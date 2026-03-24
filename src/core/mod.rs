@@ -1,0 +1,15 @@
+pub mod paths;
+pub mod cli_target;
+pub mod resource;
+pub mod group;
+pub mod db;
+pub mod linker;
+pub mod scanner;
+pub mod classifier;
+pub mod manager;
+pub mod installer;
+pub mod mcp_discovery;
+pub mod auto_group;
+pub mod channel;
+pub mod mcp_register;
+pub mod market;
