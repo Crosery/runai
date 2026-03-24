@@ -1,5 +1,7 @@
 # Skill Manager
 
+**English** | [中文](README_zh.md)
+
 A terminal-based resource manager for AI CLI skills, MCP servers, and groups. Works across **Claude Code**, **Codex**, **Gemini CLI**, and **OpenCode**.
 
 ## Features
