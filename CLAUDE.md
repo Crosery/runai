@@ -27,10 +27,13 @@ cargo build
 - **Symlink direction** — `~/.claude/skills/<name>` -> `~/.skill-manager/skills/<name>`
 - **MCP auto-registers** on first launch to all CLIs (claude/codex/gemini/opencode)
 - **Market lists are disk-cached** — loads instantly, refreshes in background (1hr TTL)
-- **Market install downloads only SKILL.md** — not the entire repo
+- **Market install downloads full skill directory** — all files, not just SKILL.md
+- **Filesystem is source of truth** — skill enabled = symlink exists; MCP enabled = CLI config file `disabled` field absent
+- **DB stores only metadata and groups** — not runtime state; old tables preserved for rollback safety
 
 ## Tests
 
 ```bash
-cargo test    # 38 tests
+cargo test                      # 60 tests
+cargo test -- --test-threads=1  # if HOME env race conditions occur
 ```
