@@ -61,6 +61,8 @@ pub struct App {
     pub status: (usize, usize, usize, usize),
     pub first_launch_info: Option<FirstLaunchInfo>,
     pub scan_log: Vec<String>,
+    /// Last known mtime of CLI config files for change detection
+    config_mtimes: HashMap<String, std::time::SystemTime>,
     // Market
     pub market_source_idx: usize,
     pub sources: Vec<SourceEntry>,
@@ -107,6 +109,7 @@ impl App {
             status: (0, 0, 0, 0),
             first_launch_info: None,
             scan_log: Vec::new(),
+            config_mtimes: HashMap::new(),
             detail_group_id: String::new(),
             detail_group_name: String::new(),
             detail_members: Vec::new(),
@@ -156,10 +159,37 @@ impl App {
         }
     }
 
-    pub fn reload(&mut self) {
-        // Sync MCP status from CLI config files (picks up external changes)
-        self.mgr.sync_mcp_status();
+    /// Check if any CLI config file changed since last check. If so, sync and reload.
+    /// Cheap: only stat() calls, no file reads unless mtime changed.
+    pub fn poll_config_changes(&mut self) {
+        let home = dirs::home_dir().unwrap_or_default();
+        let configs = [
+            home.join(".claude.json"),
+            home.join(".gemini/settings.json"),
+            home.join(".codex/settings.json"),
+            home.join(".opencode/settings.json"),
+        ];
+        let mut changed = false;
+        for path in &configs {
+            let key = path.to_string_lossy().to_string();
+            let mtime = std::fs::metadata(path)
+                .and_then(|m| m.modified())
+                .ok();
+            if let Some(mt) = mtime {
+                let prev = self.config_mtimes.get(&key);
+                if prev != Some(&mt) {
+                    self.config_mtimes.insert(key, mt);
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.mgr.sync_mcp_status();
+            self.reload();
+        }
+    }
 
+    pub fn reload(&mut self) {
         let kind_filter = match self.tab {
             Tab::Skills => Some(crate::core::resource::ResourceKind::Skill),
             Tab::Mcps => Some(crate::core::resource::ResourceKind::Mcp),
