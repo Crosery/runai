@@ -106,6 +106,12 @@ pub struct MarketSourceParams {
     pub repo: Option<String>,
 }
 
+#[derive(Deserialize, schemars::JsonSchema, Default)]
+pub struct RestoreParams {
+    /// Backup timestamp (omit to use latest)
+    pub timestamp: Option<String>,
+}
+
 #[derive(Serialize, schemars::JsonSchema)]
 pub struct TextResult {
     pub result: String,
@@ -536,30 +542,43 @@ impl SmServer {
         Json(TextResult { result: results.join("\n") })
     }
 
-    #[tool(description = "Uninstall all managed resources and restore original symlinks from backup")]
-    fn sm_uninstall_all(&self) -> Json<TextResult> {
+    #[tool(description = "Create a backup of all CLI skill directories and config files")]
+    fn sm_backup(&self) -> Json<TextResult> {
+        let mgr = self.manager.lock().unwrap();
+        let result = match crate::core::backup::create_backup(mgr.paths()) {
+            Ok(dir) => format!("Backup created: {}", dir.display()),
+            Err(e) => format!("Error: {e}"),
+        };
+        Json(TextResult { result })
+    }
+
+    #[tool(description = "Restore from backup. Omit timestamp to use latest.")]
+    fn sm_restore(&self, Parameters(p): Parameters<RestoreParams>) -> Json<TextResult> {
         let mgr = self.manager.lock().unwrap();
         let paths = mgr.paths();
+        let ts = match p.timestamp {
+            Some(t) => t,
+            None => match crate::core::backup::list_backups(paths).into_iter().next() {
+                Some(t) => t,
+                None => return Json(TextResult { result: "No backups found".into() }),
+            },
+        };
+        let result = match crate::core::backup::restore_backup(paths, &ts) {
+            Ok(n) => format!("Restored {n} items from backup {ts}"),
+            Err(e) => format!("Error: {e}"),
+        };
+        Json(TextResult { result })
+    }
 
-        if !crate::core::backup::has_backup(paths) {
-            return Json(TextResult { result: "No backup found — cannot restore".into() });
+    #[tool(description = "List available backups (newest first)")]
+    fn sm_backups(&self) -> Json<TextResult> {
+        let mgr = self.manager.lock().unwrap();
+        let list = crate::core::backup::list_backups(mgr.paths());
+        if list.is_empty() {
+            Json(TextResult { result: "No backups found".into() })
+        } else {
+            Json(TextResult { result: list.join("\n") })
         }
-
-        // Remove all managed resources from DB and their symlinks
-        let resources = mgr.list_resources(None, None).unwrap_or_default();
-        let mut removed = 0;
-        for r in &resources {
-            if mgr.uninstall(&r.id).is_ok() {
-                removed += 1;
-            }
-        }
-
-        // Restore original symlinks from backup
-        let restored = crate::core::backup::restore_backup(paths).unwrap_or(0);
-
-        Json(TextResult {
-            result: format!("Removed {} resources, restored {} original symlinks", removed, restored),
-        })
     }
 
     // ── Utility ──
@@ -584,7 +603,7 @@ impl ServerHandler for SmServer {
             "Skill Manager — manage AI CLI skills, MCPs, groups, and market. \
              Tools: sm_list, sm_groups, sm_status, sm_enable, sm_disable, sm_scan, \
              sm_delete, sm_create_group, sm_delete_group, sm_group_add, sm_group_remove, \
-             sm_batch_enable, sm_batch_disable, sm_uninstall_all, \
+             sm_batch_enable, sm_batch_disable, sm_backup, sm_restore, sm_backups, \
              sm_market, sm_market_install, sm_sources, sm_register".into()
         );
         info.capabilities = rmcp::model::ServerCapabilities::builder()

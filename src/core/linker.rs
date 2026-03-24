@@ -104,7 +104,7 @@ impl Linker {
         Ok(())
     }
 
-    fn move_dir(from: &Path, to: &Path) -> Result<()> {
+    pub fn move_dir(from: &Path, to: &Path) -> Result<()> {
         if std::fs::rename(from, to).is_ok() {
             return Ok(());
         }

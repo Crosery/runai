@@ -45,8 +45,14 @@ pub enum Commands {
     Uninstall {
         name: String,
     },
-    /// Uninstall all managed resources and restore original symlinks from backup
-    UninstallAll,
+    /// Restore from backup (uses latest backup by default)
+    Restore {
+        /// Backup timestamp (omit for latest)
+        #[arg(long)]
+        timestamp: Option<String>,
+    },
+    /// Create a backup now
+    Backup,
     /// Group management
     Group {
         #[command(subcommand)]
@@ -183,27 +189,34 @@ pub fn run(cli: Cli) -> Result<()> {
             println!("Resource '{name}' uninstalled");
             Ok(())
         }
-        Some(Commands::UninstallAll) => {
+        Some(Commands::Backup) => {
             let paths = mgr.paths();
-            if !crate::core::backup::has_backup(paths) {
-                println!("No backup found — cannot restore original symlinks.");
-                println!("Proceeding to remove all managed resources...");
+            match crate::core::backup::create_backup(paths) {
+                Ok(dir) => println!("Backup created: {}", dir.display()),
+                Err(e) => eprintln!("Backup failed: {e}"),
             }
-
-            let resources = mgr.list_resources(None, None)?;
-            let mut removed = 0;
-            for r in &resources {
-                if mgr.uninstall(&r.id).is_ok() {
-                    removed += 1;
+            Ok(())
+        }
+        Some(Commands::Restore { timestamp }) => {
+            let paths = mgr.paths();
+            let ts = match timestamp {
+                Some(t) => t,
+                None => {
+                    let backups = crate::core::backup::list_backups(paths);
+                    match backups.first() {
+                        Some(t) => t.clone(),
+                        None => {
+                            eprintln!("No backups found. Run 'skill-manager backup' first.");
+                            return Ok(());
+                        }
+                    }
                 }
+            };
+            println!("Restoring from backup: {ts}");
+            match crate::core::backup::restore_backup(paths, &ts) {
+                Ok(n) => println!("Restored {n} items"),
+                Err(e) => eprintln!("Restore failed: {e}"),
             }
-            println!("Removed {removed} managed resources.");
-
-            if crate::core::backup::has_backup(paths) {
-                let restored = crate::core::backup::restore_backup(paths)?;
-                println!("Restored {restored} original symlinks from backup.");
-            }
-
             Ok(())
         }
         Some(Commands::Group { command }) => handle_group_command(&mgr, command),
