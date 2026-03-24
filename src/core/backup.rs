@@ -67,6 +67,8 @@ fn create_backup_impl(paths: &AppPaths, home: &Path) -> Result<PathBuf> {
     // Backup CLI config files
     let configs: &[(&str, &str)] = &[
         (".claude.json", "claude.json"),
+        (".claude/settings.json", "claude-settings.json"),
+        (".claude/settings.local.json", "claude-settings-local.json"),
         (".gemini/settings.json", "gemini-settings.json"),
         (".codex/settings.json", "codex-settings.json"),
         (".opencode/settings.json", "opencode-settings.json"),
@@ -76,6 +78,12 @@ fn create_backup_impl(paths: &AppPaths, home: &Path) -> Result<PathBuf> {
         if src.exists() {
             let _ = std::fs::copy(&src, backup_dir.join(dest_name));
         }
+    }
+
+    // Backup MCP configs directory
+    let mcp_configs = home.join(".claude/mcp-configs");
+    if mcp_configs.exists() {
+        copy_dir_preserving_symlinks(&mcp_configs, &backup_dir.join("claude-mcp-configs"))?;
     }
 
     // Write timestamp marker
@@ -138,6 +146,8 @@ fn restore_backup_impl(paths: &AppPaths, timestamp: &str, home: &Path) -> Result
     // Restore config files
     let configs: &[(&str, &str)] = &[
         ("claude.json", ".claude.json"),
+        ("claude-settings.json", ".claude/settings.json"),
+        ("claude-settings-local.json", ".claude/settings.local.json"),
         ("gemini-settings.json", ".gemini/settings.json"),
         ("codex-settings.json", ".codex/settings.json"),
         ("opencode-settings.json", ".opencode/settings.json"),
@@ -152,6 +162,17 @@ fn restore_backup_impl(paths: &AppPaths, timestamp: &str, home: &Path) -> Result
             std::fs::copy(&src, &dest)?;
             restored += 1;
         }
+    }
+
+    // Restore MCP configs directory
+    let mcp_backup = backup_dir.join("claude-mcp-configs");
+    if mcp_backup.exists() {
+        let mcp_dest = home.join(".claude/mcp-configs");
+        if mcp_dest.exists() {
+            std::fs::remove_dir_all(&mcp_dest)?;
+        }
+        copy_dir_preserving_symlinks(&mcp_backup, &mcp_dest)?;
+        restored += 1;
     }
 
     Ok(restored)
