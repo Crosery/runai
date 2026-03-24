@@ -157,6 +157,9 @@ impl App {
     }
 
     pub fn reload(&mut self) {
+        // Sync MCP status from CLI config files (picks up external changes)
+        self.mgr.sync_mcp_status();
+
         let kind_filter = match self.tab {
             Tab::Skills => Some(crate::core::resource::ResourceKind::Skill),
             Tab::Mcps => Some(crate::core::resource::ResourceKind::Mcp),

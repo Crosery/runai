@@ -155,6 +155,40 @@ impl SkillManager {
         Ok(())
     }
 
+    /// Sync MCP enabled status from CLI config files into DB.
+    /// Call this before displaying MCP status to reflect external changes.
+    pub fn sync_mcp_status(&self) {
+        let home = dirs::home_dir().unwrap_or_default();
+        let configs: &[(CliTarget, &str)] = &[
+            (CliTarget::Claude, ".claude.json"),
+            (CliTarget::Gemini, ".gemini/settings.json"),
+            (CliTarget::Codex, ".codex/settings.json"),
+            (CliTarget::OpenCode, ".opencode/settings.json"),
+        ];
+
+        for (target, rel) in configs {
+            let path = home.join(rel);
+            let content = match std::fs::read_to_string(&path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            let config: serde_json::Value = match serde_json::from_str(&content) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            let servers = match config.get("mcpServers").and_then(|s| s.as_object()) {
+                Some(s) => s,
+                None => continue,
+            };
+            for (name, server) in servers {
+                if name.starts_with('_') { continue; }
+                let id = format!("mcp:{name}");
+                let disabled = server.get("disabled").and_then(|v| v.as_bool()).unwrap_or(false);
+                let _ = self.db.set_target_enabled(&id, *target, !disabled);
+            }
+        }
+    }
+
     pub fn list_resources(
         &self,
         kind: Option<ResourceKind>,
