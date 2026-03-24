@@ -131,7 +131,7 @@ impl SmServer {
     fn sm_list(&self, Parameters(p): Parameters<ListResourcesParams>) -> Json<TextResult> {
         let mgr = self.manager.lock().unwrap();
         let resources = if let Some(group_id) = p.group {
-            mgr.db().get_group_members(&group_id).unwrap_or_default()
+            mgr.get_group_members(&group_id).unwrap_or_default()
         } else {
             let kind_filter = p.kind
                 .as_deref()
@@ -162,7 +162,7 @@ impl SmServer {
         let groups = mgr.list_groups().unwrap_or_default();
 
         let items: Vec<serde_json::Value> = groups.iter().map(|(id, g)| {
-            let members = mgr.db().get_group_members(id).unwrap_or_default();
+            let members = mgr.get_group_members(id).unwrap_or_default();
             serde_json::json!({
                 "id": id,
                 "name": g.name,
@@ -179,7 +179,7 @@ impl SmServer {
         let target = parse_target(p.target.as_deref());
         let mgr = self.manager.lock().unwrap();
         let (skills, mcps) = mgr.status(target).unwrap_or((0, 0));
-        let (ts, tm) = mgr.db().resource_count().unwrap_or((0, 0));
+        let (ts, tm) = mgr.resource_count();
         let result = serde_json::json!({
             "target": target.name(),
             "skills_enabled": skills, "skills_total": ts,
@@ -378,7 +378,7 @@ impl SmServer {
         Json(TextResult { result: serde_json::to_string_pretty(&all_skills).unwrap_or_default() })
     }
 
-    #[tool(description = "Install a single skill from the market (downloads only SKILL.md)")]
+    #[tool(description = "Install a single skill from the market (downloads full skill directory)")]
     fn sm_market_install(&self, Parameters(p): Parameters<MarketInstallParams>) -> Json<TextResult> {
         let mgr = self.manager.lock().unwrap();
         let data_dir = mgr.paths().data_dir().to_path_buf();

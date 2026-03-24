@@ -183,6 +183,40 @@ impl App {
                 }
             }
         }
+        // Also watch skills directories
+        for target in crate::core::cli_target::CliTarget::ALL {
+            let skills_dir = target.skills_dir();
+            if skills_dir.exists() {
+                let key = skills_dir.to_string_lossy().to_string();
+                let mtime = std::fs::metadata(&skills_dir)
+                    .and_then(|m| m.modified())
+                    .ok();
+                if let Some(mt) = mtime {
+                    let prev = self.config_mtimes.get(&key);
+                    if prev != Some(&mt) {
+                        self.config_mtimes.insert(key, mt);
+                        changed = true;
+                    }
+                }
+            }
+        }
+
+        // Watch mcp-configs directory
+        let mcp_configs = home.join(".claude").join("mcp-configs");
+        if mcp_configs.exists() {
+            let key = mcp_configs.to_string_lossy().to_string();
+            let mtime = std::fs::metadata(&mcp_configs)
+                .and_then(|m| m.modified())
+                .ok();
+            if let Some(mt) = mtime {
+                let prev = self.config_mtimes.get(&key);
+                if prev != Some(&mt) {
+                    self.config_mtimes.insert(key, mt);
+                    changed = true;
+                }
+            }
+        }
+
         if changed {
             self.reload();
         }
@@ -198,13 +232,13 @@ impl App {
         self.items = self.mgr.list_resources(kind_filter, None).unwrap_or_default();
 
         self.groups = self.mgr.list_groups().unwrap_or_default().into_iter().map(|(id, g)| {
-            let members = self.mgr.db().get_group_members(&id).unwrap_or_default();
+            let members = self.mgr.get_group_members(&id).unwrap_or_default();
             let enabled = members.iter().filter(|m| m.is_enabled_for(self.active_target)).count();
             (id, g.name, members.len(), enabled)
         }).collect();
 
         let (es, em) = self.mgr.status(self.active_target).unwrap_or((0, 0));
-        let (ts, tm) = self.mgr.db().resource_count().unwrap_or((0, 0));
+        let (ts, tm) = self.mgr.resource_count();
         self.status = (es, ts, em, tm);
 
         if self.selected >= self.visible_count() && self.visible_count() > 0 {
@@ -730,7 +764,7 @@ impl App {
     }
 
     fn reload_group_detail(&mut self) {
-        self.detail_members = self.mgr.db()
+        self.detail_members = self.mgr
             .get_group_members(&self.detail_group_id)
             .unwrap_or_default();
     }
