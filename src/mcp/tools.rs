@@ -91,6 +91,14 @@ pub struct MarketInstallParams {
 }
 
 #[derive(Deserialize, schemars::JsonSchema, Default)]
+pub struct BatchParams {
+    /// List of resource names to enable/disable
+    pub names: Vec<String>,
+    /// CLI target: claude, codex, gemini, opencode (default: claude)
+    pub target: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema, Default)]
 pub struct MarketSourceParams {
     /// Action: "list", "add", "remove", "enable", "disable"
     pub action: String,
@@ -474,6 +482,86 @@ impl SmServer {
         Json(TextResult { result })
     }
 
+    // ── Batch operations ──
+
+    #[tool(description = "Enable multiple skills/MCPs by name list for a CLI target")]
+    fn sm_batch_enable(&self, Parameters(p): Parameters<BatchParams>) -> Json<TextResult> {
+        let target = parse_target(p.target.as_deref());
+        let mgr = self.manager.lock().unwrap();
+
+        let mut results = Vec::new();
+        for name in &p.names {
+            let groups = mgr.list_groups().unwrap_or_default();
+            let msg = if groups.iter().any(|(id, _)| id == name) {
+                mgr.enable_group(name, target, None)
+                    .map(|_| format!("'{}' enabled", name))
+                    .unwrap_or_else(|e| format!("'{}': {}", name, e))
+            } else {
+                match mgr.find_resource_id(name) {
+                    Some(id) => mgr.enable_resource(&id, target, None)
+                        .map(|_| format!("'{}' enabled", name))
+                        .unwrap_or_else(|e| format!("'{}': {}", name, e)),
+                    None => format!("'{}' not found", name),
+                }
+            };
+            results.push(msg);
+        }
+
+        Json(TextResult { result: results.join("\n") })
+    }
+
+    #[tool(description = "Disable multiple skills/MCPs by name list for a CLI target")]
+    fn sm_batch_disable(&self, Parameters(p): Parameters<BatchParams>) -> Json<TextResult> {
+        let target = parse_target(p.target.as_deref());
+        let mgr = self.manager.lock().unwrap();
+
+        let mut results = Vec::new();
+        for name in &p.names {
+            let groups = mgr.list_groups().unwrap_or_default();
+            let msg = if groups.iter().any(|(id, _)| id == name) {
+                mgr.disable_group(name, target, None)
+                    .map(|_| format!("'{}' disabled", name))
+                    .unwrap_or_else(|e| format!("'{}': {}", name, e))
+            } else {
+                match mgr.find_resource_id(name) {
+                    Some(id) => mgr.disable_resource(&id, target, None)
+                        .map(|_| format!("'{}' disabled", name))
+                        .unwrap_or_else(|e| format!("'{}': {}", name, e)),
+                    None => format!("'{}' not found", name),
+                }
+            };
+            results.push(msg);
+        }
+
+        Json(TextResult { result: results.join("\n") })
+    }
+
+    #[tool(description = "Uninstall all managed resources and restore original symlinks from backup")]
+    fn sm_uninstall_all(&self) -> Json<TextResult> {
+        let mgr = self.manager.lock().unwrap();
+        let paths = mgr.paths();
+
+        if !crate::core::backup::has_backup(paths) {
+            return Json(TextResult { result: "No backup found — cannot restore".into() });
+        }
+
+        // Remove all managed resources from DB and their symlinks
+        let resources = mgr.list_resources(None, None).unwrap_or_default();
+        let mut removed = 0;
+        for r in &resources {
+            if mgr.uninstall(&r.id).is_ok() {
+                removed += 1;
+            }
+        }
+
+        // Restore original symlinks from backup
+        let restored = crate::core::backup::restore_backup(paths).unwrap_or(0);
+
+        Json(TextResult {
+            result: format!("Removed {} resources, restored {} original symlinks", removed, restored),
+        })
+    }
+
     // ── Utility ──
 
     #[tool(description = "Register skill-manager as MCP server in all CLI configs")]
@@ -496,6 +584,7 @@ impl ServerHandler for SmServer {
             "Skill Manager — manage AI CLI skills, MCPs, groups, and market. \
              Tools: sm_list, sm_groups, sm_status, sm_enable, sm_disable, sm_scan, \
              sm_delete, sm_create_group, sm_delete_group, sm_group_add, sm_group_remove, \
+             sm_batch_enable, sm_batch_disable, sm_uninstall_all, \
              sm_market, sm_market_install, sm_sources, sm_register".into()
         );
         info.capabilities = rmcp::model::ServerCapabilities::builder()

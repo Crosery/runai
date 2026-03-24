@@ -13,3 +13,4 @@ pub mod auto_group;
 pub mod channel;
 pub mod mcp_register;
 pub mod market;
+pub mod backup;

@@ -229,7 +229,8 @@ impl Market {
         Ok(skills)
     }
 
-    /// Install a single skill: download only its SKILL.md from GitHub raw.
+    /// Install a single skill: download the entire skill directory from GitHub.
+    /// Uses GitHub Contents API to list all files, then downloads each via raw URL.
     pub async fn install_single(skill: &MarketSkill, paths: &crate::core::paths::AppPaths) -> Result<()> {
         let parts: Vec<&str> = skill.source_repo.splitn(2, '/').collect();
         if parts.len() != 2 {
@@ -237,31 +238,78 @@ impl Market {
         }
         let (owner, repo) = (parts[0], parts[1]);
 
-        // Build the raw URL for SKILL.md
-        let skill_md_path = if skill.repo_path.is_empty() {
-            "SKILL.md".to_string()
-        } else {
-            format!("{}/SKILL.md", skill.repo_path)
-        };
-        let url = format!(
-            "https://raw.githubusercontent.com/{owner}/{repo}/{}/{skill_md_path}",
-            skill.branch,
-        );
-
         let client = reqwest::Client::builder()
             .user_agent("skill-manager/0.1")
             .build()?;
 
-        let resp = client.get(&url).send().await?;
-        if !resp.status().is_success() {
-            bail!("Failed to download SKILL.md: HTTP {}", resp.status());
-        }
-        let content = resp.text().await?;
-
-        // Write to ~/.skill-manager/skills/{name}/SKILL.md
         let skill_dir = paths.skills_dir().join(&skill.name);
         std::fs::create_dir_all(&skill_dir)?;
-        std::fs::write(skill_dir.join("SKILL.md"), content)?;
+
+        // Use the repo_path as the directory to list; if empty, use root
+        let api_path = if skill.repo_path.is_empty() {
+            String::new()
+        } else {
+            skill.repo_path.clone()
+        };
+
+        Self::download_directory_recursive(
+            &client, owner, repo, &skill.branch, &api_path, &skill_dir,
+        ).await?;
+
+        Ok(())
+    }
+
+    /// Recursively download all files in a GitHub directory.
+    async fn download_directory_recursive(
+        client: &reqwest::Client,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+        api_path: &str,
+        local_dir: &std::path::Path,
+    ) -> Result<()> {
+        let url = if api_path.is_empty() {
+            format!(
+                "https://api.github.com/repos/{owner}/{repo}/contents?ref={branch}",
+            )
+        } else {
+            format!(
+                "https://api.github.com/repos/{owner}/{repo}/contents/{api_path}?ref={branch}",
+            )
+        };
+
+        let resp = client.get(&url).send().await?;
+        if !resp.status().is_success() {
+            bail!("GitHub Contents API returned HTTP {} for {}", resp.status(), url);
+        }
+
+        let items: Vec<GitHubContentItem> = resp.json().await?;
+
+        for item in &items {
+            match item.item_type.as_str() {
+                "file" => {
+                    let raw_url = format!(
+                        "https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{}",
+                        item.path,
+                    );
+                    let file_resp = client.get(&raw_url).send().await?;
+                    if !file_resp.status().is_success() {
+                        bail!("Failed to download {}: HTTP {}", item.path, file_resp.status());
+                    }
+                    let content = file_resp.bytes().await?;
+                    let file_path = local_dir.join(&item.name);
+                    std::fs::write(&file_path, &content)?;
+                }
+                "dir" => {
+                    let sub_dir = local_dir.join(&item.name);
+                    std::fs::create_dir_all(&sub_dir)?;
+                    Box::pin(Self::download_directory_recursive(
+                        client, owner, repo, branch, &item.path, &sub_dir,
+                    )).await?;
+                }
+                _ => {} // skip symlinks, submodules, etc.
+            }
+        }
 
         Ok(())
     }
@@ -281,4 +329,12 @@ struct GitTree {
 #[derive(Deserialize)]
 struct GitTreeNode {
     path: String,
+}
+
+#[derive(Deserialize)]
+struct GitHubContentItem {
+    name: String,
+    path: String,
+    #[serde(rename = "type")]
+    item_type: String,
 }

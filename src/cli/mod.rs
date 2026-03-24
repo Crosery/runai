@@ -45,6 +45,8 @@ pub enum Commands {
     Uninstall {
         name: String,
     },
+    /// Uninstall all managed resources and restore original symlinks from backup
+    UninstallAll,
     /// Group management
     Group {
         #[command(subcommand)]
@@ -179,6 +181,29 @@ pub fn run(cli: Cli) -> Result<()> {
             let resource_id = find_resource_id_by_name(&mgr, &name)?;
             mgr.uninstall(&resource_id)?;
             println!("Resource '{name}' uninstalled");
+            Ok(())
+        }
+        Some(Commands::UninstallAll) => {
+            let paths = mgr.paths();
+            if !crate::core::backup::has_backup(paths) {
+                println!("No backup found — cannot restore original symlinks.");
+                println!("Proceeding to remove all managed resources...");
+            }
+
+            let resources = mgr.list_resources(None, None)?;
+            let mut removed = 0;
+            for r in &resources {
+                if mgr.uninstall(&r.id).is_ok() {
+                    removed += 1;
+                }
+            }
+            println!("Removed {removed} managed resources.");
+
+            if crate::core::backup::has_backup(paths) {
+                let restored = crate::core::backup::restore_backup(paths)?;
+                println!("Restored {restored} original symlinks from backup.");
+            }
+
             Ok(())
         }
         Some(Commands::Group { command }) => handle_group_command(&mgr, command),

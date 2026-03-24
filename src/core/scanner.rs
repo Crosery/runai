@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 use anyhow::Result;
+use crate::core::backup;
 use crate::core::cli_target::CliTarget;
 use crate::core::db::Database;
 use crate::core::linker::{Linker, EntryType};
@@ -19,6 +20,11 @@ pub struct Scanner;
 impl Scanner {
     pub fn scan_all(paths: &AppPaths, db: &Database) -> Result<ScanResult> {
         let mut total = ScanResult::default();
+
+        // 0. Create backup before first scan if no backup exists
+        if !backup::has_backup(paths) {
+            let _ = backup::create_backup(paths);
+        }
 
         // 1. Register all skills already in the managed directory
         let managed_result = Self::scan_managed_dir(paths, db);
