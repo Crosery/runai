@@ -328,3 +328,161 @@ impl SkillManager {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    // set_mcp_disabled reads dirs::home_dir() which checks HOME env var.
+    // We serialize tests that modify HOME to avoid races.
+    static HOME_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Helper: temporarily set HOME to a given path, run a closure, restore HOME.
+    fn with_home<F: FnOnce()>(tmp: &Path, f: F) {
+        let _guard = HOME_LOCK.lock().unwrap();
+        let original = std::env::var("HOME").ok();
+        // SAFETY: we hold HOME_LOCK so no other test thread modifies HOME concurrently.
+        unsafe {
+            std::env::set_var("HOME", tmp);
+        }
+        f();
+        unsafe {
+            match original {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+    }
+
+    #[test]
+    fn set_mcp_disabled_adds_disabled_true() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join(".claude.json");
+
+        let config = serde_json::json!({
+            "mcpServers": {
+                "my-mcp": {
+                    "command": "my-mcp",
+                    "args": ["serve"]
+                }
+            }
+        });
+        std::fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+
+        with_home(tmp.path(), || {
+            SkillManager::set_mcp_disabled("my-mcp", CliTarget::Claude, true).unwrap();
+        });
+
+        let content: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+        assert_eq!(
+            content["mcpServers"]["my-mcp"]["disabled"],
+            serde_json::Value::Bool(true),
+        );
+        // command field should still be present
+        assert_eq!(
+            content["mcpServers"]["my-mcp"]["command"],
+            serde_json::Value::String("my-mcp".into()),
+        );
+    }
+
+    #[test]
+    fn set_mcp_disabled_removes_disabled_field_on_enable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join(".claude.json");
+
+        let config = serde_json::json!({
+            "mcpServers": {
+                "my-mcp": {
+                    "command": "my-mcp",
+                    "args": ["serve"],
+                    "disabled": true
+                }
+            }
+        });
+        std::fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+
+        with_home(tmp.path(), || {
+            SkillManager::set_mcp_disabled("my-mcp", CliTarget::Claude, false).unwrap();
+        });
+
+        let content: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+        // disabled field should be removed
+        assert!(content["mcpServers"]["my-mcp"].get("disabled").is_none());
+        // other fields preserved
+        assert_eq!(
+            content["mcpServers"]["my-mcp"]["command"],
+            serde_json::Value::String("my-mcp".into()),
+        );
+    }
+
+    #[test]
+    fn set_mcp_disabled_preserves_other_servers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join(".claude.json");
+
+        let config = serde_json::json!({
+            "mcpServers": {
+                "server-a": {
+                    "command": "a"
+                },
+                "server-b": {
+                    "command": "b"
+                }
+            },
+            "otherKey": "untouched"
+        });
+        std::fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+
+        with_home(tmp.path(), || {
+            SkillManager::set_mcp_disabled("server-a", CliTarget::Claude, true).unwrap();
+        });
+
+        let content: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+        // server-a is disabled
+        assert_eq!(content["mcpServers"]["server-a"]["disabled"], serde_json::Value::Bool(true));
+        // server-b is unchanged (no disabled field)
+        assert!(content["mcpServers"]["server-b"].get("disabled").is_none());
+        assert_eq!(content["mcpServers"]["server-b"]["command"], serde_json::Value::String("b".into()));
+        // top-level key preserved
+        assert_eq!(content["otherKey"], serde_json::Value::String("untouched".into()));
+    }
+
+    #[test]
+    fn set_mcp_disabled_nonexistent_mcp_does_not_crash() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join(".claude.json");
+
+        let config = serde_json::json!({
+            "mcpServers": {
+                "existing": { "command": "x" }
+            }
+        });
+        std::fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+
+        with_home(tmp.path(), || {
+            // Should succeed silently — no such server in config
+            let result = SkillManager::set_mcp_disabled("nonexistent", CliTarget::Claude, true);
+            assert!(result.is_ok());
+        });
+
+        // Config should be unchanged (not even rewritten)
+        let content: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+        assert!(content["mcpServers"]["existing"]["command"] == serde_json::Value::String("x".into()));
+    }
+
+    #[test]
+    fn set_mcp_disabled_missing_config_file_does_not_crash() {
+        let tmp = tempfile::tempdir().unwrap();
+        // No .claude.json file exists
+
+        with_home(tmp.path(), || {
+            let result = SkillManager::set_mcp_disabled("anything", CliTarget::Claude, true);
+            assert!(result.is_ok());
+        });
+    }
+}

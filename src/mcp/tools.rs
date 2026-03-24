@@ -616,15 +616,66 @@ impl ServerHandler for SmServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rmcp::handler::server::wrapper::Parameters;
 
     #[test]
-    fn tool_router_has_tools() {
+    fn tool_router_has_22_tools() {
         let server = SmServer::new().unwrap();
         let tools = server.tool_router.list_all();
         eprintln!("Registered tools: {}", tools.len());
         for t in &tools {
             eprintln!("  - {}", t.name);
         }
-        assert!(tools.len() > 0, "No tools registered in tool_router!");
+        assert_eq!(tools.len(), 22, "Expected 22 tools in tool_router, got {}", tools.len());
+    }
+
+    #[test]
+    fn sm_status_returns_valid_json() {
+        let server = SmServer::new().unwrap();
+        let Json(result) = server.sm_status(Parameters(StatusParams { target: None }));
+        let parsed: serde_json::Value = serde_json::from_str(&result.result)
+            .expect("sm_status should return valid JSON");
+
+        assert!(parsed.get("target").is_some(), "missing 'target' field");
+        assert!(parsed.get("skills_enabled").is_some(), "missing 'skills_enabled' field");
+        assert!(parsed.get("skills_total").is_some(), "missing 'skills_total' field");
+        assert!(parsed.get("mcps_enabled").is_some(), "missing 'mcps_enabled' field");
+        assert!(parsed.get("mcps_total").is_some(), "missing 'mcps_total' field");
+        assert_eq!(parsed["target"], "claude");
+    }
+
+    #[test]
+    fn sm_sources_list_returns_builtin_sources() {
+        let server = SmServer::new().unwrap();
+        let Json(result) = server.sm_sources(Parameters(MarketSourceParams {
+            action: "list".into(),
+            repo: None,
+        }));
+        let parsed: serde_json::Value = serde_json::from_str(&result.result)
+            .expect("sm_sources list should return valid JSON");
+
+        let arr = parsed.as_array().expect("sm_sources list should return an array");
+        assert!(!arr.is_empty(), "builtin sources list should not be empty");
+
+        // Every entry should have label, repo, enabled, builtin fields
+        for entry in arr {
+            assert!(entry.get("label").is_some(), "source entry missing 'label'");
+            assert!(entry.get("repo").is_some(), "source entry missing 'repo'");
+            assert!(entry.get("enabled").is_some(), "source entry missing 'enabled'");
+            assert!(entry.get("builtin").is_some(), "source entry missing 'builtin'");
+        }
+
+        // At least one builtin source should exist
+        let has_builtin = arr.iter().any(|e| e["builtin"] == serde_json::Value::Bool(true));
+        assert!(has_builtin, "expected at least one builtin source");
+    }
+
+    #[test]
+    fn sm_backups_returns_string() {
+        let server = SmServer::new().unwrap();
+        let Json(result) = server.sm_backups();
+        // With no backups, should return "No backups found"
+        // With backups, should return newline-separated timestamps
+        assert!(!result.result.is_empty(), "sm_backups should return a non-empty string");
     }
 }
