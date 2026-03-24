@@ -695,13 +695,19 @@ impl App {
     pub fn do_first_launch_scan(&mut self) {
         self.scan_log.clear();
 
-        self.scan_log.push("Scanning CLI skill directories...".into());
+        self.scan_log.push("Scanning skill directories...".into());
         for t in CliTarget::ALL {
             let dir = t.skills_dir();
             if dir.exists() {
                 self.scan_log.push(format!("  ✓ {} — {}", t.name(), dir.display()));
             }
         }
+        let home = dirs::home_dir().unwrap_or_default();
+        let agents_dir = home.join(".claude/.agents/skills");
+        if agents_dir.exists() {
+            self.scan_log.push(format!("  ✓ plugins/agents — {}", agents_dir.display()));
+        }
+
         let scan_result = self.mgr.scan().unwrap_or_default();
         self.scan_log.push(format!(
             "  Found {} skills ({} new, {} existing)",
@@ -721,9 +727,12 @@ impl App {
         }
 
         self.scan_log.push("Discovering MCP servers...".into());
-        let home = dirs::home_dir().unwrap_or_default();
         let mcp_entries = crate::core::mcp_discovery::McpDiscovery::discover_all(&home);
-        self.scan_log.push(format!("  Found {} MCP configs", mcp_entries.len()));
+        self.scan_log.push(format!("  Found {} MCP servers", mcp_entries.len()));
+        for entry in &mcp_entries {
+            let status = if entry.disabled { "disabled" } else { "enabled" };
+            self.scan_log.push(format!("    · {} ({})", entry.name, status));
+        }
 
         self.scan_log.push("Registering MCP server to all CLIs...".into());
         let reg_result = crate::core::mcp_register::McpRegister::register_all(&home);

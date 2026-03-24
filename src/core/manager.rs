@@ -203,10 +203,13 @@ impl SkillManager {
             resources.extend(skills);
         }
 
-        // MCPs: entirely from config files
+        // MCPs: entirely from config files (sorted for stable order)
         if kind.is_none() || kind == Some(ResourceKind::Mcp) {
             let mcp_status = Self::read_mcp_status_from_configs();
-            for (name, targets) in &mcp_status {
+            let mut mcp_names: Vec<_> = mcp_status.keys().collect();
+            mcp_names.sort();
+            for name in mcp_names {
+                let targets = &mcp_status[name];
                 if let Some(target) = enabled_for {
                     if !targets.get(&target).copied().unwrap_or(false) {
                         continue;

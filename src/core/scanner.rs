@@ -43,6 +43,21 @@ impl Scanner {
             }
         }
 
+        // 3. Scan additional skill locations (plugins, .agents)
+        let home = dirs::home_dir().unwrap_or_default();
+        let extra_dirs = [
+            home.join(".claude/.agents/skills"),
+            home.join(".claude/plugins/cache"),
+        ];
+        for dir in &extra_dirs {
+            if dir.exists() {
+                let result = Self::scan_extra_skills_dir(dir, paths, db);
+                total.adopted += result.adopted;
+                total.skipped += result.skipped;
+                total.errors.extend(result.errors);
+            }
+        }
+
         Ok(total)
     }
 
@@ -212,6 +227,60 @@ impl Scanner {
 
         db.insert_resource(&resource)?;
         Ok(())
+    }
+
+    /// Scan directories like ~/.claude/.agents/skills/ and plugin caches.
+    /// These are read-only — we register them in DB but don't move files.
+    fn scan_extra_skills_dir(dir: &Path, paths: &AppPaths, db: &Database) -> ScanResult {
+        let mut result = ScanResult::default();
+        Self::scan_extra_recursive(dir, paths, db, &mut result, 0);
+        result
+    }
+
+    fn scan_extra_recursive(dir: &Path, paths: &AppPaths, db: &Database, result: &mut ScanResult, depth: usize) {
+        if depth > 5 { return; }
+        let entries = match std::fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() { continue; }
+
+            // If this dir has SKILL.md, register it
+            if path.join("SKILL.md").exists() {
+                let name = match entry.file_name().to_str() {
+                    Some(n) => n.to_string(),
+                    None => continue,
+                };
+                // Skip if already known
+                let already_exists = db.list_resources(None, None)
+                    .map(|all| all.iter().any(|r| r.name == name))
+                    .unwrap_or(false);
+                if already_exists {
+                    result.skipped += 1;
+                    continue;
+                }
+                let description = Self::extract_description(&path);
+                let resource = Resource {
+                    id: format!("local:{name}"),
+                    name,
+                    kind: ResourceKind::Skill,
+                    description,
+                    directory: path.clone(),
+                    source: Source::Local { path: path.clone() },
+                    installed_at: chrono::Utc::now().timestamp(),
+                    enabled: HashMap::new(),
+                };
+                match db.insert_resource(&resource) {
+                    Ok(_) => result.adopted += 1,
+                    Err(e) => result.errors.push(format!("{}: {e}", entry.file_name().to_string_lossy())),
+                }
+            } else {
+                // Recurse into subdirectories (e.g., plugins/cache/xxx/version/skills/)
+                Self::scan_extra_recursive(&path, paths, db, result, depth + 1);
+            }
+        }
     }
 
     fn extract_description(skill_dir: &Path) -> String {
