@@ -77,14 +77,11 @@ impl SkillManager {
         target: CliTarget,
         cli_dir_override: Option<&Path>,
     ) -> Result<()> {
-        let resource = self.db.get_resource(resource_id)?
-            .ok_or_else(|| anyhow::anyhow!("resource not found: {resource_id}"))?;
-
-        if resource.kind == ResourceKind::Mcp {
-            // MCP: set disabled=false in CLI config file (no DB write)
-            Self::set_mcp_disabled(&resource.name, target, false)?;
+        if let Some(mcp_name) = resource_id.strip_prefix("mcp:") {
+            Self::set_mcp_disabled(mcp_name, target, false)
         } else {
-            // Skill: create symlink
+            let resource = self.db.get_resource(resource_id)?
+                .ok_or_else(|| anyhow::anyhow!("resource not found: {resource_id}"))?;
             let cli_dir = cli_dir_override
                 .map(|p| p.to_path_buf())
                 .unwrap_or_else(|| target.skills_dir());
@@ -93,10 +90,8 @@ impl SkillManager {
             if !link_path.exists() {
                 Linker::create_link(&resource.directory, &link_path)?;
             }
-            self.db.set_target_enabled(resource_id, target, true)?;
+            Ok(())
         }
-
-        Ok(())
     }
 
     pub fn disable_resource(
@@ -105,14 +100,11 @@ impl SkillManager {
         target: CliTarget,
         cli_dir_override: Option<&Path>,
     ) -> Result<()> {
-        let resource = self.db.get_resource(resource_id)?
-            .ok_or_else(|| anyhow::anyhow!("resource not found: {resource_id}"))?;
-
-        if resource.kind == ResourceKind::Mcp {
-            // MCP: set disabled=true in CLI config file (no DB write)
-            Self::set_mcp_disabled(&resource.name, target, true)?;
+        if let Some(mcp_name) = resource_id.strip_prefix("mcp:") {
+            Self::set_mcp_disabled(mcp_name, target, true)
         } else {
-            // Skill: remove symlink
+            let resource = self.db.get_resource(resource_id)?
+                .ok_or_else(|| anyhow::anyhow!("resource not found: {resource_id}"))?;
             let cli_dir = cli_dir_override
                 .map(|p| p.to_path_buf())
                 .unwrap_or_else(|| target.skills_dir());
@@ -120,10 +112,8 @@ impl SkillManager {
             if Linker::is_our_symlink(&link_path, self.paths.data_dir()) {
                 Linker::remove_link(&link_path)?;
             }
-            self.db.set_target_enabled(resource_id, target, false)?;
+            Ok(())
         }
-
-        Ok(())
     }
 
     /// Set `disabled` field on an MCP server in a CLI's config file.
@@ -571,6 +561,32 @@ mod tests {
         with_home(tmp.path(), || {
             let result = SkillManager::set_mcp_disabled("anything", CliTarget::Claude, true);
             assert!(result.is_ok());
+        });
+    }
+
+    #[test]
+    fn enable_disable_mcp_by_prefix() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = serde_json::json!({
+            "mcpServers": {
+                "test-mcp": { "command": "test", "args": [], "disabled": true }
+            }
+        });
+        let config_path = tmp.path().join(".claude.json");
+        std::fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+
+        with_home(tmp.path(), || {
+            let mgr = SkillManager::with_base(tmp.path().join("sm-data")).unwrap();
+
+            mgr.enable_resource("mcp:test-mcp", CliTarget::Claude, None).unwrap();
+            let content: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+            assert!(content["mcpServers"]["test-mcp"].get("disabled").is_none());
+
+            mgr.disable_resource("mcp:test-mcp", CliTarget::Claude, None).unwrap();
+            let content: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+            assert_eq!(content["mcpServers"]["test-mcp"]["disabled"], true);
         });
     }
 
