@@ -93,10 +93,6 @@ impl Database {
                 res.installed_at,
             ],
         )?;
-
-        for (target, enabled) in &res.enabled {
-            self.set_target_enabled(&res.id, *target, *enabled)?;
-        }
         Ok(())
     }
 
@@ -112,14 +108,12 @@ impl Database {
             None => return Ok(None),
         };
 
-        let id: String = row.get(0)?;
         let kind_str: String = row.get(2)?;
         let source_type: String = row.get(5)?;
         let source_meta: String = row.get::<_, Option<String>>(6)?.unwrap_or_default();
-        let enabled = self.get_targets_for_resource(&id)?;
 
         Ok(Some(Resource {
-            id: id.clone(),
+            id: row.get(0)?,
             name: row.get(1)?,
             kind: ResourceKind::from_str(&kind_str).unwrap_or(ResourceKind::Skill),
             description: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
@@ -127,40 +121,24 @@ impl Database {
             source: Source::from_meta_json(&source_type, &source_meta)
                 .unwrap_or(Source::Local { path: PathBuf::new() }),
             installed_at: row.get(7)?,
-            enabled,
+            enabled: HashMap::new(),
         }))
     }
 
     pub fn list_resources(
         &self,
         kind: Option<ResourceKind>,
-        enabled_for: Option<CliTarget>,
+        _enabled_for: Option<CliTarget>,
     ) -> Result<Vec<Resource>> {
-        let mut resources = match (kind, enabled_for) {
-            (Some(k), Some(t)) => {
-                let mut stmt = self.conn.prepare(
-                    "SELECT r.id, r.name, r.kind, r.description, r.directory, r.source_type, r.source_meta, r.installed_at
-                     FROM resources r JOIN resource_targets rt ON r.id = rt.resource_id
-                     WHERE r.kind = ?1 AND rt.cli_target = ?2 AND rt.enabled = 1 ORDER BY r.name"
-                )?;
-                self.collect_resources(&mut stmt, params![k.as_str(), t.name()])?
-            }
-            (Some(k), None) => {
+        let mut resources = match kind {
+            Some(k) => {
                 let mut stmt = self.conn.prepare(
                     "SELECT id, name, kind, description, directory, source_type, source_meta, installed_at
                      FROM resources WHERE kind = ?1 ORDER BY name"
                 )?;
                 self.collect_resources(&mut stmt, params![k.as_str()])?
             }
-            (None, Some(t)) => {
-                let mut stmt = self.conn.prepare(
-                    "SELECT r.id, r.name, r.kind, r.description, r.directory, r.source_type, r.source_meta, r.installed_at
-                     FROM resources r JOIN resource_targets rt ON r.id = rt.resource_id
-                     WHERE rt.cli_target = ?1 AND rt.enabled = 1 ORDER BY r.name"
-                )?;
-                self.collect_resources(&mut stmt, params![t.name()])?
-            }
-            (None, None) => {
+            None => {
                 let mut stmt = self.conn.prepare(
                     "SELECT id, name, kind, description, directory, source_type, source_meta, installed_at
                      FROM resources ORDER BY name"
@@ -168,9 +146,8 @@ impl Database {
                 self.collect_resources(&mut stmt, params![])?
             }
         };
-
         for res in &mut resources {
-            res.enabled = self.get_targets_for_resource(&res.id)?;
+            res.enabled = HashMap::new();
         }
         Ok(resources)
     }
@@ -206,37 +183,6 @@ impl Database {
         Ok(())
     }
 
-    pub fn set_target_enabled(&self, resource_id: &str, target: CliTarget, enabled: bool) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO resource_targets (resource_id, cli_target, enabled)
-             VALUES (?1, ?2, ?3)
-             ON CONFLICT (resource_id, cli_target)
-             DO UPDATE SET enabled = ?3",
-            params![resource_id, target.name(), enabled as i32],
-        )?;
-        Ok(())
-    }
-
-    fn get_targets_for_resource(&self, resource_id: &str) -> Result<HashMap<CliTarget, bool>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT cli_target, enabled FROM resource_targets WHERE resource_id = ?1"
-        )?;
-        let rows = stmt.query_map(params![resource_id], |row| {
-            let target_str: String = row.get(0)?;
-            let enabled: bool = row.get(1)?;
-            Ok((target_str, enabled))
-        })?;
-
-        let mut map = HashMap::new();
-        for row in rows {
-            let (target_str, enabled) = row?;
-            if let Some(target) = CliTarget::from_str(&target_str) {
-                map.insert(target, enabled);
-            }
-        }
-        Ok(map)
-    }
-
     pub fn add_group_member(&self, group_id: &str, resource_id: &str) -> Result<()> {
         self.conn.execute(
             "INSERT OR IGNORE INTO group_members (group_id, resource_id) VALUES (?1, ?2)",
@@ -262,7 +208,7 @@ impl Database {
 
         let mut resources = self.collect_resources(&mut stmt, params![group_id])?;
         for res in &mut resources {
-            res.enabled = self.get_targets_for_resource(&res.id)?;
+            res.enabled = HashMap::new();
         }
         Ok(resources)
     }
@@ -283,23 +229,9 @@ impl Database {
         let skills: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM resources WHERE kind = 'skill'", [], |r| r.get(0)
         )?;
-        let mcps: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM resources WHERE kind = 'mcp'", [], |r| r.get(0)
-        )?;
-        Ok((skills as usize, mcps as usize))
+        Ok((skills as usize, 0))
     }
 
-    pub fn enabled_count(&self, target: CliTarget) -> Result<(usize, usize)> {
-        let skills = self.enabled_skill_count(target)?;
-        let mcps: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM resources r JOIN resource_targets rt ON r.id = rt.resource_id
-             WHERE r.kind = 'mcp' AND rt.cli_target = ?1 AND rt.enabled = 1",
-            params![target.name()], |r| r.get(0)
-        )?;
-        Ok((skills, mcps as usize))
-    }
-
-    /// Count only enabled skills for a target (MCP status is read from config files).
     pub fn schema_version(&self) -> i64 {
         self.conn.query_row(
             "SELECT COALESCE(MAX(version), 0) FROM schema_version", [], |r| r.get(0)
@@ -327,14 +259,6 @@ impl Database {
         Ok(count as usize)
     }
 
-    pub fn enabled_skill_count(&self, target: CliTarget) -> Result<usize> {
-        let skills: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM resources r JOIN resource_targets rt ON r.id = rt.resource_id
-             WHERE r.kind = 'skill' AND rt.cli_target = ?1 AND rt.enabled = 1",
-            params![target.name()], |r| r.get(0)
-        )?;
-        Ok(skills as usize)
-    }
 }
 
 #[cfg(test)]

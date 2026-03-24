@@ -228,20 +228,4 @@ impl Scanner {
         String::new()
     }
 
-    fn find_resource_id_by_name(db: &Database, name: &str) -> Option<String> {
-        for prefix in &["local:", "adopted:", "github:"] {
-            let id = format!("{prefix}{name}");
-            if let Ok(Some(_)) = db.get_resource(&id) {
-                return Some(id);
-            }
-        }
-        if let Ok(all) = db.list_resources(None, None) {
-            for r in all {
-                if r.name == name {
-                    return Some(r.id);
-                }
-            }
-        }
-        None
-    }
 }

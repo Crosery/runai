@@ -724,8 +724,6 @@ impl App {
         let home = dirs::home_dir().unwrap_or_default();
         let mcp_entries = crate::core::mcp_discovery::McpDiscovery::discover_all(&home);
         self.scan_log.push(format!("  Found {} MCP configs", mcp_entries.len()));
-        let mcps_registered = self.mgr.register_mcps(&mcp_entries);
-        self.scan_log.push(format!("  Registered {} new MCPs", mcps_registered));
 
         self.scan_log.push("Registering MCP server to all CLIs...".into());
         let reg_result = crate::core::mcp_register::McpRegister::register_all(&home);
@@ -743,7 +741,7 @@ impl App {
 
         self.first_launch_info = Some(FirstLaunchInfo {
             skills_found: scan_result.adopted + scan_result.skipped,
-            mcps_found: mcps_registered,
+            mcps_found: mcp_entries.len(),
         });
     }
 

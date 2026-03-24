@@ -399,39 +399,6 @@ impl SkillManager {
         (skills, mcps)
     }
 
-    /// Register discovered MCP servers into the database.
-    pub fn register_mcps(&self, entries: &[crate::core::mcp_discovery::McpEntry]) -> usize {
-        let mut count = 0;
-        for entry in entries {
-            let id = format!("mcp:{}", entry.name);
-            let is_new = self.db.get_resource(&id).ok().flatten().is_none();
-
-            if is_new {
-                let resource = Resource {
-                    id: id.clone(),
-                    name: entry.name.clone(),
-                    kind: ResourceKind::Mcp,
-                    description: if entry.description.is_empty() {
-                        format!("{} {}", entry.command, entry.args.join(" "))
-                    } else {
-                        entry.description.clone()
-                    },
-                    directory: entry.source_file.parent().unwrap_or(Path::new(".")).to_path_buf(),
-                    source: Source::Local { path: entry.source_file.clone() },
-                    installed_at: chrono::Utc::now().timestamp(),
-                    enabled: HashMap::new(),
-                };
-                if self.db.insert_resource(&resource).is_err() {
-                    continue;
-                }
-                count += 1;
-            }
-
-            // MCP enabled status is read from CLI config at query time — no DB write needed
-        }
-        count
-    }
-
     pub fn find_resource_id(&self, name: &str) -> Option<String> {
         for prefix in &["local:", "adopted:", "github:"] {
             let id = format!("{prefix}{name}");
