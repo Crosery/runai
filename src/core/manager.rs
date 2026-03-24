@@ -231,12 +231,14 @@ impl SkillManager {
         Ok(resources)
     }
 
-    /// Check which CLI targets have a symlink for this skill name.
+    /// Check which CLI targets have this skill (symlink or direct dir in .agents/skills/ or skills/).
     fn check_skill_symlinks(&self, name: &str) -> HashMap<CliTarget, bool> {
         let mut map = HashMap::new();
         for target in CliTarget::ALL {
-            let link = target.skills_dir().join(name);
-            let enabled = Linker::is_our_symlink(&link, self.paths.data_dir());
+            // Check primary (.agents/skills/) and legacy (skills/) locations
+            let primary = target.skills_dir().join(name);
+            let legacy = target.legacy_skills_dir().join(name);
+            let enabled = primary.exists() || legacy.exists();
             map.insert(*target, enabled);
         }
         map

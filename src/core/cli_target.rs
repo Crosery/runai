@@ -27,7 +27,30 @@ impl CliTarget {
         }
     }
 
+    /// Primary skills directory — where SM creates symlinks and CC reads skills.
+    /// This is the `.agents/skills/` path used by the plugin system.
     pub fn skills_dir(&self) -> PathBuf {
+        let home = dirs::home_dir().unwrap_or_default();
+        if cfg!(windows) {
+            let appdata = dirs::data_dir().unwrap_or_else(|| home.clone());
+            match self {
+                CliTarget::Claude => appdata.join("claude").join(".agents").join("skills"),
+                CliTarget::Codex => appdata.join("codex").join(".agents").join("skills"),
+                CliTarget::Gemini => appdata.join("gemini").join(".agents").join("skills"),
+                CliTarget::OpenCode => appdata.join("opencode").join(".agents").join("skills"),
+            }
+        } else {
+            match self {
+                CliTarget::Claude => home.join(".claude").join(".agents").join("skills"),
+                CliTarget::Codex => home.join(".codex").join(".agents").join("skills"),
+                CliTarget::Gemini => home.join(".gemini").join(".agents").join("skills"),
+                CliTarget::OpenCode => home.join(".opencode").join(".agents").join("skills"),
+            }
+        }
+    }
+
+    /// Legacy skills directory — `~/.claude/skills/` etc. Also scanned for compatibility.
+    pub fn legacy_skills_dir(&self) -> PathBuf {
         let home = dirs::home_dir().unwrap_or_default();
         if cfg!(windows) {
             let appdata = dirs::data_dir().unwrap_or_else(|| home.clone());

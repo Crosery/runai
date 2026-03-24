@@ -697,15 +697,11 @@ impl App {
 
         self.scan_log.push("Scanning skill directories...".into());
         for t in CliTarget::ALL {
-            let dir = t.skills_dir();
-            if dir.exists() {
-                self.scan_log.push(format!("  ✓ {} — {}", t.name(), dir.display()));
+            for dir in &[t.skills_dir(), t.legacy_skills_dir()] {
+                if dir.exists() {
+                    self.scan_log.push(format!("  ✓ {} — {}", t.name(), dir.display()));
+                }
             }
-        }
-        let home = dirs::home_dir().unwrap_or_default();
-        let agents_dir = home.join(".claude/.agents/skills");
-        if agents_dir.exists() {
-            self.scan_log.push(format!("  ✓ plugins/agents — {}", agents_dir.display()));
         }
 
         let scan_result = self.mgr.scan().unwrap_or_default();
@@ -727,6 +723,7 @@ impl App {
         }
 
         self.scan_log.push("Discovering MCP servers...".into());
+        let home = dirs::home_dir().unwrap_or_default();
         let mcp_entries = crate::core::mcp_discovery::McpDiscovery::discover_all(&home);
         self.scan_log.push(format!("  Found {} MCP servers", mcp_entries.len()));
         for entry in &mcp_entries {
