@@ -48,6 +48,33 @@ impl Database {
                 FOREIGN KEY (resource_id) REFERENCES resources(id) ON DELETE CASCADE
             );"
         )?;
+
+        // Schema versioning
+        self.conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);"
+        )?;
+
+        let version: i64 = self.conn.query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_version", [], |r| r.get(0)
+        )?;
+
+        if version < 2 {
+            // Recreate group_members without FK constraint
+            self.conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS group_members_new (
+                    group_id TEXT NOT NULL,
+                    resource_id TEXT NOT NULL,
+                    PRIMARY KEY (group_id, resource_id)
+                );
+                INSERT OR IGNORE INTO group_members_new SELECT group_id, resource_id FROM group_members;
+                DROP TABLE IF EXISTS group_members;
+                ALTER TABLE group_members_new RENAME TO group_members;
+
+                DELETE FROM schema_version;
+                INSERT INTO schema_version VALUES (2);"
+            )?;
+        }
+
         Ok(())
     }
 
@@ -273,6 +300,26 @@ impl Database {
     }
 
     /// Count only enabled skills for a target (MCP status is read from config files).
+    pub fn schema_version(&self) -> i64 {
+        self.conn.query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_version", [], |r| r.get(0)
+        ).unwrap_or(0)
+    }
+
+    /// Get group member IDs without joining resources table.
+    /// Returns raw resource_id strings like "local:foo" or "mcp:bar".
+    pub fn get_group_member_ids(&self, group_id: &str) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT resource_id FROM group_members WHERE group_id = ?1"
+        )?;
+        let rows = stmt.query_map(params![group_id], |row| row.get(0))?;
+        let mut ids = Vec::new();
+        for row in rows {
+            ids.push(row?);
+        }
+        Ok(ids)
+    }
+
     pub fn enabled_skill_count(&self, target: CliTarget) -> Result<usize> {
         let skills: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM resources r JOIN resource_targets rt ON r.id = rt.resource_id
@@ -280,5 +327,46 @@ impl Database {
             params![target.name()], |r| r.get(0)
         )?;
         Ok(skills as usize)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migration_creates_schema_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = Database::open(&tmp.path().join("test.db")).unwrap();
+        let version: i64 = db.conn.query_row(
+            "SELECT version FROM schema_version", [], |r| r.get(0)
+        ).unwrap();
+        assert_eq!(version, 2);
+    }
+
+    #[test]
+    fn migration_preserves_group_members() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("test.db");
+
+        // Create old schema with FK (disable FK enforcement to insert mcp: row without resources entry)
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "PRAGMA foreign_keys = OFF;
+                 CREATE TABLE resources (id TEXT PRIMARY KEY, name TEXT, kind TEXT, description TEXT, directory TEXT, source_type TEXT, source_meta TEXT, installed_at INTEGER);
+                 CREATE TABLE group_members (group_id TEXT, resource_id TEXT, PRIMARY KEY(group_id, resource_id), FOREIGN KEY(resource_id) REFERENCES resources(id));
+                 INSERT INTO resources VALUES ('local:foo','foo','skill','','/tmp','local','{}',0);
+                 INSERT INTO group_members VALUES ('grp1','local:foo');
+                 INSERT INTO group_members VALUES ('grp1','mcp:bar');"
+            ).unwrap();
+        }
+
+        // Open with migration
+        let db = Database::open(&db_path).unwrap();
+        let ids = db.get_group_member_ids("grp1").unwrap();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&"local:foo".to_string()));
+        assert!(ids.contains(&"mcp:bar".to_string()));
     }
 }
