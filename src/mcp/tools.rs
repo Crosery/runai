@@ -585,38 +585,17 @@ impl SmServer {
         Json(TextResult { result: results.join("\n") })
     }
 
-    #[tool(description = "Install skills from a GitHub repo (owner/repo or URL). Downloads, registers, creates group, and enables for target CLI. Example: sm_install(repo='obra/superpowers')")]
+    #[tool(description = "Install skills from a GitHub repo. Returns a CLI command for the agent to execute via Bash tool. Do NOT call this and wait — run the returned command instead.")]
     fn sm_install(&self, Parameters(p): Parameters<InstallGitHubParams>) -> Json<TextResult> {
-        let target = parse_target(p.target.as_deref());
-        let mgr = self.manager.lock().unwrap();
-
         let input = p.repo.trim()
             .trim_start_matches("https://github.com/")
             .trim_end_matches('/');
-        let (repo_part, branch) = if input.contains('@') {
-            let parts: Vec<&str> = input.splitn(2, '@').collect();
-            (parts[0], parts[1].to_string())
-        } else {
-            (input, "main".to_string())
-        };
-        let parts: Vec<&str> = repo_part.splitn(2, '/').collect();
-        if parts.len() != 2 {
-            return Json(TextResult { result: format!("Invalid repo format: '{}'. Use 'owner/repo' or 'owner/repo@branch'.", p.repo) });
-        }
-        let (owner, repo) = (parts[0], parts[1]);
 
-        let result = match mgr.install_github_repo(owner, repo, &branch, target) {
-            Ok((group_id, names)) => {
-                format!(
-                    "Installed {} skills from {}/{}:\n  {}\n\nGroup '{}' created. Use sm_group_enable/sm_group_disable to toggle all at once.",
-                    names.len(), owner, repo,
-                    names.join(", "),
-                    group_id,
-                )
-            }
-            Err(e) => format!("Install failed: {e}"),
-        };
-        Json(TextResult { result })
+        Json(TextResult {
+            result: format!(
+                "Run this command via Bash tool:\n\nskill-manager install {input}\n\nThis downloads skills concurrently and is much faster than running inside MCP."
+            )
+        })
     }
 
     #[tool(description = "Add multiple skills/MCPs to a group at once")]
@@ -700,12 +679,13 @@ impl ServerHandler for SmServer {
         info.instructions = Some(
             "Skill Manager — manage AI CLI skills, MCPs, groups, and market.\n\
              \n\
-             INSTALL WORKFLOW (follow in order, do NOT ask user, fully autonomous):\n\
+             INSTALL WORKFLOW (fully autonomous, do NOT ask user):\n\
              1. sm_market(search='keyword') — check market first\n\
              2. If found → sm_market_install(name='...') → done\n\
              3. If NOT found → web search 'keyword claude code skill github' to find the repo\n\
-             4. Found repo → sm_install(repo='owner/repo') — downloads to ~/.skill-manager/skills/, registers, groups, enables automatically\n\
-             5. If sm_install returns plugin format error → clone repo, copy skills/ dir to ~/.claude/skills/, then sm_scan to register\n\
+             4. Found repo → run via Bash: skill-manager install owner/repo\n\
+                (Do NOT use sm_install MCP tool for downloading — use CLI directly, it's faster)\n\
+             5. After install → sm_scan to refresh, then sm_list to verify\n\
              Never ask user to search or install manually. Complete the entire flow autonomously.\n\
              \n\
              KEY TOOLS:\n\
