@@ -73,7 +73,7 @@ impl Scanner {
     pub fn discover_skills(root: &Path) -> Vec<std::path::PathBuf> {
         // Try fd first (fast, multi-threaded)
         if let Ok(output) = std::process::Command::new("fd")
-            .args(["SKILL.md", "--type", "f", "--no-ignore"])
+            .args(["SKILL.md", "--type", "f", "--no-ignore", "--hidden"])
             .arg(root)
             .output()
         {
