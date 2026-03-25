@@ -235,15 +235,18 @@ fn render_footer(f: &mut Frame, app: &App, area: Rect) {
     let border = Style::default().fg(Color::Rgb(40, 40, 50));
     let version = env!("CARGO_PKG_VERSION");
 
+    let brand_text = format!(" Skill Manager v{version} ");
+    let brand_len = brand_text.len() as u16 + 1;
+
     let footer_chunks = Layout::horizontal([
-        Constraint::Length(22),
+        Constraint::Length(brand_len),
         Constraint::Min(0),
     ]).split(area);
 
     // Left: brand + version
     let brand = Paragraph::new(Line::from(vec![
         Span::styled(" Skill Manager ", Style::default().fg(Color::Rgb(232, 149, 74)).bold()),
-        Span::styled(format!("v{version}"), Style::default().fg(Color::Rgb(80, 80, 100)).italic()),
+        Span::styled(format!("v{version} "), Style::default().fg(Color::Rgb(120, 120, 140)).italic()),
     ])).block(Block::default().borders(Borders::TOP).border_style(border));
     f.render_widget(brand, footer_chunks[0]);
 
