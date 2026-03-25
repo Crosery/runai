@@ -484,22 +484,24 @@ impl SkillManager {
             bail!("No skills found in {owner}/{repo}");
         }
 
-        let mut skill_names = Vec::new();
+        // Step 2: Download ALL files across ALL skills concurrently
+        let tasks = Market::collect_download_tasks(&extract, self.paths());
+        let downloaded = rt.block_on(Market::execute_downloads(tasks));
 
-        // Step 2: Download each skill using git tree (fast: raw downloads, no extra API calls)
-        for skill in &extract.skills {
-            if let Err(e) = rt.block_on(Market::install_single_with_tree(skill, self.paths(), Some(&extract.tree))) {
-                // Log error but continue with other skills
-                eprintln!("Warning: failed to install '{}': {e}", skill.name);
-                continue;
-            }
+        if downloaded.is_empty() {
+            bail!("All skill downloads failed for {owner}/{repo}");
+        }
 
-            let resource_id = format!("github:{owner}/{repo}:{}", skill.name);
-            let dir = self.paths.skills_dir().join(&skill.name);
+        // Step 3: Register downloaded skills in DB + enable
+        let mut skill_names: Vec<String> = downloaded.into_iter().collect();
+        skill_names.sort();
+        for name in &skill_names {
+            let resource_id = format!("github:{owner}/{repo}:{name}");
+            let dir = self.paths.skills_dir().join(name);
             let description = Self::extract_description(&dir);
             let resource = Resource {
                 id: resource_id.clone(),
-                name: skill.name.clone(),
+                name: name.clone(),
                 kind: ResourceKind::Skill,
                 description,
                 directory: dir,
@@ -513,14 +515,9 @@ impl SkillManager {
             };
             let _ = self.db.insert_resource(&resource);
             let _ = self.enable_resource(&resource_id, target, None);
-            skill_names.push(skill.name.clone());
         }
 
-        if skill_names.is_empty() {
-            bail!("All skill downloads failed for {owner}/{repo}");
-        }
-
-        // Step 3: Auto-create group
+        // Step 4: Auto-create group
         let group_id = repo.to_lowercase();
         let group = crate::core::group::Group {
             name: repo.to_string(),

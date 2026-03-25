@@ -206,6 +206,13 @@ pub(crate) struct ExtractResult {
     pub tree: GitTree,
 }
 
+/// A single file download task for batch concurrent downloads.
+pub(crate) struct DownloadTask {
+    pub skill_name: String,
+    pub url: String,
+    pub dest_path: std::path::PathBuf,
+}
+
 pub struct Market;
 
 impl Market {
@@ -292,6 +299,75 @@ impl Market {
             .filter(|n| n.path.starts_with(&prefix))
             .map(|n| n.path.clone())
             .collect()
+    }
+
+    /// Collect all file download tasks for all skills in an ExtractResult.
+    /// No network — just builds the list of (url, dest_path) pairs.
+    pub(crate) fn collect_download_tasks(
+        extract: &ExtractResult,
+        paths: &crate::core::paths::AppPaths,
+    ) -> Vec<DownloadTask> {
+        let mut tasks = Vec::new();
+        for skill in &extract.skills {
+            let parts: Vec<&str> = skill.source_repo.splitn(2, '/').collect();
+            if parts.len() != 2 { continue; }
+            let (owner, repo) = (parts[0], parts[1]);
+            let repo_path = if skill.repo_path.is_empty() { &skill.name } else { &skill.repo_path };
+            let files = Self::get_skill_files(&extract.tree, repo_path);
+            let prefix = format!("{repo_path}/");
+            let skill_dir = paths.skills_dir().join(&skill.name);
+
+            for file_path in files {
+                let url = format!(
+                    "https://raw.githubusercontent.com/{owner}/{repo}/{}/{}",
+                    skill.branch, file_path
+                );
+                let rel = file_path.strip_prefix(&prefix).unwrap_or(&file_path).to_string();
+                let dest_path = skill_dir.join(&rel);
+                tasks.push(DownloadTask {
+                    skill_name: skill.name.clone(),
+                    url,
+                    dest_path,
+                });
+            }
+        }
+        tasks
+    }
+
+    /// Download all tasks concurrently. Returns set of skill names that had at least one file downloaded.
+    pub(crate) async fn execute_downloads(tasks: Vec<DownloadTask>) -> std::collections::HashSet<String> {
+        let client = match reqwest::Client::builder()
+            .user_agent("skill-manager/0.1")
+            .build() {
+            Ok(c) => c,
+            Err(_) => return std::collections::HashSet::new(),
+        };
+
+        let mut set = tokio::task::JoinSet::new();
+        for task in tasks {
+            let client = client.clone();
+            set.spawn(async move {
+                let resp = client.get(&task.url).send().await
+                    .ok()
+                    .filter(|r| r.status().is_success());
+                let bytes = match resp {
+                    Some(r) => r.bytes().await.ok(),
+                    None => None,
+                };
+                (task.skill_name, task.dest_path, bytes)
+            });
+        }
+
+        let mut downloaded = std::collections::HashSet::new();
+        while let Some(Ok((skill_name, dest_path, Some(content)))) = set.join_next().await {
+            if let Some(parent) = dest_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if std::fs::write(&dest_path, &content).is_ok() {
+                downloaded.insert(skill_name);
+            }
+        }
+        downloaded
     }
 
     /// Install a single skill using git tree (fast: raw downloads, no Contents API).
@@ -547,5 +623,52 @@ mod tests {
         // Not found
         let found = find_skill_in_sources(data_dir, &[], "nonexistent", None);
         assert!(found.is_none(), "should not find nonexistent");
+    }
+
+    #[test]
+    fn collect_download_tasks_maps_all_files_across_skills() {
+        let tree = GitTree {
+            tree: vec![
+                GitTreeNode { path: "README.md".into() },
+                GitTreeNode { path: "skill-a/SKILL.md".into() },
+                GitTreeNode { path: "skill-a/helper.md".into() },
+                GitTreeNode { path: "skill-b/SKILL.md".into() },
+                GitTreeNode { path: "skill-b/scripts/run.sh".into() },
+            ],
+        };
+
+        let source = SourceEntry {
+            owner: "test".into(),
+            repo: "repo".into(),
+            branch: "main".into(),
+            skill_prefix: String::new(),
+            label: "Test".into(),
+            description: "test".into(),
+            builtin: false,
+            enabled: true,
+        };
+
+        let extract = Market::extract_skills(tree, &source);
+        assert_eq!(extract.skills.len(), 2);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = crate::core::paths::AppPaths::with_base(tmp.path().to_path_buf());
+        paths.ensure_dirs().unwrap();
+
+        let tasks = Market::collect_download_tasks(&extract, &paths);
+
+        // Should have 4 file tasks total (2 for skill-a, 2 for skill-b)
+        assert_eq!(tasks.len(), 4, "should collect all files across all skills");
+
+        // Verify path mapping
+        let skill_a_files: Vec<_> = tasks.iter()
+            .filter(|t| t.skill_name == "skill-a")
+            .collect();
+        assert_eq!(skill_a_files.len(), 2);
+        assert!(skill_a_files.iter().any(|t| t.dest_path.ends_with("SKILL.md")));
+        assert!(skill_a_files.iter().any(|t| t.dest_path.ends_with("helper.md")));
+
+        // Verify URL format
+        assert!(tasks[0].url.starts_with("https://raw.githubusercontent.com/test/repo/main/"));
     }
 }
