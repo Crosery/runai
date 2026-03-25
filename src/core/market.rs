@@ -319,19 +319,33 @@ impl Market {
         };
 
         if let Some(tree) = tree {
-            // Fast path: download files directly from raw.githubusercontent.com
+            // Fast path: concurrent raw downloads from raw.githubusercontent.com
             let files = Self::get_skill_files(tree, repo_path);
             let prefix = format!("{repo_path}/");
-            for file_path in &files {
+
+            // Launch all downloads concurrently using tokio JoinSet
+            let mut set = tokio::task::JoinSet::new();
+            for file_path in files {
                 let raw_url = format!(
                     "https://raw.githubusercontent.com/{owner}/{repo}/{}/{}",
                     skill.branch, file_path
                 );
-                let resp = client.get(&raw_url).send().await?;
-                if !resp.status().is_success() { continue; }
-                let content = resp.bytes().await?;
-                // Compute relative path within skill dir
-                let rel = file_path.strip_prefix(&prefix).unwrap_or(file_path);
+                let client = client.clone();
+                set.spawn(async move {
+                    let resp = client.get(&raw_url).send().await
+                        .ok()
+                        .filter(|r| r.status().is_success());
+                    let bytes = match resp {
+                        Some(r) => r.bytes().await.ok(),
+                        None => None,
+                    };
+                    (file_path, bytes)
+                });
+            }
+
+            // Collect results and write files to disk
+            while let Some(Ok((file_path, Some(content)))) = set.join_next().await {
+                let rel = file_path.strip_prefix(&prefix).unwrap_or(&file_path);
                 let dest = skill_dir.join(rel);
                 if let Some(parent) = dest.parent() {
                     std::fs::create_dir_all(parent)?;
