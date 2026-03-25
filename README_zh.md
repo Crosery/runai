@@ -9,9 +9,11 @@
 - **TUI 终端界面** — 浏览、启用/禁用、搜索 skills 和 MCPs
 - **多 CLI 支持** — 跨 4 个 AI CLI 统一管理，`1234` 切换目标
 - **分组管理** — 将 skills/MCPs 组织成组，批量启用/禁用
+- **一键安装** — `skill-manager install owner/repo` 自动下载、注册、分组、启用
 - **Skill 市场** — 浏览 2000+ 来自 5 个内置源的 skills，支持自定义 GitHub 源
-- **MCP 服务器** — 22 个工具通过 MCP 协议暴露，首次启动自动注册到所有 CLI
-- **备份与恢复** — 带时间戳的完整备份，安全回滚
+- **MCP 服务器** — 24 个工具通过 MCP 协议暴露，首次启动自动注册到所有 CLI
+- **文件系统为唯一数据源** — skill 启用 = 软链接存在；MCP 启用 = 配置条目存在
+- **备份与恢复** — 带时间戳的完整备份，包括 skill 文件、MCP 配置和 CLI 配置
 - **命令行** — 子命令支持脚本自动化
 
 ## 安装
@@ -19,8 +21,7 @@
 ```bash
 git clone https://github.com/Crosery/skill-manager.git
 cd skill-manager
-cargo build --release
-cp target/release/skill-manager ~/.local/bin/
+cargo install --path .
 ```
 
 ## 快速开始
@@ -29,13 +30,29 @@ cp target/release/skill-manager ~/.local/bin/
 # 启动 TUI（首次运行会自动扫描并注册 MCP）
 skill-manager
 
+# 从 GitHub 安装 skills（自动下载、注册、分组、启用）
+skill-manager install pbakaus/impeccable
+skill-manager install MiniMax-AI/skills
+
 # 或直接使用 CLI
-skill-manager list                    # 列出所有 skills
+skill-manager list                    # 列出所有 skills 和 MCPs
 skill-manager status                  # 查看启用数量
 skill-manager enable brainstorming    # 启用某个 skill
 skill-manager scan                    # 扫描新 skills
 skill-manager backup                  # 创建备份
-skill-manager restore                 # 从最近备份恢复
+```
+
+## 架构
+
+```
+文件系统是唯一的数据源：
+  Skill 启用 = ~/.claude/skills/<name> 软链接存在
+  MCP 启用   = ~/.claude.json mcpServers 中存在条目
+  MCP 禁用   = 条目被移除，配置备份到 ~/.skill-manager/mcps/
+
+DB 只存储：
+  Skill 元数据（名称、描述、来源、目录）
+  分组成员关系（支持 skill 和 MCP 混合成员）
 ```
 
 ## TUI 快捷键
@@ -55,9 +72,9 @@ skill-manager restore                 # 从最近备份恢复
 | `[ ]` | 切换市场源 |
 | `q` | 退出 |
 
-## MCP 工具
+## MCP 工具（24 个）
 
-作为 MCP 服务器运行时（`skill-manager mcp-serve`），提供 22 个工具：
+作为 MCP 服务器运行时（`skill-manager mcp-serve`），提供 24 个工具：
 
 **Skills 和 MCPs**
 
@@ -67,8 +84,17 @@ skill-manager restore                 # 从最近备份恢复
 | `sm_status` | 各 CLI 的启用/总数统计 |
 | `sm_enable` / `sm_disable` | 启用/禁用 skill/MCP |
 | `sm_delete` | 删除 skill/MCP（文件 + 软链接 + 数据库） |
-| `sm_scan` | 扫描目录发现新 skills |
+| `sm_scan` | 扫描目录发现新 skills（显示错误详情） |
 | `sm_batch_enable` / `sm_batch_disable` | 批量启用/禁用多个 |
+
+**安装**
+
+| 工具 | 说明 |
+|------|------|
+| `sm_install` | 返回 CLI 安装命令（AI 通过 Bash 执行，下载更快） |
+| `sm_market` | 浏览缓存的市场 skills（按源/关键词过滤） |
+| `sm_market_install` | 从市场安装单个 skill |
+| `sm_sources` | 列出/添加/删除/启用/禁用市场源 |
 
 **分组**
 
@@ -77,26 +103,32 @@ skill-manager restore                 # 从最近备份恢复
 | `sm_groups` | 列出所有分组及成员数 |
 | `sm_create_group` / `sm_delete_group` | 创建/删除分组 |
 | `sm_group_add` / `sm_group_remove` | 管理分组成员 |
+| `sm_batch_group_add` | 批量添加成员到分组 |
 | `sm_group_enable` / `sm_group_disable` | 批量启用/禁用分组内所有成员 |
-
-**市场**
-
-| 工具 | 说明 |
-|------|------|
-| `sm_market` | 浏览缓存的市场 skills（按源/关键词过滤） |
-| `sm_market_install` | 从市场安装单个 skill（下载完整目录） |
-| `sm_sources` | 列出/添加/删除/启用/禁用市场源 |
 
 **备份与工具**
 
 | 工具 | 说明 |
 |------|------|
-| `sm_backup` | 创建带时间戳的完整备份 |
+| `sm_backup` | 创建带时间戳的备份 |
 | `sm_restore` | 从备份恢复（默认最新，可指定时间戳） |
 | `sm_backups` | 列出所有可用备份 |
 | `sm_register` | 注册 MCP 到所有 CLI 配置 |
 
-MCP 服务器会在首次启动时自动注册到 `~/.claude.json`、`~/.codex/settings.json`、`~/.gemini/settings.json` 和 `~/.opencode/settings.json`。
+## MCP 管理行为
+
+- **禁用** = 从 CLI 配置中删除条目，完整配置备份到 `~/.skill-manager/mcps/{name}.json`
+- **启用** = 将备份的配置恢复写回 CLI 配置文件
+- **skill-manager 不可禁用自身**（自我保护）
+- 被禁用的 MCP 在 TUI/列表中仍然可见（显示为禁用状态，可重新启用）
+- 首次启动时自动注册到所有 CLI
+
+## Skill 发现
+
+- 扫描 `~/.claude/skills/`（用户管理）和 `~/.claude/.agents/skills/`（插件管理，只读）
+- 解析 SKILL.md frontmatter 中的 `description` 字段
+- 重新扫描时自动刷新过时的描述
+- 检测插件格式仓库（`.claude-plugin`），自动处理安装
 
 ## 市场源
 
@@ -114,21 +146,18 @@ MCP 服务器会在首次启动时自动注册到 `~/.claude.json`、`~/.codex/s
 
 ## 备份与恢复
 
-Skill Manager 在 `~/.skill-manager/backups/{时间戳}/` 创建完整备份：
+备份存储在 `~/.skill-manager/backups/{时间戳}/`：
 
 ```
-backups/20260324_195000/
-├── claude-skills/          # ~/.claude/skills/ 的完整副本（保留软链接）
-├── codex-skills/           # ~/.codex/skills/ 的完整副本
-├── claude.json             # ~/.claude.json 的副本
+backups/20260325_120000/
+├── managed-skills/     # ~/.skill-manager/skills/ 的完整副本
+├── managed-mcps/       # 被禁用的 MCP 配置备份
+├── claude-skills/      # ~/.claude/skills/ 中的软链接
+├── claude.json         # ~/.claude.json 的副本
 ├── gemini-settings.json
-└── timestamp               # 时间戳标记
-```
-
-```bash
-skill-manager backup                              # 立即创建备份
-skill-manager restore                              # 从最新备份恢复
-skill-manager restore --timestamp 20260324_195000  # 恢复指定版本
+├── codex-settings.json
+├── opencode-settings.json
+└── timestamp
 ```
 
 首次扫描前会自动创建备份。
@@ -137,11 +166,19 @@ skill-manager restore --timestamp 20260324_195000  # 恢复指定版本
 
 所有数据存储在 `~/.skill-manager/`：
 - `skills/` — 托管的 skill 目录（每个包含 SKILL.md）
+- `mcps/` — 被禁用的 MCP 配置备份（JSON）
 - `groups/` — 分组定义（TOML 文件）
 - `backups/` — 带时间戳的完整备份
-- `market-cache/` — 市场 skill 列表缓存（JSON，1小时有效期）
+- `market-cache/` — 市场 skill 列表缓存（JSON，1 小时有效期）
 - `market-sources.json` — 自定义市场源
-- `skill-manager.db` — SQLite 数据库（资源、目标状态、分组成员）
+- `skill-manager.db` — SQLite 数据库（仅 skill 元数据 + 分组成员）
+
+## 版本升级
+
+从 v0.1.x 升级时：
+- 旧 DB 表（`resource_targets`、`resources` 中的 MCP 行）保留但不再读取
+- 新代码从文件系统读取状态而非 DB
+- 降级回旧版本是安全的（旧数据完整保留）
 
 ## 许可证
 

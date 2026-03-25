@@ -87,7 +87,7 @@ When running as MCP server (`skill-manager mcp-serve`), 24 tools are available:
 
 | Tool | Description |
 |------|-------------|
-| `sm_install` | Install skills from GitHub repo (download + register + group + enable) |
+| `sm_install` | Returns CLI command for fast install from GitHub (agent runs via Bash) |
 | `sm_market` | Browse cached market skills (filter by source/search) |
 | `sm_market_install` | Install single skill from market |
 | `sm_sources` | List/add/remove/enable/disable market sources |
