@@ -263,6 +263,12 @@ impl Scanner {
                 None => continue,
             };
 
+            // Skip hidden/system dirs (e.g. .system)
+            if name.starts_with('.') {
+                result.skipped += 1;
+                continue;
+            }
+
             match Linker::detect_entry_type(&entry_path, paths.data_dir()) {
                 EntryType::OurSymlink => {
                     // Already managed — symlink existence IS the enabled state
