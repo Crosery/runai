@@ -4,6 +4,8 @@
 
 A terminal-based resource manager for AI CLI skills, MCP servers, and groups. Works across **Claude Code**, **Codex**, **Gemini CLI**, and **OpenCode**.
 
+![TUI Groups View](docs/images/tui-groups.png)
+
 ## Features
 
 - **TUI Interface** — Browse, enable/disable, search skills and MCPs with a terminal UI

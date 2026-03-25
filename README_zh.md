@@ -4,6 +4,8 @@
 
 终端界面的 AI CLI skill/MCP 资源管理器。支持 **Claude Code**、**Codex**、**Gemini CLI** 和 **OpenCode**。
 
+![TUI 分组视图](docs/images/tui-groups.png)
+
 ## 功能特性
 
 - **TUI 终端界面** — 浏览、启用/禁用、搜索 skills 和 MCPs
