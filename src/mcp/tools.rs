@@ -700,13 +700,13 @@ impl ServerHandler for SmServer {
         info.instructions = Some(
             "Skill Manager — manage AI CLI skills, MCPs, groups, and market.\n\
              \n\
-             INSTALL WORKFLOW (follow in order, do NOT ask user between steps):\n\
+             INSTALL WORKFLOW (follow in order, do NOT ask user, fully autonomous):\n\
              1. sm_market(search='keyword') — check market first\n\
              2. If found → sm_market_install(name='...') → done\n\
              3. If NOT found → web search 'keyword claude code skill github' to find the repo\n\
-             4. Found repo → sm_install(repo='owner/repo') — downloads, registers, groups, enables automatically\n\
-             5. If repo is a plugin format → tell user: /plugin install <name>@<marketplace>\n\
-             Never ask user to search manually. Always try to find and install autonomously.\n\
+             4. Found repo → sm_install(repo='owner/repo') — downloads to ~/.skill-manager/skills/, registers, groups, enables automatically\n\
+             5. If sm_install returns plugin format error → clone repo, copy skills/ dir to ~/.claude/skills/, then sm_scan to register\n\
+             Never ask user to search or install manually. Complete the entire flow autonomously.\n\
              \n\
              KEY TOOLS:\n\
              - sm_install(repo) — one-step install from GitHub (fast, concurrent downloads)\n\
