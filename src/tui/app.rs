@@ -48,6 +48,7 @@ pub enum InputMode {
 pub struct App {
     pub mgr: SkillManager,
     pub tab: Tab,
+    pub theme_mode: super::theme::ThemeMode,
     pub active_target: CliTarget,
     pub items: Vec<Resource>,
     pub groups: Vec<(String, String, usize, usize)>,
@@ -96,6 +97,7 @@ impl App {
         Self {
             mgr,
             tab: Tab::Skills,
+            theme_mode: super::theme::ThemeMode::Dark,
             active_target: CliTarget::Claude,
             items: Vec::new(),
             groups: Vec::new(),
@@ -420,6 +422,12 @@ impl App {
                 let _ = self.mgr.scan();
                 self.reload();
                 self.message = Some("Scan complete".into());
+            }
+
+            // Theme toggle
+            KeyCode::Char('t') => {
+                self.theme_mode = self.theme_mode.toggle();
+                self.message = Some(format!("Theme: {}", self.theme_mode.label()));
             }
 
             // Create group
