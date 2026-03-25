@@ -86,15 +86,23 @@ impl Scanner {
                 None => continue,
             };
 
-            // Check if already in DB (try common ID prefixes)
-            let already_exists = ["local:", "adopted:", "github:"].iter().any(|prefix| {
+            // Check if already in DB — if so, refresh description if stale
+            let existing = ["local:", "adopted:", "github:"].iter().find_map(|prefix| {
                 let id = format!("{prefix}{name}");
-                matches!(db.get_resource(&id), Ok(Some(_)))
-            }) || db.list_resources(None, None)
-                .map(|all| all.iter().any(|r| r.name == name))
-                .unwrap_or(false);
+                db.get_resource(&id).ok().flatten()
+            }).or_else(|| {
+                db.list_resources(None, None).ok()
+                    .and_then(|all| all.into_iter().find(|r| r.name == name))
+            });
 
-            if already_exists {
+            if let Some(existing) = existing {
+                // Refresh description if it's stale ("---" or empty)
+                if existing.description.is_empty() || existing.description == "---" {
+                    let desc = Self::extract_description(&path);
+                    if !desc.is_empty() && desc != "---" {
+                        let _ = db.update_description(&existing.id, &desc);
+                    }
+                }
                 result.skipped += 1;
                 continue;
             }
@@ -241,11 +249,16 @@ impl Scanner {
             };
             if !path.join("SKILL.md").exists() { continue; }
 
-            // Skip if already known
-            let already_exists = db.list_resources(None, None)
-                .map(|all| all.iter().any(|r| r.name == name))
-                .unwrap_or(false);
-            if already_exists {
+            // Skip if already known — refresh description if stale
+            let existing = db.list_resources(None, None).ok()
+                .and_then(|all| all.into_iter().find(|r| r.name == name));
+            if let Some(existing) = existing {
+                if existing.description.is_empty() || existing.description == "---" {
+                    let desc = Self::extract_description(&path);
+                    if !desc.is_empty() && desc != "---" {
+                        let _ = db.update_description(&existing.id, &desc);
+                    }
+                }
                 result.skipped += 1;
                 continue;
             }

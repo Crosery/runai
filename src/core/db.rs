@@ -178,6 +178,14 @@ impl Database {
         Ok(resources)
     }
 
+    pub fn update_description(&self, id: &str, description: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE resources SET description = ?1 WHERE id = ?2",
+            params![description, id],
+        )?;
+        Ok(())
+    }
+
     pub fn delete_resource(&self, id: &str) -> Result<()> {
         self.conn.execute("DELETE FROM resources WHERE id = ?1", params![id])?;
         Ok(())
