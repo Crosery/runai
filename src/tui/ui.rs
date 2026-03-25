@@ -30,30 +30,29 @@ pub fn render(f: &mut Frame, app: &App) {
 }
 
 fn render_header(f: &mut Frame, app: &App, area: Rect) {
+    let border = Style::default().fg(Color::Rgb(40, 40, 50));
+
     let chunks = Layout::horizontal([
-        Constraint::Length(18),
         Constraint::Min(0),
-        Constraint::Length(30),
+        Constraint::Length(32),
     ]).split(area);
 
-    let title = Paragraph::new(Line::from(vec![
-        Span::styled(" Skill Manager", Style::default().fg(Color::Rgb(232, 149, 74)).bold()),
-    ])).block(Block::default().borders(Borders::BOTTOM).border_style(Style::default().fg(Color::Rgb(40, 40, 50))));
-    f.render_widget(title, chunks[0]);
+    // Left: tabs only, flush left
+    let mut tab_spans = Vec::new();
+    tab_spans.push(Span::raw(" "));
+    for t in Tab::ALL {
+        if *t == app.tab {
+            tab_spans.push(Span::styled(format!("● {}", t.label()), Style::default().fg(Color::Rgb(56, 164, 252)).bold()));
+        } else {
+            tab_spans.push(Span::styled(format!("  {}", t.label()), Style::default().fg(Color::Gray)));
+        }
+        tab_spans.push(Span::raw("   "));
+    }
+    let tabs_widget = Paragraph::new(Line::from(tab_spans))
+        .block(Block::default().borders(Borders::BOTTOM).border_style(border));
+    f.render_widget(tabs_widget, chunks[0]);
 
-    let tab_line = Line::from(
-        Tab::ALL.iter().map(|t| {
-            if *t == app.tab {
-                Span::styled(format!(" ● {} ", t.label()), Style::default().fg(Color::Rgb(56, 164, 252)).bold())
-            } else {
-                Span::styled(format!("   {} ", t.label()), Style::default().fg(Color::Gray))
-            }
-        }).collect::<Vec<_>>()
-    );
-    let tabs_widget = Paragraph::new(tab_line)
-        .block(Block::default().borders(Borders::BOTTOM).border_style(Style::default().fg(Color::Rgb(40, 40, 50))));
-    f.render_widget(tabs_widget, chunks[1]);
-
+    // Right: target + counts
     let (es, ts, em, tm) = app.status;
     let target_name = app.active_target.name();
     let status = Paragraph::new(Line::from(vec![
@@ -61,10 +60,10 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
         Span::styled(format!("{es}"), Style::default().fg(Color::Rgb(52, 211, 153)).bold()),
         Span::styled(format!("/{ts} skills  "), Style::default().fg(Color::DarkGray)),
         Span::styled(format!("{em}"), Style::default().fg(Color::Rgb(129, 140, 248)).bold()),
-        Span::styled(format!("/{tm} mcps "), Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("/{tm} mcp "), Style::default().fg(Color::DarkGray)),
     ])).alignment(Alignment::Right)
-       .block(Block::default().borders(Borders::BOTTOM).border_style(Style::default().fg(Color::Rgb(40, 40, 50))));
-    f.render_widget(status, chunks[2]);
+       .block(Block::default().borders(Borders::BOTTOM).border_style(border));
+    f.render_widget(status, chunks[1]);
 }
 
 fn render_body(f: &mut Frame, app: &App, area: Rect) {
@@ -233,27 +232,33 @@ fn render_footer(f: &mut Frame, app: &App, area: Rect) {
         _ => (String::new(), String::new()),
     };
 
+    let border = Style::default().fg(Color::Rgb(40, 40, 50));
+    let version = env!("CARGO_PKG_VERSION");
+
     let footer_chunks = Layout::horizontal([
+        Constraint::Length(22),
         Constraint::Min(0),
-        Constraint::Length(16),
     ]).split(area);
 
-    let mut spans = vec![
-        Span::styled(left, Style::default().fg(Color::Rgb(56, 164, 252))),
-        Span::raw("  "),
-    ];
+    // Left: brand + version
+    let brand = Paragraph::new(Line::from(vec![
+        Span::styled(" Skill Manager ", Style::default().fg(Color::Rgb(232, 149, 74)).bold()),
+        Span::styled(format!("v{version}"), Style::default().fg(Color::Rgb(80, 80, 100)).italic()),
+    ])).block(Block::default().borders(Borders::TOP).border_style(border));
+    f.render_widget(brand, footer_chunks[0]);
+
+    // Right: keybindings + messages
+    let mut spans = vec![];
+    if !left.is_empty() {
+        spans.push(Span::styled(left, Style::default().fg(Color::Rgb(56, 164, 252))));
+        spans.push(Span::raw("  "));
+    }
     spans.extend(styled_help(&right).spans);
 
     let help_bar = Paragraph::new(Line::from(spans))
-        .block(Block::default().borders(Borders::TOP).border_style(Style::default().fg(Color::Rgb(40, 40, 50))));
-    f.render_widget(help_bar, footer_chunks[0]);
-
-    let version = env!("CARGO_PKG_VERSION");
-    let ver_widget = Paragraph::new(Line::from(vec![
-        Span::styled(format!("v{version} "), Style::default().fg(Color::Rgb(80, 80, 100)).italic()),
-    ])).alignment(Alignment::Right)
-       .block(Block::default().borders(Borders::TOP).border_style(Style::default().fg(Color::Rgb(40, 40, 50))));
-    f.render_widget(ver_widget, footer_chunks[1]);
+        .alignment(Alignment::Right)
+        .block(Block::default().borders(Borders::TOP).border_style(border));
+    f.render_widget(help_bar, footer_chunks[1]);
 }
 
 fn render_create_dialog(f: &mut Frame, app: &App, step: u8) {
