@@ -441,8 +441,10 @@ impl SkillManager {
         let mut skill_enabled = 0;
         if let Ok(skills) = self.db.list_resources(Some(ResourceKind::Skill), None) {
             for skill in &skills {
-                let link = target.skills_dir().join(&skill.name);
-                if Linker::is_our_symlink(&link, self.paths.data_dir()) {
+                // Check both skills/ and .agents/skills/
+                let primary = target.skills_dir().join(&skill.name);
+                let agents = target.agents_skills_dir().join(&skill.name);
+                if primary.exists() || agents.exists() {
                     skill_enabled += 1;
                 }
             }
@@ -475,11 +477,27 @@ impl SkillManager {
         skills + mcps == 0
     }
 
-    /// Count total skills (from DB) + total MCPs (from config files).
+    /// Count total skills (from DB) + total MCPs (active + disabled by SM).
     pub fn resource_count(&self) -> (usize, usize) {
         let skills = self.db.skill_count().unwrap_or(0);
-        let mcps = Self::read_mcp_status_from_configs().len();
-        (skills, mcps)
+        // Active MCPs from config files
+        let active_mcps = Self::read_mcp_status_from_configs();
+        // Disabled MCPs backed up by SM
+        let mut total_mcp_names: std::collections::HashSet<String> =
+            active_mcps.keys().cloned().collect();
+        let mcps_dir = self.paths.mcps_dir();
+        if mcps_dir.exists() {
+            if let Ok(entries) = std::fs::read_dir(&mcps_dir) {
+                for entry in entries.flatten() {
+                    if entry.path().extension().and_then(|e| e.to_str()) == Some("json") {
+                        if let Some(name) = entry.path().file_stem().and_then(|s| s.to_str()) {
+                            total_mcp_names.insert(name.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        (skills, total_mcp_names.len())
     }
 
     pub fn find_resource_id(&self, name: &str) -> Option<String> {

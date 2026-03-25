@@ -224,7 +224,7 @@ pub fn run(cli: Cli) -> Result<()> {
             let target = CliTarget::from_str(&target)
                 .ok_or_else(|| anyhow::anyhow!("unknown target: {target}"))?;
             let (skills, mcps) = mgr.status(target)?;
-            let (total_skills, total_mcps) = mgr.db().resource_count()?;
+            let (total_skills, total_mcps) = mgr.resource_count();
             println!("Target: {target}");
             println!("  Skills: {skills}/{total_skills} enabled");
             println!("  MCPs:   {mcps}/{total_mcps} enabled");
