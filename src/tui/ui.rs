@@ -27,6 +27,7 @@ pub fn render(f: &mut Frame, app: &App) {
         InputMode::SourceManager => render_source_manager(f, app, &t),
         InputMode::GroupDetail => render_group_detail(f, app, &t),
         InputMode::PickSkillForGroup => render_pick_skill(f, app, &t),
+        InputMode::Help => render_help(f, &t),
         _ => {}
     }
 }
@@ -222,9 +223,9 @@ fn render_footer(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
                 String::new()
             };
             let help = match app.tab {
-                Tab::Groups => "j/k ↕  H/L tab  SPACE toggle  1234 CLI  c create  d delete  i install  / search  s scan  t theme  q quit",
-                Tab::Market => "j/k ↕  H/L tab  ENTER install  [ ] source  s sources  / search  t theme  q quit",
-                _ => "j/k ↕  H/L tab  SPACE toggle  1234 CLI  a group  d delete  i install  / search  s scan  t theme  q quit",
+                Tab::Groups => "j/k ↕  H/L tab  SPACE toggle  / search  ? help  q quit",
+                Tab::Market => "j/k ↕  H/L tab  ENTER install  [ ] source  ? help  q quit",
+                _ => "j/k ↕  H/L tab  SPACE toggle  / search  ? help  q quit",
             };
             (
                 format!("{}{}", search_info, if msg.is_empty() { String::new() } else { format!(" {} ", msg) }),
@@ -650,6 +651,58 @@ fn render_first_launch(f: &mut Frame, app: &App, t: &Theme, step: u8) {
 }
 
 /// Turn "key1 desc1  key2 desc2" into styled spans: keys bold+colored, descs dim.
+fn render_help(f: &mut Frame, t: &Theme) {
+    let area = centered_rect(55, 70, f.area());
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(Span::styled(" Keybindings ", Style::default().fg(t.brand).bold()))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(t.text_highlight));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let ks = Style::default().fg(t.help_key).bold();
+    let ds = Style::default().fg(t.item_desc);
+    let ss = Style::default().fg(t.text_highlight).bold();
+
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled("  Navigation", ss)),
+        Line::from(vec![Span::styled(" j/k     ", ks), Span::styled("Move up/down", ds)]),
+        Line::from(vec![Span::styled(" g/G     ", ks), Span::styled("Jump to top/bottom", ds)]),
+        Line::from(vec![Span::styled(" H/L     ", ks), Span::styled("Switch tab left/right", ds)]),
+        Line::from(vec![Span::styled(" Tab     ", ks), Span::styled("Next tab", ds)]),
+        Line::from(vec![Span::styled(" 1234    ", ks), Span::styled("Switch CLI target", ds)]),
+        Line::from(""),
+        Line::from(Span::styled("  Actions", ss)),
+        Line::from(vec![Span::styled(" Space   ", ks), Span::styled("Toggle enable/disable", ds)]),
+        Line::from(vec![Span::styled(" Enter   ", ks), Span::styled("Open detail / Install", ds)]),
+        Line::from(vec![Span::styled(" /       ", ks), Span::styled("Search filter", ds)]),
+        Line::from(vec![Span::styled(" s       ", ks), Span::styled("Scan for new skills", ds)]),
+        Line::from(vec![Span::styled(" i       ", ks), Span::styled("Install from GitHub", ds)]),
+        Line::from(vec![Span::styled(" d       ", ks), Span::styled("Delete selected", ds)]),
+        Line::from(""),
+        Line::from(Span::styled("  Groups", ss)),
+        Line::from(vec![Span::styled(" c       ", ks), Span::styled("Create new group", ds)]),
+        Line::from(vec![Span::styled(" a       ", ks), Span::styled("Add to group", ds)]),
+        Line::from(""),
+        Line::from(Span::styled("  Market", ss)),
+        Line::from(vec![Span::styled(" [ ]     ", ks), Span::styled("Switch source", ds)]),
+        Line::from(vec![Span::styled(" s       ", ks), Span::styled("Source manager", ds)]),
+        Line::from(""),
+        Line::from(Span::styled("  Other", ss)),
+        Line::from(vec![Span::styled(" t       ", ks), Span::styled("Toggle dark/light theme", ds)]),
+        Line::from(vec![Span::styled(" q       ", ks), Span::styled("Quit", ds)]),
+        Line::from(vec![Span::styled(" ?       ", ks), Span::styled("This help", ds)]),
+        Line::from(""),
+        Line::from(Span::styled("  Press any key to close", Style::default().fg(t.text_dim))),
+    ];
+
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
 fn styled_help<'a>(text: &'a str, t: &Theme) -> Line<'a> {
     let key_style = Style::default().fg(t.help_key).bold();
     let desc_style = Style::default().fg(t.help_text);

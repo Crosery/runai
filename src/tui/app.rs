@@ -43,6 +43,8 @@ pub enum InputMode {
     GroupDetail,
     /// Pick a skill to add to current group
     PickSkillForGroup,
+    /// Help overlay
+    Help,
 }
 
 pub struct App {
@@ -330,6 +332,7 @@ impl App {
             InputMode::SourceManager => self.handle_source_manager_key(key),
             InputMode::GroupDetail => self.handle_group_detail_key(key),
             InputMode::PickSkillForGroup => self.handle_pick_skill_key(key),
+            InputMode::Help => { self.mode = InputMode::Normal; }
             InputMode::Normal => self.handle_normal_key(key),
         }
     }
@@ -428,6 +431,11 @@ impl App {
             KeyCode::Char('t') => {
                 self.theme_mode = self.theme_mode.toggle();
                 self.message = Some(format!("Theme: {}", self.theme_mode.label()));
+            }
+
+            // Help
+            KeyCode::Char('?') => {
+                self.mode = InputMode::Help;
             }
 
             // Create group
