@@ -78,7 +78,7 @@ impl SkillManager {
         cli_dir_override: Option<&Path>,
     ) -> Result<()> {
         if let Some(mcp_name) = resource_id.strip_prefix("mcp:") {
-            Self::set_mcp_disabled(mcp_name, target, false)
+            self.restore_mcp(mcp_name, target)
         } else {
             let resource = self.db.get_resource(resource_id)?
                 .ok_or_else(|| anyhow::anyhow!("resource not found: {resource_id}"))?;
@@ -101,7 +101,10 @@ impl SkillManager {
         cli_dir_override: Option<&Path>,
     ) -> Result<()> {
         if let Some(mcp_name) = resource_id.strip_prefix("mcp:") {
-            Self::set_mcp_disabled(mcp_name, target, true)
+            if mcp_name == "skill-manager" {
+                bail!("Cannot disable skill-manager — it would remove its own MCP connection");
+            }
+            self.remove_mcp(mcp_name, target)
         } else {
             let resource = self.db.get_resource(resource_id)?
                 .ok_or_else(|| anyhow::anyhow!("resource not found: {resource_id}"))?;
@@ -116,33 +119,75 @@ impl SkillManager {
         }
     }
 
-    /// Set `disabled` field on an MCP server in a CLI's config file.
-    fn set_mcp_disabled(mcp_name: &str, target: CliTarget, disabled: bool) -> Result<()> {
-        let home = dirs::home_dir().unwrap_or_default();
-        let config_path = match target {
-            CliTarget::Claude => home.join(".claude.json"),
-            CliTarget::Gemini => home.join(".gemini/settings.json"),
-            CliTarget::Codex => home.join(".codex/settings.json"),
-            CliTarget::OpenCode => home.join(".opencode/settings.json"),
-        };
-
+    /// Disable MCP: save config to backup, remove entry from CLI config file.
+    fn remove_mcp(&self, mcp_name: &str, target: CliTarget) -> Result<()> {
+        let config_path = Self::cli_config_path(target);
         if !config_path.exists() { return Ok(()); }
 
         let content = std::fs::read_to_string(&config_path)?;
         let mut config: serde_json::Value = serde_json::from_str(&content)?;
 
         if let Some(servers) = config.get_mut("mcpServers").and_then(|s| s.as_object_mut()) {
-            if let Some(server) = servers.get_mut(mcp_name).and_then(|s| s.as_object_mut()) {
-                if disabled {
-                    server.insert("disabled".into(), serde_json::Value::Bool(true));
-                } else {
-                    server.remove("disabled");
-                }
+            if let Some(entry) = servers.remove(mcp_name) {
+                // Save backup before removing
+                let backup_dir = self.paths.mcps_dir();
+                std::fs::create_dir_all(&backup_dir)?;
+                let backup_path = backup_dir.join(format!("{mcp_name}.json"));
+                std::fs::write(&backup_path, serde_json::to_string_pretty(&entry)?)?;
+
                 std::fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
             }
+            // Already removed — noop
         }
 
         Ok(())
+    }
+
+    /// Enable MCP: restore saved config back into CLI config file.
+    fn restore_mcp(&self, mcp_name: &str, target: CliTarget) -> Result<()> {
+        let config_path = Self::cli_config_path(target);
+
+        // Read backup
+        let backup_path = self.paths.mcps_dir().join(format!("{mcp_name}.json"));
+        if !backup_path.exists() {
+            bail!("No saved config for MCP '{mcp_name}'. Use 'claude mcp add' to register it first.");
+        }
+        let backup_content = std::fs::read_to_string(&backup_path)?;
+        let mut entry: serde_json::Value = serde_json::from_str(&backup_content)?;
+
+        // Remove disabled field if present (clean restore)
+        if let Some(obj) = entry.as_object_mut() {
+            obj.remove("disabled");
+        }
+
+        // Read or create config
+        let mut config: serde_json::Value = if config_path.exists() {
+            serde_json::from_str(&std::fs::read_to_string(&config_path)?)?
+        } else {
+            serde_json::json!({})
+        };
+
+        let servers = config.as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("config is not an object"))?
+            .entry("mcpServers")
+            .or_insert_with(|| serde_json::json!({}));
+
+        servers.as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("mcpServers is not an object"))?
+            .insert(mcp_name.to_string(), entry);
+
+        std::fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
+        Ok(())
+    }
+
+    fn cli_config_path(target: CliTarget) -> PathBuf {
+        let home = dirs::home_dir().unwrap_or_default();
+        match target {
+            CliTarget::Claude => home.join(".claude.json"),
+            CliTarget::Gemini => home.join(".gemini/settings.json"),
+            CliTarget::Codex => home.join(".codex/settings.json"),
+            CliTarget::OpenCode => home.join(".opencode/settings.json"),
+        }
     }
 
     /// Read MCP enabled/disabled status directly from CLI config files.
@@ -172,12 +217,12 @@ impl SkillManager {
                 Some(s) => s,
                 None => continue,
             };
-            for (name, server) in servers {
+            for (name, _server) in servers {
                 if name.starts_with('_') { continue; }
-                let disabled = server.get("disabled").and_then(|v| v.as_bool()).unwrap_or(false);
+                // Entry exists in config = enabled for this target
                 result.entry(name.clone())
                     .or_default()
-                    .insert(*target, !disabled);
+                    .insert(*target, true);
             }
         }
 
@@ -454,137 +499,6 @@ mod tests {
     }
 
     #[test]
-    fn set_mcp_disabled_adds_disabled_true() {
-        let tmp = tempfile::tempdir().unwrap();
-        let config_path = tmp.path().join(".claude.json");
-
-        let config = serde_json::json!({
-            "mcpServers": {
-                "my-mcp": {
-                    "command": "my-mcp",
-                    "args": ["serve"]
-                }
-            }
-        });
-        std::fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
-
-        with_home(tmp.path(), || {
-            SkillManager::set_mcp_disabled("my-mcp", CliTarget::Claude, true).unwrap();
-        });
-
-        let content: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
-        assert_eq!(
-            content["mcpServers"]["my-mcp"]["disabled"],
-            serde_json::Value::Bool(true),
-        );
-        // command field should still be present
-        assert_eq!(
-            content["mcpServers"]["my-mcp"]["command"],
-            serde_json::Value::String("my-mcp".into()),
-        );
-    }
-
-    #[test]
-    fn set_mcp_disabled_removes_disabled_field_on_enable() {
-        let tmp = tempfile::tempdir().unwrap();
-        let config_path = tmp.path().join(".claude.json");
-
-        let config = serde_json::json!({
-            "mcpServers": {
-                "my-mcp": {
-                    "command": "my-mcp",
-                    "args": ["serve"],
-                    "disabled": true
-                }
-            }
-        });
-        std::fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
-
-        with_home(tmp.path(), || {
-            SkillManager::set_mcp_disabled("my-mcp", CliTarget::Claude, false).unwrap();
-        });
-
-        let content: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
-        // disabled field should be removed
-        assert!(content["mcpServers"]["my-mcp"].get("disabled").is_none());
-        // other fields preserved
-        assert_eq!(
-            content["mcpServers"]["my-mcp"]["command"],
-            serde_json::Value::String("my-mcp".into()),
-        );
-    }
-
-    #[test]
-    fn set_mcp_disabled_preserves_other_servers() {
-        let tmp = tempfile::tempdir().unwrap();
-        let config_path = tmp.path().join(".claude.json");
-
-        let config = serde_json::json!({
-            "mcpServers": {
-                "server-a": {
-                    "command": "a"
-                },
-                "server-b": {
-                    "command": "b"
-                }
-            },
-            "otherKey": "untouched"
-        });
-        std::fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
-
-        with_home(tmp.path(), || {
-            SkillManager::set_mcp_disabled("server-a", CliTarget::Claude, true).unwrap();
-        });
-
-        let content: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
-        // server-a is disabled
-        assert_eq!(content["mcpServers"]["server-a"]["disabled"], serde_json::Value::Bool(true));
-        // server-b is unchanged (no disabled field)
-        assert!(content["mcpServers"]["server-b"].get("disabled").is_none());
-        assert_eq!(content["mcpServers"]["server-b"]["command"], serde_json::Value::String("b".into()));
-        // top-level key preserved
-        assert_eq!(content["otherKey"], serde_json::Value::String("untouched".into()));
-    }
-
-    #[test]
-    fn set_mcp_disabled_nonexistent_mcp_does_not_crash() {
-        let tmp = tempfile::tempdir().unwrap();
-        let config_path = tmp.path().join(".claude.json");
-
-        let config = serde_json::json!({
-            "mcpServers": {
-                "existing": { "command": "x" }
-            }
-        });
-        std::fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
-
-        with_home(tmp.path(), || {
-            // Should succeed silently — no such server in config
-            let result = SkillManager::set_mcp_disabled("nonexistent", CliTarget::Claude, true);
-            assert!(result.is_ok());
-        });
-
-        // Config should be unchanged (not even rewritten)
-        let content: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
-        assert!(content["mcpServers"]["existing"]["command"] == serde_json::Value::String("x".into()));
-    }
-
-    #[test]
-    fn set_mcp_disabled_missing_config_file_does_not_crash() {
-        let tmp = tempfile::tempdir().unwrap();
-        // No .claude.json file exists
-
-        with_home(tmp.path(), || {
-            let result = SkillManager::set_mcp_disabled("anything", CliTarget::Claude, true);
-            assert!(result.is_ok());
-        });
-    }
-
-    #[test]
     fn is_first_launch_false_when_mcps_exist() {
         let tmp = tempfile::tempdir().unwrap();
         let config = serde_json::json!({
@@ -646,29 +560,162 @@ mod tests {
         });
     }
 
-    #[test]
-    fn enable_disable_mcp_by_prefix() {
-        let tmp = tempfile::tempdir().unwrap();
+    /// Helper: create a realistic .claude.json with multiple MCPs (mimics real user config)
+    fn write_realistic_claude_json(dir: &Path) {
         let config = serde_json::json!({
+            "numStartups": 42,
+            "theme": "dark",
             "mcpServers": {
-                "test-mcp": { "command": "test", "args": [], "disabled": true }
+                "pencil": {
+                    "command": "/tmp/pencil-mcp",
+                    "args": ["--app", "desktop"],
+                    "env": {},
+                    "type": "stdio"
+                },
+                "github": {
+                    "command": "npx",
+                    "args": ["-y", "@modelcontextprotocol/server-github"],
+                    "type": "stdio"
+                },
+                "skill-manager": {
+                    "command": "/home/user/.local/bin/skill-manager",
+                    "args": ["mcp-serve"],
+                    "description": "Skill Manager"
+                }
             }
         });
-        let config_path = tmp.path().join(".claude.json");
-        std::fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+        std::fs::write(
+            dir.join(".claude.json"),
+            serde_json::to_string_pretty(&config).unwrap(),
+        ).unwrap();
+    }
+
+    #[test]
+    fn disable_mcp_removes_entry_from_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_realistic_claude_json(tmp.path());
+        let sm_data = tmp.path().join("sm-data");
+
+        with_home(tmp.path(), || {
+            let mgr = SkillManager::with_base(sm_data.clone()).unwrap();
+
+            // Disable pencil
+            mgr.disable_resource("mcp:pencil", CliTarget::Claude, None).unwrap();
+
+            // Verify: pencil entry removed from .claude.json
+            let content: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(tmp.path().join(".claude.json")).unwrap()
+            ).unwrap();
+            assert!(content["mcpServers"].get("pencil").is_none(),
+                "pencil should be removed from config");
+
+            // Verify: other entries untouched
+            assert!(content["mcpServers"].get("github").is_some(),
+                "github should still be in config");
+            assert!(content["mcpServers"].get("skill-manager").is_some(),
+                "skill-manager should still be in config");
+
+            // Verify: non-MCP config preserved
+            assert_eq!(content["theme"], "dark");
+            assert_eq!(content["numStartups"], 42);
+
+            // Verify: backup saved to mcp-backups dir
+            let backup_path = sm_data.join("mcps").join("pencil.json");
+            assert!(backup_path.exists(), "MCP config backup should exist");
+            let backup: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(&backup_path).unwrap()
+            ).unwrap();
+            assert_eq!(backup["command"], "/tmp/pencil-mcp");
+            assert_eq!(backup["args"][0], "--app");
+        });
+    }
+
+    #[test]
+    fn enable_mcp_restores_entry_to_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_realistic_claude_json(tmp.path());
+        let sm_data = tmp.path().join("sm-data");
+
+        with_home(tmp.path(), || {
+            let mgr = SkillManager::with_base(sm_data.clone()).unwrap();
+
+            // Disable then enable
+            mgr.disable_resource("mcp:pencil", CliTarget::Claude, None).unwrap();
+            mgr.enable_resource("mcp:pencil", CliTarget::Claude, None).unwrap();
+
+            // Verify: pencil is back in config with original fields
+            let content: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(tmp.path().join(".claude.json")).unwrap()
+            ).unwrap();
+            let pencil = content["mcpServers"].get("pencil")
+                .expect("pencil should be restored");
+            assert_eq!(pencil["command"], "/tmp/pencil-mcp");
+            assert_eq!(pencil["args"][0], "--app");
+            // Should NOT have disabled field
+            assert!(pencil.get("disabled").is_none(),
+                "restored MCP should not have disabled field");
+        });
+    }
+
+    #[test]
+    fn disable_mcp_after_disable_is_noop() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_realistic_claude_json(tmp.path());
+        let sm_data = tmp.path().join("sm-data");
+
+        with_home(tmp.path(), || {
+            let mgr = SkillManager::with_base(sm_data.clone()).unwrap();
+
+            mgr.disable_resource("mcp:pencil", CliTarget::Claude, None).unwrap();
+            // Second disable should not error (already removed)
+            mgr.disable_resource("mcp:pencil", CliTarget::Claude, None).unwrap();
+
+            // Backup should still be valid
+            let backup_path = sm_data.join("mcps").join("pencil.json");
+            assert!(backup_path.exists());
+        });
+    }
+
+    #[test]
+    fn disable_skill_manager_self_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_realistic_claude_json(tmp.path());
 
         with_home(tmp.path(), || {
             let mgr = SkillManager::with_base(tmp.path().join("sm-data")).unwrap();
 
-            mgr.enable_resource("mcp:test-mcp", CliTarget::Claude, None).unwrap();
-            let content: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
-            assert!(content["mcpServers"]["test-mcp"].get("disabled").is_none());
+            // Should refuse to disable itself
+            let result = mgr.disable_resource("mcp:skill-manager", CliTarget::Claude, None);
+            assert!(result.is_err(), "SM should refuse to disable itself");
 
-            mgr.disable_resource("mcp:test-mcp", CliTarget::Claude, None).unwrap();
-            let content: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
-            assert_eq!(content["mcpServers"]["test-mcp"]["disabled"], true);
+            // Verify: skill-manager still in config
+            let content: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(tmp.path().join(".claude.json")).unwrap()
+            ).unwrap();
+            assert!(content["mcpServers"].get("skill-manager").is_some());
+        });
+    }
+
+    #[test]
+    fn disabled_mcp_not_in_list_resources() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_realistic_claude_json(tmp.path());
+
+        with_home(tmp.path(), || {
+            let mgr = SkillManager::with_base(tmp.path().join("sm-data")).unwrap();
+
+            // Before disable: 3 MCPs
+            let before = mgr.list_resources(Some(ResourceKind::Mcp), None).unwrap();
+            assert_eq!(before.len(), 3);
+
+            // Disable pencil
+            mgr.disable_resource("mcp:pencil", CliTarget::Claude, None).unwrap();
+
+            // After disable: 2 MCPs (pencil gone)
+            let after = mgr.list_resources(Some(ResourceKind::Mcp), None).unwrap();
+            assert_eq!(after.len(), 2);
+            assert!(after.iter().all(|r| r.name != "pencil"),
+                "pencil should not appear after disable");
         });
     }
 
@@ -676,11 +723,11 @@ mod tests {
     fn list_resources_mcp_reads_from_config_files() {
         let tmp = tempfile::tempdir().unwrap();
 
-        // Write a fake .claude.json with MCPs
+        // Write a .claude.json with MCPs — entry exists = enabled
         let config = serde_json::json!({
             "mcpServers": {
                 "server-a": { "command": "a", "args": [] },
-                "server-b": { "command": "b", "args": [], "disabled": true }
+                "server-b": { "command": "b", "args": [] }
             }
         });
         std::fs::write(
@@ -699,8 +746,9 @@ mod tests {
             assert_eq!(a.id, "mcp:server-a");
             assert!(a.is_enabled_for(CliTarget::Claude));
 
+            // Both entries exist = both enabled
             let b = mcps.iter().find(|r| r.name == "server-b").unwrap();
-            assert!(!b.is_enabled_for(CliTarget::Claude));
+            assert!(b.is_enabled_for(CliTarget::Claude));
         });
     }
 }
