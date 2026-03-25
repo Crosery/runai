@@ -8,6 +8,23 @@ use crate::core::linker::{Linker, EntryType};
 use crate::core::paths::AppPaths;
 use crate::core::resource::{Resource, ResourceKind, Source};
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum SkillStatus {
+    /// Already in ~/.skill-manager/skills/
+    Managed,
+    /// In CLI skills dir (~/.claude/skills/ etc.)
+    CliDir,
+    /// Found elsewhere, can be imported
+    Unmanaged,
+}
+
+#[derive(Debug, Clone)]
+pub struct DiscoveredSkill {
+    pub name: String,
+    pub path: std::path::PathBuf,
+    pub status: SkillStatus,
+}
+
 #[derive(Debug, Default)]
 pub struct ScanResult {
     pub adopted: usize,
@@ -68,36 +85,62 @@ impl Scanner {
         Ok(total)
     }
 
-    /// Fast discovery using fd (multi-threaded, respects .gitignore).
-    /// Falls back to simple recursive scan if fd is not installed.
-    pub fn discover_skills(root: &Path) -> Vec<std::path::PathBuf> {
-        // Try fd first (fast, multi-threaded)
-        if let Ok(output) = std::process::Command::new("fd")
-            .args(["SKILL.md", "--type", "f", "--no-ignore", "--hidden"])
-            .arg(root)
-            .output()
-        {
-            if output.status.success() {
-                return String::from_utf8_lossy(&output.stdout)
-                    .lines()
-                    .filter_map(|l| {
-                        let p = std::path::PathBuf::from(l);
-                        p.parent().map(|parent| parent.to_path_buf())
-                    })
-                    .collect();
-            }
-        }
+    /// Directories to always skip during discovery (no useful SKILL.md inside).
+    const SKIP_DIRS: &'static [&'static str] = &[
+        ".git", "node_modules", "target", ".cache", ".cargo", ".rustup",
+        ".npm", ".pnpm", "venv", "__pycache__", ".venv", ".nvm",
+        "dist", "build", ".next", ".nuxt", ".wine", ".steam",
+        ".mozilla", ".thunderbird", ".config", ".local",
+    ];
 
-        // Fallback: simple recursive walk
-        let skip = [".git", "node_modules", "target", ".cache", ".local", ".cargo",
-                     ".rustup", ".npm", ".pnpm", "venv", "__pycache__", ".venv",
-                     "dist", "build", ".next", ".nuxt"];
-        let mut results = Vec::new();
-        Self::walk_for_skills(root, &skip, &mut results, 0);
-        results
+    /// Path fragments that indicate a skill is NOT manageable by SM.
+    const NOISE_PATHS: &'static [&'static str] = &[
+        "/plugins/marketplaces/",   // CC plugin system manages these
+        "/cc-profiles/",            // CC profile copies
+        "/.vscode/",                // VS Code extensions
+        "/.cursor/",                // Cursor extensions
+        "/.antigravity/",           // Antigravity extensions
+        "/backups/",                // SM backup copies
+        "/__MACOSX/",               // macOS zip artifacts
+    ];
+
+    /// Discover SKILL.md files under a root dir. Built-in, no external tools needed.
+    /// Returns only manageable skills (filters out plugins, backups, IDE extensions, etc.)
+    pub fn discover_skills(root: &Path) -> Vec<DiscoveredSkill> {
+        let mut raw = Vec::new();
+        Self::walk_for_skills(root, &mut raw, 0);
+
+        let home = dirs::home_dir().unwrap_or_default();
+        let managed_dir = home.join(".skill-manager").join("skills");
+
+        raw.into_iter()
+            .filter_map(|path| {
+                let path_str = path.to_string_lossy();
+
+                // Filter out noise
+                for noise in Self::NOISE_PATHS {
+                    if path_str.contains(noise) { return None; }
+                }
+
+                let name = path.file_name()?.to_str()?.to_string();
+                let status = if path.starts_with(&managed_dir) {
+                    SkillStatus::Managed
+                } else if path_str.contains("/.claude/skills/")
+                    || path_str.contains("/.codex/skills/")
+                    || path_str.contains("/.gemini/skills/")
+                    || path_str.contains("/.opencode/skills/")
+                {
+                    SkillStatus::CliDir
+                } else {
+                    SkillStatus::Unmanaged
+                };
+
+                Some(DiscoveredSkill { name, path, status })
+            })
+            .collect()
     }
 
-    fn walk_for_skills(dir: &Path, skip: &[&str], results: &mut Vec<std::path::PathBuf>, depth: usize) {
+    fn walk_for_skills(dir: &Path, results: &mut Vec<std::path::PathBuf>, depth: usize) {
         if depth > 8 { return; }
         let entries = match std::fs::read_dir(dir) {
             Ok(e) => e,
@@ -106,13 +149,15 @@ impl Scanner {
         for entry in entries.flatten() {
             let path = entry.path();
             if !path.is_dir() { continue; }
+            // Skip symlinks to avoid loops
+            if entry.file_type().map(|ft| ft.is_symlink()).unwrap_or(false) { continue; }
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
-            if skip.contains(&name_str.as_ref()) { continue; }
+            if Self::SKIP_DIRS.contains(&name_str.as_ref()) { continue; }
             if path.join("SKILL.md").exists() {
                 results.push(path.clone());
             }
-            Self::walk_for_skills(&path, skip, results, depth + 1);
+            Self::walk_for_skills(&path, results, depth + 1);
         }
     }
 
@@ -441,5 +486,92 @@ mod tests {
 
         let desc = Scanner::extract_description(&skill_dir);
         assert_eq!(desc, "But this line explains it.");
+    }
+
+    #[test]
+    fn discover_finds_skills_with_skill_md() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        // Create valid skill dirs
+        let s1 = root.join("skills").join("brainstorming");
+        std::fs::create_dir_all(&s1).unwrap();
+        std::fs::write(s1.join("SKILL.md"), "# Brainstorming").unwrap();
+
+        let s2 = root.join("myproject").join("skills").join("tdd");
+        std::fs::create_dir_all(&s2).unwrap();
+        std::fs::write(s2.join("SKILL.md"), "# TDD").unwrap();
+
+        // Dir WITHOUT SKILL.md — should NOT be found
+        let no_skill = root.join("not-a-skill");
+        std::fs::create_dir_all(&no_skill).unwrap();
+        std::fs::write(no_skill.join("README.md"), "not a skill").unwrap();
+
+        let found = Scanner::discover_skills(root);
+        let names: Vec<&str> = found.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"brainstorming"));
+        assert!(names.contains(&"tdd"));
+        assert!(!names.contains(&"not-a-skill"));
+    }
+
+    #[test]
+    fn discover_filters_noise_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        // Plugin dir — should be filtered out
+        let plugin = root.join("plugins").join("marketplaces").join("x").join("skills").join("foo");
+        std::fs::create_dir_all(&plugin).unwrap();
+        std::fs::write(plugin.join("SKILL.md"), "# Plugin skill").unwrap();
+
+        // Backup dir — should be filtered out
+        let backup = root.join("backups").join("20260325").join("skills").join("bar");
+        std::fs::create_dir_all(&backup).unwrap();
+        std::fs::write(backup.join("SKILL.md"), "# Backup skill").unwrap();
+
+        // Valid dir
+        let valid = root.join("skills").join("real");
+        std::fs::create_dir_all(&valid).unwrap();
+        std::fs::write(valid.join("SKILL.md"), "# Real").unwrap();
+
+        let found = Scanner::discover_skills(root);
+        let names: Vec<&str> = found.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"real"));
+        assert!(!names.contains(&"foo"), "plugin skills should be filtered");
+        assert!(!names.contains(&"bar"), "backup skills should be filtered");
+    }
+
+    #[test]
+    fn discover_skips_git_and_node_modules() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        // Skill inside node_modules — should be skipped
+        let nm = root.join("node_modules").join("some-pkg").join("skill");
+        std::fs::create_dir_all(&nm).unwrap();
+        std::fs::write(nm.join("SKILL.md"), "# NM").unwrap();
+
+        // Skill inside .git — should be skipped
+        let git = root.join(".git").join("hooks").join("skill");
+        std::fs::create_dir_all(&git).unwrap();
+        std::fs::write(git.join("SKILL.md"), "# Git").unwrap();
+
+        let found = Scanner::discover_skills(root);
+        assert!(found.is_empty());
+    }
+
+    #[test]
+    fn discover_classifies_status_correctly() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        // Unmanaged skill (not in CLI or managed dir)
+        let s = root.join("myproject").join("skills").join("test-skill");
+        std::fs::create_dir_all(&s).unwrap();
+        std::fs::write(s.join("SKILL.md"), "# Test").unwrap();
+
+        let found = Scanner::discover_skills(root);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].status, SkillStatus::Unmanaged);
     }
 }

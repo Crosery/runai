@@ -133,16 +133,28 @@ pub fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Some(Commands::Discover { root }) => {
+            use crate::core::scanner::SkillStatus;
             let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
             let search_root = root.map(std::path::PathBuf::from).unwrap_or(home);
             println!("Scanning {}...", search_root.display());
             let start = std::time::Instant::now();
             let found = crate::core::scanner::Scanner::discover_skills(&search_root);
             let elapsed = start.elapsed();
-            println!("Found {} skills in {:.1}s:\n", found.len(), elapsed.as_secs_f64());
-            for path in &found {
-                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
-                println!("  {name:<40} {}", path.display());
+
+            let managed = found.iter().filter(|s| s.status == SkillStatus::Managed).count();
+            let cli = found.iter().filter(|s| s.status == SkillStatus::CliDir).count();
+            let unmanaged = found.iter().filter(|s| s.status == SkillStatus::Unmanaged).count();
+
+            println!("Found {} skills in {:.1}s ({managed} managed, {cli} CLI, {unmanaged} unmanaged)\n",
+                found.len(), elapsed.as_secs_f64());
+
+            for s in &found {
+                let tag = match s.status {
+                    SkillStatus::Managed   => "●",
+                    SkillStatus::CliDir    => "◆",
+                    SkillStatus::Unmanaged => "○",
+                };
+                println!("  {tag} {:<40} {}", s.name, s.path.display());
             }
             Ok(())
         }

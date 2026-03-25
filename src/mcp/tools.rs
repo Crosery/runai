@@ -237,6 +237,29 @@ impl SmServer {
         Json(TextResult { result })
     }
 
+    // ── Discover ──
+
+    #[tool(description = "Discover all SKILL.md files on disk. Returns unmanaged skills that can be imported. Fast built-in scanner.")]
+    fn sm_discover(&self) -> Json<TextResult> {
+        let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+        let found = crate::core::scanner::Scanner::discover_skills(&home);
+
+        let unmanaged: Vec<_> = found.iter()
+            .filter(|s| s.status == crate::core::scanner::SkillStatus::Unmanaged)
+            .collect();
+
+        if unmanaged.is_empty() {
+            return Json(TextResult { result: "No unmanaged skills found.".into() });
+        }
+
+        let mut lines = vec![format!("{} unmanaged skills found:\n", unmanaged.len())];
+        for s in &unmanaged {
+            lines.push(format!("  {:<40} {}", s.name, s.path.display()));
+        }
+        lines.push(format!("\n({} total on disk, {} already managed)", found.len(), found.len() - unmanaged.len()));
+        Json(TextResult { result: lines.join("\n") })
+    }
+
     // ── Enable/Disable ──
 
     #[tool(description = "Enable a skill, MCP, or group for a CLI target")]
@@ -749,14 +772,14 @@ mod tests {
     use rmcp::handler::server::wrapper::Parameters;
 
     #[test]
-    fn tool_router_has_24_tools() {
+    fn tool_router_has_25_tools() {
         let server = SmServer::new().unwrap();
         let tools = server.tool_router.list_all();
         eprintln!("Registered tools: {}", tools.len());
         for t in &tools {
             eprintln!("  - {}", t.name);
         }
-        assert_eq!(tools.len(), 24, "Expected 24 tools in tool_router, got {}", tools.len());
+        assert_eq!(tools.len(), 25, "Expected 25 tools in tool_router, got {}", tools.len());
     }
 
     #[test]
