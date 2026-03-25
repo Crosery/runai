@@ -32,8 +32,10 @@ impl SmServer {
 pub struct ListResourcesParams {
     /// Filter by kind: 'skill' or 'mcp'
     pub kind: Option<String>,
-    /// Filter by group ID
+    /// Filter by group name or ID
     pub group: Option<String>,
+    /// CLI target for status display: claude, codex, gemini, opencode
+    pub target: Option<String>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema, Default)]
@@ -51,11 +53,13 @@ pub struct NameParams {
 }
 
 #[derive(Deserialize, schemars::JsonSchema, Default)]
-pub struct RenameGroupParams {
+pub struct UpdateGroupParams {
     /// Group ID
     pub id: String,
-    /// New display name
-    pub name: String,
+    /// New display name (omit to keep unchanged)
+    pub name: Option<String>,
+    /// New description (omit to keep unchanged)
+    pub description: Option<String>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema, Default)]
@@ -78,8 +82,10 @@ pub struct CreateGroupParams {
 pub struct GroupMemberParams {
     /// Group ID
     pub group: String,
-    /// Resource name to add/remove
-    pub name: String,
+    /// Single resource name (or use 'names' for multiple)
+    pub name: Option<String>,
+    /// Multiple resource names to add/remove at once
+    pub names: Option<Vec<String>>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema, Default)]
@@ -141,6 +147,23 @@ pub struct TextResult {
     pub result: String,
 }
 
+/// Merge single name + names list into one vec.
+fn collect_names(name: Option<String>, names: Option<Vec<String>>) -> Vec<String> {
+    let mut all = Vec::new();
+    if let Some(n) = name { all.push(n); }
+    if let Some(ns) = names { all.extend(ns); }
+    all
+}
+
+/// Resolve group name fuzzily, returning the group_id or an error message.
+fn resolve_group<'a>(mgr: &crate::core::manager::SkillManager, name: &str) -> Result<String, String> {
+    if let Some(id) = mgr.find_group_id(name) {
+        Ok(id)
+    } else {
+        Err(format!("Group not found: '{name}'. Use sm_groups to list available groups."))
+    }
+}
+
 fn parse_target(s: Option<&str>) -> CliTarget {
     CliTarget::from_str(s.unwrap_or("claude")).unwrap_or(CliTarget::Claude)
 }
@@ -154,8 +177,13 @@ impl SmServer {
     #[tool(description = "List all managed skills and MCP servers. Filter by kind ('skill'/'mcp') or group ID.")]
     fn sm_list(&self, Parameters(p): Parameters<ListResourcesParams>) -> Json<TextResult> {
         let mgr = self.manager.lock().unwrap();
-        let resources = if let Some(group_id) = p.group {
-            mgr.get_group_members(&group_id).unwrap_or_default()
+        let target = parse_target(p.target.as_deref());
+        let resources = if let Some(ref group_id) = p.group {
+            let gid = match mgr.find_group_id(group_id) {
+                Some(id) => id,
+                None => return Json(TextResult { result: format!("Group not found: '{group_id}'") }),
+            };
+            mgr.get_group_members(&gid).unwrap_or_default()
         } else {
             let kind_filter = p.kind
                 .as_deref()
@@ -163,21 +191,18 @@ impl SmServer {
             mgr.list_resources(kind_filter, None).unwrap_or_default()
         };
 
-        let items: Vec<serde_json::Value> = resources.iter().map(|r| {
-            serde_json::json!({
-                "name": r.name,
-                "kind": r.kind.as_str(),
-                "description": r.description,
-                "enabled": {
-                    "claude": r.is_enabled_for(CliTarget::Claude),
-                    "codex": r.is_enabled_for(CliTarget::Codex),
-                    "gemini": r.is_enabled_for(CliTarget::Gemini),
-                    "opencode": r.is_enabled_for(CliTarget::OpenCode),
-                }
-            })
-        }).collect();
+        // Compact format: "● name" (enabled) or "○ name" (disabled), one per line
+        let mut lines = Vec::new();
+        let mut enabled_count = 0;
+        for r in &resources {
+            let on = r.is_enabled_for(target);
+            if on { enabled_count += 1; }
+            let icon = if on { "●" } else { "○" };
+            lines.push(format!("{icon} {:<8} {}", r.kind.as_str(), r.name));
+        }
+        lines.insert(0, format!("{} resources ({enabled_count} enabled for {})\n", resources.len(), target.name()));
 
-        Json(TextResult { result: serde_json::to_string_pretty(&items).unwrap_or_default() })
+        Json(TextResult { result: lines.join("\n") })
     }
 
     #[tool(description = "List all groups with member counts")]
@@ -319,39 +344,72 @@ impl SmServer {
         }
     }
 
-    #[tool(description = "Rename a group's display name")]
-    fn sm_rename_group(&self, Parameters(p): Parameters<RenameGroupParams>) -> Json<TextResult> {
+    #[tool(description = "Update a group's name and/or description")]
+    fn sm_update_group(&self, Parameters(p): Parameters<UpdateGroupParams>) -> Json<TextResult> {
         let mgr = self.manager.lock().unwrap();
-        let result = match mgr.rename_group(&p.id, &p.name) {
-            Ok(_) => format!("Group '{}' renamed to '{}'", p.id, p.name),
+        let result = match mgr.update_group(&p.id, p.name.as_deref(), p.description.as_deref()) {
+            Ok(_) => {
+                let mut changes = Vec::new();
+                if let Some(n) = &p.name { changes.push(format!("name='{n}'")); }
+                if let Some(d) = &p.description { changes.push(format!("desc='{d}'")); }
+                format!("Group '{}' updated: {}", p.id, changes.join(", "))
+            }
             Err(e) => format!("Error: {e}"),
         };
         Json(TextResult { result })
     }
 
-    #[tool(description = "Add a skill or MCP to a group")]
+    #[tool(description = "Add skill(s) or MCP(s) to a group. Use 'name' for single or 'names' for multiple.")]
     fn sm_group_add(&self, Parameters(p): Parameters<GroupMemberParams>) -> Json<TextResult> {
         let mgr = self.manager.lock().unwrap();
-        let result = match mgr.find_resource_id(&p.name) {
-            Some(rid) => match mgr.db().add_group_member(&p.group, &rid) {
-                Ok(_) => format!("Added '{}' to group '{}'", p.name, p.group),
-                Err(e) => format!("Error: {e}"),
-            },
-            None => format!("Resource not found: {}", p.name),
+        let gid = match resolve_group(&mgr, &p.group) {
+            Ok(id) => id,
+            Err(e) => return Json(TextResult { result: e }),
         };
+        let all_names = collect_names(p.name, p.names);
+        if all_names.is_empty() {
+            return Json(TextResult { result: "Provide 'name' or 'names' parameter".into() });
+        }
+        let mut added = 0;
+        let mut errors = Vec::new();
+        for name in &all_names {
+            match mgr.find_resource_id(name) {
+                Some(rid) => match mgr.db().add_group_member(&gid, &rid) {
+                    Ok(_) => added += 1,
+                    Err(e) => errors.push(format!("{name}: {e}")),
+                },
+                None => errors.push(format!("{name}: not found")),
+            }
+        }
+        let mut result = format!("Added {added}/{} to group '{gid}'", all_names.len());
+        if !errors.is_empty() { result.push_str(&format!("\nErrors: {}", errors.join(", "))); }
         Json(TextResult { result })
     }
 
-    #[tool(description = "Remove a skill or MCP from a group")]
+    #[tool(description = "Remove skill(s) or MCP(s) from a group. Use 'name' for single or 'names' for multiple.")]
     fn sm_group_remove(&self, Parameters(p): Parameters<GroupMemberParams>) -> Json<TextResult> {
         let mgr = self.manager.lock().unwrap();
-        let result = match mgr.find_resource_id(&p.name) {
-            Some(rid) => match mgr.db().remove_group_member(&p.group, &rid) {
-                Ok(_) => format!("Removed '{}' from group '{}'", p.name, p.group),
-                Err(e) => format!("Error: {e}"),
-            },
-            None => format!("Resource not found: {}", p.name),
+        let gid = match resolve_group(&mgr, &p.group) {
+            Ok(id) => id,
+            Err(e) => return Json(TextResult { result: e }),
         };
+        let all_names = collect_names(p.name, p.names);
+        if all_names.is_empty() {
+            return Json(TextResult { result: "Provide 'name' or 'names' parameter".into() });
+        }
+        let mut removed = 0;
+        let mut errors = Vec::new();
+        for name in &all_names {
+            match mgr.find_resource_id(name) {
+                Some(rid) => match mgr.db().remove_group_member(&gid, &rid) {
+                    Ok(_) => removed += 1,
+                    Err(e) => errors.push(format!("{name}: {e}")),
+                },
+                None => errors.push(format!("{name}: not found")),
+            }
+        }
+        let mut result = format!("Removed {removed}/{} from group '{gid}'", all_names.len());
+        if !errors.is_empty() { result.push_str(&format!("\nErrors: {}", errors.join(", "))); }
         Json(TextResult { result })
     }
 
@@ -359,8 +417,12 @@ impl SmServer {
     fn sm_group_enable(&self, Parameters(p): Parameters<NameTargetParams>) -> Json<TextResult> {
         let target = parse_target(p.target.as_deref());
         let mgr = self.manager.lock().unwrap();
-        let result = match mgr.enable_group(&p.name, target, None) {
-            Ok(_) => format!("Group '{}' enabled for {}", p.name, target.name()),
+        let gid = match resolve_group(&mgr, &p.name) {
+            Ok(id) => id,
+            Err(e) => return Json(TextResult { result: e }),
+        };
+        let result = match mgr.enable_group(&gid, target, None) {
+            Ok(_) => format!("Group '{}' enabled for {}", gid, target.name()),
             Err(e) => format!("Error: {e}"),
         };
         Json(TextResult { result })
@@ -370,8 +432,12 @@ impl SmServer {
     fn sm_group_disable(&self, Parameters(p): Parameters<NameTargetParams>) -> Json<TextResult> {
         let target = parse_target(p.target.as_deref());
         let mgr = self.manager.lock().unwrap();
-        let result = match mgr.disable_group(&p.name, target, None) {
-            Ok(_) => format!("Group '{}' disabled for {}", p.name, target.name()),
+        let gid = match resolve_group(&mgr, &p.name) {
+            Ok(id) => id,
+            Err(e) => return Json(TextResult { result: e }),
+        };
+        let result = match mgr.disable_group(&gid, target, None) {
+            Ok(_) => format!("Group '{}' disabled for {}", gid, target.name()),
             Err(e) => format!("Error: {e}"),
         };
         Json(TextResult { result })
@@ -616,27 +682,6 @@ impl SmServer {
         })
     }
 
-    #[tool(description = "Add multiple skills/MCPs to a group at once")]
-    fn sm_batch_group_add(&self, Parameters(p): Parameters<BatchGroupAddParams>) -> Json<TextResult> {
-        let mgr = self.manager.lock().unwrap();
-        let mut added = 0;
-        let mut errors = Vec::new();
-        for name in &p.names {
-            match mgr.find_resource_id(name) {
-                Some(rid) => match mgr.db().add_group_member(&p.group, &rid) {
-                    Ok(_) => added += 1,
-                    Err(e) => errors.push(format!("{name}: {e}")),
-                },
-                None => errors.push(format!("{name}: not found")),
-            }
-        }
-        let mut result = format!("Added {added}/{} to group '{}'", p.names.len(), p.group);
-        if !errors.is_empty() {
-            result.push_str(&format!("\nErrors: {}", errors.join(", ")));
-        }
-        Json(TextResult { result })
-    }
-
     #[tool(description = "Create a backup of all CLI skill directories and config files")]
     fn sm_backup(&self) -> Json<TextResult> {
         let mgr = self.manager.lock().unwrap();
@@ -727,14 +772,14 @@ mod tests {
     use rmcp::handler::server::wrapper::Parameters;
 
     #[test]
-    fn tool_router_has_25_tools() {
+    fn tool_router_has_24_tools() {
         let server = SmServer::new().unwrap();
         let tools = server.tool_router.list_all();
         eprintln!("Registered tools: {}", tools.len());
         for t in &tools {
             eprintln!("  - {}", t.name);
         }
-        assert_eq!(tools.len(), 25, "Expected 25 tools in tool_router, got {}", tools.len());
+        assert_eq!(tools.len(), 24, "Expected 24 tools in tool_router, got {}", tools.len());
     }
 
     #[test]

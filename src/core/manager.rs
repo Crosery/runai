@@ -433,15 +433,37 @@ impl SkillManager {
         Ok(())
     }
 
-    pub fn rename_group(&self, group_id: &str, new_name: &str) -> Result<()> {
+    /// Update group name and/or description. Pass None to keep unchanged.
+    pub fn update_group(&self, group_id: &str, name: Option<&str>, description: Option<&str>) -> Result<()> {
         let path = self.paths.groups_dir().join(format!("{group_id}.toml"));
         if !path.exists() {
             bail!("Group not found: {group_id}");
         }
         let mut group = Group::load_from_file(&path)?;
-        group.name = new_name.to_string();
+        if let Some(n) = name { group.name = n.to_string(); }
+        if let Some(d) = description { group.description = d.to_string(); }
         group.save_to_file(&path)?;
         Ok(())
+    }
+
+    /// Fuzzy find group_id: exact match > contains > starts_with.
+    pub fn find_group_id(&self, query: &str) -> Option<String> {
+        let groups = self.list_groups().ok()?;
+        let q = query.to_lowercase();
+        // exact match on id or name
+        if let Some((id, _)) = groups.iter().find(|(id, g)| id.to_lowercase() == q || g.name.to_lowercase() == q) {
+            return Some(id.clone());
+        }
+        // contains match
+        if let Some((id, _)) = groups.iter().find(|(id, g)| id.to_lowercase().contains(&q) || g.name.to_lowercase().contains(&q)) {
+            return Some(id.clone());
+        }
+        None
+    }
+
+    /// Convenience wrapper for backward compat.
+    pub fn rename_group(&self, group_id: &str, new_name: &str) -> Result<()> {
+        self.update_group(group_id, Some(new_name), None)
     }
 
     pub fn get_suggested_groups(&self, name: &str, description: &str) -> Vec<String> {
@@ -985,41 +1007,88 @@ mod tests {
     }
 
     #[test]
-    fn rename_group_updates_display_name() {
+    fn update_group_name_only() {
         let tmp = tempfile::tempdir().unwrap();
         let sm_data = tmp.path().join("sm-data");
 
         with_home(tmp.path(), || {
             let mgr = SkillManager::with_base(sm_data.clone()).unwrap();
-
-            // Create a group
             let group = crate::core::group::Group {
                 name: "Old Name".into(),
-                description: "test group".into(),
+                description: "old desc".into(),
                 kind: crate::core::group::GroupKind::Custom,
                 auto_enable: false,
                 members: vec![],
             };
             mgr.create_group("my-group", &group).unwrap();
 
-            // Rename it
-            mgr.rename_group("my-group", "New Name").unwrap();
+            // Update name only
+            mgr.update_group("my-group", Some("New Name"), None).unwrap();
 
-            // Verify name changed
             let groups = mgr.list_groups().unwrap();
             let (_, g) = groups.iter().find(|(id, _)| id == "my-group").unwrap();
             assert_eq!(g.name, "New Name");
-            // Description unchanged
-            assert_eq!(g.description, "test group");
+            assert_eq!(g.description, "old desc"); // unchanged
         });
     }
 
     #[test]
-    fn rename_nonexistent_group_fails() {
+    fn update_group_description_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm_data = tmp.path().join("sm-data");
+
+        with_home(tmp.path(), || {
+            let mgr = SkillManager::with_base(sm_data.clone()).unwrap();
+            let group = crate::core::group::Group {
+                name: "My Group".into(),
+                description: "old desc".into(),
+                kind: crate::core::group::GroupKind::Custom,
+                auto_enable: false,
+                members: vec![],
+            };
+            mgr.create_group("my-group", &group).unwrap();
+
+            // Update description only
+            mgr.update_group("my-group", None, Some("new desc")).unwrap();
+
+            let groups = mgr.list_groups().unwrap();
+            let (_, g) = groups.iter().find(|(id, _)| id == "my-group").unwrap();
+            assert_eq!(g.name, "My Group"); // unchanged
+            assert_eq!(g.description, "new desc");
+        });
+    }
+
+    #[test]
+    fn update_group_both() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm_data = tmp.path().join("sm-data");
+
+        with_home(tmp.path(), || {
+            let mgr = SkillManager::with_base(sm_data.clone()).unwrap();
+            let group = crate::core::group::Group {
+                name: "Old".into(),
+                description: "old".into(),
+                kind: crate::core::group::GroupKind::Custom,
+                auto_enable: false,
+                members: vec![],
+            };
+            mgr.create_group("g1", &group).unwrap();
+
+            mgr.update_group("g1", Some("New"), Some("new")).unwrap();
+
+            let groups = mgr.list_groups().unwrap();
+            let (_, g) = groups.iter().find(|(id, _)| id == "g1").unwrap();
+            assert_eq!(g.name, "New");
+            assert_eq!(g.description, "new");
+        });
+    }
+
+    #[test]
+    fn update_nonexistent_group_fails() {
         let tmp = tempfile::tempdir().unwrap();
         with_home(tmp.path(), || {
             let mgr = SkillManager::with_base(tmp.path().join("sm-data")).unwrap();
-            let result = mgr.rename_group("nonexistent", "New Name");
+            let result = mgr.update_group("nonexistent", Some("x"), None);
             assert!(result.is_err());
         });
     }
