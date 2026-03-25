@@ -49,7 +49,17 @@ fn create_backup_impl(paths: &AppPaths, home: &Path) -> Result<PathBuf> {
     let backup_dir = paths.data_dir().join(BACKUPS_DIR).join(&ts);
     std::fs::create_dir_all(&backup_dir)?;
 
-    // Backup each CLI's skills directory
+    // Backup SM managed data
+    let managed_skills = paths.skills_dir();
+    if managed_skills.exists() {
+        copy_dir_preserving_symlinks(&managed_skills, &backup_dir.join("managed-skills"))?;
+    }
+    let managed_mcps = paths.mcps_dir();
+    if managed_mcps.exists() {
+        copy_dir_preserving_symlinks(&managed_mcps, &backup_dir.join("managed-mcps"))?;
+    }
+
+    // Backup each CLI's skills directory (symlinks)
     let cli_skill_dirs: &[(&str, &str)] = &[
         ("claude", ".claude/skills"),
         ("codex", ".codex/skills"),
@@ -122,6 +132,22 @@ fn restore_backup_impl(paths: &AppPaths, timestamp: &str, home: &Path) -> Result
     }
 
     let mut restored = 0;
+
+    // Restore SM managed data
+    let managed_skills_backup = backup_dir.join("managed-skills");
+    if managed_skills_backup.exists() {
+        let dest = paths.skills_dir();
+        if dest.exists() { std::fs::remove_dir_all(&dest)?; }
+        copy_dir_preserving_symlinks(&managed_skills_backup, &dest)?;
+        restored += 1;
+    }
+    let managed_mcps_backup = backup_dir.join("managed-mcps");
+    if managed_mcps_backup.exists() {
+        let dest = paths.mcps_dir();
+        if dest.exists() { std::fs::remove_dir_all(&dest)?; }
+        copy_dir_preserving_symlinks(&managed_mcps_backup, &dest)?;
+        restored += 1;
+    }
 
     let cli_skill_dirs: &[(&str, &str)] = &[
         ("claude", ".claude/skills"),
@@ -202,20 +228,31 @@ mod tests {
     }
 
     #[test]
-    fn create_backup_creates_timestamped_dir() {
+    fn create_backup_includes_managed_data_and_configs() {
         let (tmp, paths) = setup();
-        // Create a fake home with skill dir
         let home = tmp.path().join("home");
+
+        // Setup: managed skills + disabled MCP backup + CLI config
+        std::fs::create_dir_all(paths.skills_dir().join("my-skill")).unwrap();
+        std::fs::write(paths.skills_dir().join("my-skill/SKILL.md"), "# Test").unwrap();
+        std::fs::create_dir_all(paths.mcps_dir()).unwrap();
+        std::fs::write(paths.mcps_dir().join("disabled-mcp.json"), r#"{"command":"x"}"#).unwrap();
         std::fs::create_dir_all(home.join(".claude/skills/my-skill")).unwrap();
-        std::fs::write(home.join(".claude/skills/my-skill/SKILL.md"), "# Test").unwrap();
         std::fs::write(home.join(".claude.json"), r#"{"mcpServers":{}}"#).unwrap();
 
-        // Can't easily test with real CliTarget dirs, so test the impl directly
-        // Just verify backup dir structure
         let backup_dir = create_backup_impl(&paths, &home).unwrap();
-        assert!(backup_dir.exists());
+
         assert!(backup_dir.join("timestamp").exists());
         assert!(backup_dir.join("claude.json").exists());
+        // Managed skills backed up
+        assert!(backup_dir.join("managed-skills/my-skill/SKILL.md").exists(),
+            "managed skills should be backed up");
+        // Disabled MCP configs backed up
+        assert!(backup_dir.join("managed-mcps/disabled-mcp.json").exists(),
+            "disabled MCP backups should be backed up");
+        // CLI symlinks backed up
+        assert!(backup_dir.join("claude-skills").exists(),
+            "CLI skill symlinks should be backed up");
     }
 
     #[test]
@@ -242,27 +279,34 @@ mod tests {
         let (tmp, paths) = setup();
         let home = tmp.path().join("home");
 
-        // Setup: create skill dir and config
-        let skills = home.join(".claude/skills");
-        std::fs::create_dir_all(skills.join("brainstorming")).unwrap();
-        std::fs::write(skills.join("brainstorming/SKILL.md"), "# Original").unwrap();
+        // Setup: managed skill + disabled MCP + CLI config
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(paths.skills_dir().join("my-skill")).unwrap();
+        std::fs::write(paths.skills_dir().join("my-skill/SKILL.md"), "# Original").unwrap();
+        std::fs::create_dir_all(paths.mcps_dir()).unwrap();
+        std::fs::write(paths.mcps_dir().join("pencil.json"), r#"{"command":"pencil"}"#).unwrap();
         std::fs::write(home.join(".claude.json"), r#"{"original":true}"#).unwrap();
 
         // Backup
         let backup_dir = create_backup_impl(&paths, &home).unwrap();
         let ts = std::fs::read_to_string(backup_dir.join("timestamp")).unwrap();
 
-        // Simulate damage: delete skill, modify config
-        std::fs::remove_dir_all(&skills).unwrap();
+        // Simulate damage: delete managed skill, delete MCP backup, modify config
+        std::fs::remove_dir_all(paths.skills_dir()).unwrap();
+        std::fs::remove_dir_all(paths.mcps_dir()).unwrap();
         std::fs::write(home.join(".claude.json"), r#"{"modified":true}"#).unwrap();
 
         // Restore
         let restored = restore_backup_impl(&paths, &ts, &home).unwrap();
-        assert!(restored > 0);
+        assert!(restored >= 3, "should restore managed-skills + managed-mcps + config");
 
-        // Verify config restored
+        // Verify everything restored
+        assert!(paths.skills_dir().join("my-skill/SKILL.md").exists(),
+            "managed skill should be restored");
+        assert!(paths.mcps_dir().join("pencil.json").exists(),
+            "disabled MCP backup should be restored");
         let config = std::fs::read_to_string(home.join(".claude.json")).unwrap();
-        assert!(config.contains("original"));
+        assert!(config.contains("original"), "config should be restored");
     }
 
     #[test]
