@@ -10,10 +10,12 @@ A terminal-based resource manager for AI CLI skills, MCP servers, and groups. Wo
 
 - **TUI Interface** — Browse, enable/disable, search skills and MCPs with a terminal UI
 - **Multi-CLI Support** — Manage resources across 4 AI CLIs, switch targets with `1234`
-- **Groups** — Organize skills/MCPs into groups, batch enable/disable
-- **One-Step Install** — `sm_install(repo="owner/repo")` downloads, registers, groups, and enables
+- **Groups** — Organize skills/MCPs into groups, batch enable/disable, rename
+- **One-Step Install** — `skill-manager install owner/repo` downloads, registers, groups, and enables
+- **Skill Discovery** — Built-in recursive scanner finds all SKILL.md on disk in seconds
 - **Market** — Browse 2000+ skills from 5 built-in sources, add custom GitHub sources
-- **MCP Server** — 24 tools exposed via MCP protocol, auto-registered to all CLIs
+- **MCP Server** — 25 tools exposed via MCP protocol, auto-registered to all CLIs on first launch
+- **Dark/Light Theme** — Press `t` to toggle, optimized for both terminal backgrounds
 - **Filesystem as Source of Truth** — Skill enabled = symlink exists; MCP enabled = config entry exists
 - **Backup & Restore** — Timestamped full backups of skill directories, MCP configs, and CLI configs
 - **CLI** — Subcommands for scripting and automation
@@ -32,66 +34,62 @@ cargo install --path .
 # Launch TUI (first run will scan and register MCP automatically)
 skill-manager
 
-# Or use CLI directly
+# Install skills from GitHub (auto-download, register, group, enable)
+skill-manager install pbakaus/impeccable
+skill-manager install MiniMax-AI/skills
+
+# Install from market
+skill-manager market-install github
+
+# Discover all skills on disk
+skill-manager discover
+skill-manager discover --root /    # Full disk scan
+
+# CLI management
 skill-manager list                    # List all skills and MCPs
 skill-manager status                  # Show enabled counts
 skill-manager enable brainstorming    # Enable a skill
-skill-manager scan                    # Scan for new skills
+skill-manager scan                    # Scan known directories
 skill-manager backup                  # Create a backup
-```
-
-## Architecture
-
-```
-Filesystem is the single source of truth:
-  Skill enabled  = symlink exists in ~/.claude/skills/<name>
-  MCP enabled    = entry exists in ~/.claude.json mcpServers
-  MCP disabled   = entry removed, config backed up to ~/.skill-manager/mcps/
-
-DB stores only:
-  Skill metadata (name, description, source, directory)
-  Group membership (supports both skill and MCP members)
 ```
 
 ## TUI Keybindings
 
+Footer shows essential keys. Press `?` for full help panel.
+
 | Key | Action |
 |-----|--------|
-| `H/L` or `Tab` | Switch tabs (Skills / MCPs / Groups / Market) |
 | `j/k` | Navigate up/down |
+| `H/L` or `Tab` | Switch tabs (Skills / MCPs / Groups / Market) |
 | `Space` | Toggle enable/disable |
-| `1234` | Switch CLI target (Claude/Codex/Gemini/OpenCode) |
-| `/` | Search |
-| `Enter` | Open group detail / Install from market |
-| `d` | Delete selected item |
-| `c` | Create new group |
-| `a` | Add to group (Skills/MCPs tab) |
-| `s` | Sources manager (Market tab) / Scan (other tabs) |
-| `[ ]` | Switch market source |
+| `/` | Search filter |
+| `t` | Toggle dark/light theme |
+| `?` | Help panel (all keybindings) |
 | `q` | Quit |
 
-## MCP Tools (24)
+## MCP Tools (25)
 
-When running as MCP server (`skill-manager mcp-serve`), 24 tools are available:
+When running as MCP server (`skill-manager mcp-serve`), 25 tools are available:
 
 **Skills & MCPs**
 
 | Tool | Description |
 |------|-------------|
-| `sm_list` | List skills/MCPs with filters (kind, group) |
+| `sm_list` | List skills/MCPs (compact format, supports kind/group/target filters) |
 | `sm_status` | Enabled/total counts per CLI target |
-| `sm_enable` / `sm_disable` | Toggle skill/MCP for a CLI |
+| `sm_enable` / `sm_disable` | Toggle skill/MCP for a CLI (supports fuzzy group name) |
 | `sm_delete` | Remove a skill/MCP (files + symlinks + DB) |
-| `sm_scan` | Scan CLI directories for new skills (with error details) |
+| `sm_scan` | Scan known directories for new skills |
+| `sm_discover` | Find all SKILL.md on disk, returns unmanaged skills |
 | `sm_batch_enable` / `sm_batch_disable` | Batch toggle multiple by name list |
 
 **Install**
 
 | Tool | Description |
 |------|-------------|
-| `sm_install` | Returns CLI command for fast install from GitHub (agent runs via Bash) |
+| `sm_install` | Returns CLI command for fast GitHub install (agent runs via Bash) |
 | `sm_market` | Browse cached market skills (filter by source/search) |
-| `sm_market_install` | Install single skill from market |
+| `sm_market_install` | Returns CLI command for market install |
 | `sm_sources` | List/add/remove/enable/disable market sources |
 
 **Groups**
@@ -100,9 +98,9 @@ When running as MCP server (`skill-manager mcp-serve`), 24 tools are available:
 |------|-------------|
 | `sm_groups` | List all groups with member counts |
 | `sm_create_group` / `sm_delete_group` | Create or delete a group |
-| `sm_group_add` / `sm_group_remove` | Add/remove members |
-| `sm_batch_group_add` | Add multiple members to a group at once |
-| `sm_group_enable` / `sm_group_disable` | Batch toggle all members in a group |
+| `sm_group_add` / `sm_group_remove` | Add/remove members (single `name` or batch `names`) |
+| `sm_update_group` | Update group name and/or description |
+| `sm_group_enable` / `sm_group_disable` | Batch toggle all members (fuzzy group match) |
 
 **Backup & Utility**
 
@@ -113,20 +111,26 @@ When running as MCP server (`skill-manager mcp-serve`), 24 tools are available:
 | `sm_backups` | List all available backups |
 | `sm_register` | Register MCP to all CLI configs |
 
-## MCP Behavior
+## Key Behaviors
 
-- **Disable** = remove entry from CLI config, save full config to `~/.skill-manager/mcps/{name}.json`
-- **Enable** = restore saved config back into CLI config
-- **skill-manager refuses to disable itself** (self-protection)
-- Disabled MCPs still visible in TUI/list (shown as disabled, can toggle back)
-- Auto-registers to all CLIs on first launch
+- **Fuzzy group matching** — `sm_group_enable(name="superpower")` matches `superpowers`
+- **Install delegates to CLI** — MCP tools return Bash commands instead of downloading in-process (avoids proxy timeouts)
+- **Compact output** — `sm_list` uses one-line-per-resource format to stay within token limits
+- **Auto-discovery** — MCP instructions guide AI to search GitHub when market has no results
+- **Self-protection** — skill-manager refuses to disable itself
+- **Scans `~/skills/`** — SkillHub installs are automatically discovered
 
 ## Skill Discovery
 
-- Scanner checks `~/.claude/skills/` (user-managed) and `~/.claude/.agents/skills/` (plugin-managed, read-only)
-- SKILL.md frontmatter `description` field is parsed for display
-- Stale descriptions are refreshed on re-scan
-- Plugin-format repos (`.claude-plugin`) are detected with install guidance
+```bash
+skill-manager discover               # Scan home directory
+skill-manager discover --root /      # Full disk scan
+```
+
+Built-in recursive scanner with smart filtering:
+- **Finds**: `~/.skill-manager/skills/`, `~/.claude/skills/`, `~/skills/`, project dirs
+- **Skips**: plugins/marketplaces, IDE extensions, backups, node_modules, .git
+- **Classifies**: `●` Managed / `◆` CLI dir / `○` Unmanaged (can import)
 
 ## Market Sources
 
@@ -142,24 +146,6 @@ Built-in sources (enable/disable via `s` on Market tab):
 
 Add custom sources with `a` (format: `owner/repo` or `owner/repo@branch`).
 
-## Backup & Restore
-
-Backups stored at `~/.skill-manager/backups/{timestamp}/`:
-
-```
-backups/20260325_120000/
-├── managed-skills/     # Full copy of ~/.skill-manager/skills/
-├── managed-mcps/       # Disabled MCP config backups
-├── claude-skills/      # Symlinks in ~/.claude/skills/
-├── claude.json         # Copy of ~/.claude.json
-├── gemini-settings.json
-├── codex-settings.json
-├── opencode-settings.json
-└── timestamp
-```
-
-First scan automatically creates a backup before making any changes.
-
 ## Data
 
 All data stored in `~/.skill-manager/`:
@@ -170,13 +156,6 @@ All data stored in `~/.skill-manager/`:
 - `market-cache/` — Cached market skill lists (JSON, 1hr TTL)
 - `market-sources.json` — Custom market sources
 - `skill-manager.db` — SQLite database (skill metadata + group members only)
-
-## Migration
-
-When upgrading from v0.1.x:
-- Old DB tables (`resource_targets`, MCP rows in `resources`) are preserved but ignored
-- New code reads state from filesystem instead of DB
-- Downgrade to old version is safe (old data still intact)
 
 ## License
 
