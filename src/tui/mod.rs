@@ -25,6 +25,11 @@ pub fn run_tui(mgr: SkillManager) -> Result<()> {
     let mut app = App::new(mgr);
     app.reload();
     if app.mode == InputMode::Normal {
+        // Auto-scan if no skills found (e.g. MCP registered but skills not scanned yet)
+        if app.items.is_empty() {
+            let _ = app.mgr.scan();
+            app.reload();
+        }
         app.prefetch_market();
     }
 
