@@ -376,6 +376,24 @@ impl SmServer {
         }
 
         if all_skills.is_empty() {
+            // Check if any matched source is a plugin (not a skill collection)
+            for src in &sources {
+                if !src.enabled { continue; }
+                if let Some(ref filter) = p.source {
+                    let f = filter.to_lowercase();
+                    if !src.label.to_lowercase().contains(&f) && !src.repo_id().to_lowercase().contains(&f) {
+                        continue;
+                    }
+                }
+                if crate::core::market::is_plugin_source(&data_dir, src) {
+                    return Json(TextResult {
+                        result: format!(
+                            "This is a Claude Code plugin, not a skill collection. Install with:\n  /plugin install {}@<marketplace>\n\nOr check the repo README for install instructions.",
+                            src.repo
+                        )
+                    });
+                }
+            }
             if let Some(ref search) = p.search {
                 return Json(TextResult {
                     result: format!("No skills matching '{}'. Use sm_sources to check available sources.", search)

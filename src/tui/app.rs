@@ -150,11 +150,14 @@ impl App {
             std::thread::spawn(move || {
                 let rt = tokio::runtime::Runtime::new().unwrap();
                 let result = rt.block_on(Market::fetch(&src));
-                // Save to disk cache on success
-                if let Ok(ref skills) = result {
-                    let _ = market::save_cache(&dd, &src, skills);
+                // Save to disk cache on success, save plugin marker if detected
+                if let Ok(ref extract) = result {
+                    let _ = market::save_cache(&dd, &src, &extract.skills);
+                    if extract.plugin_detected {
+                        market::save_plugin_marker(&dd, &src);
+                    }
                 }
-                let _ = tx.send(result.map_err(|e| e.to_string()));
+                let _ = tx.send(result.map(|e| e.skills).map_err(|e| e.to_string()));
             });
         }
     }

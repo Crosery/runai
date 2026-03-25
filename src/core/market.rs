@@ -157,6 +157,19 @@ pub fn save_cache(data_dir: &Path, source: &SourceEntry, skills: &[MarketSkill])
     Ok(())
 }
 
+/// Mark a source as a Claude plugin (not a skill collection).
+pub fn save_plugin_marker(data_dir: &Path, source: &SourceEntry) {
+    let dir = data_dir.join(CACHE_DIR);
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join(format!("{}.plugin", cache_key(source)));
+    let _ = std::fs::write(&path, &source.repo);
+}
+
+/// Check if a source was detected as a Claude plugin.
+pub fn is_plugin_source(data_dir: &Path, source: &SourceEntry) -> bool {
+    data_dir.join(CACHE_DIR).join(format!("{}.plugin", cache_key(source))).exists()
+}
+
 fn cache_key(source: &SourceEntry) -> String {
     format!("{}_{}", source.owner, source.repo)
 }
@@ -226,7 +239,7 @@ impl Market {
     }
 
     /// Fetch skill list from GitHub API.
-    pub async fn fetch(source: &SourceEntry) -> Result<Vec<MarketSkill>> {
+    pub async fn fetch(source: &SourceEntry) -> Result<ExtractResult> {
         let url = format!(
             "https://api.github.com/repos/{}/{}/git/trees/{}?recursive=1",
             source.owner, source.repo, source.branch,
@@ -242,8 +255,7 @@ impl Market {
         }
 
         let body: GitTree = resp.json().await?;
-        let result = Self::extract_skills(&body, source);
-        Ok(result.skills)
+        Ok(Self::extract_skills(&body, source))
     }
 
     /// Install a single skill: download the entire skill directory from GitHub.
