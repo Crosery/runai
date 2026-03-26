@@ -1,12 +1,12 @@
-use std::collections::HashMap;
-use std::path::Path;
-use anyhow::Result;
 use crate::core::backup;
 use crate::core::cli_target::CliTarget;
 use crate::core::db::Database;
-use crate::core::linker::{Linker, EntryType};
+use crate::core::linker::{EntryType, Linker};
 use crate::core::paths::AppPaths;
 use crate::core::resource::{Resource, ResourceKind, Source};
+use anyhow::Result;
+use std::collections::HashMap;
+use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SkillStatus {
@@ -87,21 +87,39 @@ impl Scanner {
 
     /// Directories to always skip during discovery (no useful SKILL.md inside).
     const SKIP_DIRS: &'static [&'static str] = &[
-        ".git", "node_modules", "target", ".cache", ".cargo", ".rustup",
-        ".npm", ".pnpm", "venv", "__pycache__", ".venv", ".nvm",
-        "dist", "build", ".next", ".nuxt", ".wine", ".steam",
-        ".mozilla", ".thunderbird", ".config", ".local",
+        ".git",
+        "node_modules",
+        "target",
+        ".cache",
+        ".cargo",
+        ".rustup",
+        ".npm",
+        ".pnpm",
+        "venv",
+        "__pycache__",
+        ".venv",
+        ".nvm",
+        "dist",
+        "build",
+        ".next",
+        ".nuxt",
+        ".wine",
+        ".steam",
+        ".mozilla",
+        ".thunderbird",
+        ".config",
+        ".local",
     ];
 
     /// Path fragments that indicate a skill is NOT manageable by SM.
     const NOISE_PATHS: &'static [&'static str] = &[
-        "/plugins/marketplaces/",   // CC plugin system manages these
-        "/cc-profiles/",            // CC profile copies
-        "/.vscode/",                // VS Code extensions
-        "/.cursor/",                // Cursor extensions
-        "/.antigravity/",           // Antigravity extensions
-        "/backups/",                // SM backup copies
-        "/__MACOSX/",               // macOS zip artifacts
+        "/plugins/marketplaces/", // CC plugin system manages these
+        "/cc-profiles/",          // CC profile copies
+        "/.vscode/",              // VS Code extensions
+        "/.cursor/",              // Cursor extensions
+        "/.antigravity/",         // Antigravity extensions
+        "/backups/",              // SM backup copies
+        "/__MACOSX/",             // macOS zip artifacts
     ];
 
     /// Discover SKILL.md files under a root dir. Built-in, no external tools needed.
@@ -119,7 +137,9 @@ impl Scanner {
 
                 // Filter out noise
                 for noise in Self::NOISE_PATHS {
-                    if path_str.contains(noise) { return None; }
+                    if path_str.contains(noise) {
+                        return None;
+                    }
                 }
 
                 let name = path.file_name()?.to_str()?.to_string();
@@ -141,19 +161,27 @@ impl Scanner {
     }
 
     fn walk_for_skills(dir: &Path, results: &mut Vec<std::path::PathBuf>, depth: usize) {
-        if depth > 8 { return; }
+        if depth > 8 {
+            return;
+        }
         let entries = match std::fs::read_dir(dir) {
             Ok(e) => e,
             Err(_) => return,
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if !path.is_dir() { continue; }
+            if !path.is_dir() {
+                continue;
+            }
             // Skip symlinks to avoid loops
-            if entry.file_type().map(|ft| ft.is_symlink()).unwrap_or(false) { continue; }
+            if entry.file_type().map(|ft| ft.is_symlink()).unwrap_or(false) {
+                continue;
+            }
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
-            if Self::SKIP_DIRS.contains(&name_str.as_ref()) { continue; }
+            if Self::SKIP_DIRS.contains(&name_str.as_ref()) {
+                continue;
+            }
             if path.join("SKILL.md").exists() {
                 results.push(path.clone());
             }
@@ -183,7 +211,9 @@ impl Scanner {
             };
 
             let path = entry.path();
-            if !path.is_dir() { continue; }
+            if !path.is_dir() {
+                continue;
+            }
 
             let name = match entry.file_name().to_str() {
                 Some(n) => n.to_string(),
@@ -191,13 +221,17 @@ impl Scanner {
             };
 
             // Check if already in DB — if so, refresh description if stale
-            let existing = ["local:", "adopted:", "github:"].iter().find_map(|prefix| {
-                let id = format!("{prefix}{name}");
-                db.get_resource(&id).ok().flatten()
-            }).or_else(|| {
-                db.list_resources(None, None).ok()
-                    .and_then(|all| all.into_iter().find(|r| r.name == name))
-            });
+            let existing = ["local:", "adopted:", "github:"]
+                .iter()
+                .find_map(|prefix| {
+                    let id = format!("{prefix}{name}");
+                    db.get_resource(&id).ok().flatten()
+                })
+                .or_else(|| {
+                    db.list_resources(None, None)
+                        .ok()
+                        .and_then(|all| all.into_iter().find(|r| r.name == name))
+                });
 
             if let Some(existing) = existing {
                 // Refresh description if it's stale ("---" or empty)
@@ -222,6 +256,8 @@ impl Scanner {
                 source: Source::Local { path: path.clone() },
                 installed_at: chrono::Utc::now().timestamp(),
                 enabled: HashMap::new(),
+                usage_count: 0,
+                last_used_at: None,
             };
 
             match db.insert_resource(&resource) {
@@ -301,7 +337,10 @@ impl Scanner {
             if link_target.is_absolute() {
                 link_target
             } else {
-                entry_path.parent().unwrap_or(Path::new(".")).join(&link_target)
+                entry_path
+                    .parent()
+                    .unwrap_or(Path::new("."))
+                    .join(&link_target)
             }
         } else {
             entry_path.to_path_buf()
@@ -314,7 +353,11 @@ impl Scanner {
         if !actual_source.join("SKILL.md").exists() && actual_source.is_dir() {
             // 检查是否有子目录包含 SKILL.md（如 cc-switch 的嵌套结构）
             let has_skill = std::fs::read_dir(&actual_source)
-                .map(|entries| entries.filter_map(|e| e.ok()).any(|e| e.file_name() == "SKILL.md"))
+                .map(|entries| {
+                    entries
+                        .filter_map(|e| e.ok())
+                        .any(|e| e.file_name() == "SKILL.md")
+                })
                 .unwrap_or(false);
             if !has_skill {
                 anyhow::bail!("no SKILL.md found in {}", actual_source.display());
@@ -337,6 +380,8 @@ impl Scanner {
             },
             installed_at: chrono::Utc::now().timestamp(),
             enabled: HashMap::from([(target, true)]),
+            usage_count: 0,
+            last_used_at: None,
         };
 
         db.insert_resource(&resource)?;
@@ -352,15 +397,21 @@ impl Scanner {
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if !path.is_dir() { continue; }
+            if !path.is_dir() {
+                continue;
+            }
             let name = match entry.file_name().to_str() {
                 Some(n) => n.to_string(),
                 None => continue,
             };
-            if !path.join("SKILL.md").exists() { continue; }
+            if !path.join("SKILL.md").exists() {
+                continue;
+            }
 
             // Skip if already known — refresh description if stale
-            let existing = db.list_resources(None, None).ok()
+            let existing = db
+                .list_resources(None, None)
+                .ok()
                 .and_then(|all| all.into_iter().find(|r| r.name == name));
             if let Some(existing) = existing {
                 if existing.description.is_empty() || existing.description == "---" {
@@ -383,10 +434,14 @@ impl Scanner {
                 source: Source::Local { path: path.clone() },
                 installed_at: chrono::Utc::now().timestamp(),
                 enabled: HashMap::new(),
+                usage_count: 0,
+                last_used_at: None,
             };
             match db.insert_resource(&resource) {
                 Ok(_) => result.adopted += 1,
-                Err(e) => result.errors.push(format!("{}: {e}", entry.file_name().to_string_lossy())),
+                Err(e) => result
+                    .errors
+                    .push(format!("{}: {e}", entry.file_name().to_string_lossy())),
             }
         }
         result
@@ -415,10 +470,7 @@ impl Scanner {
                 }
                 // Parse description field from frontmatter
                 if let Some(rest) = trimmed.strip_prefix("description:") {
-                    fm_description = rest.trim()
-                        .trim_matches('"')
-                        .trim_matches('\'')
-                        .to_string();
+                    fm_description = rest.trim().trim_matches('"').trim_matches('\'').to_string();
                 }
             }
 
@@ -469,7 +521,10 @@ mod tests {
         std::fs::write(skill_dir.join("SKILL.md"), "---\nname: brainstorming\ndescription: \"Explores user intent and design before implementation.\"\n---\n\n# Brainstorming\n\nHelp turn ideas into designs.\n").unwrap();
 
         let desc = Scanner::extract_description(&skill_dir);
-        assert_eq!(desc, "Explores user intent and design before implementation.");
+        assert_eq!(
+            desc,
+            "Explores user intent and design before implementation."
+        );
     }
 
     #[test]
@@ -477,7 +532,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let skill_dir = tmp.path().join("simple-skill");
         std::fs::create_dir_all(&skill_dir).unwrap();
-        std::fs::write(skill_dir.join("SKILL.md"), "# My Skill\n\nThis skill does something useful.\n\nMore details here.\n").unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "# My Skill\n\nThis skill does something useful.\n\nMore details here.\n",
+        )
+        .unwrap();
 
         let desc = Scanner::extract_description(&skill_dir);
         assert_eq!(desc, "This skill does something useful.");
@@ -488,7 +547,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let skill_dir = tmp.path().join("no-desc");
         std::fs::create_dir_all(&skill_dir).unwrap();
-        std::fs::write(skill_dir.join("SKILL.md"), "---\nname: no-desc\n---\n\n# No Description Skill\n\nBut this line explains it.\n").unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: no-desc\n---\n\n# No Description Skill\n\nBut this line explains it.\n",
+        )
+        .unwrap();
 
         let desc = Scanner::extract_description(&skill_dir);
         assert_eq!(desc, "But this line explains it.");
@@ -526,12 +589,21 @@ mod tests {
         let root = tmp.path();
 
         // Plugin dir — should be filtered out
-        let plugin = root.join("plugins").join("marketplaces").join("x").join("skills").join("foo");
+        let plugin = root
+            .join("plugins")
+            .join("marketplaces")
+            .join("x")
+            .join("skills")
+            .join("foo");
         std::fs::create_dir_all(&plugin).unwrap();
         std::fs::write(plugin.join("SKILL.md"), "# Plugin skill").unwrap();
 
         // Backup dir — should be filtered out
-        let backup = root.join("backups").join("20260325").join("skills").join("bar");
+        let backup = root
+            .join("backups")
+            .join("20260325")
+            .join("skills")
+            .join("bar");
         std::fs::create_dir_all(&backup).unwrap();
         std::fs::write(backup.join("SKILL.md"), "# Backup skill").unwrap();
 

@@ -1,11 +1,11 @@
-use crossterm::event::{KeyCode, KeyEvent};
-use std::collections::HashMap;
-use std::sync::mpsc;
 use crate::core::cli_target::CliTarget;
 use crate::core::group::{Group, GroupKind};
 use crate::core::manager::SkillManager;
 use crate::core::market::{self, Market, MarketSkill, SourceEntry};
 use crate::core::resource::Resource;
+use crossterm::event::{KeyCode, KeyEvent};
+use std::collections::HashMap;
+use std::sync::mpsc;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Tab {
@@ -77,10 +77,10 @@ pub struct App {
     pub detail_group_name: String,
     pub detail_members: Vec<Resource>,
     pub detail_idx: usize,
-    pub pick_items: Vec<Resource>,  // available items to add (not already in group)
+    pub pick_items: Vec<Resource>, // available items to add (not already in group)
     pub pick_idx: usize,
     pub pick_search: String,
-    pub pick_show_mcp: bool,  // false=skills, true=mcps
+    pub pick_show_mcp: bool, // false=skills, true=mcps
     /// Per-source cache
     pub market_cache: HashMap<String, Vec<MarketSkill>>,
     /// Receivers for background fetches: repo_id -> rx
@@ -107,7 +107,11 @@ impl App {
             groups: Vec::new(),
             selected: 0,
             search: String::new(),
-            mode: if first_launch { InputMode::FirstLaunch(0) } else { InputMode::Normal },
+            mode: if first_launch {
+                InputMode::FirstLaunch(0)
+            } else {
+                InputMode::Normal
+            },
             input_buf: String::new(),
             create_name: String::new(),
             group_pick_idx: 0,
@@ -137,7 +141,9 @@ impl App {
     pub fn prefetch_market(&mut self) {
         let data_dir = self.mgr.paths().data_dir().to_path_buf();
         for source in &self.sources {
-            if !source.enabled { continue; }
+            if !source.enabled {
+                continue;
+            }
             let rid = source.repo_id();
             if self.market_cache.contains_key(&rid) || self.market_fetching.contains(&rid) {
                 continue;
@@ -181,9 +187,7 @@ impl App {
         let mut changed = false;
         for path in &configs {
             let key = path.to_string_lossy().to_string();
-            let mtime = std::fs::metadata(path)
-                .and_then(|m| m.modified())
-                .ok();
+            let mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
             if let Some(mt) = mtime {
                 let prev = self.config_mtimes.get(&key);
                 if prev != Some(&mt) {
@@ -238,13 +242,25 @@ impl App {
             Tab::Groups | Tab::Market => None,
         };
 
-        self.items = self.mgr.list_resources(kind_filter, None).unwrap_or_default();
+        self.items = self
+            .mgr
+            .list_resources(kind_filter, None)
+            .unwrap_or_default();
 
-        self.groups = self.mgr.list_groups().unwrap_or_default().into_iter().map(|(id, g)| {
-            let members = self.mgr.get_group_members(&id).unwrap_or_default();
-            let enabled = members.iter().filter(|m| m.is_enabled_for(self.active_target)).count();
-            (id, g.name, members.len(), enabled)
-        }).collect();
+        self.groups = self
+            .mgr
+            .list_groups()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(id, g)| {
+                let members = self.mgr.get_group_members(&id).unwrap_or_default();
+                let enabled = members
+                    .iter()
+                    .filter(|m| m.is_enabled_for(self.active_target))
+                    .count();
+                (id, g.name, members.len(), enabled)
+            })
+            .collect();
 
         let (es, em) = self.mgr.status(self.active_target).unwrap_or((0, 0));
         let (ts, tm) = self.mgr.resource_count();
@@ -261,20 +277,24 @@ impl App {
 
     pub fn visible_items(&self) -> Vec<&Resource> {
         let q = self.search.to_lowercase();
-        self.items.iter().filter(|r| {
-            q.is_empty()
-                || r.name.to_lowercase().contains(&q)
-                || r.description.to_lowercase().contains(&q)
-        }).collect()
+        self.items
+            .iter()
+            .filter(|r| {
+                q.is_empty()
+                    || r.name.to_lowercase().contains(&q)
+                    || r.description.to_lowercase().contains(&q)
+            })
+            .collect()
     }
 
     pub fn visible_groups(&self) -> Vec<&(String, String, usize, usize)> {
         let q = self.search.to_lowercase();
-        self.groups.iter().filter(|(id, name, _, _)| {
-            q.is_empty()
-                || name.to_lowercase().contains(&q)
-                || id.to_lowercase().contains(&q)
-        }).collect()
+        self.groups
+            .iter()
+            .filter(|(id, name, _, _)| {
+                q.is_empty() || name.to_lowercase().contains(&q) || id.to_lowercase().contains(&q)
+            })
+            .collect()
     }
 
     pub fn visible_market(&self) -> Vec<&MarketSkill> {
@@ -282,11 +302,14 @@ impl App {
         let enabled = self.enabled_sources();
         if let Some(src) = enabled.get(self.market_source_idx) {
             if let Some(skills) = self.market_cache.get(&src.repo_id()) {
-                return skills.iter().filter(|s| {
-                    q.is_empty()
-                        || s.name.to_lowercase().contains(&q)
-                        || s.source_label.to_lowercase().contains(&q)
-                }).collect();
+                return skills
+                    .iter()
+                    .filter(|s| {
+                        q.is_empty()
+                            || s.name.to_lowercase().contains(&q)
+                            || s.source_label.to_lowercase().contains(&q)
+                    })
+                    .collect();
             }
         }
         Vec::new()
@@ -334,7 +357,9 @@ impl App {
             InputMode::SourceManager => self.handle_source_manager_key(key),
             InputMode::GroupDetail => self.handle_group_detail_key(key),
             InputMode::PickSkillForGroup => self.handle_pick_skill_key(key),
-            InputMode::Help => { self.mode = InputMode::Normal; }
+            InputMode::Help => {
+                self.mode = InputMode::Normal;
+            }
             InputMode::RenameGroup => self.handle_rename_group_key(key),
             InputMode::Normal => self.handle_normal_key(key),
         }
@@ -349,11 +374,15 @@ impl App {
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                if self.selected > 0 { self.selected -= 1; }
+                if self.selected > 0 {
+                    self.selected -= 1;
+                }
             }
             KeyCode::Char('g') => self.selected = 0,
             KeyCode::Char('G') => {
-                if self.visible_count() > 0 { self.selected = self.visible_count() - 1; }
+                if self.visible_count() > 0 {
+                    self.selected = self.visible_count() - 1;
+                }
             }
 
             // Tab switching
@@ -408,6 +437,11 @@ impl App {
                 self.source_pick_idx = 0;
             }
 
+            // Market: Enter to install selected skill
+            KeyCode::Enter if self.tab == Tab::Market => {
+                self.install_market_selected();
+            }
+
             // Toggle enable/disable
             KeyCode::Enter | KeyCode::Char(' ') => self.toggle_selected(),
 
@@ -418,10 +452,22 @@ impl App {
             }
 
             // Switch CLI target
-            KeyCode::Char('1') => { self.active_target = CliTarget::Claude; self.reload(); }
-            KeyCode::Char('2') => { self.active_target = CliTarget::Codex; self.reload(); }
-            KeyCode::Char('3') => { self.active_target = CliTarget::Gemini; self.reload(); }
-            KeyCode::Char('4') => { self.active_target = CliTarget::OpenCode; self.reload(); }
+            KeyCode::Char('1') => {
+                self.active_target = CliTarget::Claude;
+                self.reload();
+            }
+            KeyCode::Char('2') => {
+                self.active_target = CliTarget::Codex;
+                self.reload();
+            }
+            KeyCode::Char('3') => {
+                self.active_target = CliTarget::Gemini;
+                self.reload();
+            }
+            KeyCode::Char('4') => {
+                self.active_target = CliTarget::OpenCode;
+                self.reload();
+            }
 
             // Scan
             KeyCode::Char('s') => {
@@ -495,8 +541,14 @@ impl App {
                 self.selected = 0;
             }
             KeyCode::Enter => self.mode = InputMode::Normal,
-            KeyCode::Backspace => { self.search.pop(); self.selected = 0; }
-            KeyCode::Char(c) => { self.search.push(c); self.selected = 0; }
+            KeyCode::Backspace => {
+                self.search.pop();
+                self.selected = 0;
+            }
+            KeyCode::Char(c) => {
+                self.search.push(c);
+                self.selected = 0;
+            }
             _ => {}
         }
     }
@@ -519,11 +571,15 @@ impl App {
                 } else {
                     let name = self.create_name.clone();
                     let desc = self.input_buf.trim().to_string();
-                    let id = name.to_lowercase()
-                        .chars().map(|c| if c.is_alphanumeric() { c } else { '-' })
+                    let id = name
+                        .to_lowercase()
+                        .chars()
+                        .map(|c| if c.is_alphanumeric() { c } else { '-' })
                         .collect::<String>()
-                        .split('-').filter(|s| !s.is_empty())
-                        .collect::<Vec<_>>().join("-");
+                        .split('-')
+                        .filter(|s| !s.is_empty())
+                        .collect::<Vec<_>>()
+                        .join("-");
                     let group = Group {
                         name,
                         description: desc,
@@ -541,7 +597,9 @@ impl App {
                     self.reload();
                 }
             }
-            KeyCode::Backspace => { self.input_buf.pop(); }
+            KeyCode::Backspace => {
+                self.input_buf.pop();
+            }
             KeyCode::Char(c) => self.input_buf.push(c),
             _ => {}
         }
@@ -556,17 +614,25 @@ impl App {
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                if self.group_pick_idx > 0 { self.group_pick_idx -= 1; }
+                if self.group_pick_idx > 0 {
+                    self.group_pick_idx -= 1;
+                }
             }
             KeyCode::Enter => {
                 if let Some((group_id, group_name, _, _)) = self.groups.get(self.group_pick_idx) {
                     let resource_id = match self.tab {
-                        Tab::Groups | Tab::Market => { self.mode = InputMode::Normal; return; }
+                        Tab::Groups | Tab::Market => {
+                            self.mode = InputMode::Normal;
+                            return;
+                        }
                         _ => {
                             let visible = self.visible_items();
                             match visible.get(self.selected) {
                                 Some(r) => r.id.clone(),
-                                None => { self.mode = InputMode::Normal; return; }
+                                None => {
+                                    self.mode = InputMode::Normal;
+                                    return;
+                                }
                             }
                         }
                     };
@@ -581,6 +647,42 @@ impl App {
                 }
             }
             _ => {}
+        }
+    }
+
+    fn install_market_selected(&mut self) {
+        let visible = self.visible_market();
+        if let Some(skill) = visible.get(self.selected) {
+            if skill.installed {
+                self.message = Some(format!("'{}' is already installed", skill.name));
+                return;
+            }
+            let name = skill.name.clone();
+            let source_repo = skill.source_repo.clone();
+            self.message = Some(format!("Installing '{name}'..."));
+
+            // Try market install
+            let data_dir = self.mgr.paths().data_dir().to_path_buf();
+            let sources = market::load_sources(&data_dir);
+            if let Some(found) = market::find_skill_in_sources(&data_dir, &sources, &name, None) {
+                let paths = self.mgr.paths().clone();
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                match rt.block_on(Market::install_single(&found, &paths)) {
+                    Ok(_) => {
+                        let _ = self.mgr.register_local_skill(&name);
+                        if let Some(id) = self.mgr.find_resource_id(&name) {
+                            let _ = self.mgr.enable_resource(&id, self.active_target, None);
+                        }
+                        self.message = Some(format!("Installed '{name}' from {source_repo}"));
+                        self.reload();
+                    }
+                    Err(e) => {
+                        self.message = Some(format!("Install failed: {e}"));
+                    }
+                }
+            } else {
+                self.message = Some(format!("'{name}' not found in market sources"));
+            }
         }
     }
 
@@ -617,7 +719,8 @@ impl App {
 
     fn delete_selected_resource(&mut self) {
         let visible = self.visible_items();
-        let entry = visible.get(self.selected)
+        let entry = visible
+            .get(self.selected)
             .map(|r| (r.id.clone(), r.name.clone(), r.directory.clone()));
         if let Some((id, name, dir)) = entry {
             // Remove symlinks from all CLIs
@@ -674,7 +777,9 @@ impl App {
                 self.mode = InputMode::Normal;
                 self.reload();
             }
-            KeyCode::Backspace => { self.input_buf.pop(); }
+            KeyCode::Backspace => {
+                self.input_buf.pop();
+            }
             KeyCode::Char(c) => self.input_buf.push(c),
             _ => {}
         }
@@ -700,7 +805,10 @@ impl App {
                         self.message = Some(format!("Installing {owner}/{repo}@{branch}..."));
                         let rt = tokio::runtime::Runtime::new().unwrap();
                         match rt.block_on(crate::core::installer::Installer::install_from_github(
-                            &owner, &repo, &branch, self.mgr.paths(),
+                            &owner,
+                            &repo,
+                            &branch,
+                            self.mgr.paths(),
                         )) {
                             Ok(results) => {
                                 let mut registered = 0;
@@ -709,7 +817,10 @@ impl App {
                                         registered += 1;
                                     }
                                 }
-                                self.message = Some(format!("Installed {} skills from {owner}/{repo}", registered));
+                                self.message = Some(format!(
+                                    "Installed {} skills from {owner}/{repo}",
+                                    registered
+                                ));
                                 self.reload();
                             }
                             Err(e) => self.message = Some(format!("Install failed: {e}")),
@@ -718,7 +829,9 @@ impl App {
                     Err(e) => self.message = Some(format!("Invalid source: {e}")),
                 }
             }
-            KeyCode::Backspace => { self.input_buf.pop(); }
+            KeyCode::Backspace => {
+                self.input_buf.pop();
+            }
             KeyCode::Char(c) => self.input_buf.push(c),
             _ => {}
         }
@@ -726,20 +839,18 @@ impl App {
 
     fn handle_first_launch_key(&mut self, key: KeyEvent, step: u8) {
         match step {
-            0 => {
-                match key.code {
-                    KeyCode::Enter => {
-                        self.mode = InputMode::FirstLaunch(1);
-                        self.scan_log.clear();
-                        self.scan_log.push("Starting scan...".into());
-                    }
-                    KeyCode::Char('q') | KeyCode::Esc => {
-                        self.mode = InputMode::Normal;
-                        self.reload();
-                    }
-                    _ => {}
+            0 => match key.code {
+                KeyCode::Enter => {
+                    self.mode = InputMode::FirstLaunch(1);
+                    self.scan_log.clear();
+                    self.scan_log.push("Starting scan...".into());
                 }
-            }
+                KeyCode::Char('q') | KeyCode::Esc => {
+                    self.mode = InputMode::Normal;
+                    self.reload();
+                }
+                _ => {}
+            },
             1 => {} // scanning
             2 => {
                 self.mode = InputMode::Normal;
@@ -760,7 +871,8 @@ impl App {
         for t in CliTarget::ALL {
             for dir in &[t.skills_dir(), t.agents_skills_dir()] {
                 if dir.exists() {
-                    self.scan_log.push(format!("  ✓ {} — {}", t.name(), dir.display()));
+                    self.scan_log
+                        .push(format!("  ✓ {} — {}", t.name(), dir.display()));
                 }
             }
         }
@@ -773,7 +885,10 @@ impl App {
             scan_result.skipped,
         ));
         if !scan_result.errors.is_empty() {
-            self.scan_log.push(format!("  ⚠ {} errors (see ~/.skill-manager/scan.log)", scan_result.errors.len()));
+            self.scan_log.push(format!(
+                "  ⚠ {} errors (see ~/.skill-manager/scan.log)",
+                scan_result.errors.len()
+            ));
             let log_path = self.mgr.paths().data_dir().join("scan.log");
             let log_content = format!(
                 "=== Scan Log {} ===\n\n{}\n",
@@ -786,19 +901,27 @@ impl App {
         self.scan_log.push("Discovering MCP servers...".into());
         let home = dirs::home_dir().unwrap_or_default();
         let mcp_entries = crate::core::mcp_discovery::McpDiscovery::discover_all(&home);
-        self.scan_log.push(format!("  Found {} MCP servers", mcp_entries.len()));
+        self.scan_log
+            .push(format!("  Found {} MCP servers", mcp_entries.len()));
         for entry in &mcp_entries {
-            let status = if entry.disabled { "disabled" } else { "enabled" };
-            self.scan_log.push(format!("    · {} ({})", entry.name, status));
+            let status = if entry.disabled {
+                "disabled"
+            } else {
+                "enabled"
+            };
+            self.scan_log
+                .push(format!("    · {} ({})", entry.name, status));
         }
 
-        self.scan_log.push("Registering MCP server to all CLIs...".into());
+        self.scan_log
+            .push("Registering MCP server to all CLIs...".into());
         let reg_result = crate::core::mcp_register::McpRegister::register_all(&home);
         for name in &reg_result.registered {
             self.scan_log.push(format!("  ✓ Registered to {name}"));
         }
         for name in &reg_result.skipped {
-            self.scan_log.push(format!("  · {name} (already registered)"));
+            self.scan_log
+                .push(format!("  · {name} (already registered)"));
         }
         for err in &reg_result.errors {
             self.scan_log.push(format!("  ⚠ {err}"));
@@ -817,7 +940,9 @@ impl App {
     // ── Group Detail ──
 
     fn open_group_detail(&mut self) {
-        let entry = self.visible_groups().get(self.selected)
+        let entry = self
+            .visible_groups()
+            .get(self.selected)
             .map(|(id, name, _, _)| (id.clone(), name.clone()));
         if let Some((id, name)) = entry {
             self.detail_group_id = id;
@@ -829,7 +954,8 @@ impl App {
     }
 
     fn reload_group_detail(&mut self) {
-        self.detail_members = self.mgr
+        self.detail_members = self
+            .mgr
             .get_group_members(&self.detail_group_id)
             .unwrap_or_default();
     }
@@ -841,12 +967,16 @@ impl App {
                 self.reload();
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                if !self.detail_members.is_empty() && self.detail_idx + 1 < self.detail_members.len() {
+                if !self.detail_members.is_empty()
+                    && self.detail_idx + 1 < self.detail_members.len()
+                {
                     self.detail_idx += 1;
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                if self.detail_idx > 0 { self.detail_idx -= 1; }
+                if self.detail_idx > 0 {
+                    self.detail_idx -= 1;
+                }
             }
             // Toggle enable/disable selected member
             KeyCode::Enter | KeyCode::Char(' ') => {
@@ -868,7 +998,9 @@ impl App {
                     let gid = self.detail_group_id.clone();
                     let _ = self.mgr.db().remove_group_member(&gid, &rid);
                     self.reload_group_detail();
-                    if self.detail_idx >= self.detail_members.len() && !self.detail_members.is_empty() {
+                    if self.detail_idx >= self.detail_members.len()
+                        && !self.detail_members.is_empty()
+                    {
                         self.detail_idx = self.detail_members.len() - 1;
                     }
                 }
@@ -882,23 +1014,37 @@ impl App {
                 self.mode = InputMode::PickSkillForGroup;
             }
             // Switch CLI target
-            KeyCode::Char('1') => { self.active_target = CliTarget::Claude; self.reload_group_detail(); }
-            KeyCode::Char('2') => { self.active_target = CliTarget::Codex; self.reload_group_detail(); }
-            KeyCode::Char('3') => { self.active_target = CliTarget::Gemini; self.reload_group_detail(); }
-            KeyCode::Char('4') => { self.active_target = CliTarget::OpenCode; self.reload_group_detail(); }
+            KeyCode::Char('1') => {
+                self.active_target = CliTarget::Claude;
+                self.reload_group_detail();
+            }
+            KeyCode::Char('2') => {
+                self.active_target = CliTarget::Codex;
+                self.reload_group_detail();
+            }
+            KeyCode::Char('3') => {
+                self.active_target = CliTarget::Gemini;
+                self.reload_group_detail();
+            }
+            KeyCode::Char('4') => {
+                self.active_target = CliTarget::OpenCode;
+                self.reload_group_detail();
+            }
             _ => {}
         }
     }
 
     fn load_pick_items(&mut self) {
-        let member_ids: std::collections::HashSet<String> = self.detail_members.iter()
-            .map(|r| r.id.clone()).collect();
+        let member_ids: std::collections::HashSet<String> =
+            self.detail_members.iter().map(|r| r.id.clone()).collect();
         let kind = if self.pick_show_mcp {
             Some(crate::core::resource::ResourceKind::Mcp)
         } else {
             Some(crate::core::resource::ResourceKind::Skill)
         };
-        self.pick_items = self.mgr.list_resources(kind, None)
+        self.pick_items = self
+            .mgr
+            .list_resources(kind, None)
             .unwrap_or_default()
             .into_iter()
             .filter(|r| !member_ids.contains(&r.id))
@@ -907,11 +1053,14 @@ impl App {
 
     pub fn visible_pick_items(&self) -> Vec<&Resource> {
         let q = self.pick_search.to_lowercase();
-        self.pick_items.iter().filter(|r| {
-            q.is_empty()
-                || r.name.to_lowercase().contains(&q)
-                || r.description.to_lowercase().contains(&q)
-        }).collect()
+        self.pick_items
+            .iter()
+            .filter(|r| {
+                q.is_empty()
+                    || r.name.to_lowercase().contains(&q)
+                    || r.description.to_lowercase().contains(&q)
+            })
+            .collect()
     }
 
     fn handle_pick_skill_key(&mut self, key: KeyEvent) {
@@ -926,10 +1075,14 @@ impl App {
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                if self.pick_idx > 0 { self.pick_idx -= 1; }
+                if self.pick_idx > 0 {
+                    self.pick_idx -= 1;
+                }
             }
             KeyCode::Enter => {
-                let rid = self.visible_pick_items().get(self.pick_idx)
+                let rid = self
+                    .visible_pick_items()
+                    .get(self.pick_idx)
                     .map(|r| (r.id.clone(), r.name.clone()));
                 if let Some((rid, rname)) = rid {
                     let gid = self.detail_group_id.clone();
@@ -949,8 +1102,14 @@ impl App {
                 self.load_pick_items();
                 self.pick_idx = 0;
             }
-            KeyCode::Backspace => { self.pick_search.pop(); self.pick_idx = 0; }
-            KeyCode::Char(c) => { self.pick_search.push(c); self.pick_idx = 0; }
+            KeyCode::Backspace => {
+                self.pick_search.pop();
+                self.pick_idx = 0;
+            }
+            KeyCode::Char(c) => {
+                self.pick_search.push(c);
+                self.pick_idx = 0;
+            }
             _ => {}
         }
     }
@@ -968,7 +1127,9 @@ impl App {
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                if self.source_pick_idx > 0 { self.source_pick_idx -= 1; }
+                if self.source_pick_idx > 0 {
+                    self.source_pick_idx -= 1;
+                }
             }
             KeyCode::Enter | KeyCode::Char(' ') => {
                 let idx = self.source_pick_idx;
@@ -993,7 +1154,8 @@ impl App {
                 // Delete user-added source
                 if let Some(src) = self.sources.get(self.source_pick_idx) {
                     if src.builtin {
-                        self.message = Some("Can't delete built-in source (disable it instead)".into());
+                        self.message =
+                            Some("Can't delete built-in source (disable it instead)".into());
                     } else {
                         let label = src.label.clone();
                         let rid = src.repo_id();
@@ -1044,7 +1206,9 @@ impl App {
                 }
                 self.mode = InputMode::SourceManager;
             }
-            KeyCode::Backspace => { self.input_buf.pop(); }
+            KeyCode::Backspace => {
+                self.input_buf.pop();
+            }
             KeyCode::Char(c) => self.input_buf.push(c),
             _ => {}
         }
@@ -1055,11 +1219,14 @@ impl App {
     /// Poll all background market fetches, collecting results into cache.
     pub fn poll_market(&mut self) {
         let installed: Option<Vec<String>> = if !self.market_rxs.is_empty() {
-            Some(self.mgr.list_resources(None, None)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|r| r.name)
-                .collect())
+            Some(
+                self.mgr
+                    .list_resources(None, None)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|r| r.name)
+                    .collect(),
+            )
         } else {
             None
         };

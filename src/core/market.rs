@@ -16,7 +16,15 @@ pub struct SourceEntry {
 }
 
 impl SourceEntry {
-    fn builtin(owner: &str, repo: &str, branch: &str, prefix: &str, label: &str, desc: &str, enabled: bool) -> Self {
+    fn builtin(
+        owner: &str,
+        repo: &str,
+        branch: &str,
+        prefix: &str,
+        label: &str,
+        desc: &str,
+        enabled: bool,
+    ) -> Self {
         Self {
             owner: owner.into(),
             repo: repo.into(),
@@ -31,7 +39,8 @@ impl SourceEntry {
 
     /// Parse "owner/repo" or "owner/repo@branch" into a user-added source.
     pub fn from_input(input: &str) -> Result<Self> {
-        let input = input.trim()
+        let input = input
+            .trim()
             .trim_start_matches("https://github.com/")
             .trim_end_matches('/');
         let (repo_part, branch) = if input.contains('@') {
@@ -64,16 +73,51 @@ impl SourceEntry {
 /// Default built-in sources. First two enabled by default.
 fn builtin_sources() -> Vec<SourceEntry> {
     vec![
-        SourceEntry::builtin("anthropics", "claude-plugins-official", "main", "",
-            "Anthropic Official", "Official Claude plugins & skills (23)", true),
-        SourceEntry::builtin("affaan-m", "everything-claude-code", "main", "skills/",
-            "Everything Claude Code", "Community skills collection (120+)", true),
-        SourceEntry::builtin("TerminalSkills", "skills", "main", "skills/",
-            "Terminal Skills", "Open-source skill library (900+)", false),
-        SourceEntry::builtin("sickn33", "antigravity-awesome-skills", "main", "skills/",
-            "Antigravity Skills", "Agentic skills collection (1300+)", false),
-        SourceEntry::builtin("mxyhi", "ok-skills", "main", "",
-            "OK Skills", "Curated agent skills & playbooks (55)", false),
+        SourceEntry::builtin(
+            "anthropics",
+            "claude-plugins-official",
+            "main",
+            "",
+            "Anthropic Official",
+            "Official Claude plugins & skills (23)",
+            true,
+        ),
+        SourceEntry::builtin(
+            "affaan-m",
+            "everything-claude-code",
+            "main",
+            "skills/",
+            "Everything Claude Code",
+            "Community skills collection (120+)",
+            true,
+        ),
+        SourceEntry::builtin(
+            "TerminalSkills",
+            "skills",
+            "main",
+            "skills/",
+            "Terminal Skills",
+            "Open-source skill library (900+)",
+            false,
+        ),
+        SourceEntry::builtin(
+            "sickn33",
+            "antigravity-awesome-skills",
+            "main",
+            "skills/",
+            "Antigravity Skills",
+            "Agentic skills collection (1300+)",
+            false,
+        ),
+        SourceEntry::builtin(
+            "mxyhi",
+            "ok-skills",
+            "main",
+            "",
+            "OK Skills",
+            "Curated agent skills & playbooks (55)",
+            false,
+        ),
     ]
 }
 
@@ -83,7 +127,8 @@ const SOURCES_FILE: &str = "market-sources.json";
 pub fn load_sources(data_dir: &Path) -> Vec<SourceEntry> {
     let path = data_dir.join(SOURCES_FILE);
     let saved: Vec<SourceEntry> = if path.exists() {
-        std::fs::read_to_string(&path).ok()
+        std::fs::read_to_string(&path)
+            .ok()
             .and_then(|c| serde_json::from_str(&c).ok())
             .unwrap_or_default()
     } else {
@@ -94,7 +139,8 @@ pub fn load_sources(data_dir: &Path) -> Vec<SourceEntry> {
 
     // Merge built-in sources: use saved enabled state if available
     for b in builtin_sources() {
-        let enabled = saved.iter()
+        let enabled = saved
+            .iter()
             .find(|s| s.builtin && s.repo_id() == b.repo_id())
             .map(|s| s.enabled)
             .unwrap_or(b.enabled);
@@ -123,9 +169,9 @@ pub fn save_sources(data_dir: &Path, sources: &[SourceEntry]) -> Result<()> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MarketSkill {
     pub name: String,
-    pub repo_path: String,      // e.g. "skills/brainstorming"
+    pub repo_path: String, // e.g. "skills/brainstorming"
     pub source_label: String,
-    pub source_repo: String,    // "owner/repo"
+    pub source_repo: String, // "owner/repo"
     pub branch: String,
     #[serde(skip)]
     pub installed: bool,
@@ -136,11 +182,11 @@ const CACHE_MAX_AGE_SECS: u64 = 3600; // 1 hour
 
 /// Load cached skill list from disk. Returns None if missing or stale.
 pub fn load_cache(data_dir: &Path, source: &SourceEntry) -> Option<Vec<MarketSkill>> {
-    let path = data_dir.join(CACHE_DIR).join(format!("{}.json", cache_key(source)));
+    let path = data_dir
+        .join(CACHE_DIR)
+        .join(format!("{}.json", cache_key(source)));
     let meta = std::fs::metadata(&path).ok()?;
-    let age = meta.modified().ok()?
-        .elapsed().ok()?
-        .as_secs();
+    let age = meta.modified().ok()?.elapsed().ok()?.as_secs();
     if age > CACHE_MAX_AGE_SECS {
         return None; // stale
     }
@@ -167,7 +213,10 @@ pub fn save_plugin_marker(data_dir: &Path, source: &SourceEntry) {
 
 /// Check if a source was detected as a Claude plugin.
 pub fn is_plugin_source(data_dir: &Path, source: &SourceEntry) -> bool {
-    data_dir.join(CACHE_DIR).join(format!("{}.plugin", cache_key(source))).exists()
+    data_dir
+        .join(CACHE_DIR)
+        .join(format!("{}.plugin", cache_key(source)))
+        .exists()
 }
 
 /// Find a skill in market cache by name, with optional source filter (matches label or repo_id).
@@ -178,11 +227,12 @@ pub fn find_skill_in_sources(
     source_filter: Option<&str>,
 ) -> Option<MarketSkill> {
     for src in sources {
-        if !src.enabled { continue; }
+        if !src.enabled {
+            continue;
+        }
         if let Some(filter) = source_filter {
             let f = filter.to_lowercase();
-            if !src.label.to_lowercase().contains(&f)
-                && !src.repo_id().to_lowercase().contains(&f)
+            if !src.label.to_lowercase().contains(&f) && !src.repo_id().to_lowercase().contains(&f)
             {
                 continue;
             }
@@ -255,7 +305,9 @@ impl Market {
                 dir.rsplit('/').next().unwrap_or(dir).to_string()
             };
 
-            if name.is_empty() { continue; }
+            if name.is_empty() {
+                continue;
+            }
 
             skills.push(MarketSkill {
                 name,
@@ -269,7 +321,11 @@ impl Market {
 
         skills.sort_by(|a, b| a.name.cmp(&b.name));
         skills.dedup_by(|a, b| a.name == b.name);
-        ExtractResult { skills, plugin_detected, tree }
+        ExtractResult {
+            skills,
+            plugin_detected,
+            tree,
+        }
     }
 
     /// Fetch skill list from GitHub API.
@@ -279,13 +335,16 @@ impl Market {
             source.owner, source.repo, source.branch,
         );
 
-        let client = reqwest::Client::builder()
-            .user_agent("skill-manager/0.1")
-            .build()?;
+        let client = reqwest::Client::builder().user_agent("runai/0.5").build()?;
 
         let resp = client.get(&url).send().await?;
         if !resp.status().is_success() {
-            bail!("GitHub API {} for {}/{}", resp.status(), source.owner, source.repo);
+            bail!(
+                "GitHub API {} for {}/{}",
+                resp.status(),
+                source.owner,
+                source.repo
+            );
         }
 
         let body: GitTree = resp.json().await?;
@@ -295,7 +354,8 @@ impl Market {
     /// Get all file paths belonging to a skill from the git tree.
     pub(crate) fn get_skill_files(tree: &GitTree, repo_path: &str) -> Vec<String> {
         let prefix = format!("{repo_path}/");
-        tree.tree.iter()
+        tree.tree
+            .iter()
             .filter(|n| n.path.starts_with(&prefix))
             .map(|n| n.path.clone())
             .collect()
@@ -310,9 +370,15 @@ impl Market {
         let mut tasks = Vec::new();
         for skill in &extract.skills {
             let parts: Vec<&str> = skill.source_repo.splitn(2, '/').collect();
-            if parts.len() != 2 { continue; }
+            if parts.len() != 2 {
+                continue;
+            }
             let (owner, repo) = (parts[0], parts[1]);
-            let repo_path = if skill.repo_path.is_empty() { &skill.name } else { &skill.repo_path };
+            let repo_path = if skill.repo_path.is_empty() {
+                &skill.name
+            } else {
+                &skill.repo_path
+            };
             let files = Self::get_skill_files(&extract.tree, repo_path);
             let prefix = format!("{repo_path}/");
             let skill_dir = paths.skills_dir().join(&skill.name);
@@ -322,7 +388,10 @@ impl Market {
                     "https://raw.githubusercontent.com/{owner}/{repo}/{}/{}",
                     skill.branch, file_path
                 );
-                let rel = file_path.strip_prefix(&prefix).unwrap_or(&file_path).to_string();
+                let rel = file_path
+                    .strip_prefix(&prefix)
+                    .unwrap_or(&file_path)
+                    .to_string();
                 let dest_path = skill_dir.join(&rel);
                 tasks.push(DownloadTask {
                     skill_name: skill.name.clone(),
@@ -335,10 +404,10 @@ impl Market {
     }
 
     /// Download all tasks concurrently. Returns set of skill names that had at least one file downloaded.
-    pub(crate) async fn execute_downloads(tasks: Vec<DownloadTask>) -> std::collections::HashSet<String> {
-        let client = match reqwest::Client::builder()
-            .user_agent("skill-manager/0.1")
-            .build() {
+    pub(crate) async fn execute_downloads(
+        tasks: Vec<DownloadTask>,
+    ) -> std::collections::HashSet<String> {
+        let client = match reqwest::Client::builder().user_agent("runai/0.5").build() {
             Ok(c) => c,
             Err(_) => return std::collections::HashSet::new(),
         };
@@ -349,12 +418,10 @@ impl Market {
             set.spawn(async move {
                 let result = client.get(&task.url).send().await;
                 match result {
-                    Ok(resp) if resp.status().is_success() => {
-                        match resp.bytes().await {
-                            Ok(bytes) => (task.skill_name, task.dest_path, Some(bytes)),
-                            Err(_) => (task.skill_name, task.dest_path, None),
-                        }
-                    }
+                    Ok(resp) if resp.status().is_success() => match resp.bytes().await {
+                        Ok(bytes) => (task.skill_name, task.dest_path, Some(bytes)),
+                        Err(_) => (task.skill_name, task.dest_path, None),
+                    },
                     _ => (task.skill_name, task.dest_path, None),
                 }
             });
@@ -386,9 +453,7 @@ impl Market {
             bail!("invalid source_repo: {}", skill.source_repo);
         }
         let (owner, repo) = (parts[0], parts[1]);
-        let client = reqwest::Client::builder()
-            .user_agent("skill-manager/0.1")
-            .build()?;
+        let client = reqwest::Client::builder().user_agent("runai/0.5").build()?;
         let skill_dir = paths.skills_dir().join(&skill.name);
         std::fs::create_dir_all(&skill_dir)?;
 
@@ -412,7 +477,10 @@ impl Market {
                 );
                 let client = client.clone();
                 set.spawn(async move {
-                    let resp = client.get(&raw_url).send().await
+                    let resp = client
+                        .get(&raw_url)
+                        .send()
+                        .await
                         .ok()
                         .filter(|r| r.status().is_success());
                     let bytes = match resp {
@@ -435,15 +503,24 @@ impl Market {
         } else {
             // Fallback: Contents API (slower but works without tree)
             Self::download_directory_recursive(
-                &client, owner, repo, &skill.branch, repo_path, &skill_dir,
-            ).await?;
+                &client,
+                owner,
+                repo,
+                &skill.branch,
+                repo_path,
+                &skill_dir,
+            )
+            .await?;
         }
 
         Ok(())
     }
 
     /// Install a single skill (backwards-compatible, uses Contents API fallback).
-    pub async fn install_single(skill: &MarketSkill, paths: &crate::core::paths::AppPaths) -> Result<()> {
+    pub async fn install_single(
+        skill: &MarketSkill,
+        paths: &crate::core::paths::AppPaths,
+    ) -> Result<()> {
         Self::install_single_with_tree(skill, paths, None).await
     }
 
@@ -457,18 +534,18 @@ impl Market {
         local_dir: &std::path::Path,
     ) -> Result<()> {
         let url = if api_path.is_empty() {
-            format!(
-                "https://api.github.com/repos/{owner}/{repo}/contents?ref={branch}",
-            )
+            format!("https://api.github.com/repos/{owner}/{repo}/contents?ref={branch}",)
         } else {
-            format!(
-                "https://api.github.com/repos/{owner}/{repo}/contents/{api_path}?ref={branch}",
-            )
+            format!("https://api.github.com/repos/{owner}/{repo}/contents/{api_path}?ref={branch}",)
         };
 
         let resp = client.get(&url).send().await?;
         if !resp.status().is_success() {
-            bail!("GitHub Contents API returned HTTP {} for {}", resp.status(), url);
+            bail!(
+                "GitHub Contents API returned HTTP {} for {}",
+                resp.status(),
+                url
+            );
         }
 
         let items: Vec<GitHubContentItem> = resp.json().await?;
@@ -482,7 +559,11 @@ impl Market {
                     );
                     let file_resp = client.get(&raw_url).send().await?;
                     if !file_resp.status().is_success() {
-                        bail!("Failed to download {}: HTTP {}", item.path, file_resp.status());
+                        bail!(
+                            "Failed to download {}: HTTP {}",
+                            item.path,
+                            file_resp.status()
+                        );
                     }
                     let content = file_resp.bytes().await?;
                     let file_path = local_dir.join(&item.name);
@@ -493,7 +574,8 @@ impl Market {
                     std::fs::create_dir_all(&sub_dir)?;
                     Box::pin(Self::download_directory_recursive(
                         client, owner, repo, branch, &item.path, &sub_dir,
-                    )).await?;
+                    ))
+                    .await?;
                 }
                 _ => {} // skip symlinks, submodules, etc.
             }
@@ -535,9 +617,15 @@ mod tests {
     fn fetch_detects_claude_plugin_format() {
         let tree = GitTree {
             tree: vec![
-                GitTreeNode { path: ".claude-plugin/plugin.json".into() },
-                GitTreeNode { path: "README.md".into() },
-                GitTreeNode { path: "skills/brainstorming/SKILL.md".into() },
+                GitTreeNode {
+                    path: ".claude-plugin/plugin.json".into(),
+                },
+                GitTreeNode {
+                    path: "README.md".into(),
+                },
+                GitTreeNode {
+                    path: "skills/brainstorming/SKILL.md".into(),
+                },
             ],
         };
 
@@ -561,12 +649,24 @@ mod tests {
     fn extract_file_paths_from_tree() {
         let tree = GitTree {
             tree: vec![
-                GitTreeNode { path: "README.md".into() },
-                GitTreeNode { path: "find-skills/SKILL.md".into() },
-                GitTreeNode { path: "deep-research/SKILL.md".into() },
-                GitTreeNode { path: "deep-research/agents/openai.yaml".into() },
-                GitTreeNode { path: "deep-research/prompts/search.md".into() },
-                GitTreeNode { path: "other-dir/not-a-skill.txt".into() },
+                GitTreeNode {
+                    path: "README.md".into(),
+                },
+                GitTreeNode {
+                    path: "find-skills/SKILL.md".into(),
+                },
+                GitTreeNode {
+                    path: "deep-research/SKILL.md".into(),
+                },
+                GitTreeNode {
+                    path: "deep-research/agents/openai.yaml".into(),
+                },
+                GitTreeNode {
+                    path: "deep-research/prompts/search.md".into(),
+                },
+                GitTreeNode {
+                    path: "other-dir/not-a-skill.txt".into(),
+                },
             ],
         };
 
@@ -577,11 +677,14 @@ mod tests {
         // Get files for deep-research (multiple files)
         let mut files = Market::get_skill_files(&tree, "deep-research");
         files.sort();
-        assert_eq!(files, vec![
-            "deep-research/SKILL.md",
-            "deep-research/agents/openai.yaml",
-            "deep-research/prompts/search.md",
-        ]);
+        assert_eq!(
+            files,
+            vec![
+                "deep-research/SKILL.md",
+                "deep-research/agents/openai.yaml",
+                "deep-research/prompts/search.md",
+            ]
+        );
     }
 
     #[test]
@@ -613,11 +716,21 @@ mod tests {
         save_cache(data_dir, &source, &skills).unwrap();
 
         // Find by repo_id
-        let found = find_skill_in_sources(data_dir, &[source.clone()], "find-skills", Some("mxyhi/ok-skills"));
+        let found = find_skill_in_sources(
+            data_dir,
+            &[source.clone()],
+            "find-skills",
+            Some("mxyhi/ok-skills"),
+        );
         assert!(found.is_some(), "should find by repo_id");
 
         // Find by label
-        let found = find_skill_in_sources(data_dir, &[source.clone()], "find-skills", Some("OK Skills"));
+        let found = find_skill_in_sources(
+            data_dir,
+            &[source.clone()],
+            "find-skills",
+            Some("OK Skills"),
+        );
         assert!(found.is_some(), "should find by label");
 
         // Find without source filter
@@ -633,11 +746,21 @@ mod tests {
     fn collect_download_tasks_maps_all_files_across_skills() {
         let tree = GitTree {
             tree: vec![
-                GitTreeNode { path: "README.md".into() },
-                GitTreeNode { path: "skill-a/SKILL.md".into() },
-                GitTreeNode { path: "skill-a/helper.md".into() },
-                GitTreeNode { path: "skill-b/SKILL.md".into() },
-                GitTreeNode { path: "skill-b/scripts/run.sh".into() },
+                GitTreeNode {
+                    path: "README.md".into(),
+                },
+                GitTreeNode {
+                    path: "skill-a/SKILL.md".into(),
+                },
+                GitTreeNode {
+                    path: "skill-a/helper.md".into(),
+                },
+                GitTreeNode {
+                    path: "skill-b/SKILL.md".into(),
+                },
+                GitTreeNode {
+                    path: "skill-b/scripts/run.sh".into(),
+                },
             ],
         };
 
@@ -665,14 +788,24 @@ mod tests {
         assert_eq!(tasks.len(), 4, "should collect all files across all skills");
 
         // Verify path mapping
-        let skill_a_files: Vec<_> = tasks.iter()
-            .filter(|t| t.skill_name == "skill-a")
-            .collect();
+        let skill_a_files: Vec<_> = tasks.iter().filter(|t| t.skill_name == "skill-a").collect();
         assert_eq!(skill_a_files.len(), 2);
-        assert!(skill_a_files.iter().any(|t| t.dest_path.ends_with("SKILL.md")));
-        assert!(skill_a_files.iter().any(|t| t.dest_path.ends_with("helper.md")));
+        assert!(
+            skill_a_files
+                .iter()
+                .any(|t| t.dest_path.ends_with("SKILL.md"))
+        );
+        assert!(
+            skill_a_files
+                .iter()
+                .any(|t| t.dest_path.ends_with("helper.md"))
+        );
 
         // Verify URL format
-        assert!(tasks[0].url.starts_with("https://raw.githubusercontent.com/test/repo/main/"));
+        assert!(
+            tasks[0]
+                .url
+                .starts_with("https://raw.githubusercontent.com/test/repo/main/")
+        );
     }
 }

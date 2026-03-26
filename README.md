@@ -1,4 +1,4 @@
-# Skill Manager
+# Runai
 
 **English** | [中文](README_zh.md)
 
@@ -11,7 +11,7 @@ A terminal-based resource manager for AI CLI skills, MCP servers, and groups. Wo
 - **TUI Interface** — Browse, enable/disable, search skills and MCPs with a terminal UI
 - **Multi-CLI Support** — Manage resources across 4 AI CLIs, switch targets with `1234`
 - **Groups** — Organize skills/MCPs into groups, batch enable/disable, rename
-- **One-Step Install** — `skill-manager install owner/repo` downloads, registers, groups, and enables
+- **One-Step Install** — `runai install owner/repo` downloads, registers, groups, and enables
 - **Skill Discovery** — Built-in recursive scanner finds all SKILL.md on disk in seconds
 - **Market** — Browse 2000+ skills from 5 built-in sources, add custom GitHub sources
 - **MCP Server** — 25 tools exposed via MCP protocol, auto-registered to all CLIs on first launch
@@ -23,8 +23,8 @@ A terminal-based resource manager for AI CLI skills, MCP servers, and groups. Wo
 ## Install
 
 ```bash
-git clone https://github.com/Crosery/skill-manager.git
-cd skill-manager
+git clone https://github.com/Crosery/runai.git
+cd runai
 cargo install --path .
 ```
 
@@ -32,25 +32,25 @@ cargo install --path .
 
 ```bash
 # Launch TUI (first run will scan and register MCP automatically)
-skill-manager
+runai
 
 # Install skills from GitHub (auto-download, register, group, enable)
-skill-manager install pbakaus/impeccable
-skill-manager install MiniMax-AI/skills
+runai install pbakaus/impeccable
+runai install MiniMax-AI/skills
 
 # Install from market
-skill-manager market-install github
+runai market-install github
 
 # Discover all skills on disk
-skill-manager discover
-skill-manager discover --root /    # Full disk scan
+runai discover
+runai discover --root /    # Full disk scan
 
 # CLI management
-skill-manager list                    # List all skills and MCPs
-skill-manager status                  # Show enabled counts
-skill-manager enable brainstorming    # Enable a skill
-skill-manager scan                    # Scan known directories
-skill-manager backup                  # Create a backup
+runai list                    # List all skills and MCPs
+runai status                  # Show enabled counts
+runai enable brainstorming    # Enable a skill
+runai scan                    # Scan known directories
+runai backup                  # Create a backup
 ```
 
 ## TUI Keybindings
@@ -69,7 +69,7 @@ Footer shows essential keys. Press `?` for full help panel.
 
 ## MCP Tools (25)
 
-When running as MCP server (`skill-manager mcp-serve`), 25 tools are available:
+When running as MCP server (`runai mcp-serve`), 25 tools are available:
 
 **Skills & MCPs**
 
@@ -117,14 +117,14 @@ When running as MCP server (`skill-manager mcp-serve`), 25 tools are available:
 - **Install delegates to CLI** — MCP tools return Bash commands instead of downloading in-process (avoids proxy timeouts)
 - **Compact output** — `sm_list` uses one-line-per-resource format to stay within token limits
 - **Auto-discovery** — MCP instructions guide AI to search GitHub when market has no results
-- **Self-protection** — skill-manager refuses to disable itself
+- **Self-protection** — runai refuses to disable itself
 - **Scans `~/skills/`** — SkillHub installs are automatically discovered
 
 ## Skill Discovery
 
 ```bash
-skill-manager discover               # Scan home directory
-skill-manager discover --root /      # Full disk scan
+runai discover               # Scan home directory
+runai discover --root /      # Full disk scan
 ```
 
 Built-in recursive scanner with smart filtering:
@@ -156,6 +156,8 @@ All data stored in `~/.skill-manager/`:
 - `market-cache/` — Cached market skill lists (JSON, 1hr TTL)
 - `market-sources.json` — Custom market sources
 - `skill-manager.db` — SQLite database (skill metadata + group members only)
+
+> **Note**: The data directory `~/.skill-manager/` is kept for backward compatibility with versions prior to v0.5.0.
 
 ## License
 

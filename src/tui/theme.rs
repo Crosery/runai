@@ -149,7 +149,10 @@ mod tests {
         let light = Theme::light();
         // Key colors should differ between themes
         assert_ne!(format!("{:?}", dark.text), format!("{:?}", light.text));
-        assert_ne!(format!("{:?}", dark.item_selected_bg), format!("{:?}", light.item_selected_bg));
+        assert_ne!(
+            format!("{:?}", dark.item_selected_bg),
+            format!("{:?}", light.item_selected_bg)
+        );
         assert_ne!(format!("{:?}", dark.border), format!("{:?}", light.border));
     }
 }

@@ -22,7 +22,6 @@ const NAME_RULES: &[(&str, &str)] = &[
     ("eval-harness", "ECC Workflow"),
     ("skill-stocktake", "ECC Workflow"),
     ("plankton-", "ECC Workflow"),
-
     // ── Design / UI ──
     ("frontend-design", "Design & UI"),
     ("frontend-slides", "Design & UI"),
@@ -46,7 +45,6 @@ const NAME_RULES: &[(&str, &str)] = &[
     ("polish", "Design & UI"),
     ("quieter", "Design & UI"),
     ("typeset", "Design & UI"),
-
     // ── Languages ──
     ("python-", "Python"),
     ("django-", "Python"),
@@ -62,20 +60,17 @@ const NAME_RULES: &[(&str, &str)] = &[
     ("swift-", "Swift"),
     ("laravel-", "PHP"),
     ("perl-", "Perl"),
-
     // ── Frontend / Backend ──
     ("frontend-patterns", "Frontend"),
     ("backend-patterns", "Backend"),
     ("api-design", "Backend"),
     ("mcp-server-patterns", "Backend"),
-
     // ── Testing ──
     ("e2e-testing", "Testing"),
     ("tdd-workflow", "Testing"),
     ("ai-regression-testing", "Testing"),
     ("verification-loop", "Testing"),
     ("verification-before-completion", "Testing"),
-
     // ── Workflow / Productivity ──
     ("brainstorming", "Workflow"),
     ("writing-plans", "Workflow"),
@@ -90,24 +85,20 @@ const NAME_RULES: &[(&str, &str)] = &[
     ("strategic-compact", "Workflow"),
     ("iterative-retrieval", "Workflow"),
     ("coding-standards", "Workflow"),
-
     // ── Multi-Agent ──
     ("multi-agent-", "Multi-Agent"),
     ("agent-teams-", "Multi-Agent"),
     ("channel-chat", "Multi-Agent"),
     ("dmux-", "Multi-Agent"),
     ("tmux-ide", "Multi-Agent"),
-
     // ── Database ──
     ("clickhouse-", "Database"),
     ("postgres-", "Database"),
     ("database-migrations", "Database"),
-
     // ── Documents / Office ──
     ("docx", "Documents"),
     ("excel", "Documents"),
     ("obsidian-", "Documents"),
-
     // ── Project-specific ──
     ("ktv-car-", "Project-Specific"),
     ("lixiang-car-", "Project-Specific"),
@@ -203,84 +194,153 @@ mod tests {
 
     #[test]
     fn superpower_series() {
-        assert_eq!(Classifier::suggest_groups("using-superpowers", ""), vec!["Superpower"]);
+        assert_eq!(
+            Classifier::suggest_groups("using-superpowers", ""),
+            vec!["Superpower"]
+        );
     }
 
     #[test]
     fn impeccable_series() {
-        assert_eq!(Classifier::suggest_groups("teach-impeccable", ""), vec!["Impeccable"]);
+        assert_eq!(
+            Classifier::suggest_groups("teach-impeccable", ""),
+            vec!["Impeccable"]
+        );
     }
 
     #[test]
     fn bmad_series() {
-        assert_eq!(Classifier::suggest_groups("bmad-orchestrator", ""), vec!["BMAD"]);
+        assert_eq!(
+            Classifier::suggest_groups("bmad-orchestrator", ""),
+            vec!["BMAD"]
+        );
     }
 
     #[test]
     fn academic_series() {
-        assert_eq!(Classifier::suggest_groups("academic-paper", ""), vec!["Academic"]);
-        assert_eq!(Classifier::suggest_groups("deep-research", ""), vec!["Academic"]);
-        assert_eq!(Classifier::suggest_groups("latex-thesis-zh", ""), vec!["Academic"]);
+        assert_eq!(
+            Classifier::suggest_groups("academic-paper", ""),
+            vec!["Academic"]
+        );
+        assert_eq!(
+            Classifier::suggest_groups("deep-research", ""),
+            vec!["Academic"]
+        );
+        assert_eq!(
+            Classifier::suggest_groups("latex-thesis-zh", ""),
+            vec!["Academic"]
+        );
     }
 
     #[test]
     fn ecc_workflow() {
-        assert_eq!(Classifier::suggest_groups("configure-ecc", ""), vec!["ECC Workflow"]);
-        assert_eq!(Classifier::suggest_groups("continuous-learning-v2", ""), vec!["ECC Workflow"]);
+        assert_eq!(
+            Classifier::suggest_groups("configure-ecc", ""),
+            vec!["ECC Workflow"]
+        );
+        assert_eq!(
+            Classifier::suggest_groups("continuous-learning-v2", ""),
+            vec!["ECC Workflow"]
+        );
     }
 
     #[test]
     fn design_ui_skills() {
-        for name in &["animate", "bolder", "colorize", "critique", "polish", "typeset"] {
-            assert_eq!(Classifier::suggest_groups(name, ""), vec!["Design & UI"], "failed for {name}");
+        for name in &[
+            "animate", "bolder", "colorize", "critique", "polish", "typeset",
+        ] {
+            assert_eq!(
+                Classifier::suggest_groups(name, ""),
+                vec!["Design & UI"],
+                "failed for {name}"
+            );
         }
     }
 
     #[test]
     fn python() {
-        assert_eq!(Classifier::suggest_groups("python-testing", ""), vec!["Python"]);
-        assert_eq!(Classifier::suggest_groups("django-patterns", ""), vec!["Python"]);
+        assert_eq!(
+            Classifier::suggest_groups("python-testing", ""),
+            vec!["Python"]
+        );
+        assert_eq!(
+            Classifier::suggest_groups("django-patterns", ""),
+            vec!["Python"]
+        );
     }
 
     #[test]
     fn java() {
-        assert_eq!(Classifier::suggest_groups("springboot-tdd", ""), vec!["Java"]);
+        assert_eq!(
+            Classifier::suggest_groups("springboot-tdd", ""),
+            vec!["Java"]
+        );
         assert_eq!(Classifier::suggest_groups("jpa-patterns", ""), vec!["Java"]);
     }
 
     #[test]
     fn testing() {
-        assert_eq!(Classifier::suggest_groups("e2e-testing", ""), vec!["Testing"]);
-        assert_eq!(Classifier::suggest_groups("tdd-workflow", ""), vec!["Testing"]);
+        assert_eq!(
+            Classifier::suggest_groups("e2e-testing", ""),
+            vec!["Testing"]
+        );
+        assert_eq!(
+            Classifier::suggest_groups("tdd-workflow", ""),
+            vec!["Testing"]
+        );
     }
 
     #[test]
     fn workflow() {
-        assert_eq!(Classifier::suggest_groups("brainstorming", ""), vec!["Workflow"]);
-        assert_eq!(Classifier::suggest_groups("writing-plans", ""), vec!["Workflow"]);
+        assert_eq!(
+            Classifier::suggest_groups("brainstorming", ""),
+            vec!["Workflow"]
+        );
+        assert_eq!(
+            Classifier::suggest_groups("writing-plans", ""),
+            vec!["Workflow"]
+        );
     }
 
     #[test]
     fn multi_agent() {
-        assert_eq!(Classifier::suggest_groups("multi-agent-brainstorming", ""), vec!["Multi-Agent"]);
-        assert_eq!(Classifier::suggest_groups("channel-chat", ""), vec!["Multi-Agent"]);
+        assert_eq!(
+            Classifier::suggest_groups("multi-agent-brainstorming", ""),
+            vec!["Multi-Agent"]
+        );
+        assert_eq!(
+            Classifier::suggest_groups("channel-chat", ""),
+            vec!["Multi-Agent"]
+        );
     }
 
     #[test]
     fn database() {
-        assert_eq!(Classifier::suggest_groups("clickhouse-io", ""), vec!["Database"]);
-        assert_eq!(Classifier::suggest_groups("database-migrations", ""), vec!["Database"]);
+        assert_eq!(
+            Classifier::suggest_groups("clickhouse-io", ""),
+            vec!["Database"]
+        );
+        assert_eq!(
+            Classifier::suggest_groups("database-migrations", ""),
+            vec!["Database"]
+        );
     }
 
     #[test]
     fn documents() {
         assert_eq!(Classifier::suggest_groups("docx", ""), vec!["Documents"]);
-        assert_eq!(Classifier::suggest_groups("obsidian-cli", ""), vec!["Documents"]);
+        assert_eq!(
+            Classifier::suggest_groups("obsidian-cli", ""),
+            vec!["Documents"]
+        );
     }
 
     #[test]
     fn keyword_fallback() {
-        assert_eq!(Classifier::suggest_groups("my-tool", "A typescript utility"), vec!["TypeScript"]);
+        assert_eq!(
+            Classifier::suggest_groups("my-tool", "A typescript utility"),
+            vec!["TypeScript"]
+        );
     }
 
     #[test]
@@ -292,39 +352,108 @@ mod tests {
     #[test]
     fn high_coverage_on_real_skills() {
         let skills = vec![
-            "academic-paper", "academic-paper-reviewer", "academic-pipeline",
-            "adapt", "agent-teams-orchestration", "ai-regression-testing",
-            "android-clean-architecture", "animate", "api-design", "arrange",
-            "audit", "backend-patterns", "bolder", "brainstorming",
-            "channel-chat", "clarify", "clickhouse-io", "coding-standards",
-            "colorize", "compose-multiplatform-patterns", "configure-ecc",
-            "continuous-learning", "continuous-learning-v2",
-            "cpp-coding-standards", "cpp-testing", "critique",
-            "database-migrations", "deep-research", "delight",
-            "dispatching-parallel-agents", "distill", "django-patterns",
-            "django-tdd", "django-verification", "dmux-workflows", "docx",
-            "e2e-testing", "eval-harness", "excel", "executing-plans",
-            "extract", "finishing-a-development-branch", "frontend-design",
-            "frontend-patterns", "frontend-slides", "golang-patterns",
-            "golang-testing", "harden", "humanizer-zh-academic",
-            "iterative-retrieval", "java-coding-standards", "jpa-patterns",
-            "kotlin-coroutines-flows", "kotlin-exposed-patterns",
-            "kotlin-ktor-patterns", "kotlin-patterns", "kotlin-testing",
-            "ktv-car-debug-suite", "laravel-patterns", "laravel-tdd",
-            "laravel-verification", "latex-thesis-zh", "lixiang-car-debugging",
-            "mcp-server-patterns", "multi-agent-brainstorming",
-            "multi-agent-orchestration", "normalize", "obsidian-cli",
-            "obsidian-markdown", "onboard", "optimize", "overdrive",
-            "perl-patterns", "perl-testing", "plankton-code-quality",
-            "polish", "postgres-patterns", "ppt-visual",
-            "project-guidelines-example", "python-patterns", "python-testing",
-            "quieter", "receiving-code-review", "requesting-code-review",
-            "rust-patterns", "rust-testing", "skill-stocktake",
-            "springboot-patterns", "springboot-tdd", "springboot-verification",
-            "strategic-compact", "subagent-driven-development", "tdd-workflow",
-            "teach-impeccable", "tmux-ide", "typeset", "using-git-worktrees",
-            "using-superpowers", "verification-before-completion",
-            "verification-loop", "writing-plans", "writing-skills",
+            "academic-paper",
+            "academic-paper-reviewer",
+            "academic-pipeline",
+            "adapt",
+            "agent-teams-orchestration",
+            "ai-regression-testing",
+            "android-clean-architecture",
+            "animate",
+            "api-design",
+            "arrange",
+            "audit",
+            "backend-patterns",
+            "bolder",
+            "brainstorming",
+            "channel-chat",
+            "clarify",
+            "clickhouse-io",
+            "coding-standards",
+            "colorize",
+            "compose-multiplatform-patterns",
+            "configure-ecc",
+            "continuous-learning",
+            "continuous-learning-v2",
+            "cpp-coding-standards",
+            "cpp-testing",
+            "critique",
+            "database-migrations",
+            "deep-research",
+            "delight",
+            "dispatching-parallel-agents",
+            "distill",
+            "django-patterns",
+            "django-tdd",
+            "django-verification",
+            "dmux-workflows",
+            "docx",
+            "e2e-testing",
+            "eval-harness",
+            "excel",
+            "executing-plans",
+            "extract",
+            "finishing-a-development-branch",
+            "frontend-design",
+            "frontend-patterns",
+            "frontend-slides",
+            "golang-patterns",
+            "golang-testing",
+            "harden",
+            "humanizer-zh-academic",
+            "iterative-retrieval",
+            "java-coding-standards",
+            "jpa-patterns",
+            "kotlin-coroutines-flows",
+            "kotlin-exposed-patterns",
+            "kotlin-ktor-patterns",
+            "kotlin-patterns",
+            "kotlin-testing",
+            "ktv-car-debug-suite",
+            "laravel-patterns",
+            "laravel-tdd",
+            "laravel-verification",
+            "latex-thesis-zh",
+            "lixiang-car-debugging",
+            "mcp-server-patterns",
+            "multi-agent-brainstorming",
+            "multi-agent-orchestration",
+            "normalize",
+            "obsidian-cli",
+            "obsidian-markdown",
+            "onboard",
+            "optimize",
+            "overdrive",
+            "perl-patterns",
+            "perl-testing",
+            "plankton-code-quality",
+            "polish",
+            "postgres-patterns",
+            "ppt-visual",
+            "project-guidelines-example",
+            "python-patterns",
+            "python-testing",
+            "quieter",
+            "receiving-code-review",
+            "requesting-code-review",
+            "rust-patterns",
+            "rust-testing",
+            "skill-stocktake",
+            "springboot-patterns",
+            "springboot-tdd",
+            "springboot-verification",
+            "strategic-compact",
+            "subagent-driven-development",
+            "tdd-workflow",
+            "teach-impeccable",
+            "tmux-ide",
+            "typeset",
+            "using-git-worktrees",
+            "using-superpowers",
+            "verification-before-completion",
+            "verification-loop",
+            "writing-plans",
+            "writing-skills",
         ];
 
         let mut matched = 0;

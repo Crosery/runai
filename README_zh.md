@@ -1,4 +1,4 @@
-# Skill Manager
+# Runai
 
 [English](README.md) | **中文**
 
@@ -11,7 +11,7 @@
 - **TUI 终端界面** — 浏览、启用/禁用、搜索 skills 和 MCPs
 - **多 CLI 支持** — 跨 4 个 AI CLI 统一管理，`1234` 切换目标
 - **分组管理** — 将 skills/MCPs 组织成组，批量启用/禁用，重命名
-- **一键安装** — `skill-manager install owner/repo` 自动下载、注册、分组、启用
+- **一键安装** — `runai install owner/repo` 自动下载、注册、分组、启用
 - **Skill 发现** — 内置递归扫描器，秒级发现磁盘上所有 SKILL.md
 - **Skill 市场** — 浏览 2000+ 来自 5 个内置源的 skills，支持自定义 GitHub 源
 - **MCP 服务器** — 25 个工具通过 MCP 协议暴露，首次启动自动注册到所有 CLI
@@ -23,8 +23,8 @@
 ## 安装
 
 ```bash
-git clone https://github.com/Crosery/skill-manager.git
-cd skill-manager
+git clone https://github.com/Crosery/runai.git
+cd runai
 cargo install --path .
 ```
 
@@ -32,25 +32,25 @@ cargo install --path .
 
 ```bash
 # 启动 TUI（首次运行会自动扫描并注册 MCP）
-skill-manager
+runai
 
 # 从 GitHub 安装 skills（自动下载、注册、分组、启用）
-skill-manager install pbakaus/impeccable
-skill-manager install MiniMax-AI/skills
+runai install pbakaus/impeccable
+runai install MiniMax-AI/skills
 
 # 从市场安装
-skill-manager market-install github
+runai market-install github
 
 # 发现磁盘上所有 skill
-skill-manager discover
-skill-manager discover --root /    # 全盘扫描
+runai discover
+runai discover --root /    # 全盘扫描
 
 # CLI 管理
-skill-manager list                    # 列出所有 skills 和 MCPs
-skill-manager status                  # 查看启用数量
-skill-manager enable brainstorming    # 启用某个 skill
-skill-manager scan                    # 扫描已知目录
-skill-manager backup                  # 创建备份
+runai list                    # 列出所有 skills 和 MCPs
+runai status                  # 查看启用数量
+runai enable brainstorming    # 启用某个 skill
+runai scan                    # 扫描已知目录
+runai backup                  # 创建备份
 ```
 
 ## TUI 快捷键
@@ -69,7 +69,7 @@ skill-manager backup                  # 创建备份
 
 ## MCP 工具（25 个）
 
-作为 MCP 服务器运行时（`skill-manager mcp-serve`），提供 25 个工具：
+作为 MCP 服务器运行时（`runai mcp-serve`），提供 25 个工具：
 
 **Skills 和 MCPs**
 
@@ -117,14 +117,14 @@ skill-manager backup                  # 创建备份
 - **安装委托 CLI** — MCP 工具返回 Bash 命令而非进程内下载（避免代理超时）
 - **精简输出** — `sm_list` 使用单行格式，避免超出 token 限制
 - **自动发现** — MCP 指令引导 AI 在市场没有结果时自动搜索 GitHub
-- **自我保护** — skill-manager 拒绝禁用自身
+- **自我保护** — runai 拒绝禁用自身
 - **扫描 `~/skills/`** — 自动发现 SkillHub 安装的 skill
 
 ## Skill 发现
 
 ```bash
-skill-manager discover               # 扫描 home 目录
-skill-manager discover --root /      # 全盘扫描
+runai discover               # 扫描 home 目录
+runai discover --root /      # 全盘扫描
 ```
 
 内置递归扫描器，智能过滤：
@@ -156,6 +156,8 @@ skill-manager discover --root /      # 全盘扫描
 - `market-cache/` — 市场 skill 列表缓存（JSON，1 小时有效期）
 - `market-sources.json` — 自定义市场源
 - `skill-manager.db` — SQLite 数据库（仅 skill 元数据 + 分组成员）
+
+> **注意**: 数据目录 `~/.skill-manager/` 保留不变，以兼容 v0.5.0 之前的版本。
 
 ## 许可证
 

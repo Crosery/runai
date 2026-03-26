@@ -1,6 +1,6 @@
-use std::path::Path;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Channel {
@@ -57,7 +57,11 @@ impl ChannelConfig {
 
     pub fn add_channel(&mut self, name: String, url: String, description: String) {
         if !self.channels.iter().any(|c| c.url == url) {
-            self.channels.push(Channel { name, url, description });
+            self.channels.push(Channel {
+                name,
+                url,
+                description,
+            });
         }
     }
 
@@ -84,7 +88,11 @@ mod tests {
         let path = tmp.path().join("channels.json");
 
         let mut cfg = ChannelConfig::default_config();
-        cfg.add_channel("Test".into(), "https://test.com".into(), "Test channel".into());
+        cfg.add_channel(
+            "Test".into(),
+            "https://test.com".into(),
+            "Test channel".into(),
+        );
         cfg.save(&path).unwrap();
 
         let loaded = ChannelConfig::load(&path).unwrap();

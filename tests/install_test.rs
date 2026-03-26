@@ -1,11 +1,13 @@
-use skill_manager::core::manager::SkillManager;
-use skill_manager::core::cli_target::CliTarget;
+use runai::core::cli_target::CliTarget;
+use runai::core::manager::SkillManager;
 
 #[test]
 #[ignore] // Run manually: cargo test --test install_test -- --ignored --nocapture
 fn test_real_install_minimax() {
     let tmp = tempfile::tempdir().unwrap();
-    unsafe { std::env::set_var("HOME", tmp.path()); }
+    unsafe {
+        std::env::set_var("HOME", tmp.path());
+    }
 
     // Create ~/.claude/skills/ for symlink target
     std::fs::create_dir_all(tmp.path().join(".claude/skills")).unwrap();
@@ -30,13 +32,22 @@ fn test_real_install_minimax() {
             }
             assert!(!names.is_empty(), "should install at least one skill");
             for name in &names {
-                assert!(mgr.paths().skills_dir().join(name).join("SKILL.md").exists(),
-                    "{name} missing SKILL.md");
+                assert!(
+                    mgr.paths()
+                        .skills_dir()
+                        .join(name)
+                        .join("SKILL.md")
+                        .exists(),
+                    "{name} missing SKILL.md"
+                );
             }
             // Verify symlinks created
             for name in &names {
                 let symlink = tmp.path().join(".claude/skills").join(name);
-                assert!(symlink.exists(), "{name} symlink should exist in ~/.claude/skills/");
+                assert!(
+                    symlink.exists(),
+                    "{name} symlink should exist in ~/.claude/skills/"
+                );
             }
             // Verify group has members
             let members = mgr.get_group_members(&group_id).unwrap();
@@ -48,7 +59,11 @@ fn test_real_install_minimax() {
                 for entry in entries.flatten() {
                     let name = entry.file_name();
                     let has_md = entry.path().join("SKILL.md").exists();
-                    println!("  on disk: {} (SKILL.md={})", name.to_string_lossy(), has_md);
+                    println!(
+                        "  on disk: {} (SKILL.md={})",
+                        name.to_string_lossy(),
+                        has_md
+                    );
                 }
             }
             panic!("Install failed: {e}");

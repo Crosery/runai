@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use anyhow::Result;
+use std::collections::HashMap;
 
 use crate::core::classifier::Classifier;
 use crate::core::group::{Group, GroupKind};
@@ -30,19 +30,23 @@ impl AutoGroup {
                 continue;
             }
             for group_name in &suggestions {
-                group_map.entry(group_name.clone()).or_default().push(r.id.clone());
+                group_map
+                    .entry(group_name.clone())
+                    .or_default()
+                    .push(r.id.clone());
             }
             assigned_count += 1;
         }
 
         // Create groups and add members
         let mut groups_created = 0;
-        let existing_groups: Vec<String> = mgr.list_groups()?
-            .into_iter().map(|(id, _)| id).collect();
+        let existing_groups: Vec<String> =
+            mgr.list_groups()?.into_iter().map(|(id, _)| id).collect();
 
         for (group_name, resource_ids) in &group_map {
             // Clean group_id: lowercase, replace non-alnum with single dash, trim dashes
-            let group_id: String = group_name.to_lowercase()
+            let group_id: String = group_name
+                .to_lowercase()
                 .chars()
                 .map(|c| if c.is_alphanumeric() { c } else { '-' })
                 .collect::<String>()
@@ -91,7 +95,10 @@ impl AutoGroup {
         for r in resources {
             let suggestions = Classifier::suggest_groups(&r.name, &r.description);
             for group_name in suggestions {
-                group_map.entry(group_name).or_default().push(r.name.clone());
+                group_map
+                    .entry(group_name)
+                    .or_default()
+                    .push(r.name.clone());
             }
         }
         group_map
@@ -101,8 +108,8 @@ impl AutoGroup {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap as StdHashMap;
     use crate::core::resource::{Resource, ResourceKind, Source};
+    use std::collections::HashMap as StdHashMap;
     use std::path::PathBuf;
 
     fn make_resource(name: &str, desc: &str) -> Resource {
@@ -112,9 +119,13 @@ mod tests {
             kind: ResourceKind::Skill,
             description: desc.into(),
             directory: PathBuf::from(format!("/tmp/{name}")),
-            source: Source::Local { path: PathBuf::from(format!("/tmp/{name}")) },
+            source: Source::Local {
+                path: PathBuf::from(format!("/tmp/{name}")),
+            },
             installed_at: 0,
             enabled: StdHashMap::new(),
+            usage_count: 0,
+            last_used_at: None,
         }
     }
 
@@ -133,7 +144,11 @@ mod tests {
         assert!(preview.contains_key("Rust"));
         assert_eq!(preview["Rust"].len(), 1);
         // my-random-tool has no match
-        assert!(!preview.values().any(|v| v.contains(&"my-random-tool".to_string())));
+        assert!(
+            !preview
+                .values()
+                .any(|v| v.contains(&"my-random-tool".to_string()))
+        );
     }
 
     #[test]
@@ -148,7 +163,12 @@ mod tests {
         let mgr = SkillManager::with_base(tmp.path().to_path_buf()).unwrap();
 
         // Create skill dirs and register
-        for name in &["python-testing", "python-patterns", "rust-testing", "random-tool"] {
+        for name in &[
+            "python-testing",
+            "python-patterns",
+            "rust-testing",
+            "random-tool",
+        ] {
             let dir = mgr.paths().skills_dir().join(name);
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(dir.join("SKILL.md"), format!("# {name}\nA {name} skill\n")).unwrap();

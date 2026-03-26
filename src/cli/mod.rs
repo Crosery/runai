@@ -1,12 +1,16 @@
-use clap::{Parser, Subcommand};
-use anyhow::Result;
 use crate::core::cli_target::CliTarget;
 use crate::core::group::{Group, GroupKind, GroupMember, MemberType};
 use crate::core::manager::SkillManager;
 use crate::core::resource::ResourceKind;
+use anyhow::Result;
+use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "skill-manager", version, about = "AI CLI resource manager for skills and MCP servers")]
+#[command(
+    name = "runai",
+    version,
+    about = "AI CLI resource manager for skills and MCP servers"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
@@ -44,9 +48,7 @@ pub enum Commands {
         target: String,
     },
     /// Install a skill from GitHub
-    Install {
-        source: String,
-    },
+    Install { source: String },
     /// Install a skill from market
     MarketInstall {
         name: String,
@@ -54,9 +56,7 @@ pub enum Commands {
         source: Option<String>,
     },
     /// Uninstall a resource
-    Uninstall {
-        name: String,
-    },
+    Uninstall { name: String },
     /// Restore from backup (uses latest backup by default)
     Restore {
         /// Backup timestamp (omit for latest)
@@ -77,10 +77,16 @@ pub enum Commands {
     },
     /// Start MCP server (stdio)
     McpServe,
-    /// Register skill-manager as MCP server in all CLI configs
+    /// Register runai as MCP server in all CLI configs
     Register,
-    /// Unregister skill-manager from all CLI configs
+    /// Unregister runai from all CLI configs
     Unregister,
+    /// Show usage statistics (most used skills/MCPs)
+    Usage {
+        /// Show only top N entries
+        #[arg(long)]
+        top: Option<usize>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -103,16 +109,15 @@ pub enum GroupCommands {
         resource_type: String,
     },
     /// Remove a resource from a group
-    Remove {
-        group: String,
-        resource: String,
-    },
+    Remove { group: String, resource: String },
     /// List all groups
     List,
 }
 
 pub fn run(cli: Cli) -> Result<()> {
-    let mgr = if let Ok(dir) = std::env::var("SKILL_MANAGER_DATA_DIR") {
+    let mgr = if let Ok(dir) =
+        std::env::var("RUNE_DATA_DIR").or_else(|_| std::env::var("SKILL_MANAGER_DATA_DIR"))
+    {
         SkillManager::with_base(std::path::PathBuf::from(dir))?
     } else {
         SkillManager::new()?
@@ -125,8 +130,12 @@ pub fn run(cli: Cli) -> Result<()> {
         }
         Some(Commands::Scan) => {
             let result = mgr.scan()?;
-            println!("Scan complete: {} adopted, {} skipped, {} errors",
-                result.adopted, result.skipped, result.errors.len());
+            println!(
+                "Scan complete: {} adopted, {} skipped, {} errors",
+                result.adopted,
+                result.skipped,
+                result.errors.len()
+            );
             for err in &result.errors {
                 eprintln!("  error: {err}");
             }
@@ -141,24 +150,40 @@ pub fn run(cli: Cli) -> Result<()> {
             let found = crate::core::scanner::Scanner::discover_skills(&search_root);
             let elapsed = start.elapsed();
 
-            let managed = found.iter().filter(|s| s.status == SkillStatus::Managed).count();
-            let cli = found.iter().filter(|s| s.status == SkillStatus::CliDir).count();
-            let unmanaged = found.iter().filter(|s| s.status == SkillStatus::Unmanaged).count();
+            let managed = found
+                .iter()
+                .filter(|s| s.status == SkillStatus::Managed)
+                .count();
+            let cli = found
+                .iter()
+                .filter(|s| s.status == SkillStatus::CliDir)
+                .count();
+            let unmanaged = found
+                .iter()
+                .filter(|s| s.status == SkillStatus::Unmanaged)
+                .count();
 
-            println!("Found {} skills in {:.1}s ({managed} managed, {cli} CLI, {unmanaged} unmanaged)\n",
-                found.len(), elapsed.as_secs_f64());
+            println!(
+                "Found {} skills in {:.1}s ({managed} managed, {cli} CLI, {unmanaged} unmanaged)\n",
+                found.len(),
+                elapsed.as_secs_f64()
+            );
 
             for s in &found {
                 let tag = match s.status {
-                    SkillStatus::Managed   => "●",
-                    SkillStatus::CliDir    => "◆",
+                    SkillStatus::Managed => "●",
+                    SkillStatus::CliDir => "◆",
                     SkillStatus::Unmanaged => "○",
                 };
                 println!("  {tag} {:<40} {}", s.name, s.path.display());
             }
             Ok(())
         }
-        Some(Commands::List { group, kind, target }) => {
+        Some(Commands::List {
+            group,
+            kind,
+            target,
+        }) => {
             let kind_filter = kind.as_deref().and_then(ResourceKind::from_str);
             let target_filter = target.as_deref().and_then(CliTarget::from_str);
 
@@ -172,7 +197,8 @@ pub fn run(cli: Cli) -> Result<()> {
                 println!("No resources found.");
             } else {
                 for r in &resources {
-                    let enabled_targets: Vec<&str> = CliTarget::ALL.iter()
+                    let enabled_targets: Vec<&str> = CliTarget::ALL
+                        .iter()
                         .filter(|t| r.is_enabled_for(**t))
                         .map(|t| t.name())
                         .collect();
@@ -218,7 +244,8 @@ pub fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Some(Commands::Install { source }) => {
-            let input = source.trim()
+            let input = source
+                .trim()
                 .trim_start_matches("https://github.com/")
                 .trim_end_matches('/');
             let (repo_part, branch) = if input.contains('@') {
@@ -244,11 +271,18 @@ pub fn run(cli: Cli) -> Result<()> {
             let data_dir = mgr.paths().data_dir().to_path_buf();
             let sources = crate::core::market::load_sources(&data_dir);
             let skill = crate::core::market::find_skill_in_sources(
-                &data_dir, &sources, &name, source.as_deref()
-            ).ok_or_else(|| anyhow::anyhow!("Skill '{name}' not found in market"))?;
+                &data_dir,
+                &sources,
+                &name,
+                source.as_deref(),
+            )
+            .ok_or_else(|| anyhow::anyhow!("Skill '{name}' not found in market"))?;
             let source_repo = skill.source_repo.clone();
             let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(crate::core::market::Market::install_single(&skill, mgr.paths()))?;
+            rt.block_on(crate::core::market::Market::install_single(
+                &skill,
+                mgr.paths(),
+            ))?;
             let _ = mgr.register_local_skill(&skill.name);
             if let Some(id) = mgr.find_resource_id(&skill.name) {
                 let _ = mgr.enable_resource(&id, CliTarget::Claude, None);
@@ -279,7 +313,7 @@ pub fn run(cli: Cli) -> Result<()> {
                     match backups.first() {
                         Some(t) => t.clone(),
                         None => {
-                            eprintln!("No backups found. Run 'skill-manager backup' first.");
+                            eprintln!("No backups found. Run 'runai backup' first.");
                             return Ok(());
                         }
                     }
@@ -322,6 +356,29 @@ pub fn run(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
+        Some(Commands::Usage { top }) => {
+            use crate::core::resource::format_time_ago;
+            let stats = mgr.usage_stats()?;
+            let limit = top.unwrap_or(usize::MAX);
+            if stats.is_empty() {
+                println!("No usage data yet.");
+            } else {
+                println!("{:>5}  {:>10}  {:<5}  {}", "uses", "last", "type", "name");
+                for (i, s) in stats.iter().enumerate() {
+                    if i >= limit {
+                        break;
+                    }
+                    let ago = format_time_ago(s.last_used_at);
+                    let kind = if s.id.starts_with("mcp:") {
+                        "mcp"
+                    } else {
+                        "skill"
+                    };
+                    println!("{:>5}  {:>10}  {:<5}  {}", s.count, ago, kind, s.name);
+                }
+            }
+            Ok(())
+        }
         Some(Commands::Unregister) => {
             let home = dirs::home_dir().unwrap_or_default();
             crate::core::mcp_register::McpRegister::unregister_all(&home)?;
@@ -333,7 +390,12 @@ pub fn run(cli: Cli) -> Result<()> {
 
 fn handle_group_command(mgr: &SkillManager, command: GroupCommands) -> Result<()> {
     match command {
-        GroupCommands::Create { id, name, description, kind } => {
+        GroupCommands::Create {
+            id,
+            name,
+            description,
+            kind,
+        } => {
             let kind = match kind.as_str() {
                 "default" => GroupKind::Default,
                 "ecosystem" => GroupKind::Ecosystem,
@@ -350,7 +412,11 @@ fn handle_group_command(mgr: &SkillManager, command: GroupCommands) -> Result<()
             println!("Group '{id}' created");
             Ok(())
         }
-        GroupCommands::Add { group, resource, resource_type } => {
+        GroupCommands::Add {
+            group,
+            resource,
+            resource_type,
+        } => {
             let resource_id = find_resource_id_by_name(mgr, &resource)?;
             mgr.db().add_group_member(&group, &resource_id)?;
 
@@ -362,7 +428,10 @@ fn handle_group_command(mgr: &SkillManager, command: GroupCommands) -> Result<()
                     _ => MemberType::Skill,
                 };
                 if !g.members.iter().any(|m| m.name == resource) {
-                    g.members.push(GroupMember { name: resource.clone(), member_type });
+                    g.members.push(GroupMember {
+                        name: resource.clone(),
+                        member_type,
+                    });
                     g.save_to_file(&path)?;
                 }
             }
@@ -394,7 +463,11 @@ fn handle_group_command(mgr: &SkillManager, command: GroupCommands) -> Result<()
                         GroupKind::Ecosystem => "ecosystem",
                         GroupKind::Custom => "custom",
                     };
-                    println!("  [{kind_str}] {id} — {} ({} members)", g.name, members.len());
+                    println!(
+                        "  [{kind_str}] {id} — {} ({} members)",
+                        g.name,
+                        members.len()
+                    );
                 }
             }
             Ok(())

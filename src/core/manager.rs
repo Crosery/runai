@@ -1,6 +1,4 @@
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use anyhow::{Result, bail};
+use crate::core::classifier::Classifier;
 use crate::core::cli_target::CliTarget;
 use crate::core::db::Database;
 use crate::core::group::Group;
@@ -8,7 +6,113 @@ use crate::core::linker::Linker;
 use crate::core::paths::AppPaths;
 use crate::core::resource::{Resource, ResourceKind, Source};
 use crate::core::scanner::Scanner;
-use crate::core::classifier::Classifier;
+use anyhow::{Result, bail};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+/// Convert a TOML MCP entry to JSON (for backup storage).
+fn toml_to_json_mcp(val: &toml::Value) -> serde_json::Value {
+    match val {
+        toml::Value::Table(t) => {
+            let mut obj = serde_json::Map::new();
+            for (k, v) in t {
+                obj.insert(k.clone(), toml_val_to_json(v));
+            }
+            serde_json::Value::Object(obj)
+        }
+        other => toml_val_to_json(other),
+    }
+}
+
+fn toml_val_to_json(val: &toml::Value) -> serde_json::Value {
+    match val {
+        toml::Value::String(s) => serde_json::Value::String(s.clone()),
+        toml::Value::Integer(i) => serde_json::json!(i),
+        toml::Value::Boolean(b) => serde_json::json!(b),
+        toml::Value::Array(a) => serde_json::Value::Array(a.iter().map(toml_val_to_json).collect()),
+        toml::Value::Table(t) => {
+            let mut obj = serde_json::Map::new();
+            for (k, v) in t {
+                obj.insert(k.clone(), toml_val_to_json(v));
+            }
+            serde_json::Value::Object(obj)
+        }
+        _ => serde_json::Value::Null,
+    }
+}
+
+/// Convert a JSON MCP entry to TOML (for restoring into config.toml).
+fn json_to_toml_mcp(val: &serde_json::Value) -> toml::Value {
+    match val {
+        serde_json::Value::Object(obj) => {
+            let mut table = toml::Table::new();
+            for (k, v) in obj {
+                table.insert(k.clone(), json_val_to_toml(v));
+            }
+            toml::Value::Table(table)
+        }
+        other => json_val_to_toml(other),
+    }
+}
+
+fn json_val_to_toml(val: &serde_json::Value) -> toml::Value {
+    match val {
+        serde_json::Value::String(s) => toml::Value::String(s.clone()),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                toml::Value::Integer(i)
+            } else {
+                toml::Value::String(n.to_string())
+            }
+        }
+        serde_json::Value::Bool(b) => toml::Value::Boolean(*b),
+        serde_json::Value::Array(a) => toml::Value::Array(a.iter().map(json_val_to_toml).collect()),
+        serde_json::Value::Object(obj) => {
+            let mut table = toml::Table::new();
+            for (k, v) in obj {
+                table.insert(k.clone(), json_val_to_toml(v));
+            }
+            toml::Value::Table(table)
+        }
+        serde_json::Value::Null => toml::Value::String(String::new()),
+    }
+}
+
+/// Convert JSON MCP backup to OpenCode format.
+/// Handles both standard format (command=string, args=array) and
+/// OpenCode native format (command=array) since backup may contain either.
+fn json_to_opencode_mcp(entry: &serde_json::Value) -> serde_json::Value {
+    let command_val = entry.get("command");
+
+    let command_arr = if let Some(arr) = command_val.and_then(|v| v.as_array()) {
+        // Already OpenCode format: command is an array
+        arr.clone()
+    } else {
+        // Standard format: command is string, args is separate array
+        let cmd = command_val
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let args: Vec<String> = entry
+            .get("args")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut arr = vec![serde_json::Value::String(cmd)];
+        arr.extend(args.into_iter().map(serde_json::Value::String));
+        arr
+    };
+
+    serde_json::json!({
+        "command": command_arr,
+        "enabled": true,
+        "type": "local",
+    })
+}
 
 pub struct SkillManager {
     paths: AppPaths,
@@ -65,6 +169,8 @@ impl SkillManager {
             source,
             installed_at: chrono::Utc::now().timestamp(),
             enabled: HashMap::new(),
+            usage_count: 0,
+            last_used_at: None,
         };
 
         self.db.insert_resource(&resource)?;
@@ -80,7 +186,9 @@ impl SkillManager {
         if let Some(mcp_name) = resource_id.strip_prefix("mcp:") {
             self.restore_mcp(mcp_name, target)
         } else {
-            let resource = self.db.get_resource(resource_id)?
+            let resource = self
+                .db
+                .get_resource(resource_id)?
                 .ok_or_else(|| anyhow::anyhow!("resource not found: {resource_id}"))?;
             let cli_dir = cli_dir_override
                 .map(|p| p.to_path_buf())
@@ -101,12 +209,14 @@ impl SkillManager {
         cli_dir_override: Option<&Path>,
     ) -> Result<()> {
         if let Some(mcp_name) = resource_id.strip_prefix("mcp:") {
-            if mcp_name == "skill-manager" {
-                bail!("Cannot disable skill-manager — it would remove its own MCP connection");
+            if mcp_name == "runai" || mcp_name == "skill-manager" {
+                bail!("Cannot disable runai — it would remove its own MCP connection");
             }
             self.remove_mcp(mcp_name, target)
         } else {
-            let resource = self.db.get_resource(resource_id)?
+            let resource = self
+                .db
+                .get_resource(resource_id)?
                 .ok_or_else(|| anyhow::anyhow!("resource not found: {resource_id}"))?;
             let cli_dir = cli_dir_override
                 .map(|p| p.to_path_buf())
@@ -122,22 +232,45 @@ impl SkillManager {
     /// Disable MCP: save config to backup, remove entry from CLI config file.
     fn remove_mcp(&self, mcp_name: &str, target: CliTarget) -> Result<()> {
         let config_path = Self::cli_config_path(target);
-        if !config_path.exists() { return Ok(()); }
+        if !config_path.exists() {
+            return Ok(());
+        }
 
         let content = std::fs::read_to_string(&config_path)?;
-        let mut config: serde_json::Value = serde_json::from_str(&content)?;
 
-        if let Some(servers) = config.get_mut("mcpServers").and_then(|s| s.as_object_mut()) {
-            if let Some(entry) = servers.remove(mcp_name) {
-                // Save backup before removing
-                let backup_dir = self.paths.mcps_dir();
-                std::fs::create_dir_all(&backup_dir)?;
-                let backup_path = backup_dir.join(format!("{mcp_name}.json"));
-                std::fs::write(&backup_path, serde_json::to_string_pretty(&entry)?)?;
+        if target.uses_toml() {
+            // Codex: TOML format
+            let mut table: toml::Table = content.parse()?;
+            if let Some(toml::Value::Table(servers)) = table.get_mut("mcp_servers") {
+                if let Some(entry) = servers.remove(mcp_name) {
+                    // Save backup as JSON for cross-format restore
+                    let backup_dir = self.paths.mcps_dir();
+                    std::fs::create_dir_all(&backup_dir)?;
+                    let backup_path = backup_dir.join(format!("{mcp_name}.json"));
+                    let json_entry = toml_to_json_mcp(&entry);
+                    std::fs::write(&backup_path, serde_json::to_string_pretty(&json_entry)?)?;
 
-                std::fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
+                    std::fs::write(&config_path, toml::to_string_pretty(&table)?)?;
+                }
             }
-            // Already removed — noop
+        } else {
+            // JSON format (Claude/Gemini/OpenCode)
+            let mut config: serde_json::Value = serde_json::from_str(&content)?;
+            let mcp_key = if target.uses_opencode_format() {
+                "mcp"
+            } else {
+                "mcpServers"
+            };
+            if let Some(servers) = config.get_mut(mcp_key).and_then(|s| s.as_object_mut()) {
+                if let Some(entry) = servers.remove(mcp_name) {
+                    let backup_dir = self.paths.mcps_dir();
+                    std::fs::create_dir_all(&backup_dir)?;
+                    let backup_path = backup_dir.join(format!("{mcp_name}.json"));
+                    std::fs::write(&backup_path, serde_json::to_string_pretty(&entry)?)?;
+
+                    std::fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
+                }
+            }
         }
 
         Ok(())
@@ -150,7 +283,9 @@ impl SkillManager {
         // Read backup
         let backup_path = self.paths.mcps_dir().join(format!("{mcp_name}.json"));
         if !backup_path.exists() {
-            bail!("No saved config for MCP '{mcp_name}'. Use 'claude mcp add' to register it first.");
+            bail!(
+                "No saved config for MCP '{mcp_name}'. Use 'claude mcp add' to register it first."
+            );
         }
         let backup_content = std::fs::read_to_string(&backup_path)?;
         let mut entry: serde_json::Value = serde_json::from_str(&backup_content)?;
@@ -160,69 +295,137 @@ impl SkillManager {
             obj.remove("disabled");
         }
 
-        // Read or create config
-        let mut config: serde_json::Value = if config_path.exists() {
-            serde_json::from_str(&std::fs::read_to_string(&config_path)?)?
+        if let Some(parent) = config_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        if target.uses_toml() {
+            // Codex: restore into TOML config.toml
+            let mut table: toml::Table = if config_path.exists() {
+                std::fs::read_to_string(&config_path)?.parse()?
+            } else {
+                toml::Table::new()
+            };
+            let servers = table
+                .entry("mcp_servers")
+                .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+            if let toml::Value::Table(s) = servers {
+                s.insert(mcp_name.to_string(), json_to_toml_mcp(&entry));
+            }
+            std::fs::write(&config_path, toml::to_string_pretty(&table)?)?;
         } else {
-            serde_json::json!({})
-        };
+            // JSON format
+            let mut config: serde_json::Value = if config_path.exists() {
+                serde_json::from_str(&std::fs::read_to_string(&config_path)?)?
+            } else {
+                serde_json::json!({})
+            };
 
-        let servers = config.as_object_mut()
-            .ok_or_else(|| anyhow::anyhow!("config is not an object"))?
-            .entry("mcpServers")
-            .or_insert_with(|| serde_json::json!({}));
+            let mcp_key = if target.uses_opencode_format() {
+                "mcp"
+            } else {
+                "mcpServers"
+            };
 
-        servers.as_object_mut()
-            .ok_or_else(|| anyhow::anyhow!("mcpServers is not an object"))?
-            .insert(mcp_name.to_string(), entry);
+            // For OpenCode, convert backup JSON to OpenCode format
+            if target.uses_opencode_format() {
+                entry = json_to_opencode_mcp(&entry);
+            }
 
-        std::fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
+            let servers = config
+                .as_object_mut()
+                .ok_or_else(|| anyhow::anyhow!("config is not an object"))?
+                .entry(mcp_key)
+                .or_insert_with(|| serde_json::json!({}));
+
+            servers
+                .as_object_mut()
+                .ok_or_else(|| anyhow::anyhow!("{mcp_key} is not an object"))?
+                .insert(mcp_name.to_string(), entry);
+
+            std::fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
+        }
         Ok(())
     }
 
     fn cli_config_path(target: CliTarget) -> PathBuf {
-        let home = dirs::home_dir().unwrap_or_default();
-        match target {
-            CliTarget::Claude => home.join(".claude.json"),
-            CliTarget::Gemini => home.join(".gemini/settings.json"),
-            CliTarget::Codex => home.join(".codex/settings.json"),
-            CliTarget::OpenCode => home.join(".opencode/settings.json"),
-        }
+        target.mcp_config_path()
     }
 
     /// Read MCP enabled/disabled status directly from CLI config files.
     /// Returns mcp_name -> { target -> enabled }.
     pub fn read_mcp_status_from_configs() -> HashMap<String, HashMap<CliTarget, bool>> {
-        let home = dirs::home_dir().unwrap_or_default();
-        let configs: &[(CliTarget, &str)] = &[
-            (CliTarget::Claude, ".claude.json"),
-            (CliTarget::Gemini, ".gemini/settings.json"),
-            (CliTarget::Codex, ".codex/settings.json"),
-            (CliTarget::OpenCode, ".opencode/settings.json"),
-        ];
-
         let mut result: HashMap<String, HashMap<CliTarget, bool>> = HashMap::new();
 
-        for (target, rel) in configs {
-            let path = home.join(rel);
+        for target in CliTarget::ALL {
+            let path = target.mcp_config_path();
             let content = match std::fs::read_to_string(&path) {
                 Ok(c) => c,
                 Err(_) => continue,
             };
-            let config: serde_json::Value = match serde_json::from_str(&content) {
-                Ok(c) => c,
-                Err(_) => continue,
-            };
-            let servers = match config.get("mcpServers").and_then(|s| s.as_object()) {
-                Some(s) => s,
-                None => continue,
-            };
-            for (name, _server) in servers {
-                if name.starts_with('_') { continue; }
-                // Entry exists in config = enabled for this target
-                result.entry(name.clone())
-                    .or_default()
-                    .insert(*target, true);
+
+            if target.uses_toml() {
+                // Codex: parse TOML, look for [mcp_servers.*]
+                let table: toml::Table = match content.parse() {
+                    Ok(t) => t,
+                    Err(_) => continue,
+                };
+                if let Some(toml::Value::Table(servers)) = table.get("mcp_servers") {
+                    for name in servers.keys() {
+                        if name.starts_with('_') {
+                            continue;
+                        }
+                        result
+                            .entry(name.clone())
+                            .or_default()
+                            .insert(*target, true);
+                    }
+                }
+            } else if target.uses_opencode_format() {
+                // OpenCode: key="mcp", command=array, has "enabled" field
+                let config: serde_json::Value = match serde_json::from_str(&content) {
+                    Ok(c) => c,
+                    Err(_) => continue,
+                };
+                let servers = match config.get("mcp").and_then(|s| s.as_object()) {
+                    Some(s) => s,
+                    None => continue,
+                };
+                for (name, server) in servers {
+                    if name.starts_with('_') {
+                        continue;
+                    }
+                    // OpenCode has explicit enabled field; default true if absent
+                    let enabled = server
+                        .get("enabled")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(true);
+                    if enabled {
+                        result
+                            .entry(name.clone())
+                            .or_default()
+                            .insert(*target, true);
+                    }
+                }
+            } else {
+                // JSON: Claude/Gemini (mcpServers key)
+                let config: serde_json::Value = match serde_json::from_str(&content) {
+                    Ok(c) => c,
+                    Err(_) => continue,
+                };
+                let servers = match config.get("mcpServers").and_then(|s| s.as_object()) {
+                    Some(s) => s,
+                    None => continue,
+                };
+                for (name, _server) in servers {
+                    if name.starts_with('_') {
+                        continue;
+                    }
+                    result
+                        .entry(name.clone())
+                        .or_default()
+                        .insert(*target, true);
+                }
             }
         }
 
@@ -263,9 +466,13 @@ impl SkillManager {
                     kind: ResourceKind::Mcp,
                     description: String::new(),
                     directory: PathBuf::new(),
-                    source: Source::Local { path: PathBuf::new() },
+                    source: Source::Local {
+                        path: PathBuf::new(),
+                    },
                     installed_at: 0,
                     enabled: targets.clone(),
+                    usage_count: 0,
+                    last_used_at: None,
                 });
             }
 
@@ -275,12 +482,17 @@ impl SkillManager {
                 if let Ok(entries) = std::fs::read_dir(&mcps_dir) {
                     for entry in entries.flatten() {
                         let path = entry.path();
-                        if path.extension().and_then(|e| e.to_str()) != Some("json") { continue; }
-                        let name = path.file_stem()
+                        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                            continue;
+                        }
+                        let name = path
+                            .file_stem()
                             .and_then(|s| s.to_str())
                             .unwrap_or("")
                             .to_string();
-                        if name.is_empty() || seen.contains(&name) { continue; }
+                        if name.is_empty() || seen.contains(&name) {
+                            continue;
+                        }
                         // This MCP was disabled by SM — show as disabled
                         mcp_resources.push(Resource {
                             id: format!("mcp:{name}"),
@@ -288,9 +500,13 @@ impl SkillManager {
                             kind: ResourceKind::Mcp,
                             description: String::new(),
                             directory: PathBuf::new(),
-                            source: Source::Local { path: PathBuf::new() },
+                            source: Source::Local {
+                                path: PathBuf::new(),
+                            },
                             installed_at: 0,
                             enabled: HashMap::new(), // no targets = disabled
+                            usage_count: 0,
+                            last_used_at: None,
                         });
                     }
                 }
@@ -323,7 +539,9 @@ impl SkillManager {
     }
 
     pub fn uninstall(&self, resource_id: &str) -> Result<()> {
-        let resource = self.db.get_resource(resource_id)?
+        let resource = self
+            .db
+            .get_resource(resource_id)?
             .ok_or_else(|| anyhow::anyhow!("resource not found: {resource_id}"))?;
 
         for target in CliTarget::ALL {
@@ -364,7 +582,8 @@ impl SkillManager {
             let entry = entry?;
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) == Some("toml") {
-                let id = path.file_stem()
+                let id = path
+                    .file_stem()
                     .and_then(|s| s.to_str())
                     .unwrap_or("")
                     .to_string();
@@ -394,9 +613,13 @@ impl SkillManager {
                     kind: ResourceKind::Mcp,
                     description: String::new(),
                     directory: PathBuf::new(),
-                    source: Source::Local { path: PathBuf::new() },
+                    source: Source::Local {
+                        path: PathBuf::new(),
+                    },
                     installed_at: 0,
                     enabled,
+                    usage_count: 0,
+                    last_used_at: None,
                 });
             } else if let Ok(Some(mut res)) = self.db.get_resource(id) {
                 res.enabled = self.check_skill_symlinks(&res.name);
@@ -434,14 +657,23 @@ impl SkillManager {
     }
 
     /// Update group name and/or description. Pass None to keep unchanged.
-    pub fn update_group(&self, group_id: &str, name: Option<&str>, description: Option<&str>) -> Result<()> {
+    pub fn update_group(
+        &self,
+        group_id: &str,
+        name: Option<&str>,
+        description: Option<&str>,
+    ) -> Result<()> {
         let path = self.paths.groups_dir().join(format!("{group_id}.toml"));
         if !path.exists() {
             bail!("Group not found: {group_id}");
         }
         let mut group = Group::load_from_file(&path)?;
-        if let Some(n) = name { group.name = n.to_string(); }
-        if let Some(d) = description { group.description = d.to_string(); }
+        if let Some(n) = name {
+            group.name = n.to_string();
+        }
+        if let Some(d) = description {
+            group.description = d.to_string();
+        }
         group.save_to_file(&path)?;
         Ok(())
     }
@@ -451,11 +683,17 @@ impl SkillManager {
         let groups = self.list_groups().ok()?;
         let q = query.to_lowercase();
         // exact match on id or name
-        if let Some((id, _)) = groups.iter().find(|(id, g)| id.to_lowercase() == q || g.name.to_lowercase() == q) {
+        if let Some((id, _)) = groups
+            .iter()
+            .find(|(id, g)| id.to_lowercase() == q || g.name.to_lowercase() == q)
+        {
             return Some(id.clone());
         }
         // contains match
-        if let Some((id, _)) = groups.iter().find(|(id, g)| id.to_lowercase().contains(&q) || g.name.to_lowercase().contains(&q)) {
+        if let Some((id, _)) = groups
+            .iter()
+            .find(|(id, g)| id.to_lowercase().contains(&q) || g.name.to_lowercase().contains(&q))
+        {
             return Some(id.clone());
         }
         None
@@ -483,7 +721,8 @@ impl SkillManager {
             }
         }
         let mcp_status = Self::read_mcp_status_from_configs();
-        let mcp_enabled = mcp_status.values()
+        let mcp_enabled = mcp_status
+            .values()
             .filter(|targets| targets.get(&target).copied().unwrap_or(false))
             .count();
         Ok((skill_enabled, mcp_enabled))
@@ -510,8 +749,10 @@ impl SkillManager {
         let extract = rt.block_on(Market::fetch(&source))?;
 
         if extract.plugin_detected && extract.skills.is_empty() {
-            bail!("This is a Claude Code plugin, not a skill collection.\n\
-                   Install with: /plugin install {repo}@<marketplace>");
+            bail!(
+                "This is a Claude Code plugin, not a skill collection.\n\
+                   Install with: /plugin install {repo}@<marketplace>"
+            );
         }
         if extract.skills.is_empty() {
             bail!("No skills found in {owner}/{repo}");
@@ -545,6 +786,8 @@ impl SkillManager {
                 },
                 installed_at: chrono::Utc::now().timestamp(),
                 enabled: HashMap::new(),
+                usage_count: 0,
+                last_used_at: None,
             };
             let _ = self.db.insert_resource(&resource);
             let _ = self.enable_resource(&resource_id, target, None);
@@ -592,7 +835,9 @@ impl SkillManager {
 
         for name in skill_names {
             let dir = self.paths.skills_dir().join(name);
-            if !dir.exists() { continue; }
+            if !dir.exists() {
+                continue;
+            }
 
             let description = Self::extract_description(&dir);
             let resource_id = format!("local:{name}");
@@ -602,9 +847,13 @@ impl SkillManager {
                 kind: ResourceKind::Skill,
                 description,
                 directory: dir,
-                source: Source::Local { path: self.paths.skills_dir().join(name) },
+                source: Source::Local {
+                    path: self.paths.skills_dir().join(name),
+                },
                 installed_at: chrono::Utc::now().timestamp(),
                 enabled: HashMap::new(),
+                usage_count: 0,
+                last_used_at: None,
             };
             if self.db.insert_resource(&resource).is_ok() {
                 let _ = self.enable_resource(&resource_id, target, None);
@@ -614,6 +863,43 @@ impl SkillManager {
         }
 
         Ok(registered)
+    }
+
+    // --- Batch operations ---
+
+    /// Delete multiple resources by name. Returns (deleted_count, errors).
+    pub fn batch_delete(&self, names: &[String]) -> Result<(usize, Vec<String>)> {
+        let mut deleted = 0;
+        let mut errors = Vec::new();
+        for name in names {
+            match self.find_resource_id(name) {
+                Some(id) => match self.uninstall(&id) {
+                    Ok(_) => deleted += 1,
+                    Err(e) => errors.push(format!("{name}: {e}")),
+                },
+                None => errors.push(format!("{name}: not found")),
+            }
+        }
+        Ok((deleted, errors))
+    }
+
+    // --- Usage tracking ---
+
+    /// Record a usage event for a resource by name.
+    pub fn record_usage(&self, name: &str) -> Result<()> {
+        let id = self
+            .find_resource_id(name)
+            .ok_or_else(|| anyhow::anyhow!("resource not found: {name}"))?;
+        let affected = self.db.record_usage(&id)?;
+        if affected == 0 {
+            bail!("resource not found in DB: {id}");
+        }
+        Ok(())
+    }
+
+    /// Get usage stats for all DB resources, sorted by usage_count DESC.
+    pub fn usage_stats(&self) -> Result<Vec<crate::core::resource::UsageStat>> {
+        self.db.get_usage_stats()
     }
 
     // --- Internal ---
@@ -708,7 +994,8 @@ mod tests {
         std::fs::write(
             tmp.path().join(".claude.json"),
             serde_json::to_string_pretty(&config).unwrap(),
-        ).unwrap();
+        )
+        .unwrap();
 
         with_home(tmp.path(), || {
             let mgr = SkillManager::with_base(tmp.path().join("sm-data")).unwrap();
@@ -727,11 +1014,14 @@ mod tests {
         std::fs::write(
             tmp.path().join(".claude.json"),
             serde_json::to_string_pretty(&config).unwrap(),
-        ).unwrap();
+        )
+        .unwrap();
 
         with_home(tmp.path(), || {
             let mgr = SkillManager::with_base(tmp.path().join("sm-data")).unwrap();
-            mgr.db().add_group_member("test-group", "mcp:my-mcp").unwrap();
+            mgr.db()
+                .add_group_member("test-group", "mcp:my-mcp")
+                .unwrap();
 
             let members = mgr.get_group_members("test-group").unwrap();
             assert_eq!(members.len(), 1);
@@ -752,7 +1042,8 @@ mod tests {
         std::fs::write(
             tmp.path().join(".claude.json"),
             serde_json::to_string_pretty(&config).unwrap(),
-        ).unwrap();
+        )
+        .unwrap();
 
         with_home(tmp.path(), || {
             let mgr = SkillManager::with_base(tmp.path().join("sm-data")).unwrap();
@@ -778,17 +1069,18 @@ mod tests {
                     "args": ["-y", "@modelcontextprotocol/server-github"],
                     "type": "stdio"
                 },
-                "skill-manager": {
-                    "command": "/home/user/.local/bin/skill-manager",
+                "runai": {
+                    "command": "/home/user/.local/bin/runai",
                     "args": ["mcp-serve"],
-                    "description": "Skill Manager"
+                    "description": "Runai — AI skill manager"
                 }
             }
         });
         std::fs::write(
             dir.join(".claude.json"),
             serde_json::to_string_pretty(&config).unwrap(),
-        ).unwrap();
+        )
+        .unwrap();
     }
 
     #[test]
@@ -801,20 +1093,28 @@ mod tests {
             let mgr = SkillManager::with_base(sm_data.clone()).unwrap();
 
             // Disable pencil
-            mgr.disable_resource("mcp:pencil", CliTarget::Claude, None).unwrap();
+            mgr.disable_resource("mcp:pencil", CliTarget::Claude, None)
+                .unwrap();
 
             // Verify: pencil entry removed from .claude.json
             let content: serde_json::Value = serde_json::from_str(
-                &std::fs::read_to_string(tmp.path().join(".claude.json")).unwrap()
-            ).unwrap();
-            assert!(content["mcpServers"].get("pencil").is_none(),
-                "pencil should be removed from config");
+                &std::fs::read_to_string(tmp.path().join(".claude.json")).unwrap(),
+            )
+            .unwrap();
+            assert!(
+                content["mcpServers"].get("pencil").is_none(),
+                "pencil should be removed from config"
+            );
 
             // Verify: other entries untouched
-            assert!(content["mcpServers"].get("github").is_some(),
-                "github should still be in config");
-            assert!(content["mcpServers"].get("skill-manager").is_some(),
-                "skill-manager should still be in config");
+            assert!(
+                content["mcpServers"].get("github").is_some(),
+                "github should still be in config"
+            );
+            assert!(
+                content["mcpServers"].get("runai").is_some(),
+                "runai should still be in config"
+            );
 
             // Verify: non-MCP config preserved
             assert_eq!(content["theme"], "dark");
@@ -823,9 +1123,8 @@ mod tests {
             // Verify: backup saved to mcp-backups dir
             let backup_path = sm_data.join("mcps").join("pencil.json");
             assert!(backup_path.exists(), "MCP config backup should exist");
-            let backup: serde_json::Value = serde_json::from_str(
-                &std::fs::read_to_string(&backup_path).unwrap()
-            ).unwrap();
+            let backup: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&backup_path).unwrap()).unwrap();
             assert_eq!(backup["command"], "/tmp/pencil-mcp");
             assert_eq!(backup["args"][0], "--app");
         });
@@ -841,20 +1140,26 @@ mod tests {
             let mgr = SkillManager::with_base(sm_data.clone()).unwrap();
 
             // Disable then enable
-            mgr.disable_resource("mcp:pencil", CliTarget::Claude, None).unwrap();
-            mgr.enable_resource("mcp:pencil", CliTarget::Claude, None).unwrap();
+            mgr.disable_resource("mcp:pencil", CliTarget::Claude, None)
+                .unwrap();
+            mgr.enable_resource("mcp:pencil", CliTarget::Claude, None)
+                .unwrap();
 
             // Verify: pencil is back in config with original fields
             let content: serde_json::Value = serde_json::from_str(
-                &std::fs::read_to_string(tmp.path().join(".claude.json")).unwrap()
-            ).unwrap();
-            let pencil = content["mcpServers"].get("pencil")
+                &std::fs::read_to_string(tmp.path().join(".claude.json")).unwrap(),
+            )
+            .unwrap();
+            let pencil = content["mcpServers"]
+                .get("pencil")
                 .expect("pencil should be restored");
             assert_eq!(pencil["command"], "/tmp/pencil-mcp");
             assert_eq!(pencil["args"][0], "--app");
             // Should NOT have disabled field
-            assert!(pencil.get("disabled").is_none(),
-                "restored MCP should not have disabled field");
+            assert!(
+                pencil.get("disabled").is_none(),
+                "restored MCP should not have disabled field"
+            );
         });
     }
 
@@ -867,9 +1172,11 @@ mod tests {
         with_home(tmp.path(), || {
             let mgr = SkillManager::with_base(sm_data.clone()).unwrap();
 
-            mgr.disable_resource("mcp:pencil", CliTarget::Claude, None).unwrap();
+            mgr.disable_resource("mcp:pencil", CliTarget::Claude, None)
+                .unwrap();
             // Second disable should not error (already removed)
-            mgr.disable_resource("mcp:pencil", CliTarget::Claude, None).unwrap();
+            mgr.disable_resource("mcp:pencil", CliTarget::Claude, None)
+                .unwrap();
 
             // Backup should still be valid
             let backup_path = sm_data.join("mcps").join("pencil.json");
@@ -878,7 +1185,7 @@ mod tests {
     }
 
     #[test]
-    fn disable_skill_manager_self_is_refused() {
+    fn disable_rune_self_is_refused() {
         let tmp = tempfile::tempdir().unwrap();
         write_realistic_claude_json(tmp.path());
 
@@ -886,14 +1193,15 @@ mod tests {
             let mgr = SkillManager::with_base(tmp.path().join("sm-data")).unwrap();
 
             // Should refuse to disable itself
-            let result = mgr.disable_resource("mcp:skill-manager", CliTarget::Claude, None);
-            assert!(result.is_err(), "SM should refuse to disable itself");
+            let result = mgr.disable_resource("mcp:runai", CliTarget::Claude, None);
+            assert!(result.is_err(), "Runai should refuse to disable itself");
 
-            // Verify: skill-manager still in config
+            // Verify: runai still in config
             let content: serde_json::Value = serde_json::from_str(
-                &std::fs::read_to_string(tmp.path().join(".claude.json")).unwrap()
-            ).unwrap();
-            assert!(content["mcpServers"].get("skill-manager").is_some());
+                &std::fs::read_to_string(tmp.path().join(".claude.json")).unwrap(),
+            )
+            .unwrap();
+            assert!(content["mcpServers"].get("runai").is_some());
         });
     }
 
@@ -912,15 +1220,20 @@ mod tests {
             assert!(pencil_before.is_enabled_for(CliTarget::Claude));
 
             // Disable pencil
-            mgr.disable_resource("mcp:pencil", CliTarget::Claude, None).unwrap();
+            mgr.disable_resource("mcp:pencil", CliTarget::Claude, None)
+                .unwrap();
 
             // After disable: still 3 MCPs, but pencil is disabled
             let after = mgr.list_resources(Some(ResourceKind::Mcp), None).unwrap();
             assert_eq!(after.len(), 3, "disabled MCP should still be visible");
-            let pencil_after = after.iter().find(|r| r.name == "pencil")
+            let pencil_after = after
+                .iter()
+                .find(|r| r.name == "pencil")
                 .expect("pencil should still appear in list");
-            assert!(!pencil_after.is_enabled_for(CliTarget::Claude),
-                "pencil should show as disabled");
+            assert!(
+                !pencil_after.is_enabled_for(CliTarget::Claude),
+                "pencil should show as disabled"
+            );
 
             // Other MCPs unchanged
             let github = after.iter().find(|r| r.name == "github").unwrap();
@@ -942,13 +1255,14 @@ mod tests {
         std::fs::write(
             tmp.path().join(".claude.json"),
             serde_json::to_string_pretty(&config).unwrap(),
-        ).unwrap();
+        )
+        .unwrap();
 
         with_home(tmp.path(), || {
             let mgr = SkillManager::with_base(tmp.path().join("sm-data")).unwrap();
-            let mcps = mgr.list_resources(
-                Some(crate::core::resource::ResourceKind::Mcp), None
-            ).unwrap();
+            let mcps = mgr
+                .list_resources(Some(crate::core::resource::ResourceKind::Mcp), None)
+                .unwrap();
 
             assert_eq!(mcps.len(), 2);
             let a = mcps.iter().find(|r| r.name == "server-a").unwrap();
@@ -972,8 +1286,11 @@ mod tests {
         std::fs::write(skills_dir.join("debugging/SKILL.md"),
             "---\nname: debugging\ndescription: \"Systematic debugging skill\"\n---\n\n# Debugging\n").unwrap();
         std::fs::create_dir_all(skills_dir.join("tdd")).unwrap();
-        std::fs::write(skills_dir.join("tdd/SKILL.md"),
-            "---\nname: tdd\ndescription: \"Test-driven development\"\n---\n\n# TDD\n").unwrap();
+        std::fs::write(
+            skills_dir.join("tdd/SKILL.md"),
+            "---\nname: tdd\ndescription: \"Test-driven development\"\n---\n\n# TDD\n",
+        )
+        .unwrap();
 
         // Also create the skills_dir for symlinking
         let claude_skills = tmp.path().join(".claude/skills");
@@ -982,12 +1299,14 @@ mod tests {
         with_home(tmp.path(), || {
             let mgr = SkillManager::with_base(sm_data.clone()).unwrap();
 
-            let count = mgr.register_and_group_skills(
-                &["debugging".into(), "tdd".into()],
-                "my-toolkit",
-                "My Toolkit",
-                CliTarget::Claude,
-            ).unwrap();
+            let count = mgr
+                .register_and_group_skills(
+                    &["debugging".into(), "tdd".into()],
+                    "my-toolkit",
+                    "My Toolkit",
+                    CliTarget::Claude,
+                )
+                .unwrap();
 
             assert_eq!(count, 2, "should register 2 skills");
 
@@ -996,8 +1315,14 @@ mod tests {
             assert_eq!(members.len(), 2);
 
             // Skills enabled (symlinks created)
-            assert!(claude_skills.join("debugging").exists(), "debugging symlink should exist");
-            assert!(claude_skills.join("tdd").exists(), "tdd symlink should exist");
+            assert!(
+                claude_skills.join("debugging").exists(),
+                "debugging symlink should exist"
+            );
+            assert!(
+                claude_skills.join("tdd").exists(),
+                "tdd symlink should exist"
+            );
 
             // Descriptions parsed from frontmatter
             let resources = mgr.list_resources(Some(ResourceKind::Skill), None).unwrap();
@@ -1023,7 +1348,8 @@ mod tests {
             mgr.create_group("my-group", &group).unwrap();
 
             // Update name only
-            mgr.update_group("my-group", Some("New Name"), None).unwrap();
+            mgr.update_group("my-group", Some("New Name"), None)
+                .unwrap();
 
             let groups = mgr.list_groups().unwrap();
             let (_, g) = groups.iter().find(|(id, _)| id == "my-group").unwrap();
@@ -1049,7 +1375,8 @@ mod tests {
             mgr.create_group("my-group", &group).unwrap();
 
             // Update description only
-            mgr.update_group("my-group", None, Some("new desc")).unwrap();
+            mgr.update_group("my-group", None, Some("new desc"))
+                .unwrap();
 
             let groups = mgr.list_groups().unwrap();
             let (_, g) = groups.iter().find(|(id, _)| id == "my-group").unwrap();
@@ -1091,5 +1418,465 @@ mod tests {
             let result = mgr.update_group("nonexistent", Some("x"), None);
             assert!(result.is_err());
         });
+    }
+
+    #[test]
+    fn batch_delete_removes_multiple_resources() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm_data = tmp.path().join("sm-data");
+        let skills_dir = sm_data.join("skills");
+        for name in &["skill-a", "skill-b", "skill-c"] {
+            std::fs::create_dir_all(skills_dir.join(name)).unwrap();
+            std::fs::write(skills_dir.join(format!("{name}/SKILL.md")), "# X\n").unwrap();
+        }
+
+        with_home(tmp.path(), || {
+            let mgr = SkillManager::with_base(sm_data.clone()).unwrap();
+            for name in &["skill-a", "skill-b", "skill-c"] {
+                mgr.register_local_skill(name).unwrap();
+            }
+
+            let result =
+                mgr.batch_delete(&["skill-a".into(), "skill-b".into(), "nonexistent".into()]);
+            let (deleted, errors) = result.unwrap();
+            assert_eq!(deleted, 2);
+            assert_eq!(errors.len(), 1); // nonexistent
+
+            // skill-c should still exist
+            assert!(mgr.find_resource_id("skill-c").is_some());
+            assert!(mgr.find_resource_id("skill-a").is_none());
+            assert!(mgr.find_resource_id("skill-b").is_none());
+        });
+    }
+
+    #[test]
+    fn record_usage_by_name_increments_count() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm_data = tmp.path().join("sm-data");
+        let skills_dir = sm_data.join("skills");
+        std::fs::create_dir_all(skills_dir.join("my-skill")).unwrap();
+        std::fs::write(skills_dir.join("my-skill/SKILL.md"), "# My Skill\n").unwrap();
+
+        with_home(tmp.path(), || {
+            let mgr = SkillManager::with_base(sm_data.clone()).unwrap();
+            mgr.register_local_skill("my-skill").unwrap();
+
+            mgr.record_usage("my-skill").unwrap();
+            mgr.record_usage("my-skill").unwrap();
+
+            let stats = mgr.usage_stats().unwrap();
+            let entry = stats.iter().find(|s| s.name == "my-skill").unwrap();
+            assert_eq!(entry.count, 2);
+            assert!(entry.last_used_at.is_some());
+        });
+    }
+
+    #[test]
+    fn record_usage_unknown_name_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_home(tmp.path(), || {
+            let mgr = SkillManager::with_base(tmp.path().join("sm-data")).unwrap();
+            let result = mgr.record_usage("nonexistent");
+            assert!(result.is_err());
+        });
+    }
+
+    #[test]
+    fn usage_stats_returns_all_resources_sorted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm_data = tmp.path().join("sm-data");
+        let skills_dir = sm_data.join("skills");
+        for name in &["alpha", "beta"] {
+            std::fs::create_dir_all(skills_dir.join(name)).unwrap();
+            std::fs::write(skills_dir.join(format!("{name}/SKILL.md")), "# Skill\n").unwrap();
+        }
+
+        with_home(tmp.path(), || {
+            let mgr = SkillManager::with_base(sm_data.clone()).unwrap();
+            mgr.register_local_skill("alpha").unwrap();
+            mgr.register_local_skill("beta").unwrap();
+
+            mgr.record_usage("beta").unwrap();
+            mgr.record_usage("beta").unwrap();
+            mgr.record_usage("alpha").unwrap();
+
+            let stats = mgr.usage_stats().unwrap();
+            assert_eq!(stats.len(), 2);
+            assert_eq!(stats[0].name, "beta"); // 2 uses, should be first
+            assert_eq!(stats[1].name, "alpha"); // 1 use
+        });
+    }
+
+    #[test]
+    fn disable_enable_mcp_on_codex_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Create codex config with TOML format
+        let codex_dir = tmp.path().join(".codex");
+        std::fs::create_dir_all(&codex_dir).unwrap();
+        std::fs::write(
+            codex_dir.join("config.toml"),
+            r#"
+[mcp_servers.test-mcp]
+type = "stdio"
+command = "test-cmd"
+args = ["--flag"]
+"#,
+        )
+        .unwrap();
+
+        with_home(tmp.path(), || {
+            let mgr = SkillManager::with_base(tmp.path().join("sm-data")).unwrap();
+
+            // Disable MCP on codex
+            mgr.disable_resource("mcp:test-mcp", CliTarget::Codex, None)
+                .unwrap();
+
+            // Config should have entry removed
+            let content = std::fs::read_to_string(codex_dir.join("config.toml")).unwrap();
+            assert!(
+                !content.contains("[mcp_servers.test-mcp]"),
+                "test-mcp should be removed from TOML"
+            );
+
+            // Re-enable
+            mgr.enable_resource("mcp:test-mcp", CliTarget::Codex, None)
+                .unwrap();
+
+            let content = std::fs::read_to_string(codex_dir.join("config.toml")).unwrap();
+            assert!(
+                content.contains("[mcp_servers.test-mcp]"),
+                "test-mcp should be restored to TOML"
+            );
+            assert!(content.contains("test-cmd"), "command should be restored");
+        });
+    }
+
+    #[test]
+    fn enable_mcp_creates_config_for_missing_cli() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm_data = tmp.path().join("sm-data");
+
+        // First create a backup for the MCP (simulate previous disable)
+        let mcps_dir = sm_data.join("mcps");
+        std::fs::create_dir_all(&mcps_dir).unwrap();
+        std::fs::write(
+            mcps_dir.join("my-mcp.json"),
+            r#"{"command":"my-cmd","args":[]}"#,
+        )
+        .unwrap();
+
+        with_home(tmp.path(), || {
+            let mgr = SkillManager::with_base(sm_data.clone()).unwrap();
+
+            // Enable on gemini — no .gemini/settings.json exists yet
+            mgr.enable_resource("mcp:my-mcp", CliTarget::Gemini, None)
+                .unwrap();
+
+            // Config file should now exist with the MCP entry
+            let gemini_config = tmp.path().join(".gemini").join("settings.json");
+            assert!(gemini_config.exists(), "gemini config should be created");
+
+            let content: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&gemini_config).unwrap()).unwrap();
+            assert!(content["mcpServers"]["my-mcp"].is_object());
+        });
+    }
+
+    #[test]
+    fn read_mcp_status_from_multiple_clis() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Claude config (JSON)
+        let claude_config = serde_json::json!({
+            "mcpServers": { "shared-mcp": { "command": "x" } }
+        });
+        std::fs::write(
+            tmp.path().join(".claude.json"),
+            serde_json::to_string_pretty(&claude_config).unwrap(),
+        )
+        .unwrap();
+
+        // Codex config (TOML)
+        let codex_dir = tmp.path().join(".codex");
+        std::fs::create_dir_all(&codex_dir).unwrap();
+        std::fs::write(
+            codex_dir.join("config.toml"),
+            r#"
+[mcp_servers.shared-mcp]
+type = "stdio"
+command = "x"
+
+[mcp_servers.codex-only]
+type = "stdio"
+command = "y"
+"#,
+        )
+        .unwrap();
+
+        with_home(tmp.path(), || {
+            let status = SkillManager::read_mcp_status_from_configs();
+
+            // shared-mcp enabled on both claude and codex
+            let shared = status.get("shared-mcp").unwrap();
+            assert!(shared.get(&CliTarget::Claude).copied().unwrap_or(false));
+            assert!(shared.get(&CliTarget::Codex).copied().unwrap_or(false));
+
+            // codex-only only on codex
+            let codex_only = status.get("codex-only").unwrap();
+            assert!(!codex_only.get(&CliTarget::Claude).copied().unwrap_or(false));
+            assert!(codex_only.get(&CliTarget::Codex).copied().unwrap_or(false));
+        });
+    }
+
+    #[test]
+    fn read_mcp_status_reads_codex_toml() {
+        let tmp = tempfile::tempdir().unwrap();
+        let codex_dir = tmp.path().join(".codex");
+        std::fs::create_dir_all(&codex_dir).unwrap();
+        std::fs::write(
+            codex_dir.join("config.toml"),
+            r#"
+model = "gpt-5"
+
+[mcp_servers.pencil]
+type = "stdio"
+command = "npx"
+args = ["-y", "@anthropic-ai/pencil-mcp"]
+
+[mcp_servers.github]
+type = "stdio"
+command = "gh-mcp"
+args = []
+"#,
+        )
+        .unwrap();
+
+        with_home(tmp.path(), || {
+            let status = SkillManager::read_mcp_status_from_configs();
+            let pencil = status.get("pencil").unwrap();
+            assert!(pencil.get(&CliTarget::Codex).copied().unwrap_or(false));
+            let github = status.get("github").unwrap();
+            assert!(github.get(&CliTarget::Codex).copied().unwrap_or(false));
+        });
+    }
+
+    #[test]
+    fn disable_enable_mcp_on_codex_toml() {
+        let tmp = tempfile::tempdir().unwrap();
+        let codex_dir = tmp.path().join(".codex");
+        std::fs::create_dir_all(&codex_dir).unwrap();
+        std::fs::write(
+            codex_dir.join("config.toml"),
+            r#"
+model = "gpt-5"
+
+[mcp_servers.pencil]
+type = "stdio"
+command = "npx"
+args = ["-y", "@anthropic-ai/pencil-mcp"]
+
+[mcp_servers.github]
+type = "stdio"
+command = "gh-mcp"
+args = []
+"#,
+        )
+        .unwrap();
+
+        with_home(tmp.path(), || {
+            let mgr = SkillManager::with_base(tmp.path().join("sm-data")).unwrap();
+
+            // Disable pencil on codex
+            mgr.disable_resource("mcp:pencil", CliTarget::Codex, None)
+                .unwrap();
+
+            // pencil should be removed from config.toml
+            let content = std::fs::read_to_string(codex_dir.join("config.toml")).unwrap();
+            assert!(
+                !content.contains("[mcp_servers.pencil]"),
+                "pencil should be removed from TOML"
+            );
+            // github should still be there
+            assert!(
+                content.contains("[mcp_servers.github]"),
+                "github should remain in TOML"
+            );
+            // model should be preserved
+            assert!(
+                content.contains("model"),
+                "non-MCP config should be preserved"
+            );
+
+            // Re-enable pencil
+            mgr.enable_resource("mcp:pencil", CliTarget::Codex, None)
+                .unwrap();
+
+            let content = std::fs::read_to_string(codex_dir.join("config.toml")).unwrap();
+            assert!(
+                content.contains("[mcp_servers.pencil]"),
+                "pencil should be restored to TOML"
+            );
+        });
+    }
+
+    #[test]
+    fn register_codex_writes_toml() {
+        let tmp = tempfile::tempdir().unwrap();
+        let codex_dir = tmp.path().join(".codex");
+        std::fs::create_dir_all(&codex_dir).unwrap();
+        std::fs::write(codex_dir.join("config.toml"), "model = \"gpt-5\"\n").unwrap();
+
+        let result = crate::core::mcp_register::McpRegister::register_all(tmp.path());
+        assert!(
+            result.registered.contains(&"codex".to_string()),
+            "codex should be registered"
+        );
+
+        let content = std::fs::read_to_string(codex_dir.join("config.toml")).unwrap();
+        assert!(
+            content.contains("[mcp_servers.runai]"),
+            "runai should be in TOML"
+        );
+        assert!(
+            content.contains("mcp-serve"),
+            "mcp-serve arg should be present"
+        );
+        // Non-MCP config preserved
+        assert!(content.contains("model"), "existing config preserved");
+    }
+
+    // --- OpenCode tests ---
+
+    #[test]
+    fn read_mcp_status_reads_opencode_format() {
+        let tmp = tempfile::tempdir().unwrap();
+        let oc_dir = tmp.path().join(".config").join("opencode");
+        std::fs::create_dir_all(&oc_dir).unwrap();
+        std::fs::write(
+            oc_dir.join("opencode.json"),
+            r#"{
+                "mcp": {
+                    "pencil": {
+                        "command": ["npx", "-y", "@anthropic-ai/pencil-mcp"],
+                        "enabled": true,
+                        "type": "local"
+                    },
+                    "disabled-one": {
+                        "command": ["node", "server.js"],
+                        "enabled": false,
+                        "type": "local"
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        with_home(tmp.path(), || {
+            let status = SkillManager::read_mcp_status_from_configs();
+            // pencil should be detected as enabled on OpenCode
+            let pencil = status.get("pencil").unwrap();
+            assert!(
+                pencil.get(&CliTarget::OpenCode).copied().unwrap_or(false),
+                "pencil should be enabled for opencode"
+            );
+            // disabled-one should NOT be in status (enabled=false)
+            let disabled = status.get("disabled-one");
+            let oc_enabled = disabled
+                .and_then(|m| m.get(&CliTarget::OpenCode))
+                .copied()
+                .unwrap_or(false);
+            assert!(!oc_enabled, "disabled MCP should not show as enabled");
+        });
+    }
+
+    #[test]
+    fn disable_enable_mcp_on_opencode() {
+        let tmp = tempfile::tempdir().unwrap();
+        let oc_dir = tmp.path().join(".config").join("opencode");
+        std::fs::create_dir_all(&oc_dir).unwrap();
+        std::fs::write(
+            oc_dir.join("opencode.json"),
+            r#"{
+                "mcp": {
+                    "pencil": {
+                        "command": ["npx", "-y", "@anthropic-ai/pencil-mcp"],
+                        "enabled": true,
+                        "type": "local"
+                    },
+                    "other": {
+                        "command": ["other-cmd"],
+                        "enabled": true,
+                        "type": "local"
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        with_home(tmp.path(), || {
+            let mgr = SkillManager::with_base(tmp.path().join("sm-data")).unwrap();
+
+            // Disable pencil
+            mgr.disable_resource("mcp:pencil", CliTarget::OpenCode, None)
+                .unwrap();
+
+            let content: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(oc_dir.join("opencode.json")).unwrap(),
+            )
+            .unwrap();
+            // pencil should be removed from mcp
+            assert!(
+                content["mcp"].get("pencil").is_none(),
+                "pencil should be removed"
+            );
+            // other should remain
+            assert!(content["mcp"]["other"].is_object(), "other should remain");
+
+            // Re-enable
+            mgr.enable_resource("mcp:pencil", CliTarget::OpenCode, None)
+                .unwrap();
+
+            let content: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(oc_dir.join("opencode.json")).unwrap(),
+            )
+            .unwrap();
+            let pencil = &content["mcp"]["pencil"];
+            assert!(pencil.is_object(), "pencil should be restored");
+            // Command array must be preserved correctly
+            let cmd = pencil["command"]
+                .as_array()
+                .expect("command should be array");
+            assert_eq!(cmd[0], "npx", "first element should be npx");
+            assert_eq!(cmd[1], "-y");
+            assert_eq!(cmd[2], "@anthropic-ai/pencil-mcp");
+            assert_eq!(pencil["enabled"], true);
+            assert_eq!(pencil["type"], "local");
+        });
+    }
+
+    #[test]
+    fn register_opencode_writes_correct_format() {
+        let tmp = tempfile::tempdir().unwrap();
+        let oc_dir = tmp.path().join(".config").join("opencode");
+        std::fs::create_dir_all(&oc_dir).unwrap();
+        std::fs::write(oc_dir.join("opencode.json"), r#"{"provider":{}}"#).unwrap();
+
+        let result = crate::core::mcp_register::McpRegister::register_all(tmp.path());
+        assert!(
+            result.registered.contains(&"opencode".to_string()),
+            "opencode should be registered"
+        );
+
+        let content: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(oc_dir.join("opencode.json")).unwrap())
+                .unwrap();
+        let sm = &content["mcp"]["runai"];
+        assert!(sm.is_object(), "runai should be in mcp");
+        // command should be an array (OpenCode format)
+        assert!(sm["command"].is_array(), "command should be array");
+        assert_eq!(sm["type"], "local");
+        assert_eq!(sm["enabled"], true);
+        // provider should be preserved
+        assert!(content["provider"].is_object(), "existing config preserved");
     }
 }

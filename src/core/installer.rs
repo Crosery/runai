@@ -1,8 +1,8 @@
-use std::path::Path;
-use anyhow::{Result, bail};
-use crate::core::paths::AppPaths;
 use crate::core::classifier::Classifier;
 use crate::core::linker::Linker;
+use crate::core::paths::AppPaths;
+use anyhow::{Result, bail};
+use std::path::Path;
 
 #[derive(Debug)]
 pub struct InstallResult {
@@ -40,9 +40,7 @@ impl Installer {
         branch: &str,
         paths: &AppPaths,
     ) -> Result<Vec<InstallResult>> {
-        let url = format!(
-            "https://github.com/{owner}/{repo}/archive/refs/heads/{branch}.tar.gz"
-        );
+        let url = format!("https://github.com/{owner}/{repo}/archive/refs/heads/{branch}.tar.gz");
 
         let response = reqwest::get(&url).await?;
         if !response.status().is_success() {
@@ -79,7 +77,8 @@ impl Installer {
 
             if path.is_dir() {
                 if path.join("SKILL.md").exists() {
-                    let name = path.file_name()
+                    let name = path
+                        .file_name()
                         .and_then(|n| n.to_str())
                         .unwrap_or("unknown")
                         .to_string();
@@ -92,7 +91,9 @@ impl Installer {
 
                     let description = Self::extract_description(&target);
                     let suggested = Classifier::suggest_groups_with_source(
-                        &name, &description, Some((owner, repo)),
+                        &name,
+                        &description,
+                        Some((owner, repo)),
                     );
 
                     results.push(InstallResult {

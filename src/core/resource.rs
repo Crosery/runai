@@ -1,7 +1,7 @@
+use crate::core::cli_target::CliTarget;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use serde::{Deserialize, Serialize};
-use crate::core::cli_target::CliTarget;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -30,9 +30,17 @@ impl ResourceKind {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Source {
-    Local { path: PathBuf },
-    GitHub { owner: String, repo: String, branch: String },
-    Adopted { original_cli: String },
+    Local {
+        path: PathBuf,
+    },
+    GitHub {
+        owner: String,
+        repo: String,
+        branch: String,
+    },
+    Adopted {
+        original_cli: String,
+    },
 }
 
 impl Source {
@@ -68,6 +76,8 @@ pub struct Resource {
     pub source: Source,
     pub installed_at: i64,
     pub enabled: HashMap<CliTarget, bool>,
+    pub usage_count: u64,
+    pub last_used_at: Option<i64>,
 }
 
 impl Resource {
@@ -81,5 +91,31 @@ impl Resource {
 
     pub fn is_enabled_for(&self, target: CliTarget) -> bool {
         self.enabled.get(&target).copied().unwrap_or(false)
+    }
+}
+
+/// Usage statistics for a resource.
+#[derive(Debug, Clone)]
+pub struct UsageStat {
+    pub id: String,
+    pub name: String,
+    pub count: u64,
+    pub last_used_at: Option<i64>,
+}
+
+/// Format a timestamp as a human-readable "X ago" string.
+pub fn format_time_ago(ts: Option<i64>) -> String {
+    match ts {
+        Some(ts) => {
+            let secs = (chrono::Utc::now().timestamp() - ts).max(0);
+            if secs < 3600 {
+                format!("{}m ago", secs / 60)
+            } else if secs < 86400 {
+                format!("{}h ago", secs / 3600)
+            } else {
+                format!("{}d ago", secs / 86400)
+            }
+        }
+        None => "never".into(),
     }
 }

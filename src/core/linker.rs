@@ -1,5 +1,5 @@
+use anyhow::{Context, Result};
 use std::path::Path;
-use anyhow::{Result, Context};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum EntryType {
@@ -19,14 +19,24 @@ impl Linker {
 
         #[cfg(unix)]
         {
-            std::os::unix::fs::symlink(target, link)
-                .with_context(|| format!("failed to symlink {} -> {}", link.display(), target.display()))?;
+            std::os::unix::fs::symlink(target, link).with_context(|| {
+                format!(
+                    "failed to symlink {} -> {}",
+                    link.display(),
+                    target.display()
+                )
+            })?;
         }
 
         #[cfg(windows)]
         {
-            std::os::windows::fs::symlink_dir(target, link)
-                .with_context(|| format!("failed to symlink {} -> {}", link.display(), target.display()))?;
+            std::os::windows::fs::symlink_dir(target, link).with_context(|| {
+                format!(
+                    "failed to symlink {} -> {}",
+                    link.display(),
+                    target.display()
+                )
+            })?;
         }
 
         Ok(())
