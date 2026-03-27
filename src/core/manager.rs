@@ -227,7 +227,9 @@ impl SkillManager {
                 .map(|p| p.to_path_buf())
                 .unwrap_or_else(|| target.skills_dir());
             let link_path = cli_dir.join(&resource.name);
-            if Linker::is_our_symlink(&link_path, self.paths.data_dir()) {
+            // Remove symlink regardless of target — handles both our managed dir
+            // and legacy paths (e.g. old .skill-manager/ symlinks)
+            if Linker::is_symlink(&link_path) {
                 Linker::remove_link(&link_path)?;
             }
             Ok(())
@@ -1964,5 +1966,44 @@ args = []
         assert_eq!(sm["enabled"], true);
         // provider should be preserved
         assert!(content["provider"].is_object(), "existing config preserved");
+    }
+
+    #[test]
+    fn disable_skill_removes_any_symlink_not_just_ours() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm_data = tmp.path().join("sm-data");
+        let skills_dir = sm_data.join("skills");
+        std::fs::create_dir_all(skills_dir.join("test-skill")).unwrap();
+        std::fs::write(skills_dir.join("test-skill/SKILL.md"), "# Test").unwrap();
+
+        // Create CLI skills dir with a symlink pointing to some OTHER path (not our managed dir)
+        let claude_skills = tmp.path().join(".claude/skills");
+        std::fs::create_dir_all(&claude_skills).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(
+            "/some/other/path/test-skill",
+            claude_skills.join("test-skill"),
+        )
+        .unwrap();
+
+        with_home(tmp.path(), || {
+            let mgr = SkillManager::with_base(sm_data.clone()).unwrap();
+            mgr.register_local_skill("test-skill").unwrap();
+
+            // Should be detected as enabled (symlink exists)
+            let skills = mgr.list_resources(Some(ResourceKind::Skill), None).unwrap();
+            let skill = skills.iter().find(|s| s.name == "test-skill").unwrap();
+            assert!(skill.is_enabled_for(CliTarget::Claude));
+
+            // Disable should work even though symlink doesn't point to our managed dir
+            mgr.disable_resource(&skill.id, CliTarget::Claude, None)
+                .unwrap();
+
+            // Symlink should be gone
+            assert!(
+                !claude_skills.join("test-skill").symlink_metadata().is_ok(),
+                "symlink should be removed"
+            );
+        });
     }
 }
