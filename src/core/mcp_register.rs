@@ -242,6 +242,112 @@ impl McpRegister {
             .is_some()
     }
 
+    /// Migrate old "skill-manager" MCP entries to "runai" across all CLIs.
+    /// Returns the number of CLIs that were migrated.
+    /// - Renames the entry key from "skill-manager" to "runai"
+    /// - Preserves all fields (args, env, timeout, etc.)
+    /// - If "runai" already exists, only removes the old entry (no overwrite)
+    /// - Idempotent: safe to call multiple times
+    pub fn migrate_all(home: &Path) -> usize {
+        let mut count = 0;
+
+        // Claude: ~/.claude.json (JSON, key="mcpServers")
+        if Self::migrate_json(&home.join(".claude.json"), "mcpServers") {
+            count += 1;
+        }
+
+        // Gemini: ~/.gemini/settings.json (JSON, key="mcpServers")
+        if Self::migrate_json(&home.join(".gemini").join("settings.json"), "mcpServers") {
+            count += 1;
+        }
+
+        // Codex: ~/.codex/config.toml (TOML, key="mcp_servers")
+        if Self::migrate_codex_toml(&home.join(".codex").join("config.toml")) {
+            count += 1;
+        }
+
+        // OpenCode: ~/.config/opencode/opencode.json (JSON, key="mcp")
+        if Self::migrate_json(
+            &home.join(".config").join("opencode").join("opencode.json"),
+            "mcp",
+        ) {
+            count += 1;
+        }
+
+        count
+    }
+
+    /// Migrate "skill-manager" → "runai" in a JSON config file.
+    /// Returns true if migration occurred.
+    fn migrate_json(path: &Path, servers_key: &str) -> bool {
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+        let mut config: serde_json::Value = match serde_json::from_str(&content) {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+
+        let servers = match config.get_mut(servers_key).and_then(|s| s.as_object_mut()) {
+            Some(s) => s,
+            None => return false,
+        };
+
+        // Nothing to migrate
+        if !servers.contains_key("skill-manager") {
+            return false;
+        }
+
+        let old_entry = servers.remove("skill-manager").unwrap();
+
+        // Only insert if "runai" doesn't already exist
+        if !servers.contains_key("runai") {
+            servers.insert("runai".into(), old_entry);
+        }
+
+        // Write back
+        if let Ok(out) = serde_json::to_string_pretty(&config) {
+            let _ = std::fs::write(path, out);
+        }
+
+        true
+    }
+
+    /// Migrate "skill-manager" → "runai" in Codex TOML config.
+    /// Returns true if migration occurred.
+    fn migrate_codex_toml(path: &Path) -> bool {
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+        let mut table: toml::Table = match content.parse() {
+            Ok(t) => t,
+            Err(_) => return false,
+        };
+
+        let servers = match table.get_mut("mcp_servers") {
+            Some(toml::Value::Table(s)) => s,
+            _ => return false,
+        };
+
+        if !servers.contains_key("skill-manager") {
+            return false;
+        }
+
+        let old_entry = servers.remove("skill-manager").unwrap();
+
+        if !servers.contains_key("runai") {
+            servers.insert("runai".into(), old_entry);
+        }
+
+        if let Ok(out) = toml::to_string_pretty(&table) {
+            let _ = std::fs::write(path, out);
+        }
+
+        true
+    }
+
     /// Unregister from all CLIs.
     pub fn unregister_all(home: &Path) -> Result<()> {
         // JSON CLIs with mcpServers key
@@ -373,6 +479,177 @@ mod tests {
             tmp.path(),
             ".codex/settings.json"
         ));
+    }
+
+    // --- Migration tests ---
+
+    #[test]
+    fn migrate_claude_renames_old_entry_preserving_fields() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_file(
+            tmp.path(),
+            ".claude.json",
+            r#"{
+                "numStartups": 42,
+                "mcpServers": {
+                    "skill-manager": {
+                        "command": "/old/path/skill-manager",
+                        "args": ["mcp-serve"],
+                        "description": "old description",
+                        "timeout": 30000
+                    },
+                    "other-mcp": { "command": "x" }
+                }
+            }"#,
+        );
+
+        let migrated = McpRegister::migrate_all(tmp.path());
+        assert!(migrated > 0, "should migrate at least one CLI");
+
+        let content = std::fs::read_to_string(tmp.path().join(".claude.json")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+
+        // Old entry removed
+        assert!(
+            v["mcpServers"].get("skill-manager").is_none(),
+            "old entry should be removed"
+        );
+        // New entry exists with preserved fields
+        let runai = &v["mcpServers"]["runai"];
+        assert!(runai.is_object(), "runai entry should exist");
+        assert_eq!(runai["args"][0], "mcp-serve", "args preserved");
+        assert_eq!(runai["timeout"], 30000, "timeout preserved");
+        // Other MCPs untouched
+        assert!(
+            v["mcpServers"]["other-mcp"].is_object(),
+            "other MCPs preserved"
+        );
+        // Non-MCP config untouched
+        assert_eq!(v["numStartups"], 42, "non-MCP config preserved");
+    }
+
+    #[test]
+    fn migrate_codex_toml_renames_old_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_file(
+            tmp.path(),
+            ".codex/config.toml",
+            r#"
+model = "gpt-5"
+
+[mcp_servers.skill-manager]
+type = "stdio"
+command = "/old/skill-manager"
+args = ["mcp-serve"]
+
+[mcp_servers.other]
+type = "stdio"
+command = "other-cmd"
+"#,
+        );
+
+        let migrated = McpRegister::migrate_all(tmp.path());
+        assert!(migrated > 0);
+
+        let content = std::fs::read_to_string(tmp.path().join(".codex/config.toml")).unwrap();
+        assert!(
+            !content.contains("[mcp_servers.skill-manager]"),
+            "old entry removed"
+        );
+        assert!(content.contains("[mcp_servers.runai]"), "new entry created");
+        assert!(
+            content.contains("[mcp_servers.other]"),
+            "other MCPs preserved"
+        );
+        assert!(content.contains("model"), "non-MCP config preserved");
+    }
+
+    #[test]
+    fn migrate_opencode_renames_old_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_file(
+            tmp.path(),
+            ".config/opencode/opencode.json",
+            r#"{
+                "mcp": {
+                    "skill-manager": {
+                        "command": ["/old/skill-manager", "mcp-serve"],
+                        "enabled": true,
+                        "type": "local"
+                    },
+                    "pencil": {
+                        "command": ["npx", "-y", "pencil"],
+                        "enabled": true,
+                        "type": "local"
+                    }
+                },
+                "provider": {}
+            }"#,
+        );
+
+        let migrated = McpRegister::migrate_all(tmp.path());
+        assert!(migrated > 0);
+
+        let content: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(tmp.path().join(".config/opencode/opencode.json")).unwrap(),
+        )
+        .unwrap();
+
+        assert!(
+            content["mcp"].get("skill-manager").is_none(),
+            "old entry removed"
+        );
+        let runai = &content["mcp"]["runai"];
+        assert!(runai.is_object(), "runai entry exists");
+        assert!(runai["command"].is_array(), "command preserved as array");
+        assert_eq!(runai["enabled"], true, "enabled preserved");
+        // Other MCPs untouched
+        assert!(content["mcp"]["pencil"].is_object(), "other MCPs preserved");
+        assert!(content["provider"].is_object(), "non-MCP config preserved");
+    }
+
+    #[test]
+    fn migrate_skips_when_runai_already_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_file(
+            tmp.path(),
+            ".claude.json",
+            r#"{
+                "mcpServers": {
+                    "skill-manager": { "command": "/old/skill-manager", "args": ["mcp-serve"] },
+                    "runai": { "command": "/new/runai", "args": ["mcp-serve"] }
+                }
+            }"#,
+        );
+
+        let migrated = McpRegister::migrate_all(tmp.path());
+
+        let content = std::fs::read_to_string(tmp.path().join(".claude.json")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+
+        // runai should keep its existing config, NOT be overwritten by old skill-manager
+        assert_eq!(
+            v["mcpServers"]["runai"]["command"], "/new/runai",
+            "existing runai should NOT be overwritten"
+        );
+        // old entry should still be cleaned up
+        assert!(
+            v["mcpServers"].get("skill-manager").is_none(),
+            "old entry should be removed even when runai exists"
+        );
+    }
+
+    #[test]
+    fn migrate_noop_when_no_old_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_file(
+            tmp.path(),
+            ".claude.json",
+            r#"{"mcpServers":{"runai":{"command":"x"}}}"#,
+        );
+
+        let migrated = McpRegister::migrate_all(tmp.path());
+        assert_eq!(migrated, 0, "nothing to migrate");
     }
 
     #[test]

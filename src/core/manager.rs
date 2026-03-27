@@ -121,6 +121,11 @@ pub struct SkillManager {
 
 impl SkillManager {
     pub fn new() -> Result<Self> {
+        // Auto-migrate old "skill-manager" MCP entries to "runai" on first launch
+        if let Some(home) = dirs::home_dir() {
+            crate::core::mcp_register::McpRegister::migrate_all(&home);
+        }
+
         let paths = AppPaths::default_path();
         paths.ensure_dirs()?;
         let db = Database::open(&paths.db_path())?;
