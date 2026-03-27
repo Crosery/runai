@@ -943,8 +943,12 @@ impl SmServer {
         if lines.is_empty() {
             Json(TextResult {
                 result: format!(
-                    "No results for '{}'. Try web search: '{} claude code skill github'",
-                    p.name, p.name
+                    "No results for '{q}' in installed or market.\n\n\
+                     Try these fallbacks:\n\
+                     1. npx skills find {q}  ← search skills.sh ecosystem\n\
+                     2. Web search: '{q} claude code skill github'\n\
+                     3. sm_sources(action='list') to check enabled market sources\n\n\
+                     If you find a repo, install with: runai install owner/repo"
                 ),
             })
         } else {
@@ -1289,6 +1293,19 @@ mod tests {
         assert!(
             !result.result.is_empty(),
             "sm_backups should return a non-empty string"
+        );
+    }
+
+    #[test]
+    fn sm_search_no_results_suggests_npx_skills_find() {
+        let server = SmServer::new().unwrap();
+        let Json(result) = server.sm_search(Parameters(NameParams {
+            name: "xyznonexistent99999".into(),
+        }));
+        assert!(
+            result.result.contains("npx skills find"),
+            "no-results message should suggest npx skills find, got: {}",
+            result.result
         );
     }
 }
