@@ -54,6 +54,9 @@ impl AppPaths {
         // Fix symlinks in all CLI skills directories
         Self::relink_cli_skills(home, &old_str, &new_str);
 
+        // Update directory paths inside the DB
+        Self::update_db_paths(&new_db, &old_str, &new_str);
+
         Ok(())
     }
 
@@ -97,6 +100,25 @@ impl AppPaths {
                 }
             }
         }
+    }
+
+    /// Update directory and source_meta paths in the DB from old prefix to new.
+    fn update_db_paths(db_path: &Path, old_prefix: &str, new_prefix: &str) {
+        if !db_path.exists() {
+            return;
+        }
+        let conn = match rusqlite::Connection::open(db_path) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let _ = conn.execute(
+            "UPDATE resources SET directory = REPLACE(directory, ?1, ?2) WHERE directory LIKE '%' || ?1 || '%'",
+            rusqlite::params![old_prefix, new_prefix],
+        );
+        let _ = conn.execute(
+            "UPDATE resources SET source_meta = REPLACE(source_meta, ?1, ?2) WHERE source_meta LIKE '%' || ?1 || '%'",
+            rusqlite::params![old_prefix, new_prefix],
+        );
     }
 
     pub fn with_base(base: PathBuf) -> Self {
@@ -206,6 +228,55 @@ mod tests {
                 "symlink should NOT point to old path"
             );
         }
+    }
+
+    #[test]
+    fn migrate_updates_db_directory_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let old_dir = tmp.path().join(".skill-manager");
+        let new_dir = tmp.path().join(".runai");
+
+        // Create old structure with a real SQLite DB
+        std::fs::create_dir_all(old_dir.join("skills/my-skill")).unwrap();
+        std::fs::write(old_dir.join("skills/my-skill/SKILL.md"), "# Test").unwrap();
+        std::fs::create_dir_all(old_dir.join("mcps")).unwrap();
+        std::fs::create_dir_all(old_dir.join("groups")).unwrap();
+
+        // Create a real DB with old paths
+        {
+            let db = crate::core::db::Database::open(&old_dir.join("skill-manager.db")).unwrap();
+            let res = crate::core::resource::Resource {
+                id: "local:my-skill".into(),
+                name: "my-skill".into(),
+                kind: crate::core::resource::ResourceKind::Skill,
+                description: "test".into(),
+                directory: old_dir.join("skills/my-skill"),
+                source: crate::core::resource::Source::Local {
+                    path: old_dir.join("skills/my-skill"),
+                },
+                installed_at: 0,
+                enabled: std::collections::HashMap::new(),
+                usage_count: 0,
+                last_used_at: None,
+            };
+            db.insert_resource(&res).unwrap();
+        }
+
+        // Migrate
+        AppPaths::migrate_data_dir(&old_dir, &new_dir, tmp.path()).unwrap();
+
+        // Verify DB paths are updated
+        let db = crate::core::db::Database::open(&new_dir.join("runai.db")).unwrap();
+        let res = db.get_resource("local:my-skill").unwrap().unwrap();
+        let dir_str = res.directory.to_string_lossy();
+        assert!(
+            dir_str.contains(".runai"),
+            "directory should point to .runai, got: {dir_str}"
+        );
+        assert!(
+            !dir_str.contains(".skill-manager"),
+            "directory should NOT contain old path"
+        );
     }
 
     #[test]
