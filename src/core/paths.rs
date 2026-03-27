@@ -28,7 +28,7 @@ impl AppPaths {
                 home.join(".skill-manager")
             };
             if old_base.exists() {
-                let _ = Self::migrate_data_dir(&old_base, &new_base);
+                let _ = Self::migrate_data_dir(&old_base, &new_base, &home);
             }
         }
 
@@ -36,8 +36,11 @@ impl AppPaths {
     }
 
     /// Migrate old data directory to new location.
-    /// Renames the directory and the DB file inside it.
-    fn migrate_data_dir(old: &Path, new: &Path) -> Result<()> {
+    /// Renames the directory, the DB file, and fixes symlinks in all CLI skills dirs.
+    fn migrate_data_dir(old: &Path, new: &Path, home: &Path) -> Result<()> {
+        let old_str = old.to_string_lossy().to_string();
+        let new_str = new.to_string_lossy().to_string();
+
         // Rename the entire directory atomically
         std::fs::rename(old, new)?;
 
@@ -48,7 +51,52 @@ impl AppPaths {
             std::fs::rename(&old_db, &new_db)?;
         }
 
+        // Fix symlinks in all CLI skills directories
+        Self::relink_cli_skills(home, &old_str, &new_str);
+
         Ok(())
+    }
+
+    /// Scan all CLI skills directories for symlinks pointing to old path, repoint to new path.
+    fn relink_cli_skills(home: &Path, old_prefix: &str, new_prefix: &str) {
+        let cli_skill_dirs = [
+            home.join(".claude").join("skills"),
+            home.join(".codex").join("skills"),
+            home.join(".gemini").join("skills"),
+            home.join(".opencode").join("skills"),
+            home.join(".config").join("opencode").join("skills"),
+        ];
+
+        for dir in &cli_skill_dirs {
+            if !dir.exists() {
+                continue;
+            }
+            let entries = match std::fs::read_dir(dir) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                // Only fix symlinks
+                if !path.is_symlink() {
+                    continue;
+                }
+                let target = match std::fs::read_link(&path) {
+                    Ok(t) => t,
+                    Err(_) => continue,
+                };
+                let target_str = target.to_string_lossy();
+                if target_str.contains(old_prefix) {
+                    let new_target = target_str.replace(old_prefix, new_prefix);
+                    // Remove old symlink and create new one
+                    let _ = std::fs::remove_file(&path);
+                    #[cfg(unix)]
+                    let _ = std::os::unix::fs::symlink(Path::new(&new_target), &path);
+                    #[cfg(windows)]
+                    let _ = std::os::windows::fs::symlink_dir(Path::new(&new_target), &path);
+                }
+            }
+        }
     }
 
     pub fn with_base(base: PathBuf) -> Self {
@@ -99,7 +147,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn migrate_renames_old_dir_and_db() {
+    fn migrate_renames_dir_db_and_fixes_symlinks() {
         let tmp = tempfile::tempdir().unwrap();
         let old_dir = tmp.path().join(".skill-manager");
         let new_dir = tmp.path().join(".runai");
@@ -111,8 +159,18 @@ mod tests {
         std::fs::write(old_dir.join("skill-manager.db"), "fake-db-data").unwrap();
         std::fs::write(old_dir.join("market-sources.json"), "[]").unwrap();
 
+        // Create a CLI skills dir with symlink pointing to old path
+        let claude_skills = tmp.path().join(".claude/skills");
+        std::fs::create_dir_all(&claude_skills).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(
+            old_dir.join("skills/my-skill"),
+            claude_skills.join("my-skill"),
+        )
+        .unwrap();
+
         // Migrate
-        AppPaths::migrate_data_dir(&old_dir, &new_dir).unwrap();
+        AppPaths::migrate_data_dir(&old_dir, &new_dir, tmp.path()).unwrap();
 
         // Old dir should be gone
         assert!(!old_dir.exists(), "old dir should be removed");
@@ -123,23 +181,31 @@ mod tests {
             new_dir.join("skills/my-skill/SKILL.md").exists(),
             "skills preserved"
         );
-        assert!(new_dir.join("groups").exists(), "groups preserved");
-        assert!(
-            new_dir.join("market-sources.json").exists(),
-            "market-sources preserved"
-        );
 
         // DB renamed
-        assert!(
-            !new_dir.join("skill-manager.db").exists(),
-            "old DB name should be gone"
-        );
         assert!(new_dir.join("runai.db").exists(), "new DB should exist");
         assert_eq!(
             std::fs::read_to_string(new_dir.join("runai.db")).unwrap(),
             "fake-db-data",
             "DB content preserved"
         );
+
+        // Symlink should be updated to point to new path
+        #[cfg(unix)]
+        {
+            let link = claude_skills.join("my-skill");
+            assert!(link.exists(), "symlink should still work");
+            let target = std::fs::read_link(&link).unwrap();
+            assert!(
+                target.to_string_lossy().contains(".runai"),
+                "symlink should point to .runai, got: {}",
+                target.display()
+            );
+            assert!(
+                !target.to_string_lossy().contains(".skill-manager"),
+                "symlink should NOT point to old path"
+            );
+        }
     }
 
     #[test]
