@@ -1,4 +1,5 @@
 use crate::core::cli_target::CliTarget;
+use crate::core::dazi::{self, DaziAgent, DaziBundle, DaziClient, DaziKind, DaziSkill};
 use crate::core::group::{Group, GroupKind};
 use crate::core::manager::SkillManager;
 use crate::core::market::{self, Market, MarketSkill, SourceEntry};
@@ -13,10 +14,11 @@ pub enum Tab {
     Mcps,
     Groups,
     Market,
+    Dazi,
 }
 
 impl Tab {
-    pub const ALL: &[Tab] = &[Tab::Skills, Tab::Mcps, Tab::Groups, Tab::Market];
+    pub const ALL: &[Tab] = &[Tab::Skills, Tab::Mcps, Tab::Groups, Tab::Market, Tab::Dazi];
 
     pub fn label(&self) -> &'static str {
         match self {
@@ -24,6 +26,7 @@ impl Tab {
             Tab::Mcps => "MCPs",
             Tab::Groups => "Groups",
             Tab::Market => "Market",
+            Tab::Dazi => "搭子",
         }
     }
 }
@@ -87,6 +90,18 @@ pub struct App {
     pub market_rxs: HashMap<String, mpsc::Receiver<Result<Vec<MarketSkill>, String>>>,
     /// Sources currently being fetched
     pub market_fetching: std::collections::HashSet<String>,
+    // Dazi marketplace
+    pub dazi_kind: DaziKind,
+    pub dazi_skills: Vec<DaziSkill>,
+    pub dazi_agents: Vec<DaziAgent>,
+    pub dazi_bundles: Vec<DaziBundle>,
+    pub dazi_loading: bool,
+    pub dazi_rx_skills: Option<mpsc::Receiver<Result<Vec<DaziSkill>, String>>>,
+    pub dazi_rx_agents: Option<mpsc::Receiver<Result<Vec<DaziAgent>, String>>>,
+    pub dazi_rx_bundles: Option<mpsc::Receiver<Result<Vec<DaziBundle>, String>>>,
+    /// Background token refresh
+    dazi_token_rx: Option<mpsc::Receiver<Result<bool, String>>>,
+    dazi_last_token_check: std::time::Instant,
 }
 
 pub struct FirstLaunchInfo {
@@ -134,6 +149,16 @@ impl App {
             market_cache: HashMap::new(),
             market_rxs: HashMap::new(),
             market_fetching: std::collections::HashSet::new(),
+            dazi_kind: DaziKind::Skills,
+            dazi_skills: Vec::new(),
+            dazi_agents: Vec::new(),
+            dazi_bundles: Vec::new(),
+            dazi_loading: false,
+            dazi_rx_skills: None,
+            dazi_rx_agents: None,
+            dazi_rx_bundles: None,
+            dazi_token_rx: None,
+            dazi_last_token_check: std::time::Instant::now(),
         }
     }
 
@@ -239,7 +264,7 @@ impl App {
         let kind_filter = match self.tab {
             Tab::Skills => Some(crate::core::resource::ResourceKind::Skill),
             Tab::Mcps => Some(crate::core::resource::ResourceKind::Mcp),
-            Tab::Groups | Tab::Market => None,
+            Tab::Groups | Tab::Market | Tab::Dazi => None,
         };
 
         self.items = self
@@ -325,10 +350,59 @@ impl App {
             .unwrap_or(false)
     }
 
+    pub fn visible_dazi(&self) -> usize {
+        match self.dazi_kind {
+            DaziKind::Skills => self.visible_dazi_skills().len(),
+            DaziKind::Agents => self.visible_dazi_agents().len(),
+            DaziKind::Bundles => self.visible_dazi_bundles().len(),
+        }
+    }
+
+    pub fn visible_dazi_skills(&self) -> Vec<&DaziSkill> {
+        let q = self.search.to_lowercase();
+        self.dazi_skills
+            .iter()
+            .filter(|s| {
+                q.is_empty()
+                    || s.name.to_lowercase().contains(&q)
+                    || s.description.to_lowercase().contains(&q)
+                    || s.tags.iter().any(|t| t.to_lowercase().contains(&q))
+            })
+            .collect()
+    }
+
+    pub fn visible_dazi_agents(&self) -> Vec<&DaziAgent> {
+        let q = self.search.to_lowercase();
+        self.dazi_agents
+            .iter()
+            .filter(|a| {
+                q.is_empty()
+                    || a.name.to_lowercase().contains(&q)
+                    || a.title.to_lowercase().contains(&q)
+                    || a.description.to_lowercase().contains(&q)
+                    || a.tags.iter().any(|t| t.to_lowercase().contains(&q))
+            })
+            .collect()
+    }
+
+    pub fn visible_dazi_bundles(&self) -> Vec<&DaziBundle> {
+        let q = self.search.to_lowercase();
+        self.dazi_bundles
+            .iter()
+            .filter(|b| {
+                q.is_empty()
+                    || b.name.to_lowercase().contains(&q)
+                    || b.source_team_name.to_lowercase().contains(&q)
+                    || b.description.to_lowercase().contains(&q)
+            })
+            .collect()
+    }
+
     pub fn visible_count(&self) -> usize {
         match self.tab {
             Tab::Groups => self.visible_groups().len(),
             Tab::Market => self.visible_market().len(),
+            Tab::Dazi => self.visible_dazi(),
             _ => self.visible_items().len(),
         }
     }
@@ -424,6 +498,21 @@ impl App {
             // Market: Enter to install
             KeyCode::Enter if self.tab == Tab::Market => {
                 self.install_from_market();
+            }
+
+            // Dazi: switch kind with [ ]
+            KeyCode::Char('[') if self.tab == Tab::Dazi => {
+                self.dazi_kind = self.dazi_kind.prev();
+                self.selected = 0;
+            }
+            KeyCode::Char(']') if self.tab == Tab::Dazi => {
+                self.dazi_kind = self.dazi_kind.next();
+                self.selected = 0;
+            }
+
+            // Dazi: Enter to install
+            KeyCode::Enter if self.tab == Tab::Dazi => {
+                self.install_from_dazi();
             }
 
             // Groups: Enter opens group detail
@@ -1292,6 +1381,312 @@ impl App {
             }
             Err(e) => {
                 self.message = Some(format!("Install failed: {e}"));
+            }
+        }
+    }
+
+    // ── Dazi ──
+
+    /// Start background fetch for dazi skills, agents, and MCP token.
+    pub fn prefetch_dazi(&mut self) {
+        if self.dazi_loading {
+            return;
+        }
+
+        let data_dir = self.mgr.paths().data_dir().to_path_buf();
+
+        // Load from disk cache first
+        if let Some(cached) = dazi::load_cache_skills(&data_dir) {
+            self.dazi_skills = cached;
+        }
+        if let Some(cached) = dazi::load_cache_agents(&data_dir) {
+            self.dazi_agents = cached;
+        }
+        if let Some(cached) = dazi::load_cache_bundles(&data_dir) {
+            self.dazi_bundles = cached;
+        }
+
+        // Mark installed
+        let installed: Vec<String> = self
+            .mgr
+            .list_resources(None, None)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|r| r.name)
+            .collect();
+        dazi::mark_installed_skills(&mut self.dazi_skills, &installed);
+        dazi::mark_installed_agents(&mut self.dazi_agents, &installed);
+
+        // Background refresh
+        self.dazi_loading = true;
+
+        let (tx_s, rx_s) = mpsc::channel();
+        self.dazi_rx_skills = Some(rx_s);
+        let dd_s = data_dir.clone();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let result = rt.block_on(DaziClient::new().fetch_skills());
+            if let Ok(ref skills) = result {
+                let _ = dazi::save_cache_skills(&dd_s, skills);
+            }
+            let _ = tx_s.send(result.map_err(|e| e.to_string()));
+        });
+
+        let (tx_a, rx_a) = mpsc::channel();
+        self.dazi_rx_agents = Some(rx_a);
+        let dd_a = data_dir.clone();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let result = rt.block_on(DaziClient::new().fetch_agents());
+            if let Ok(ref agents) = result {
+                let _ = dazi::save_cache_agents(&dd_a, agents);
+            }
+            let _ = tx_a.send(result.map_err(|e| e.to_string()));
+        });
+
+        let (tx_b, rx_b) = mpsc::channel();
+        self.dazi_rx_bundles = Some(rx_b);
+        let dd_b = data_dir.clone();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let result = rt.block_on(DaziClient::new().fetch_bundles());
+            if let Ok(ref bundles) = result {
+                let _ = dazi::save_cache_bundles(&dd_b, bundles);
+            }
+            let _ = tx_b.send(result.map_err(|e| e.to_string()));
+        });
+
+        // Also ensure MCP token is fresh (background)
+        self.start_token_refresh();
+    }
+
+    /// Kick off a background token refresh if needed.
+    fn start_token_refresh(&mut self) {
+        if self.dazi_token_rx.is_some() {
+            return; // already refreshing
+        }
+        let data_dir = self.mgr.paths().data_dir().to_path_buf();
+        let (tx, rx) = mpsc::channel();
+        self.dazi_token_rx = Some(rx);
+        self.dazi_last_token_check = std::time::Instant::now();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let result = rt.block_on(dazi::refresh_token_if_needed(&data_dir));
+            let _ = tx.send(result.map_err(|e| e.to_string()));
+        });
+    }
+
+    /// Poll dazi background fetches.
+    pub fn poll_dazi(&mut self) {
+        let installed: Vec<String> = self
+            .mgr
+            .list_resources(None, None)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|r| r.name)
+            .collect();
+
+        let mut done_skills = false;
+        if let Some(ref rx) = self.dazi_rx_skills {
+            match rx.try_recv() {
+                Ok(Ok(mut skills)) => {
+                    dazi::mark_installed_skills(&mut skills, &installed);
+                    self.dazi_skills = skills;
+                    done_skills = true;
+                }
+                Ok(Err(_)) => {
+                    done_skills = true;
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    done_skills = true;
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        if done_skills {
+            self.dazi_rx_skills = None;
+        }
+
+        let mut done_agents = false;
+        if let Some(ref rx) = self.dazi_rx_agents {
+            match rx.try_recv() {
+                Ok(Ok(mut agents)) => {
+                    dazi::mark_installed_agents(&mut agents, &installed);
+                    self.dazi_agents = agents;
+                    done_agents = true;
+                }
+                Ok(Err(_)) => {
+                    done_agents = true;
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    done_agents = true;
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        if done_agents {
+            self.dazi_rx_agents = None;
+        }
+
+        let mut done_bundles = false;
+        if let Some(ref rx) = self.dazi_rx_bundles {
+            match rx.try_recv() {
+                Ok(Ok(bundles)) => {
+                    self.dazi_bundles = bundles;
+                    done_bundles = true;
+                }
+                Ok(Err(_)) => {
+                    done_bundles = true;
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    done_bundles = true;
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        if done_bundles {
+            self.dazi_rx_bundles = None;
+        }
+
+        if self.dazi_rx_skills.is_none()
+            && self.dazi_rx_agents.is_none()
+            && self.dazi_rx_bundles.is_none()
+        {
+            self.dazi_loading = false;
+        }
+
+        // Poll token refresh
+        let mut token_done = false;
+        if let Some(ref rx) = self.dazi_token_rx {
+            match rx.try_recv() {
+                Ok(Ok(refreshed)) => {
+                    if refreshed {
+                        self.message = Some("Dazi MCP token refreshed".into());
+                    }
+                    token_done = true;
+                }
+                Ok(Err(_)) | Err(mpsc::TryRecvError::Disconnected) => {
+                    token_done = true;
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        if token_done {
+            self.dazi_token_rx = None;
+        }
+
+        // Periodic token check: every 10 minutes
+        if self.dazi_token_rx.is_none()
+            && self.dazi_last_token_check.elapsed() > std::time::Duration::from_secs(600)
+        {
+            self.start_token_refresh();
+        }
+    }
+
+    fn install_from_dazi(&mut self) {
+        match self.dazi_kind {
+            DaziKind::Skills => {
+                let visible = self.visible_dazi_skills();
+                let skill = match visible.get(self.selected) {
+                    Some(s) => (*s).clone(),
+                    None => return,
+                };
+                if skill.installed {
+                    self.message = Some(format!("'{}' already installed", skill.name));
+                    return;
+                }
+                self.message = Some(format!("Installing '{}'...", skill.name));
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                match rt.block_on(DaziClient::new().install_skill(&skill.name, self.mgr.paths())) {
+                    Ok(name) => {
+                        let _ = self.mgr.register_local_skill(&name);
+                        if let Some(id) = self.mgr.find_resource_id(&name) {
+                            let _ = self.mgr.enable_resource(&id, self.active_target, None);
+                        }
+                        self.message = Some(format!("Installed '{name}' from 搭子"));
+                        for s in &mut self.dazi_skills {
+                            if s.name == name {
+                                s.installed = true;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        self.message = Some(format!("Install failed: {e}"));
+                    }
+                }
+            }
+            DaziKind::Agents => {
+                let visible = self.visible_dazi_agents();
+                let agent = match visible.get(self.selected) {
+                    Some(a) => (*a).clone(),
+                    None => return,
+                };
+                if agent.installed {
+                    self.message = Some(format!("'{}' already installed", agent.name));
+                    return;
+                }
+                self.message = Some(format!("Installing '{}'...", agent.name));
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                match rt.block_on(DaziClient::new().install_agent(&agent.name, self.mgr.paths())) {
+                    Ok(name) => {
+                        let _ = self.mgr.register_local_skill(&name);
+                        if let Some(id) = self.mgr.find_resource_id(&name) {
+                            let _ = self.mgr.enable_resource(&id, self.active_target, None);
+                        }
+                        self.message = Some(format!("Installed agent '{name}' from 搭子"));
+                        for a in &mut self.dazi_agents {
+                            if a.name == name {
+                                a.installed = true;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        self.message = Some(format!("Install failed: {e}"));
+                    }
+                }
+            }
+            DaziKind::Bundles => {
+                let visible = self.visible_dazi_bundles();
+                let bundle = match visible.get(self.selected) {
+                    Some(b) => (*b).clone(),
+                    None => return,
+                };
+                let total = bundle.agent_refs.len() + bundle.skill_refs.len();
+                let display = if bundle.source_team_name.is_empty() {
+                    &bundle.name
+                } else {
+                    &bundle.source_team_name
+                };
+                self.message = Some(format!("Installing bundle '{display}' ({total} items)..."));
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                match rt.block_on(DaziClient::new().install_bundle(&bundle, self.mgr.paths())) {
+                    Ok(names) => {
+                        for name in &names {
+                            let _ = self.mgr.register_local_skill(name);
+                            if let Some(id) = self.mgr.find_resource_id(name) {
+                                let _ = self.mgr.enable_resource(&id, self.active_target, None);
+                            }
+                        }
+                        // Mark installed in skill/agent caches
+                        for s in &mut self.dazi_skills {
+                            if names.contains(&s.name) {
+                                s.installed = true;
+                            }
+                        }
+                        for a in &mut self.dazi_agents {
+                            if names.contains(&a.name) {
+                                a.installed = true;
+                            }
+                        }
+                        self.message = Some(format!(
+                            "Installed bundle '{display}': {} items",
+                            names.len()
+                        ));
+                    }
+                    Err(e) => {
+                        self.message = Some(format!("Bundle install failed: {e}"));
+                    }
+                }
             }
         }
     }
