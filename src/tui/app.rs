@@ -3,9 +3,27 @@ use crate::core::group::{Group, GroupKind};
 use crate::core::manager::SkillManager;
 use crate::core::market::{self, Market, MarketSkill, SourceEntry};
 use crate::core::resource::Resource;
+use crate::tui::i18n::{Lang, T};
 use crossterm::event::{KeyCode, KeyEvent};
 use std::collections::HashMap;
 use std::sync::mpsc;
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum FilterMode {
+    All,
+    Enabled,
+    Disabled,
+}
+
+impl FilterMode {
+    pub fn next(self) -> Self {
+        match self {
+            FilterMode::All => FilterMode::Enabled,
+            FilterMode::Enabled => FilterMode::Disabled,
+            FilterMode::Disabled => FilterMode::All,
+        }
+    }
+}
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Tab {
@@ -53,11 +71,13 @@ pub struct App {
     pub mgr: SkillManager,
     pub tab: Tab,
     pub theme_mode: super::theme::ThemeMode,
+    pub lang: Lang,
     pub active_target: CliTarget,
     pub items: Vec<Resource>,
     pub groups: Vec<(String, String, usize, usize)>,
     pub selected: usize,
     pub search: String,
+    pub filter_mode: FilterMode,
     pub mode: InputMode,
     pub input_buf: String,
     pub create_name: String,
@@ -102,11 +122,13 @@ impl App {
             mgr,
             tab: Tab::Skills,
             theme_mode: super::theme::ThemeMode::Dark,
+            lang: Lang::Zh,
             active_target: CliTarget::Claude,
             items: Vec::new(),
             groups: Vec::new(),
             selected: 0,
             search: String::new(),
+            filter_mode: FilterMode::All,
             mode: if first_launch {
                 InputMode::FirstLaunch(0)
             } else {
@@ -135,6 +157,10 @@ impl App {
             market_rxs: HashMap::new(),
             market_fetching: std::collections::HashSet::new(),
         }
+    }
+
+    pub fn t(&self) -> T {
+        T::new(self.lang)
     }
 
     /// Load from disk cache first (instant), then background refresh stale ones.
@@ -280,9 +306,15 @@ impl App {
         self.items
             .iter()
             .filter(|r| {
-                q.is_empty()
+                let search_ok = q.is_empty()
                     || r.name.to_lowercase().contains(&q)
-                    || r.description.to_lowercase().contains(&q)
+                    || r.description.to_lowercase().contains(&q);
+                let filter_ok = match self.filter_mode {
+                    FilterMode::All => true,
+                    FilterMode::Enabled => r.is_enabled_for(self.active_target),
+                    FilterMode::Disabled => !r.is_enabled_for(self.active_target),
+                };
+                search_ok && filter_ok
             })
             .collect()
     }
@@ -473,13 +505,31 @@ impl App {
             KeyCode::Char('s') => {
                 let _ = self.mgr.scan();
                 self.reload();
-                self.message = Some("Scan complete".into());
+                self.message = Some(self.t().msg_scan_done().to_string());
+            }
+
+            // Language toggle
+            KeyCode::Char('l') if !matches!(self.tab, Tab::Groups) => {
+                self.lang = self.lang.toggle();
+                self.message = Some(self.t().msg_lang_switched().to_string());
+            }
+
+            // Filter mode toggle (Skills/MCPs tabs only)
+            KeyCode::Char('f') if self.tab == Tab::Skills || self.tab == Tab::Mcps => {
+                self.filter_mode = self.filter_mode.next();
+                self.selected = 0;
+                let label = match self.filter_mode {
+                    FilterMode::All => self.t().filter_all(),
+                    FilterMode::Enabled => self.t().filter_enabled(),
+                    FilterMode::Disabled => self.t().filter_disabled(),
+                };
+                self.message = Some(self.t().msg_filter(label));
             }
 
             // Theme toggle
             KeyCode::Char('t') => {
                 self.theme_mode = self.theme_mode.toggle();
-                self.message = Some(format!("Theme: {}", self.theme_mode.label()));
+                self.message = Some(self.t().msg_theme(self.theme_mode.label()));
             }
 
             // Help

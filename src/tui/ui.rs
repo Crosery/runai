@@ -1,4 +1,5 @@
-use super::app::{App, InputMode, Tab};
+use super::app::{App, FilterMode, InputMode, Tab};
+use super::i18n::T;
 use super::theme::Theme;
 use ratatui::prelude::*;
 use ratatui::widgets::*;
@@ -28,29 +29,31 @@ pub fn render(f: &mut Frame, app: &App) {
         InputMode::SourceManager => render_source_manager(f, app, &t),
         InputMode::GroupDetail => render_group_detail(f, app, &t),
         InputMode::PickSkillForGroup => render_pick_skill(f, app, &t),
-        InputMode::Help => render_help(f, &t),
+        InputMode::Help => render_help(f, app, &t),
         InputMode::RenameGroup => render_rename_dialog(f, app, &t),
         _ => {}
     }
 }
 
 fn render_header(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
+    let i = T::new(app.lang);
     let border = Style::default().fg(t.border);
 
     let chunks = Layout::horizontal([Constraint::Min(0), Constraint::Length(32)]).split(area);
 
     // Left: tabs only, flush left
+    let tab_labels = [i.tab_skills(), i.tab_mcps(), i.tab_groups(), i.tab_market()];
     let mut tab_spans = Vec::new();
     tab_spans.push(Span::raw(" "));
-    for tab in Tab::ALL {
+    for (tab, label) in Tab::ALL.iter().zip(tab_labels.iter()) {
         if *tab == app.tab {
             tab_spans.push(Span::styled(
-                format!("● {}", tab.label()),
+                format!("● {}", label),
                 Style::default().fg(t.tab_active).bold(),
             ));
         } else {
             tab_spans.push(Span::styled(
-                format!("  {}", tab.label()),
+                format!("  {}", label),
                 Style::default().fg(t.tab_inactive),
             ));
         }
@@ -72,9 +75,9 @@ fn render_header(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
             Style::default().fg(t.brand).bold(),
         ),
         Span::styled(format!("{es}"), Style::default().fg(t.status_skills).bold()),
-        Span::styled(format!("/{ts} skills  "), Style::default().fg(t.status_dim)),
+        Span::styled(format!("/{ts} {}  ", i.status_skills()), Style::default().fg(t.status_dim)),
         Span::styled(format!("{em}"), Style::default().fg(t.status_mcps).bold()),
-        Span::styled(format!("/{tm} mcp "), Style::default().fg(t.status_dim)),
+        Span::styled(format!("/{tm} {}", i.status_mcp()), Style::default().fg(t.status_dim)),
     ]))
     .alignment(Alignment::Right)
     .block(
@@ -94,6 +97,7 @@ fn render_body(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
 }
 
 fn render_resources(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
+    let i = T::new(app.lang);
     let visible = app.visible_items();
     let items: Vec<ListItem> = visible
         .iter()
@@ -145,7 +149,17 @@ fn render_resources(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         })
         .collect();
 
-    let title = format!(" {} ({}) ", app.tab.label(), visible.len());
+    let filter_label = match app.filter_mode {
+        FilterMode::All => i.filter_all(),
+        FilterMode::Enabled => i.filter_enabled(),
+        FilterMode::Disabled => i.filter_disabled(),
+    };
+    let tab_label = match app.tab {
+        Tab::Skills => i.tab_skills(),
+        Tab::Mcps => i.tab_mcps(),
+        _ => i.tab_skills(),
+    };
+    let title = format!(" {} ({}) [{}] ", tab_label, visible.len(), filter_label);
     let list = List::new(items)
         .block(
             Block::default()
@@ -162,6 +176,7 @@ fn render_resources(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
 }
 
 fn render_groups(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
+    let i = T::new(app.lang);
     let visible = app.visible_groups();
     let items: Vec<ListItem> = visible
         .iter()
@@ -204,7 +219,7 @@ fn render_groups(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         })
         .collect();
 
-    let title = format!(" Groups ({}) ", visible.len());
+    let title = format!(" {} ({}) ", i.title_groups(), visible.len());
     let list = List::new(items)
         .block(
             Block::default()
@@ -221,6 +236,7 @@ fn render_groups(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
 }
 
 fn render_market(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
+    let i = T::new(app.lang);
     let visible = app.visible_market();
     let enabled = app.enabled_sources();
     let total_enabled = enabled.len();
@@ -253,11 +269,12 @@ fn render_market(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
 
     let title_text = if app.current_source_loading() {
         let label = source.map(|s| s.label.as_str()).unwrap_or("...");
-        format!(" Market — Loading {label}... ")
+        format!(" {} — {} {label}... ", i.tab_market(), i.title_market_loading())
     } else if let Some(src) = source {
         let custom_tag = if src.builtin { "" } else { " ★" };
         format!(
-            " Market — {}{} ({}) [{}/{}] ◀ {} ▶ ",
+            " {} — {}{} ({}) [{}/{}] ◀ {} ▶ ",
+            i.tab_market(),
             src.label,
             custom_tag,
             visible.len(),
@@ -266,7 +283,7 @@ fn render_market(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
             src.description
         )
     } else {
-        " Market — No sources enabled (press 's') ".into()
+        i.title_market_no_source().to_string()
     };
 
     let list = List::new(items)
@@ -285,35 +302,24 @@ fn render_market(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
 }
 
 fn render_footer(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
+    let i = T::new(app.lang);
     let (left, right) = match app.mode {
         InputMode::Search => (
             format!(" /{} ", app.search),
-            "ESC cancel  ENTER confirm".to_string(),
+            i.help_search().to_string(),
         ),
         InputMode::Normal => {
-            let msg = app.message.as_deref().unwrap_or("");
             let search_info = if !app.search.is_empty() {
                 format!(" filter: {} ", app.search)
             } else {
                 String::new()
             };
             let help = match app.tab {
-                Tab::Groups => "j/k ↕  H/L tab  SPACE toggle  / search  t theme  ? help  q quit",
-                Tab::Market => "j/k ↕  H/L tab  ENTER install  [ ] source  t theme  ? help  q quit",
-                _ => "j/k ↕  H/L tab  SPACE toggle  / search  t theme  ? help  q quit",
+                Tab::Groups => i.help_normal_groups(),
+                Tab::Market => i.help_normal_market(),
+                _ => i.help_normal_skills(),
             };
-            (
-                format!(
-                    "{}{}",
-                    search_info,
-                    if msg.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" {} ", msg)
-                    }
-                ),
-                help.to_string(),
-            )
+            (search_info, help.to_string())
         }
         _ => (String::new(), String::new()),
     };
@@ -353,22 +359,12 @@ fn render_footer(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
 }
 
 fn render_create_dialog(f: &mut Frame, app: &App, t: &Theme, step: u8) {
+    let i = T::new(app.lang);
     let area = centered_rect(50, 30, f.area());
     f.render_widget(Clear, area);
 
-    let prompt = if step == 0 {
-        "Group Name:"
-    } else {
-        "Description (Enter to skip):"
-    };
-    let title = if step == 0 {
-        " Create Group (1/2) "
-    } else {
-        " Create Group (2/2) "
-    };
-
     let block = Block::default()
-        .title(Span::styled(title, Style::default().fg(t.brand).bold()))
+        .title(Span::styled(i.title_create_group(step), Style::default().fg(t.brand).bold()))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(t.text_highlight));
@@ -379,7 +375,7 @@ fn render_create_dialog(f: &mut Frame, app: &App, t: &Theme, step: u8) {
     let lines = vec![
         Line::from(""),
         Line::from(Span::styled(
-            format!("  {prompt}"),
+            format!("  {}", i.create_group_prompt(step)),
             Style::default().fg(t.item_desc),
         )),
         Line::from(""),
@@ -389,21 +385,19 @@ fn render_create_dialog(f: &mut Frame, app: &App, t: &Theme, step: u8) {
             Span::styled("█", Style::default().fg(t.text_highlight)),
         ]),
         Line::from(""),
-        styled_help("  ESC cancel  ENTER confirm", t),
+        styled_help(i.help_dialog(), t),
     ];
     let p = Paragraph::new(lines);
     f.render_widget(p, inner);
 }
 
 fn render_group_picker(f: &mut Frame, app: &App, t: &Theme) {
+    let i = T::new(app.lang);
     let area = centered_rect(40, 50, f.area());
     f.render_widget(Clear, area);
 
     let block = Block::default()
-        .title(Span::styled(
-            " Add to Group ",
-            Style::default().fg(t.brand).bold(),
-        ))
+        .title(Span::styled(i.title_add_to_group(), Style::default().fg(t.brand).bold()))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(t.text_highlight));
@@ -435,7 +429,7 @@ fn render_group_picker(f: &mut Frame, app: &App, t: &Theme) {
         .collect();
 
     let help = Line::from(Span::styled(
-        " j/k navigate  ENTER select  ESC cancel",
+        i.help_group_picker(),
         Style::default().fg(t.text_dim),
     ));
 
@@ -447,14 +441,12 @@ fn render_group_picker(f: &mut Frame, app: &App, t: &Theme) {
 }
 
 fn render_install_dialog(f: &mut Frame, app: &App, t: &Theme) {
+    let i = T::new(app.lang);
     let area = centered_rect(55, 25, f.area());
     f.render_widget(Clear, area);
 
     let block = Block::default()
-        .title(Span::styled(
-            " Install from GitHub ",
-            Style::default().fg(t.brand).bold(),
-        ))
+        .title(Span::styled(i.title_install(), Style::default().fg(t.brand).bold()))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(t.text_highlight));
@@ -463,10 +455,7 @@ fn render_install_dialog(f: &mut Frame, app: &App, t: &Theme) {
 
     let lines = vec![
         Line::from(""),
-        Line::from(Span::styled(
-            "  Enter GitHub source (owner/repo or owner/repo@branch):",
-            Style::default().fg(t.item_desc),
-        )),
+        Line::from(Span::styled(i.install_prompt(), Style::default().fg(t.item_desc))),
         Line::from(""),
         Line::from(vec![
             Span::raw("  > "),
@@ -474,12 +463,13 @@ fn render_install_dialog(f: &mut Frame, app: &App, t: &Theme) {
             Span::styled("█", Style::default().fg(t.text_highlight)),
         ]),
         Line::from(""),
-        styled_help("  ESC cancel  ENTER install", t),
+        styled_help(i.help_install(), t),
     ];
     f.render_widget(Paragraph::new(lines), inner);
 }
 
 fn render_group_detail(f: &mut Frame, app: &App, t: &Theme) {
+    let i = T::new(app.lang);
     let area = centered_rect(65, 70, f.area());
     f.render_widget(Clear, area);
 
@@ -500,7 +490,7 @@ fn render_group_detail(f: &mut Frame, app: &App, t: &Theme) {
 
     if app.detail_members.is_empty() {
         let empty = Paragraph::new(Line::from(Span::styled(
-            "  (empty) — press 'a' to add skills",
+            i.group_empty(),
             Style::default().fg(t.text_dim),
         )));
         f.render_widget(empty, chunks[0]);
@@ -542,16 +532,13 @@ fn render_group_detail(f: &mut Frame, app: &App, t: &Theme) {
         Style::default().fg(t.text_highlight).bold(),
     )];
     help_spans.extend(
-        styled_help(
-            "j/k navigate  SPACE toggle  a add  d remove  1234 CLI  ESC close",
-            t,
-        )
-        .spans,
+        styled_help(i.help_group_detail(), t).spans,
     );
     f.render_widget(Paragraph::new(Line::from(help_spans)), chunks[1]);
 }
 
 fn render_pick_skill(f: &mut Frame, app: &App, t: &Theme) {
+    let i = T::new(app.lang);
     let area = centered_rect(60, 70, f.area());
     f.render_widget(Clear, area);
 
@@ -579,10 +566,7 @@ fn render_pick_skill(f: &mut Frame, app: &App, t: &Theme) {
 
     // Search bar
     let search_line = if app.pick_search.is_empty() {
-        Line::from(Span::styled(
-            "  Type to filter...",
-            Style::default().fg(t.text_dim),
-        ))
+        Line::from(Span::styled(i.pick_filter_hint(), Style::default().fg(t.text_dim)))
     } else {
         Line::from(vec![
             Span::styled("  /", Style::default().fg(t.text_highlight)),
@@ -612,23 +596,18 @@ fn render_pick_skill(f: &mut Frame, app: &App, t: &Theme) {
     f.render_stateful_widget(list, chunks[1], &mut state);
 
     f.render_widget(
-        Paragraph::new(styled_help(
-            " j/k navigate  ENTER add  TAB skill/mcp  type search  BS clear  ESC back",
-            t,
-        )),
+        Paragraph::new(styled_help(i.help_pick_skill(), t)),
         chunks[2],
     );
 }
 
 fn render_source_manager(f: &mut Frame, app: &App, t: &Theme) {
+    let i = T::new(app.lang);
     let area = centered_rect(60, 60, f.area());
     f.render_widget(Clear, area);
 
     let block = Block::default()
-        .title(Span::styled(
-            " Market Sources ",
-            Style::default().fg(t.brand).bold(),
-        ))
+        .title(Span::styled(i.title_sources(), Style::default().fg(t.brand).bold()))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(t.text_highlight));
@@ -673,23 +652,18 @@ fn render_source_manager(f: &mut Frame, app: &App, t: &Theme) {
     f.render_stateful_widget(list, chunks[0], &mut state);
 
     f.render_widget(
-        Paragraph::new(styled_help(
-            " j/k navigate  SPACE toggle  a add  d delete  ESC close",
-            t,
-        )),
+        Paragraph::new(styled_help(i.help_sources(), t)),
         chunks[1],
     );
 }
 
 fn render_add_source_dialog(f: &mut Frame, app: &App, t: &Theme) {
+    let i = T::new(app.lang);
     let area = centered_rect(55, 25, f.area());
     f.render_widget(Clear, area);
 
     let block = Block::default()
-        .title(Span::styled(
-            " Add Market Source ",
-            Style::default().fg(t.brand).bold(),
-        ))
+        .title(Span::styled(i.title_add_source(), Style::default().fg(t.brand).bold()))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(t.text_highlight));
@@ -698,14 +672,8 @@ fn render_add_source_dialog(f: &mut Frame, app: &App, t: &Theme) {
 
     let lines = vec![
         Line::from(""),
-        Line::from(Span::styled(
-            "  Enter GitHub repo (owner/repo or full URL):",
-            Style::default().fg(t.item_desc),
-        )),
-        Line::from(Span::styled(
-            "  e.g. anthropics/claude-code  or  owner/repo@branch",
-            Style::default().fg(t.text_dim),
-        )),
+        Line::from(Span::styled(i.add_source_prompt(), Style::default().fg(t.item_desc))),
+        Line::from(Span::styled(i.add_source_example(), Style::default().fg(t.text_dim))),
         Line::from(""),
         Line::from(vec![
             Span::raw("  > "),
@@ -713,74 +681,50 @@ fn render_add_source_dialog(f: &mut Frame, app: &App, t: &Theme) {
             Span::styled("█", Style::default().fg(t.text_highlight)),
         ]),
         Line::from(""),
-        styled_help("  ESC cancel  ENTER add", t),
+        styled_help(i.help_add_source(), t),
     ];
     f.render_widget(Paragraph::new(lines), inner);
 }
 
 fn render_first_launch(f: &mut Frame, app: &App, t: &Theme, step: u8) {
+    let i = T::new(app.lang);
     let area = centered_rect(60, 60, f.area());
     f.render_widget(Clear, area);
 
     match step {
         0 => {
-            // Welcome
             let block = Block::default()
-                .title(Span::styled(
-                    " Welcome to Runai ",
-                    Style::default().fg(t.brand).bold(),
-                ))
+                .title(Span::styled(i.title_welcome(), Style::default().fg(t.brand).bold()))
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(t.text_highlight));
             let inner = block.inner(area);
             f.render_widget(block, area);
 
+            let (k1, v1, k2, v2) = i.welcome_keys();
             let lines = vec![
                 Line::from(""),
-                Line::from(Span::styled(
-                    "  First time setup detected!",
-                    Style::default().fg(t.text).bold(),
-                )),
+                Line::from(Span::styled(i.welcome_detected(), Style::default().fg(t.text).bold())),
                 Line::from(""),
-                Line::from(Span::styled(
-                    "  This will:",
-                    Style::default().fg(t.item_desc),
-                )),
-                Line::from(Span::styled(
-                    "    • Scan all CLI directories for skills",
-                    Style::default().fg(t.item_desc),
-                )),
-                Line::from(Span::styled(
-                    "      (Claude, Codex, Gemini, OpenCode)",
-                    Style::default().fg(t.text_dim),
-                )),
-                Line::from(Span::styled(
-                    "    • Discover MCP servers from config files",
-                    Style::default().fg(t.item_desc),
-                )),
-                Line::from(Span::styled(
-                    "    • Offer smart auto-grouping",
-                    Style::default().fg(t.item_desc),
-                )),
+                Line::from(Span::styled(i.welcome_will(), Style::default().fg(t.item_desc))),
+                Line::from(Span::styled(i.welcome_scan_dirs(), Style::default().fg(t.item_desc))),
+                Line::from(Span::styled(i.welcome_scan_dirs2(), Style::default().fg(t.text_dim))),
+                Line::from(Span::styled(i.welcome_discover_mcp(), Style::default().fg(t.item_desc))),
+                Line::from(Span::styled(i.welcome_auto_group(), Style::default().fg(t.item_desc))),
                 Line::from(""),
                 Line::from(""),
                 Line::from(vec![
-                    Span::styled("  ENTER ", Style::default().fg(t.tag_enabled).bold()),
-                    Span::styled("start scan    ", Style::default().fg(t.item_desc)),
-                    Span::styled("ESC ", Style::default().fg(t.tag_warning).bold()),
-                    Span::styled("skip", Style::default().fg(t.item_desc)),
+                    Span::styled(k1, Style::default().fg(t.tag_enabled).bold()),
+                    Span::styled(v1, Style::default().fg(t.item_desc)),
+                    Span::styled(k2, Style::default().fg(t.tag_warning).bold()),
+                    Span::styled(v2, Style::default().fg(t.item_desc)),
                 ]),
             ];
             f.render_widget(Paragraph::new(lines), inner);
         }
         1 => {
-            // Scanning in progress
             let block = Block::default()
-                .title(Span::styled(
-                    " Scanning... ",
-                    Style::default().fg(t.tag_warning).bold(),
-                ))
+                .title(Span::styled(i.title_scanning(), Style::default().fg(t.tag_warning).bold()))
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(t.text_highlight));
@@ -789,10 +733,7 @@ fn render_first_launch(f: &mut Frame, app: &App, t: &Theme, step: u8) {
 
             let mut lines = vec![
                 Line::from(""),
-                Line::from(Span::styled(
-                    "  Scanning all skill directories and MCP configs...",
-                    Style::default().fg(t.text).bold(),
-                )),
+                Line::from(Span::styled(i.scanning_msg(), Style::default().fg(t.text).bold())),
                 Line::from(""),
             ];
             for log_line in &app.scan_log {
@@ -802,19 +743,12 @@ fn render_first_launch(f: &mut Frame, app: &App, t: &Theme, step: u8) {
                 )));
             }
             lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
-                "  Please wait...",
-                Style::default().fg(t.text_dim),
-            )));
+            lines.push(Line::from(Span::styled(i.scanning_wait(), Style::default().fg(t.text_dim))));
             f.render_widget(Paragraph::new(lines), inner);
         }
         2 => {
-            // Scan done, show results + log
             let block = Block::default()
-                .title(Span::styled(
-                    " Scan Complete ",
-                    Style::default().fg(t.tag_enabled).bold(),
-                ))
+                .title(Span::styled(i.title_scan_done(), Style::default().fg(t.tag_enabled).bold()))
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(t.text_highlight));
@@ -822,8 +756,6 @@ fn render_first_launch(f: &mut Frame, app: &App, t: &Theme, step: u8) {
             f.render_widget(block, area);
 
             let mut lines: Vec<Line> = vec![Line::from("")];
-
-            // Show scan log
             for log_line in &app.scan_log {
                 let color = if log_line.starts_with("  ✓") {
                     t.tag_enabled
@@ -843,29 +775,17 @@ fn render_first_launch(f: &mut Frame, app: &App, t: &Theme, step: u8) {
 
             if let Some(info) = &app.first_launch_info {
                 lines.push(Line::from(vec![
-                    Span::styled("  Skills found: ", Style::default().fg(t.item_desc)),
-                    Span::styled(
-                        format!("{}", info.skills_found),
-                        Style::default().fg(t.status_skills).bold(),
-                    ),
+                    Span::styled(i.scan_skills_found(), Style::default().fg(t.item_desc)),
+                    Span::styled(format!("{}", info.skills_found), Style::default().fg(t.status_skills).bold()),
                 ]));
                 lines.push(Line::from(vec![
-                    Span::styled("  MCPs found:   ", Style::default().fg(t.item_desc)),
-                    Span::styled(
-                        format!("{}", info.mcps_found),
-                        Style::default().fg(t.status_mcps).bold(),
-                    ),
+                    Span::styled(i.scan_mcps_found(), Style::default().fg(t.item_desc)),
+                    Span::styled(format!("{}", info.mcps_found), Style::default().fg(t.status_mcps).bold()),
                 ]));
                 lines.push(Line::from(""));
-                lines.push(Line::from(Span::styled(
-                    "  Press any key to continue.",
-                    Style::default().fg(t.text_dim),
-                )));
+                lines.push(Line::from(Span::styled(i.scan_continue(), Style::default().fg(t.text_dim))));
             } else {
-                lines.push(Line::from(Span::styled(
-                    "  Scanning...",
-                    Style::default().fg(t.item_desc),
-                )));
+                lines.push(Line::from(Span::styled(i.scan_in_progress(), Style::default().fg(t.item_desc))));
             }
 
             f.render_widget(Paragraph::new(lines), inner);
@@ -874,16 +794,13 @@ fn render_first_launch(f: &mut Frame, app: &App, t: &Theme, step: u8) {
     }
 }
 
-/// Turn "key1 desc1  key2 desc2" into styled spans: keys bold+colored, descs dim.
 fn render_rename_dialog(f: &mut Frame, app: &App, t: &Theme) {
+    let i = T::new(app.lang);
     let area = centered_rect(50, 25, f.area());
     f.render_widget(Clear, area);
 
     let block = Block::default()
-        .title(Span::styled(
-            " Rename Group ",
-            Style::default().fg(t.brand).bold(),
-        ))
+        .title(Span::styled(i.title_rename_group(), Style::default().fg(t.brand).bold()))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(t.text_highlight));
@@ -892,10 +809,7 @@ fn render_rename_dialog(f: &mut Frame, app: &App, t: &Theme) {
 
     let lines = vec![
         Line::from(""),
-        Line::from(Span::styled(
-            "  New name:",
-            Style::default().fg(t.item_desc),
-        )),
+        Line::from(Span::styled(i.rename_prompt(), Style::default().fg(t.item_desc))),
         Line::from(""),
         Line::from(vec![
             Span::raw("  > "),
@@ -903,20 +817,18 @@ fn render_rename_dialog(f: &mut Frame, app: &App, t: &Theme) {
             Span::styled("█", Style::default().fg(t.text_highlight)),
         ]),
         Line::from(""),
-        styled_help("  ESC cancel  ENTER confirm", t),
+        styled_help(i.help_dialog(), t),
     ];
     f.render_widget(Paragraph::new(lines), inner);
 }
 
-fn render_help(f: &mut Frame, t: &Theme) {
+fn render_help(f: &mut Frame, app: &App, t: &Theme) {
+    let i = T::new(app.lang);
     let area = centered_rect(55, 70, f.area());
     f.render_widget(Clear, area);
 
     let block = Block::default()
-        .title(Span::styled(
-            " Keybindings ",
-            Style::default().fg(t.brand).bold(),
-        ))
+        .title(Span::styled(i.title_keybindings(), Style::default().fg(t.brand).bold()))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(t.text_highlight));
@@ -929,62 +841,28 @@ fn render_help(f: &mut Frame, t: &Theme) {
 
     let lines = vec![
         Line::from(""),
-        Line::from(Span::styled("  Navigation", ss)),
-        Line::from(vec![
-            Span::styled(" g/G     ", ks),
-            Span::styled("Jump to top/bottom", ds),
-        ]),
-        Line::from(vec![
-            Span::styled(" 1234    ", ks),
-            Span::styled("Switch CLI target (Claude/Codex/Gemini/OpenCode)", ds),
-        ]),
+        Line::from(Span::styled(i.help_section_nav(), ss)),
+        Line::from(vec![Span::styled(" g/G     ", ks), Span::styled(i.help_g(), ds)]),
+        Line::from(vec![Span::styled(" 1234    ", ks), Span::styled(i.help_1234(), ds)]),
+        Line::from(vec![Span::styled(" f       ", ks), Span::styled(i.help_f(), ds)]),
+        Line::from(vec![Span::styled(" l       ", ks), Span::styled(i.help_l_lang(), ds)]),
         Line::from(""),
-        Line::from(Span::styled("  Skills & MCPs", ss)),
-        Line::from(vec![
-            Span::styled(" Enter   ", ks),
-            Span::styled("Open group detail / Install from market", ds),
-        ]),
-        Line::from(vec![
-            Span::styled(" s       ", ks),
-            Span::styled("Scan for new skills", ds),
-        ]),
-        Line::from(vec![
-            Span::styled(" i       ", ks),
-            Span::styled("Install from GitHub (owner/repo)", ds),
-        ]),
-        Line::from(vec![
-            Span::styled(" d       ", ks),
-            Span::styled("Delete selected skill or MCP", ds),
-        ]),
+        Line::from(Span::styled(i.help_section_skills(), ss)),
+        Line::from(vec![Span::styled(" Enter   ", ks), Span::styled(i.help_enter(), ds)]),
+        Line::from(vec![Span::styled(" s       ", ks), Span::styled(i.help_s(), ds)]),
+        Line::from(vec![Span::styled(" i       ", ks), Span::styled(i.help_i(), ds)]),
+        Line::from(vec![Span::styled(" d       ", ks), Span::styled(i.help_d(), ds)]),
         Line::from(""),
-        Line::from(Span::styled("  Groups", ss)),
-        Line::from(vec![
-            Span::styled(" c       ", ks),
-            Span::styled("Create new group", ds),
-        ]),
-        Line::from(vec![
-            Span::styled(" r       ", ks),
-            Span::styled("Rename group (Groups tab)", ds),
-        ]),
-        Line::from(vec![
-            Span::styled(" a       ", ks),
-            Span::styled("Add selected to a group", ds),
-        ]),
+        Line::from(Span::styled(i.help_section_groups(), ss)),
+        Line::from(vec![Span::styled(" c       ", ks), Span::styled(i.help_c(), ds)]),
+        Line::from(vec![Span::styled(" r       ", ks), Span::styled(i.help_r(), ds)]),
+        Line::from(vec![Span::styled(" a       ", ks), Span::styled(i.help_a(), ds)]),
         Line::from(""),
-        Line::from(Span::styled("  Market", ss)),
-        Line::from(vec![
-            Span::styled(" [ ]     ", ks),
-            Span::styled("Switch market source", ds),
-        ]),
-        Line::from(vec![
-            Span::styled(" s       ", ks),
-            Span::styled("Source manager (Market tab)", ds),
-        ]),
+        Line::from(Span::styled(i.help_section_market(), ss)),
+        Line::from(vec![Span::styled(" [ ]     ", ks), Span::styled(i.help_brackets(), ds)]),
+        Line::from(vec![Span::styled(" s       ", ks), Span::styled(i.help_s_market(), ds)]),
         Line::from(""),
-        Line::from(Span::styled(
-            "  Press any key to close",
-            Style::default().fg(t.text_dim),
-        )),
+        Line::from(Span::styled(i.help_close(), Style::default().fg(t.text_dim))),
     ];
 
     f.render_widget(Paragraph::new(lines), inner);
