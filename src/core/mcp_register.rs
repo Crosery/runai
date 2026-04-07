@@ -79,15 +79,27 @@ impl McpRegister {
             .entry("mcpServers")
             .or_insert_with(|| serde_json::json!({}));
 
-        if servers.get("runai").is_some() {
-            return Ok(false); // already registered
+        let servers_map = servers
+            .as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("mcpServers is not an object"))?;
+
+        if let Some(existing) = servers_map.get("runai") {
+            // Already registered — check if binary path is still correct
+            let current_cmd = existing
+                .get("command")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            if current_cmd == binary {
+                return Ok(false); // already registered with correct path
+            }
+            // Path changed — update it
+            servers_map.insert("runai".into(), Self::mcp_entry(binary));
+            let content = serde_json::to_string_pretty(&config)?;
+            std::fs::write(&path, content)?;
+            return Ok(true);
         }
 
-        servers
-            .as_object_mut()
-            .ok_or_else(|| anyhow::anyhow!("mcpServers is not an object"))?
-            .insert("runai".into(), Self::mcp_entry(binary));
-
+        servers_map.insert("runai".into(), Self::mcp_entry(binary));
         let content = serde_json::to_string_pretty(&config)?;
         std::fs::write(&path, content)?;
         Ok(true)
@@ -115,15 +127,25 @@ impl McpRegister {
             .entry("mcpServers")
             .or_insert_with(|| serde_json::json!({}));
 
-        if servers.get("runai").is_some() {
-            return Ok(false);
+        let servers_map = servers
+            .as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("mcpServers is not an object"))?;
+
+        if let Some(existing) = servers_map.get("runai") {
+            let current_cmd = existing
+                .get("command")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            if current_cmd == binary {
+                return Ok(false);
+            }
+            servers_map.insert("runai".into(), Self::mcp_entry(binary));
+            let content = serde_json::to_string_pretty(&config)?;
+            std::fs::write(&path, content)?;
+            return Ok(true);
         }
 
-        servers
-            .as_object_mut()
-            .ok_or_else(|| anyhow::anyhow!("mcpServers is not an object"))?
-            .insert("runai".into(), Self::mcp_entry(binary));
-
+        servers_map.insert("runai".into(), Self::mcp_entry(binary));
         let content = serde_json::to_string_pretty(&config)?;
         std::fs::write(&path, content)?;
         Ok(true)
@@ -144,9 +166,18 @@ impl McpRegister {
             toml::Table::new()
         };
 
-        // Check if already registered
+        // Check if already registered — update if path changed
         if let Some(toml::Value::Table(servers)) = table.get("mcp_servers") {
-            if servers.contains_key("runai") {
+            if let Some(toml::Value::Table(entry)) = servers.get("runai") {
+                let current_cmd = entry
+                    .get("command")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                if current_cmd == binary {
+                    return Ok(false);
+                }
+                // Path changed — fall through to re-register
+            } else if servers.contains_key("runai") {
                 return Ok(false);
             }
         }
@@ -185,9 +216,18 @@ impl McpRegister {
             serde_json::json!({})
         };
 
-        // Check if already registered
-        if config.get("mcp").and_then(|s| s.get("runai")).is_some() {
-            return Ok(false);
+        // Check if already registered — update if path changed
+        if let Some(existing) = config.get("mcp").and_then(|s| s.get("runai")) {
+            let current_cmd = existing
+                .get("command")
+                .and_then(|v| v.as_array())
+                .and_then(|a| a.first())
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            if current_cmd == binary {
+                return Ok(false);
+            }
+            // Path changed — fall through to re-register
         }
 
         let servers = config
@@ -418,7 +458,21 @@ mod tests {
     }
 
     #[test]
-    fn register_skips_if_already_present() {
+    fn register_skips_if_path_matches() {
+        let tmp = tempfile::tempdir().unwrap();
+        let binary = McpRegister::find_binary();
+        write_file(
+            tmp.path(),
+            ".claude.json",
+            &format!(r#"{{"mcpServers":{{"runai":{{"command":"{binary}"}}}}}}"#),
+        );
+
+        let result = McpRegister::register_all(tmp.path());
+        assert!(result.skipped.contains(&"claude".to_string()));
+    }
+
+    #[test]
+    fn register_updates_if_path_changed() {
         let tmp = tempfile::tempdir().unwrap();
         write_file(
             tmp.path(),
@@ -427,11 +481,11 @@ mod tests {
         );
 
         let result = McpRegister::register_all(tmp.path());
-        assert!(result.skipped.contains(&"claude".to_string()));
+        assert!(result.registered.contains(&"claude".to_string()));
 
-        // Should NOT overwrite
+        // Should update to current binary path
         let content = std::fs::read_to_string(tmp.path().join(".claude.json")).unwrap();
-        assert!(content.contains("\"old\""));
+        assert!(!content.contains("\"old\""));
     }
 
     #[test]
