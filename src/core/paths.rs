@@ -1,6 +1,23 @@
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 
+/// Standalone helper to resolve the data directory without constructing AppPaths.
+/// Checks RUNE_DATA_DIR, then SKILL_MANAGER_DATA_DIR, then falls back to ~/.runai.
+pub fn data_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("RUNE_DATA_DIR") {
+        return PathBuf::from(dir);
+    }
+    if let Ok(dir) = std::env::var("SKILL_MANAGER_DATA_DIR") {
+        return PathBuf::from(dir);
+    }
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    if cfg!(windows) {
+        dirs::data_dir().unwrap_or(home).join("runai")
+    } else {
+        home.join(".runai")
+    }
+}
+
 #[derive(Clone)]
 pub struct AppPaths {
     base: PathBuf,

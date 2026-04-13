@@ -36,16 +36,32 @@ impl T {
     }
 
     // ── Tabs ──
-    pub fn tab_skills(&self) -> &'static str { self.zh_en("技能", "Skills") }
-    pub fn tab_mcps(&self) -> &'static str { self.zh_en("MCP", "MCPs") }
-    pub fn tab_groups(&self) -> &'static str { self.zh_en("分组", "Groups") }
-    pub fn tab_market(&self) -> &'static str { self.zh_en("市场", "Market") }
-    pub fn tab_dazi(&self) -> &'static str { self.zh_en("搭子", "Dazi") }
+    pub fn tab_skills(&self) -> &'static str {
+        self.zh_en("技能", "Skills")
+    }
+    pub fn tab_mcps(&self) -> &'static str {
+        self.zh_en("MCP", "MCPs")
+    }
+    pub fn tab_groups(&self) -> &'static str {
+        self.zh_en("分组", "Groups")
+    }
+    pub fn tab_market(&self) -> &'static str {
+        self.zh_en("市场", "Market")
+    }
+    pub fn tab_dazi(&self) -> &'static str {
+        self.zh_en("搭子", "Dazi")
+    }
 
     // ── Filter modes ──
-    pub fn filter_all(&self) -> &'static str { self.zh_en("全部", "All") }
-    pub fn filter_enabled(&self) -> &'static str { self.zh_en("已启用", "Enabled") }
-    pub fn filter_disabled(&self) -> &'static str { self.zh_en("未启用", "Disabled") }
+    pub fn filter_all(&self) -> &'static str {
+        self.zh_en("全部", "All")
+    }
+    pub fn filter_enabled(&self) -> &'static str {
+        self.zh_en("已启用", "Enabled")
+    }
+    pub fn filter_disabled(&self) -> &'static str {
+        self.zh_en("未启用", "Disabled")
+    }
 
     // ── Footer help ──
     pub fn help_normal_skills(&self) -> &'static str {
@@ -77,19 +93,33 @@ impl T {
     }
 
     // ── Status bar ──
-    pub fn status_skills(&self) -> &'static str { self.zh_en("技能  ", "skills  ") }
-    pub fn status_mcp(&self) -> &'static str { self.zh_en("mcp ", "mcp ") }
+    pub fn status_skills(&self) -> &'static str {
+        self.zh_en("技能  ", "skills  ")
+    }
+    pub fn status_mcp(&self) -> &'static str {
+        self.zh_en("mcp ", "mcp ")
+    }
 
     // ── List titles ──
-    pub fn title_groups(&self) -> &'static str { self.zh_en("分组", "Groups") }
-    pub fn title_market_loading(&self) -> &'static str { self.zh_en("加载中", "Loading") }
+    pub fn title_groups(&self) -> &'static str {
+        self.zh_en("分组", "Groups")
+    }
+    pub fn title_market_loading(&self) -> &'static str {
+        self.zh_en("加载中", "Loading")
+    }
     pub fn title_market_no_source(&self) -> &'static str {
-        self.zh_en(" 市场 — 无可用源 (按 's') ", " Market — No sources enabled (press 's') ")
+        self.zh_en(
+            " 市场 — 无可用源 (按 's') ",
+            " Market — No sources enabled (press 's') ",
+        )
     }
 
     // ── Group detail ──
     pub fn group_empty(&self) -> &'static str {
-        self.zh_en("  (空) — 按 'a' 添加技能", "  (empty) — press 'a' to add skills")
+        self.zh_en(
+            "  (空) — 按 'a' 添加技能",
+            "  (empty) — press 'a' to add skills",
+        )
     }
     pub fn help_group_detail(&self) -> &'static str {
         self.zh_en(
@@ -120,7 +150,10 @@ impl T {
         )
     }
     pub fn cant_delete_builtin(&self) -> &'static str {
-        self.zh_en("内置源不可删除（可禁用）", "Can't delete built-in source (disable it instead)")
+        self.zh_en(
+            "内置源不可删除（可禁用）",
+            "Can't delete built-in source (disable it instead)",
+        )
     }
 
     // ── Add source dialog ──
@@ -128,10 +161,16 @@ impl T {
         self.zh_en(" 添加市场源 ", " Add Market Source ")
     }
     pub fn add_source_prompt(&self) -> &'static str {
-        self.zh_en("  输入 GitHub 仓库 (owner/repo 或完整 URL):", "  Enter GitHub repo (owner/repo or full URL):")
+        self.zh_en(
+            "  输入 GitHub 仓库 (owner/repo 或完整 URL):",
+            "  Enter GitHub repo (owner/repo or full URL):",
+        )
     }
     pub fn add_source_example(&self) -> &'static str {
-        self.zh_en("  例: anthropics/claude-code  或  owner/repo@branch", "  e.g. anthropics/claude-code  or  owner/repo@branch")
+        self.zh_en(
+            "  例: anthropics/claude-code  或  owner/repo@branch",
+            "  e.g. anthropics/claude-code  or  owner/repo@branch",
+        )
     }
     pub fn help_add_source(&self) -> &'static str {
         self.zh_en("  ESC 取消  ENTER 添加", "  ESC cancel  ENTER add")
@@ -190,21 +229,38 @@ impl T {
     }
 
     // ── First launch ──
-    pub fn title_welcome(&self) -> &'static str { self.zh_en(" 欢迎使用 Runai ", " Welcome to Runai ") }
-    pub fn title_scanning(&self) -> &'static str { self.zh_en(" 扫描中... ", " Scanning... ") }
-    pub fn title_scan_done(&self) -> &'static str { self.zh_en(" 扫描完成 ", " Scan Complete ") }
+    pub fn title_welcome(&self) -> &'static str {
+        self.zh_en(" 欢迎使用 Runai ", " Welcome to Runai ")
+    }
+    pub fn title_scanning(&self) -> &'static str {
+        self.zh_en(" 扫描中... ", " Scanning... ")
+    }
+    pub fn title_scan_done(&self) -> &'static str {
+        self.zh_en(" 扫描完成 ", " Scan Complete ")
+    }
     pub fn welcome_detected(&self) -> &'static str {
         self.zh_en("  检测到首次启动！", "  First time setup detected!")
     }
-    pub fn welcome_will(&self) -> &'static str { self.zh_en("  将会:", "  This will:") }
+    pub fn welcome_will(&self) -> &'static str {
+        self.zh_en("  将会:", "  This will:")
+    }
     pub fn welcome_scan_dirs(&self) -> &'static str {
-        self.zh_en("    • 扫描所有 CLI 目录中的技能", "    • Scan all CLI directories for skills")
+        self.zh_en(
+            "    • 扫描所有 CLI 目录中的技能",
+            "    • Scan all CLI directories for skills",
+        )
     }
     pub fn welcome_scan_dirs2(&self) -> &'static str {
-        self.zh_en("      (Claude, Codex, Gemini, OpenCode)", "      (Claude, Codex, Gemini, OpenCode)")
+        self.zh_en(
+            "      (Claude, Codex, Gemini, OpenCode)",
+            "      (Claude, Codex, Gemini, OpenCode)",
+        )
     }
     pub fn welcome_discover_mcp(&self) -> &'static str {
-        self.zh_en("    • 从配置文件发现 MCP 服务器", "    • Discover MCP servers from config files")
+        self.zh_en(
+            "    • 从配置文件发现 MCP 服务器",
+            "    • Discover MCP servers from config files",
+        )
     }
     pub fn welcome_auto_group(&self) -> &'static str {
         self.zh_en("    • 提供智能自动分组", "    • Offer smart auto-grouping")
@@ -216,48 +272,102 @@ impl T {
         }
     }
     pub fn scanning_msg(&self) -> &'static str {
-        self.zh_en("  正在扫描所有技能目录和 MCP 配置...", "  Scanning all skill directories and MCP configs...")
+        self.zh_en(
+            "  正在扫描所有技能目录和 MCP 配置...",
+            "  Scanning all skill directories and MCP configs...",
+        )
     }
     pub fn scanning_wait(&self) -> &'static str {
         self.zh_en("  请稍候...", "  Please wait...")
     }
-    pub fn scan_skills_found(&self) -> &'static str { self.zh_en("  发现技能: ", "  Skills found: ") }
-    pub fn scan_mcps_found(&self) -> &'static str { self.zh_en("  发现 MCP:  ", "  MCPs found:   ") }
+    pub fn scan_skills_found(&self) -> &'static str {
+        self.zh_en("  发现技能: ", "  Skills found: ")
+    }
+    pub fn scan_mcps_found(&self) -> &'static str {
+        self.zh_en("  发现 MCP:  ", "  MCPs found:   ")
+    }
     pub fn scan_continue(&self) -> &'static str {
         self.zh_en("  按任意键继续。", "  Press any key to continue.")
     }
-    pub fn scan_in_progress(&self) -> &'static str { self.zh_en("  扫描中...", "  Scanning...") }
+    pub fn scan_in_progress(&self) -> &'static str {
+        self.zh_en("  扫描中...", "  Scanning...")
+    }
 
     // ── Help overlay ──
-    pub fn title_keybindings(&self) -> &'static str { self.zh_en(" 快捷键 ", " Keybindings ") }
-    pub fn help_section_nav(&self) -> &'static str { self.zh_en("  导航", "  Navigation") }
-    pub fn help_g(&self) -> &'static str { self.zh_en("跳到顶部/底部", "Jump to top/bottom") }
+    pub fn title_keybindings(&self) -> &'static str {
+        self.zh_en(" 快捷键 ", " Keybindings ")
+    }
+    pub fn help_section_nav(&self) -> &'static str {
+        self.zh_en("  导航", "  Navigation")
+    }
+    pub fn help_g(&self) -> &'static str {
+        self.zh_en("跳到顶部/底部", "Jump to top/bottom")
+    }
     pub fn help_1234(&self) -> &'static str {
-        self.zh_en("切换 CLI 目标  1:Claude  2:Codex  3:Gemini  4:OpenCode",
-                   "Switch CLI  1:Claude  2:Codex  3:Gemini  4:OpenCode")
+        self.zh_en(
+            "切换 CLI 目标  1:Claude  2:Codex  3:Gemini  4:OpenCode",
+            "Switch CLI  1:Claude  2:Codex  3:Gemini  4:OpenCode",
+        )
     }
     pub fn help_f(&self) -> &'static str {
-        self.zh_en("切换显示过滤 (全部 / 已启用 / 未启用)", "Toggle filter (All / Enabled / Disabled)")
+        self.zh_en(
+            "切换显示过滤 (全部 / 已启用 / 未启用)",
+            "Toggle filter (All / Enabled / Disabled)",
+        )
     }
-    pub fn help_section_skills(&self) -> &'static str { self.zh_en("  技能 & MCP", "  Skills & MCPs") }
+    pub fn help_section_skills(&self) -> &'static str {
+        self.zh_en("  技能 & MCP", "  Skills & MCPs")
+    }
     pub fn help_enter(&self) -> &'static str {
-        self.zh_en("打开分组详情 / 从市场安装", "Open group detail / Install from market")
+        self.zh_en(
+            "打开分组详情 / 从市场安装",
+            "Open group detail / Install from market",
+        )
     }
-    pub fn help_s(&self) -> &'static str { self.zh_en("扫描新技能", "Scan for new skills") }
-    pub fn help_i(&self) -> &'static str { self.zh_en("从 GitHub 安装 (owner/repo)", "Install from GitHub (owner/repo)") }
-    pub fn help_d(&self) -> &'static str { self.zh_en("删除选中的技能或 MCP", "Delete selected skill or MCP") }
-    pub fn help_section_groups(&self) -> &'static str { self.zh_en("  分组", "  Groups") }
-    pub fn help_c(&self) -> &'static str { self.zh_en("创建新分组", "Create new group") }
-    pub fn help_r(&self) -> &'static str { self.zh_en("重命名分组 (分组标签)", "Rename group (Groups tab)") }
-    pub fn help_a(&self) -> &'static str { self.zh_en("添加选中项到分组", "Add selected to a group") }
-    pub fn help_section_market(&self) -> &'static str { self.zh_en("  市场", "  Market") }
-    pub fn help_brackets(&self) -> &'static str { self.zh_en("切换市场源", "Switch market source") }
-    pub fn help_s_market(&self) -> &'static str { self.zh_en("源管理器 (市场标签)", "Source manager (Market tab)") }
-    pub fn help_close(&self) -> &'static str { self.zh_en("  按任意键关闭", "  Press any key to close") }
-    pub fn help_l_lang(&self) -> &'static str { self.zh_en("切换语言 (中文/EN)", "Toggle language (中文/EN)") }
+    pub fn help_s(&self) -> &'static str {
+        self.zh_en("扫描新技能", "Scan for new skills")
+    }
+    pub fn help_i(&self) -> &'static str {
+        self.zh_en(
+            "从 GitHub 安装 (owner/repo)",
+            "Install from GitHub (owner/repo)",
+        )
+    }
+    pub fn help_d(&self) -> &'static str {
+        self.zh_en("删除选中的技能或 MCP", "Delete selected skill or MCP")
+    }
+    pub fn help_section_groups(&self) -> &'static str {
+        self.zh_en("  分组", "  Groups")
+    }
+    pub fn help_c(&self) -> &'static str {
+        self.zh_en("创建新分组", "Create new group")
+    }
+    pub fn help_r(&self) -> &'static str {
+        self.zh_en("重命名分组 (分组标签)", "Rename group (Groups tab)")
+    }
+    pub fn help_a(&self) -> &'static str {
+        self.zh_en("添加选中项到分组", "Add selected to a group")
+    }
+    pub fn help_section_market(&self) -> &'static str {
+        self.zh_en("  市场", "  Market")
+    }
+    pub fn help_brackets(&self) -> &'static str {
+        self.zh_en("切换市场源", "Switch market source")
+    }
+    pub fn help_s_market(&self) -> &'static str {
+        self.zh_en("源管理器 (市场标签)", "Source manager (Market tab)")
+    }
+    pub fn help_close(&self) -> &'static str {
+        self.zh_en("  按任意键关闭", "  Press any key to close")
+    }
+    pub fn help_l_lang(&self) -> &'static str {
+        self.zh_en("切换语言 (中文/EN)", "Toggle language (中文/EN)")
+    }
 
     // ── Messages ──
-    pub fn msg_scan_done(&self) -> &'static str { self.zh_en("扫描完成", "Scan complete") }
+    pub fn msg_scan_done(&self) -> &'static str {
+        self.zh_en("扫描完成", "Scan complete")
+    }
     pub fn msg_filter(&self, label: &'static str) -> String {
         match self.lang {
             Lang::Zh => format!("显示: {}", label),

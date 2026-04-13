@@ -87,6 +87,10 @@ pub enum Commands {
         #[arg(long)]
         top: Option<usize>,
     },
+    /// Update runai to the latest version
+    Update,
+    /// Run health checks on runai installation
+    Doctor,
 }
 
 #[derive(Subcommand)]
@@ -383,6 +387,32 @@ pub fn run(cli: Cli) -> Result<()> {
             let home = dirs::home_dir().unwrap_or_default();
             crate::core::mcp_register::McpRegister::unregister_all(&home)?;
             println!("Unregistered from all CLIs");
+            Ok(())
+        }
+        Some(Commands::Update) => {
+            let data_dir = crate::core::paths::data_dir();
+            let rt = tokio::runtime::Runtime::new()?;
+            let msg = rt.block_on(crate::core::updater::perform_update(&data_dir))?;
+            println!("{msg}");
+            Ok(())
+        }
+        Some(Commands::Doctor) => {
+            println!("runai doctor v{}\n", env!("CARGO_PKG_VERSION"));
+            let results = crate::core::doctor::run_doctor();
+            let mut has_fail = false;
+            for r in &results {
+                let icon = r.icon();
+                println!("  {icon} {:<15} {}", r.name, r.detail);
+                if r.status == crate::core::doctor::CheckStatus::Fail {
+                    has_fail = true;
+                }
+            }
+            println!();
+            if has_fail {
+                println!("Some checks failed. Run 'runai register' to fix MCP registration.");
+            } else {
+                println!("All checks passed.");
+            }
             Ok(())
         }
     }

@@ -32,6 +32,7 @@ pub fn run_tui(mgr: SkillManager) -> Result<()> {
             app.reload();
         }
         app.prefetch_market();
+        app.prefetch_dazi();
     }
 
     loop {
@@ -46,8 +47,9 @@ pub fn run_tui(mgr: SkillManager) -> Result<()> {
             continue; // re-render immediately with results
         }
 
-        // Poll async market loading + config file changes
+        // Poll async market loading + dazi loading + config file changes
         app.poll_market();
+        app.poll_dazi();
         app.poll_config_changes();
 
         if event::poll(Duration::from_millis(100))? {

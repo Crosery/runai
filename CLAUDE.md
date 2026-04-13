@@ -5,10 +5,10 @@ AI CLI skill/MCP resource manager — TUI + MCP server.
 ## Architecture
 
 - **Rust** — single binary, no runtime dependencies
-- **Core** — `src/core/` (paths, db, linker, scanner, classifier, manager, installer, market)
-- **TUI** — `src/tui/` (ratatui + crossterm, 4 tabs: Skills/MCPs/Groups/Market)
+- **Core** — `src/core/` (paths, db, linker, scanner, classifier, manager, installer, market, dazi)
+- **TUI** — `src/tui/` (ratatui + crossterm, 5 tabs: Skills/MCPs/Groups/Market/搭子)
 - **CLI** — `src/cli/` (15 subcommands)
-- **MCP server** — `src/mcp/` (rmcp, 30 tools, stdio transport)
+- **MCP server** — `src/mcp/` (rmcp, 42 tools, stdio transport)
 
 ## Build & Run
 
@@ -32,6 +32,23 @@ cargo build
 - **DB stores only metadata and groups** — not runtime state; old tables preserved for rollback safety
 - **Environment variables** — `RUNE_DATA_DIR` (preferred) or `SKILL_MANAGER_DATA_DIR` (legacy) to override data directory
 
+## Dazi Marketplace (搭子)
+
+- **Module** — `src/core/dazi.rs` — HTTP API client for `dazi.ktvsky.com`
+- **Three resource types** — Skills (ZIP download), Agents (JSON → SKILL.md), Bundles (batch install)
+- **Cache** — `~/.runai/dazi-cache/` (skills.json, agents.json, bundles.json), 1hr TTL
+- **MCP token** — `~/.runai/dazi-token.json`, auto-refresh every 10min in TUI, registers `dazi-marketplace` as remote MCP in CLI configs
+- **Session** — `~/.runai/dazi-session.json`, for team API operations (bundle publish), 7-day validity with auto-renewal
+- **ZIP prefix stripping** — `extract_zip()` auto-strips common top-level directory prefix (e.g. `docx/SKILL.md` → `SKILL.md`)
+- **MCP tools (12)**:
+  - `sm_dazi_search` / `sm_dazi_list` / `sm_dazi_stats` — browse & search
+  - `sm_dazi_install` / `sm_dazi_install_bundle` — install skills/agents/bundles
+  - `sm_dazi_publish` / `sm_dazi_publish_agent` — publish to marketplace
+  - `sm_dazi_login` / `sm_dazi_logout` — session management (local HTTP server + browser auth)
+  - `sm_dazi_publishable` / `sm_dazi_publish_bundle` — team bundle operations (requires login)
+  - `sm_dazi_refresh` — refresh cache + MCP token
+- **Environment variables** — `DAZI_BASE_URL` to override marketplace server
+
 ## Migration Note (v0.5.0)
 
 The binary was renamed from `skill-manager` to `runai`. On first launch:
@@ -43,6 +60,6 @@ The binary was renamed from `skill-manager` to `runai`. On first launch:
 ## Tests
 
 ```bash
-cargo test                      # 103 tests
+cargo test                      # 123 tests
 cargo test -- --test-threads=1  # if HOME env race conditions occur
 ```

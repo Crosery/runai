@@ -19,9 +19,14 @@ pub struct SmServer {
 impl SmServer {
     pub fn new() -> Result<Self> {
         let manager = SkillManager::new()?;
+        let mut router = Self::tool_router();
+        #[cfg(feature = "dazi")]
+        {
+            router.merge(Self::dazi_tool_router());
+        }
         Ok(Self {
             manager: Mutex::new(manager),
-            tool_router: Self::tool_router(),
+            tool_router: router,
         })
     }
 }
@@ -47,19 +52,27 @@ pub struct NameTargetParams {
 }
 
 #[derive(Deserialize, schemars::JsonSchema, Default)]
+pub struct UnifiedEnableParams {
+    /// Single resource or group name
+    pub name: Option<String>,
+    /// Multiple resource/group names
+    pub names: Option<Vec<String>>,
+    /// CLI target: claude, codex, gemini, opencode (default: claude)
+    pub target: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema, Default)]
 pub struct NameParams {
     /// Resource or group name
     pub name: String,
 }
 
 #[derive(Deserialize, schemars::JsonSchema, Default)]
-pub struct UpdateGroupParams {
-    /// Group ID
-    pub id: String,
-    /// New display name (omit to keep unchanged)
+pub struct UnifiedDeleteParams {
+    /// Single resource name
     pub name: Option<String>,
-    /// New description (omit to keep unchanged)
-    pub description: Option<String>,
+    /// Multiple resource names
+    pub names: Option<Vec<String>>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema, Default)]
@@ -79,13 +92,19 @@ pub struct CreateGroupParams {
 }
 
 #[derive(Deserialize, schemars::JsonSchema, Default)]
-pub struct GroupMemberParams {
+pub struct GroupMembersActionParams {
+    /// Action: "add", "remove", or "update"
+    pub action: String,
     /// Group ID
     pub group: String,
-    /// Single resource name (or use 'names' for multiple)
+    /// Single resource name (for add/remove)
     pub name: Option<String>,
-    /// Multiple resource names to add/remove at once
+    /// Multiple resource names (for add/remove)
     pub names: Option<Vec<String>>,
+    /// New display name (for update action only)
+    pub display_name: Option<String>,
+    /// New description (for update action only)
+    pub description: Option<String>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema, Default)]
@@ -97,9 +116,11 @@ pub struct MarketListParams {
 }
 
 #[derive(Deserialize, schemars::JsonSchema, Default)]
-pub struct MarketInstallParams {
-    /// Skill name to install
-    pub name: String,
+pub struct UnifiedMarketInstallParams {
+    /// Single skill name to install
+    pub name: Option<String>,
+    /// Multiple skill names to install
+    pub names: Option<Vec<String>>,
     /// Source repo (owner/repo), required if ambiguous
     pub source: Option<String>,
 }
@@ -113,53 +134,9 @@ pub struct InstallGitHubParams {
 }
 
 #[derive(Deserialize, schemars::JsonSchema, Default)]
-pub struct BatchGroupAddParams {
-    /// Group ID
-    pub group: String,
-    /// List of resource names to add
-    pub names: Vec<String>,
-}
-
-#[derive(Deserialize, schemars::JsonSchema, Default)]
-pub struct BatchParams {
-    /// List of resource names to enable/disable
-    pub names: Vec<String>,
-    /// CLI target: claude, codex, gemini, opencode (default: claude)
-    pub target: Option<String>,
-}
-
-#[derive(Deserialize, schemars::JsonSchema, Default)]
-pub struct MarketSourceParams {
-    /// Action: "list", "add", "remove", "enable", "disable"
-    pub action: String,
-    /// Source repo (owner/repo) for add/remove/enable/disable
-    pub repo: Option<String>,
-}
-
-#[derive(Deserialize, schemars::JsonSchema, Default)]
-pub struct RecordUsageParams {
-    /// Resource name (skill or MCP)
-    pub name: String,
-}
-
-#[derive(Deserialize, schemars::JsonSchema, Default)]
 pub struct UsageStatsParams {
     /// Max entries to return (default: all)
     pub top: Option<usize>,
-}
-
-#[derive(Deserialize, schemars::JsonSchema, Default)]
-pub struct BatchDeleteParams {
-    /// List of resource names to delete
-    pub names: Vec<String>,
-}
-
-#[derive(Deserialize, schemars::JsonSchema, Default)]
-pub struct BatchInstallParams {
-    /// List of skill names from market to install
-    pub names: Vec<String>,
-    /// Source repo filter (optional)
-    pub source: Option<String>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema, Default)]
@@ -205,6 +182,51 @@ fn is_safe_shell_arg(s: &str) -> bool {
 
 fn parse_target(s: Option<&str>) -> CliTarget {
     CliTarget::from_str(s.unwrap_or("claude")).unwrap_or(CliTarget::Claude)
+}
+
+/// Notify Claude Code to reload a specific MCP server after config changes.
+/// Uses `claude mcp remove + add-json` to force re-read.
+/// Only relevant when target is Claude — other CLIs don't support hot-reload.
+fn sync_claude_mcp(mcp_name: &str) {
+    // Read current config to get the MCP entry
+    let home = dirs::home_dir().unwrap_or_default();
+    let config_path = home.join(".claude.json");
+    let content = match std::fs::read_to_string(&config_path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let config: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    let entry = config.get("mcpServers").and_then(|s| s.get(mcp_name));
+
+    match entry {
+        Some(entry) => {
+            // MCP exists in config → remove then re-add to force Claude Code to reconnect
+            let json_str = serde_json::to_string(entry).unwrap_or_default();
+            let _ = std::process::Command::new("claude")
+                .args(["mcp", "remove", mcp_name, "-s", "user"])
+                .output();
+            let _ = std::process::Command::new("claude")
+                .args(["mcp", "add-json", "-s", "user", mcp_name, &json_str])
+                .output();
+        }
+        None => {
+            // MCP was removed from config → tell Claude Code to disconnect
+            let _ = std::process::Command::new("claude")
+                .args(["mcp", "remove", mcp_name, "-s", "user"])
+                .output();
+        }
+    }
+}
+
+/// Sync all MCP changes for Claude target after enable/disable operations.
+fn maybe_sync_claude(target: CliTarget, mcp_name: &str) {
+    if target == CliTarget::Claude {
+        sync_claude_mcp(mcp_name);
+    }
 }
 
 // --- Tool router ---
@@ -305,94 +327,115 @@ impl SmServer {
         Json(TextResult { result })
     }
 
-    // ── Discover ──
-
-    #[tool(
-        description = "Find unmanaged SKILL.md files on disk. Use sm_scan to import them after discovery."
-    )]
-    fn sm_discover(&self) -> Json<TextResult> {
-        let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-        let found = crate::core::scanner::Scanner::discover_skills(&home);
-
-        let unmanaged: Vec<_> = found
-            .iter()
-            .filter(|s| s.status == crate::core::scanner::SkillStatus::Unmanaged)
-            .collect();
-
-        if unmanaged.is_empty() {
-            return Json(TextResult {
-                result: "No unmanaged skills found.".into(),
-            });
-        }
-
-        let mut lines = vec![format!("{} unmanaged skills found:\n", unmanaged.len())];
-        for s in &unmanaged {
-            lines.push(format!("  {:<40} {}", s.name, s.path.display()));
-        }
-        lines.push(format!(
-            "\n({} total on disk, {} already managed)",
-            found.len(),
-            found.len() - unmanaged.len()
-        ));
-        Json(TextResult {
-            result: lines.join("\n"),
-        })
-    }
-
     // ── Enable/Disable ──
 
     #[tool(
-        description = "Enable a skill/MCP/group for a CLI target. For multiple, use sm_batch_enable."
+        description = "Enable skill(s)/MCP(s)/group(s) for a CLI target. Pass 'name' for single or 'names' for multiple. Auto-detects groups vs items."
     )]
-    fn sm_enable(&self, Parameters(p): Parameters<NameTargetParams>) -> Json<TextResult> {
+    fn sm_enable(&self, Parameters(p): Parameters<UnifiedEnableParams>) -> Json<TextResult> {
+        let all_names = collect_names(p.name, p.names);
+        if all_names.is_empty() {
+            return Json(TextResult {
+                result: "Provide 'name' or 'names' parameter.".into(),
+            });
+        }
         let target = parse_target(p.target.as_deref());
         let mgr = self.manager.lock().unwrap();
-
         let groups = mgr.list_groups().unwrap_or_default();
-        let result = if groups.iter().any(|(id, _)| id == &p.name) {
-            mgr.enable_group(&p.name, target, None)
-                .map(|_| format!("Group '{}' enabled for {}", p.name, target.name()))
-                .unwrap_or_else(|e| format!("Error: {e}"))
-        } else {
-            match mgr.find_resource_id(&p.name) {
-                Some(id) => mgr
-                    .enable_resource(&id, target, None)
-                    .map(|_| format!("'{}' enabled for {}", p.name, target.name()))
-                    .unwrap_or_else(|e| format!("Error: {e}")),
-                None => format!(
-                    "Not found: '{}'. Try sm_scan first, or sm_market(search='{}') to find it.",
-                    p.name, p.name
-                ),
-            }
-        };
-        Json(TextResult { result })
+
+        let mut results = Vec::new();
+        for name in &all_names {
+            let msg = if groups.iter().any(|(id, _)| id == name) {
+                let r = mgr
+                    .enable_group(name, target, None)
+                    .map(|_| format!("Group '{name}' enabled for {}", target.name()))
+                    .unwrap_or_else(|e| format!("'{name}': {e}"));
+                if let Ok(members) = mgr.get_group_members(name) {
+                    for m in &members {
+                        if m.id.starts_with("mcp:") {
+                            maybe_sync_claude(target, &m.name);
+                        }
+                    }
+                }
+                r
+            } else {
+                match mgr.find_resource_id(name) {
+                    Some(id) => {
+                        let is_mcp = id.starts_with("mcp:");
+                        let r = mgr
+                            .enable_resource(&id, target, None)
+                            .map(|_| format!("'{name}' enabled for {}", target.name()))
+                            .unwrap_or_else(|e| format!("'{name}': {e}"));
+                        if is_mcp {
+                            maybe_sync_claude(target, name);
+                        }
+                        r
+                    }
+                    None => format!(
+                        "Not found: '{name}'. Try sm_scan first, or sm_market(search='{name}') to find it."
+                    ),
+                }
+            };
+            results.push(msg);
+        }
+        Json(TextResult {
+            result: results.join("\n"),
+        })
     }
 
     #[tool(
-        description = "Disable a skill/MCP/group for a CLI target. For multiple, use sm_batch_disable."
+        description = "Disable skill(s)/MCP(s)/group(s) for a CLI target. Pass 'name' for single or 'names' for multiple. Auto-detects groups vs items."
     )]
-    fn sm_disable(&self, Parameters(p): Parameters<NameTargetParams>) -> Json<TextResult> {
+    fn sm_disable(&self, Parameters(p): Parameters<UnifiedEnableParams>) -> Json<TextResult> {
+        let all_names = collect_names(p.name, p.names);
+        if all_names.is_empty() {
+            return Json(TextResult {
+                result: "Provide 'name' or 'names' parameter.".into(),
+            });
+        }
         let target = parse_target(p.target.as_deref());
         let mgr = self.manager.lock().unwrap();
-
         let groups = mgr.list_groups().unwrap_or_default();
-        let result = if groups.iter().any(|(id, _)| id == &p.name) {
-            mgr.disable_group(&p.name, target, None)
-                .map(|_| format!("Group '{}' disabled for {}", p.name, target.name()))
-                .unwrap_or_else(|e| format!("Error: {e}"))
-        } else {
-            match mgr.find_resource_id(&p.name) {
-                Some(id) => mgr
-                    .disable_resource(&id, target, None)
-                    .map(|_| format!("'{}' disabled for {}", p.name, target.name()))
-                    .unwrap_or_else(|e| format!("Error: {e}")),
-                None => format!(
-                    "Not found: '{}'. Run sm_list to see available resources.",
-                    p.name
-                ),
-            }
-        };
-        Json(TextResult { result })
+
+        let mut results = Vec::new();
+        for name in &all_names {
+            let msg = if groups.iter().any(|(id, _)| id == name) {
+                let mcp_names: Vec<String> = mgr
+                    .get_group_members(name)
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|m| m.id.starts_with("mcp:"))
+                    .map(|m| m.name.clone())
+                    .collect();
+                let r = mgr
+                    .disable_group(name, target, None)
+                    .map(|_| format!("Group '{name}' disabled for {}", target.name()))
+                    .unwrap_or_else(|e| format!("'{name}': {e}"));
+                for mcp_name in &mcp_names {
+                    maybe_sync_claude(target, mcp_name);
+                }
+                r
+            } else {
+                match mgr.find_resource_id(name) {
+                    Some(id) => {
+                        let is_mcp = id.starts_with("mcp:");
+                        let r = mgr
+                            .disable_resource(&id, target, None)
+                            .map(|_| format!("'{name}' disabled for {}", target.name()))
+                            .unwrap_or_else(|e| format!("'{name}': {e}"));
+                        if is_mcp {
+                            maybe_sync_claude(target, name);
+                        }
+                        r
+                    }
+                    None => format!("Not found: '{name}'. Run sm_list to see available resources."),
+                }
+            };
+            results.push(msg);
+        }
+        Json(TextResult {
+            result: results.join("\n"),
+        })
     }
 
     // ── Mutating tools ──
@@ -416,21 +459,30 @@ impl SmServer {
     }
 
     #[tool(
-        description = "Delete one skill/MCP (files+symlinks+DB). For multiple, use sm_batch_delete."
+        description = "Delete skill(s)/MCP(s) (files+symlinks+DB). Pass 'name' for single or 'names' for multiple."
     )]
-    fn sm_delete(&self, Parameters(p): Parameters<NameParams>) -> Json<TextResult> {
+    fn sm_delete(&self, Parameters(p): Parameters<UnifiedDeleteParams>) -> Json<TextResult> {
+        let all_names = collect_names(p.name, p.names);
+        if all_names.is_empty() {
+            return Json(TextResult {
+                result: "Provide 'name' or 'names' parameter.".into(),
+            });
+        }
         let mgr = self.manager.lock().unwrap();
-        let result = match mgr.find_resource_id(&p.name) {
-            Some(id) => match mgr.uninstall(&id) {
-                Ok(_) => format!("Deleted '{}'", p.name),
-                Err(e) => format!("Error: {e}"),
-            },
-            None => format!(
-                "Not found: '{}'. Run sm_list to see available resources.",
-                p.name
-            ),
-        };
-        Json(TextResult { result })
+        let mut results = Vec::new();
+        for name in &all_names {
+            let msg = match mgr.find_resource_id(name) {
+                Some(id) => match mgr.uninstall(&id) {
+                    Ok(_) => format!("Deleted '{name}'"),
+                    Err(e) => format!("'{name}': {e}"),
+                },
+                None => format!("Not found: '{name}'. Run sm_list to see available resources."),
+            };
+            results.push(msg);
+        }
+        Json(TextResult {
+            result: results.join("\n"),
+        })
     }
 
     // ── Group management ──
@@ -469,118 +521,86 @@ impl SmServer {
         }
     }
 
-    #[tool(description = "Update a group's name and/or description")]
-    fn sm_update_group(&self, Parameters(p): Parameters<UpdateGroupParams>) -> Json<TextResult> {
-        let mgr = self.manager.lock().unwrap();
-        let result = match mgr.update_group(&p.id, p.name.as_deref(), p.description.as_deref()) {
-            Ok(_) => {
-                let mut changes = Vec::new();
-                if let Some(n) = &p.name {
-                    changes.push(format!("name='{n}'"));
-                }
-                if let Some(d) = &p.description {
-                    changes.push(format!("desc='{d}'"));
-                }
-                format!("Group '{}' updated: {}", p.id, changes.join(", "))
-            }
-            Err(e) => format!("Error: {e}"),
-        };
-        Json(TextResult { result })
-    }
-
     #[tool(
-        description = "Add skill(s) or MCP(s) to a group. Use 'name' for single or 'names' for multiple."
+        description = "Manage group members. action: 'add' (add resources), 'remove' (remove resources), 'update' (rename/redescribe). Pass 'name'/'names' for add/remove, 'display_name'/'description' for update."
     )]
-    fn sm_group_add(&self, Parameters(p): Parameters<GroupMemberParams>) -> Json<TextResult> {
+    fn sm_group_members(
+        &self,
+        Parameters(p): Parameters<GroupMembersActionParams>,
+    ) -> Json<TextResult> {
         let mgr = self.manager.lock().unwrap();
         let gid = match resolve_group(&mgr, &p.group) {
             Ok(id) => id,
             Err(e) => return Json(TextResult { result: e }),
         };
-        let all_names = collect_names(p.name, p.names);
-        if all_names.is_empty() {
-            return Json(TextResult {
-                result: "Provide 'name' or 'names' parameter".into(),
-            });
-        }
-        let mut added = 0;
-        let mut errors = Vec::new();
-        for name in &all_names {
-            match mgr.find_resource_id(name) {
-                Some(rid) => match mgr.db().add_group_member(&gid, &rid) {
-                    Ok(_) => added += 1,
-                    Err(e) => errors.push(format!("{name}: {e}")),
-                },
-                None => errors.push(format!("{name}: not found")),
+
+        let result = match p.action.as_str() {
+            "add" => {
+                let all_names = collect_names(p.name, p.names);
+                if all_names.is_empty() {
+                    return Json(TextResult {
+                        result: "Provide 'name' or 'names' parameter.".into(),
+                    });
+                }
+                let mut added = 0;
+                let mut errors = Vec::new();
+                for name in &all_names {
+                    match mgr.find_resource_id(name) {
+                        Some(rid) => match mgr.db().add_group_member(&gid, &rid) {
+                            Ok(_) => added += 1,
+                            Err(e) => errors.push(format!("{name}: {e}")),
+                        },
+                        None => errors.push(format!("{name}: not found")),
+                    }
+                }
+                let mut msg = format!("Added {added}/{} to group '{gid}'", all_names.len());
+                if !errors.is_empty() {
+                    msg.push_str(&format!("\nErrors: {}", errors.join(", ")));
+                }
+                msg
             }
-        }
-        let mut result = format!("Added {added}/{} to group '{gid}'", all_names.len());
-        if !errors.is_empty() {
-            result.push_str(&format!("\nErrors: {}", errors.join(", ")));
-        }
-        Json(TextResult { result })
-    }
-
-    #[tool(
-        description = "Remove skill(s) or MCP(s) from a group. Use 'name' for single or 'names' for multiple."
-    )]
-    fn sm_group_remove(&self, Parameters(p): Parameters<GroupMemberParams>) -> Json<TextResult> {
-        let mgr = self.manager.lock().unwrap();
-        let gid = match resolve_group(&mgr, &p.group) {
-            Ok(id) => id,
-            Err(e) => return Json(TextResult { result: e }),
-        };
-        let all_names = collect_names(p.name, p.names);
-        if all_names.is_empty() {
-            return Json(TextResult {
-                result: "Provide 'name' or 'names' parameter".into(),
-            });
-        }
-        let mut removed = 0;
-        let mut errors = Vec::new();
-        for name in &all_names {
-            match mgr.find_resource_id(name) {
-                Some(rid) => match mgr.db().remove_group_member(&gid, &rid) {
-                    Ok(_) => removed += 1,
-                    Err(e) => errors.push(format!("{name}: {e}")),
-                },
-                None => errors.push(format!("{name}: not found")),
+            "remove" => {
+                let all_names = collect_names(p.name, p.names);
+                if all_names.is_empty() {
+                    return Json(TextResult {
+                        result: "Provide 'name' or 'names' parameter.".into(),
+                    });
+                }
+                let mut removed = 0;
+                let mut errors = Vec::new();
+                for name in &all_names {
+                    match mgr.find_resource_id(name) {
+                        Some(rid) => match mgr.db().remove_group_member(&gid, &rid) {
+                            Ok(_) => removed += 1,
+                            Err(e) => errors.push(format!("{name}: {e}")),
+                        },
+                        None => errors.push(format!("{name}: not found")),
+                    }
+                }
+                let mut msg = format!("Removed {removed}/{} from group '{gid}'", all_names.len());
+                if !errors.is_empty() {
+                    msg.push_str(&format!("\nErrors: {}", errors.join(", ")));
+                }
+                msg
             }
-        }
-        let mut result = format!("Removed {removed}/{} from group '{gid}'", all_names.len());
-        if !errors.is_empty() {
-            result.push_str(&format!("\nErrors: {}", errors.join(", ")));
-        }
-        Json(TextResult { result })
-    }
+            "update" => {
+                match mgr.update_group(&gid, p.display_name.as_deref(), p.description.as_deref()) {
+                    Ok(_) => {
+                        let mut changes = Vec::new();
+                        if let Some(n) = &p.display_name {
+                            changes.push(format!("name='{n}'"));
+                        }
+                        if let Some(d) = &p.description {
+                            changes.push(format!("desc='{d}'"));
+                        }
+                        format!("Group '{gid}' updated: {}", changes.join(", "))
+                    }
+                    Err(e) => format!("Error: {e}"),
+                }
+            }
+            _ => "Invalid action. Use: add, remove, or update".into(),
+        };
 
-    #[tool(description = "Enable all skills/MCPs in a group for a CLI target")]
-    fn sm_group_enable(&self, Parameters(p): Parameters<NameTargetParams>) -> Json<TextResult> {
-        let target = parse_target(p.target.as_deref());
-        let mgr = self.manager.lock().unwrap();
-        let gid = match resolve_group(&mgr, &p.name) {
-            Ok(id) => id,
-            Err(e) => return Json(TextResult { result: e }),
-        };
-        let result = match mgr.enable_group(&gid, target, None) {
-            Ok(_) => format!("Group '{}' enabled for {}", gid, target.name()),
-            Err(e) => format!("Error: {e}"),
-        };
-        Json(TextResult { result })
-    }
-
-    #[tool(description = "Disable all skills/MCPs in a group for a CLI target")]
-    fn sm_group_disable(&self, Parameters(p): Parameters<NameTargetParams>) -> Json<TextResult> {
-        let target = parse_target(p.target.as_deref());
-        let mgr = self.manager.lock().unwrap();
-        let gid = match resolve_group(&mgr, &p.name) {
-            Ok(id) => id,
-            Err(e) => return Json(TextResult { result: e }),
-        };
-        let result = match mgr.disable_group(&gid, target, None) {
-            Ok(_) => format!("Group '{}' disabled for {}", gid, target.name()),
-            Err(e) => format!("Error: {e}"),
-        };
         Json(TextResult { result })
     }
 
@@ -661,7 +681,7 @@ impl SmServer {
             if let Some(ref search) = p.search {
                 return Json(TextResult {
                     result: format!(
-                        "No skills matching '{}'. Use sm_sources to check available sources.",
+                        "No skills matching '{}'. Check available sources in TUI Market tab.",
                         search
                     ),
                 });
@@ -674,21 +694,28 @@ impl SmServer {
     }
 
     #[tool(
-        description = "Install one market skill. Returns Bash command — run it, don't wait for MCP. For multiple, use sm_batch_install."
+        description = "Install market skill(s). Returns Bash command(s) — run them, don't wait for MCP. Pass 'name' for single or 'names' for multiple."
     )]
     fn sm_market_install(
         &self,
-        Parameters(p): Parameters<MarketInstallParams>,
+        Parameters(p): Parameters<UnifiedMarketInstallParams>,
     ) -> Json<TextResult> {
-        if !is_safe_shell_arg(&p.name) {
+        let all_names = collect_names(p.name, p.names);
+        if all_names.is_empty() {
             return Json(TextResult {
-                result: format!(
-                    "Invalid name: '{}'. Only alphanumeric, -, _, ., / allowed.",
-                    p.name
-                ),
+                result: "Provide 'name' or 'names' parameter.".into(),
             });
         }
-        let mut cmd = format!("runai market-install {}", p.name);
+        // Validate all names and source before generating commands
+        for name in &all_names {
+            if !is_safe_shell_arg(name) {
+                return Json(TextResult {
+                    result: format!(
+                        "Invalid name: '{name}'. Only alphanumeric, -, _, ., / allowed."
+                    ),
+                });
+            }
+        }
         if let Some(ref src) = p.source {
             if !is_safe_shell_arg(src) {
                 return Json(TextResult {
@@ -697,157 +724,33 @@ impl SmServer {
                     ),
                 });
             }
-            cmd.push_str(&format!(" --source '{src}'"));
         }
-        Json(TextResult {
-            result: format!(
-                "Run this command via Bash tool:\n\n{cmd}\n\nDo NOT wait for MCP — CLI is much faster."
-            ),
-        })
-    }
-
-    #[tool(
-        description = "Manage market sources. Actions: list, add (repo=owner/repo), remove (repo=owner/repo), enable (repo), disable (repo)"
-    )]
-    fn sm_sources(&self, Parameters(p): Parameters<MarketSourceParams>) -> Json<TextResult> {
-        let mgr = self.manager.lock().unwrap();
-        let data_dir = mgr.paths().data_dir().to_path_buf();
-        let mut sources = crate::core::market::load_sources(&data_dir);
-
-        let result = match p.action.as_str() {
-            "list" => {
-                let items: Vec<serde_json::Value> = sources
-                    .iter()
-                    .map(|s| {
-                        serde_json::json!({
-                            "label": s.label,
-                            "repo": s.repo_id(),
-                            "enabled": s.enabled,
-                            "builtin": s.builtin,
-                        })
-                    })
-                    .collect();
-                serde_json::to_string_pretty(&items).unwrap_or_default()
-            }
-            "add" => match p.repo {
-                Some(repo) => match crate::core::market::SourceEntry::from_input(&repo) {
-                    Ok(src) => {
-                        sources.push(src);
-                        let _ = crate::core::market::save_sources(&data_dir, &sources);
-                        format!("Added source: {repo}")
-                    }
-                    Err(e) => format!("Invalid: {e}"),
-                },
-                None => "Missing 'repo' parameter".into(),
-            },
-            "remove" => match p.repo {
-                Some(repo) => {
-                    let before = sources.len();
-                    sources.retain(|s| !s.builtin && s.repo_id() != repo);
-                    if sources.len() < before {
-                        let _ = crate::core::market::save_sources(&data_dir, &sources);
-                        format!("Removed source: {repo}")
-                    } else {
-                        format!("Source not found or is built-in: {repo}")
-                    }
+        let cmds: Vec<String> = all_names
+            .iter()
+            .map(|name| {
+                let mut cmd = format!("runai market-install {name}");
+                if let Some(ref src) = p.source {
+                    cmd.push_str(&format!(" --source '{src}'"));
                 }
-                None => "Missing 'repo' parameter".into(),
-            },
-            "enable" | "disable" => {
-                let enable = p.action == "enable";
-                match p.repo {
-                    Some(repo) => {
-                        let mut found = false;
-                        for s in &mut sources {
-                            if s.repo_id() == repo {
-                                s.enabled = enable;
-                                found = true;
-                            }
-                        }
-                        if found {
-                            let _ = crate::core::market::save_sources(&data_dir, &sources);
-                            format!(
-                                "Source {} {}",
-                                repo,
-                                if enable { "enabled" } else { "disabled" }
-                            )
-                        } else {
-                            format!("Source not found: {repo}")
-                        }
-                    }
-                    None => "Missing 'repo' parameter".into(),
-                }
-            }
-            _ => format!(
-                "Unknown action: {}. Use list/add/remove/enable/disable",
-                p.action
-            ),
-        };
-        Json(TextResult { result })
-    }
+                cmd
+            })
+            .collect();
 
-    // ── Batch operations ──
-
-    #[tool(
-        description = "Enable multiple skills/MCPs at once. Pass names=['a','b','c']. Faster than calling sm_enable repeatedly."
-    )]
-    fn sm_batch_enable(&self, Parameters(p): Parameters<BatchParams>) -> Json<TextResult> {
-        let target = parse_target(p.target.as_deref());
-        let mgr = self.manager.lock().unwrap();
-
-        let mut results = Vec::new();
-        for name in &p.names {
-            let groups = mgr.list_groups().unwrap_or_default();
-            let msg = if groups.iter().any(|(id, _)| id == name) {
-                mgr.enable_group(name, target, None)
-                    .map(|_| format!("'{}' enabled", name))
-                    .unwrap_or_else(|e| format!("'{}': {}", name, e))
-            } else {
-                match mgr.find_resource_id(name) {
-                    Some(id) => mgr
-                        .enable_resource(&id, target, None)
-                        .map(|_| format!("'{}' enabled", name))
-                        .unwrap_or_else(|e| format!("'{}': {}", name, e)),
-                    None => format!("'{}' not found", name),
-                }
-            };
-            results.push(msg);
+        if cmds.len() == 1 {
+            Json(TextResult {
+                result: format!(
+                    "Run this command via Bash tool:\n\n{}\n\nDo NOT wait for MCP — CLI is much faster.",
+                    cmds[0]
+                ),
+            })
+        } else {
+            Json(TextResult {
+                result: format!(
+                    "Run these commands via Bash tool (one by one or with &&):\n\n{}\n\nThen run: runai scan",
+                    cmds.join("\n")
+                ),
+            })
         }
-
-        Json(TextResult {
-            result: results.join("\n"),
-        })
-    }
-
-    #[tool(
-        description = "Disable multiple skills/MCPs at once. Pass names=['a','b','c']. Faster than calling sm_disable repeatedly."
-    )]
-    fn sm_batch_disable(&self, Parameters(p): Parameters<BatchParams>) -> Json<TextResult> {
-        let target = parse_target(p.target.as_deref());
-        let mgr = self.manager.lock().unwrap();
-
-        let mut results = Vec::new();
-        for name in &p.names {
-            let groups = mgr.list_groups().unwrap_or_default();
-            let msg = if groups.iter().any(|(id, _)| id == name) {
-                mgr.disable_group(name, target, None)
-                    .map(|_| format!("'{}' disabled", name))
-                    .unwrap_or_else(|e| format!("'{}': {}", name, e))
-            } else {
-                match mgr.find_resource_id(name) {
-                    Some(id) => mgr
-                        .disable_resource(&id, target, None)
-                        .map(|_| format!("'{}' disabled", name))
-                        .unwrap_or_else(|e| format!("'{}': {}", name, e)),
-                    None => format!("'{}' not found", name),
-                }
-            };
-            results.push(msg);
-        }
-
-        Json(TextResult {
-            result: results.join("\n"),
-        })
     }
 
     #[tool(
@@ -947,7 +850,7 @@ impl SmServer {
                      Try these fallbacks:\n\
                      1. npx skills find {q}  ← search skills.sh ecosystem\n\
                      2. Web search: '{q} claude code skill github'\n\
-                     3. sm_sources(action='list') to check enabled market sources\n\n\
+                     3. Check enabled market sources in TUI Market tab\n\n\
                      If you find a repo, install with: runai install owner/repo"
                 ),
             })
@@ -958,91 +861,7 @@ impl SmServer {
         }
     }
 
-    // ── Batch: delete & install ──
-
-    #[tool(
-        description = "Delete multiple skills/MCPs by name list in one call. Returns summary of deleted and failed."
-    )]
-    fn sm_batch_delete(&self, Parameters(p): Parameters<BatchDeleteParams>) -> Json<TextResult> {
-        if p.names.is_empty() {
-            return Json(TextResult {
-                result: "Provide 'names' list".into(),
-            });
-        }
-        let mgr = self.manager.lock().unwrap();
-        match mgr.batch_delete(&p.names) {
-            Ok((deleted, errors)) => {
-                let mut msg = format!("Deleted {deleted}/{}", p.names.len());
-                if !errors.is_empty() {
-                    msg.push_str(&format!("\nErrors: {}", errors.join(", ")));
-                }
-                Json(TextResult { result: msg })
-            }
-            Err(e) => Json(TextResult {
-                result: format!("Error: {e}"),
-            }),
-        }
-    }
-
-    #[tool(
-        description = "Install multiple skills from market. Returns CLI commands to run via Bash (faster than MCP)."
-    )]
-    fn sm_batch_install(&self, Parameters(p): Parameters<BatchInstallParams>) -> Json<TextResult> {
-        if p.names.is_empty() {
-            return Json(TextResult {
-                result: "Provide 'names' list".into(),
-            });
-        }
-        // Validate all names and source before generating commands
-        for name in &p.names {
-            if !is_safe_shell_arg(name) {
-                return Json(TextResult {
-                    result: format!(
-                        "Invalid name: '{name}'. Only alphanumeric, -, _, ., / allowed."
-                    ),
-                });
-            }
-        }
-        if let Some(ref src) = p.source {
-            if !is_safe_shell_arg(src) {
-                return Json(TextResult {
-                    result: format!("Invalid source: '{src}'."),
-                });
-            }
-        }
-        let cmds: Vec<String> = p
-            .names
-            .iter()
-            .map(|name| {
-                let mut cmd = format!("runai market-install {name}");
-                if let Some(ref src) = p.source {
-                    cmd.push_str(&format!(" --source '{src}'"));
-                }
-                cmd
-            })
-            .collect();
-
-        Json(TextResult {
-            result: format!(
-                "Run these commands via Bash tool (one by one or with &&):\n\n{}\n\nThen run: runai scan",
-                cmds.join("\n")
-            ),
-        })
-    }
-
     // ── Usage tracking ──
-
-    #[tool(
-        description = "Record a usage event for a skill or MCP. Call this after using a skill so usage stats stay accurate."
-    )]
-    fn sm_record_usage(&self, Parameters(p): Parameters<RecordUsageParams>) -> Json<TextResult> {
-        let mgr = self.manager.lock().unwrap();
-        let result = match mgr.record_usage(&p.name) {
-            Ok(_) => format!("Recorded usage for '{}'", p.name),
-            Err(e) => format!("Error: {e}"),
-        };
-        Json(TextResult { result })
-    }
 
     #[tool(
         description = "Show usage statistics for all skills and MCPs, sorted by most used. Helps identify unused resources."
@@ -1138,69 +957,32 @@ impl SmServer {
         }
     }
 
-    // ── Utility ──
-
-    #[tool(description = "Register runai as MCP server in all CLI configs")]
-    fn sm_register(&self) -> Json<TextResult> {
-        let home = dirs::home_dir().unwrap_or_default();
-        let r = crate::core::mcp_register::McpRegister::register_all(&home);
-        let mut parts = Vec::new();
-        for name in &r.registered {
-            parts.push(format!("✓ {name}"));
-        }
-        for name in &r.skipped {
-            parts.push(format!("· {name} (already)"));
-        }
-        for err in &r.errors {
-            parts.push(format!("⚠ {err}"));
-        }
-        Json(TextResult {
-            result: parts.join("\n"),
-        })
-    }
 }
+
+// ── Dazi marketplace tools (conditionally compiled) ──
+#[cfg(feature = "dazi")]
+mod dazi_tools;
+
 
 #[tool_handler]
 impl ServerHandler for SmServer {
     fn get_info(&self) -> ServerInfo {
         let mut info = ServerInfo::default();
         info.instructions = Some(
-            "Runai — AI skill manager for skills, MCPs, groups, and market.\n\
+            "Runai — AI skill/MCP manager.\n\
              \n\
-             AUTONOMOUS SKILL DISCOVERY (proactive, do NOT wait for user to ask):\n\
-             When the user asks 'how do I do X', 'can you do X', 'find a skill for X',\n\
-             or mentions needing help with a specific domain (design, testing, deployment, etc.),\n\
-             AUTOMATICALLY search for relevant skills:\n\
-             1. sm_search(name='keyword') — search installed + market at once\n\
-             2. If found in market → sm_market_install(name='...') or sm_batch_install\n\
-             3. If NOT found → run via Bash: npx skills find <keyword>\n\
-             4. If npx finds a skill → run via Bash: npx skills add <owner/repo@skill> -g -y\n\
-             5. Still not found → web search '<keyword> claude code skill github'\n\
-             6. Found GitHub repo → run via Bash: runai install owner/repo\n\
-             7. After any install → sm_scan to refresh, then sm_enable to activate\n\
-             Complete the entire flow autonomously. Never ask user to search or install manually.\n\
+             SKILL DISCOVERY (proactive):\n\
+             1. sm_search → find skills (local + market)\n\
+             2. sm_market_install → install (returns CLI command, run via Bash)\n\
+             3. Fallback: Bash `npx skills find <keyword>` or `runai install owner/repo`\n\
+             4. After install → sm_scan, sm_enable\n\
              \n\
-             QUALITY VERIFICATION (before recommending any skill):\n\
-             - Prefer skills with 1K+ installs or from trusted sources\n\
-             - Trusted sources: anthropics, vercel-labs, microsoft, ComposioHQ\n\
-             - Be cautious with skills under 100 installs or from unknown authors\n\
-             - Check GitHub stars when possible — skip repos with <100 stars\n\
-             \n\
-             USAGE TRACKING:\n\
-             - After using a skill, call sm_record_usage(name='skill-name') to track usage\n\
-             - sm_usage_stats(top=10) — see most/least used resources to help users clean up\n\
-             \n\
-             KEY TOOLS:\n\
-             - sm_search(name='keyword') — unified search across installed + market\n\
-             - sm_install(repo) — returns CLI command for GitHub install (run via Bash)\n\
-             - sm_market(search) / sm_market_install(name) — install from market cache\n\
-             - sm_enable/sm_disable — toggle skill or MCP for a CLI target\n\
-             - sm_batch_enable/sm_batch_disable — toggle multiple at once (pass names=[])\n\
-             - sm_batch_delete(names=[]) — delete multiple resources at once\n\
-             - sm_list / sm_status — view resources and counts\n\
-             - sm_groups / sm_create_group / sm_group_add(names=[]) — organize into groups\n\
-             - sm_scan — discover new skills from filesystem\n\
-             - sm_usage_stats — identify unused resources for cleanup"
+             CORE: sm_list, sm_status, sm_enable, sm_disable, sm_search, sm_scan\n\
+             INSTALL: sm_install(repo), sm_market_install\n\
+             GROUPS: sm_groups, sm_create_group, sm_delete_group, sm_group_members\n\
+             STATS: sm_usage_stats\n\
+             BACKUP: sm_backup, sm_backups, sm_restore\n\
+             MARKET: sm_market"
                 .into(),
         );
         info.capabilities = rmcp::model::ServerCapabilities::builder()
@@ -1216,17 +998,103 @@ mod tests {
     use rmcp::handler::server::wrapper::Parameters;
 
     #[test]
-    fn tool_router_has_30_tools() {
+    fn tool_router_has_expected_tools() {
         let server = SmServer::new().unwrap();
         let tools = server.tool_router.list_all();
+        let tool_names: Vec<String> = tools.iter().map(|t| t.name.to_string()).collect();
         eprintln!("Registered tools: {}", tools.len());
-        for t in &tools {
-            eprintln!("  - {}", t.name);
+        for name in &tool_names {
+            eprintln!("  - {name}");
         }
+
+        // 18 core expected tools
+        let expected_core = [
+            "sm_list",
+            "sm_status",
+            "sm_enable",
+            "sm_disable",
+            "sm_search",
+            "sm_scan",
+            "sm_delete",
+            "sm_install",
+            "sm_market",
+            "sm_market_install",
+            "sm_groups",
+            "sm_create_group",
+            "sm_delete_group",
+            "sm_group_members",
+            "sm_usage_stats",
+            "sm_backup",
+            "sm_backups",
+            "sm_restore",
+        ];
+        for name in &expected_core {
+            assert!(
+                tool_names.iter().any(|t| t == name),
+                "Expected core tool '{name}' not found"
+            );
+        }
+
+        // 12 dazi tools (only present with dazi feature)
+        #[cfg(feature = "dazi")]
+        {
+            let expected_dazi = [
+                "sm_dazi_search",
+                "sm_dazi_install",
+                "sm_dazi_install_bundle",
+                "sm_dazi_list",
+                "sm_dazi_stats",
+                "sm_dazi_publish",
+                "sm_dazi_publish_agent",
+                "sm_dazi_refresh",
+                "sm_dazi_login",
+                "sm_dazi_logout",
+                "sm_dazi_publish_bundle",
+                "sm_dazi_publishable",
+            ];
+            for name in &expected_dazi {
+                assert!(
+                    tool_names.iter().any(|t| t == name),
+                    "Expected dazi tool '{name}' not found"
+                );
+            }
+        }
+
+        // 13 removed tools
+        let removed = [
+            "sm_batch_enable",
+            "sm_batch_disable",
+            "sm_batch_delete",
+            "sm_batch_install",
+            "sm_group_enable",
+            "sm_group_disable",
+            "sm_group_add",
+            "sm_group_remove",
+            "sm_update_group",
+            "sm_register",
+            "sm_record_usage",
+            "sm_discover",
+            "sm_sources",
+        ];
+        for name in &removed {
+            assert!(
+                !tool_names.iter().any(|t| t == name),
+                "Removed tool '{name}' should not be present"
+            );
+        }
+
+        #[cfg(feature = "dazi")]
         assert_eq!(
             tools.len(),
             30,
-            "Expected 30 tools in tool_router, got {}",
+            "Expected 30 tools (18 core + 12 dazi), got {}",
+            tools.len()
+        );
+        #[cfg(not(feature = "dazi"))]
+        assert_eq!(
+            tools.len(),
+            18,
+            "Expected 18 tools (core only, no dazi), got {}",
             tools.len()
         );
     }
@@ -1256,42 +1124,6 @@ mod tests {
             "missing 'mcps_total' field"
         );
         assert_eq!(parsed["target"], "claude");
-    }
-
-    #[test]
-    fn sm_sources_list_returns_builtin_sources() {
-        let server = SmServer::new().unwrap();
-        let Json(result) = server.sm_sources(Parameters(MarketSourceParams {
-            action: "list".into(),
-            repo: None,
-        }));
-        let parsed: serde_json::Value =
-            serde_json::from_str(&result.result).expect("sm_sources list should return valid JSON");
-
-        let arr = parsed
-            .as_array()
-            .expect("sm_sources list should return an array");
-        assert!(!arr.is_empty(), "builtin sources list should not be empty");
-
-        // Every entry should have label, repo, enabled, builtin fields
-        for entry in arr {
-            assert!(entry.get("label").is_some(), "source entry missing 'label'");
-            assert!(entry.get("repo").is_some(), "source entry missing 'repo'");
-            assert!(
-                entry.get("enabled").is_some(),
-                "source entry missing 'enabled'"
-            );
-            assert!(
-                entry.get("builtin").is_some(),
-                "source entry missing 'builtin'"
-            );
-        }
-
-        // At least one builtin source should exist
-        let has_builtin = arr
-            .iter()
-            .any(|e| e["builtin"] == serde_json::Value::Bool(true));
-        assert!(has_builtin, "expected at least one builtin source");
     }
 
     #[test]
