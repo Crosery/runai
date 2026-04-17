@@ -324,9 +324,7 @@ impl Scanner {
                 }
                 EntryType::ForeignSymlink | EntryType::RealDir => {
                     match Self::adopt_entry(&entry_path, &name, paths, db, target) {
-                        Ok(AdoptOutcome::Adopted | AdoptOutcome::Healed) => {
-                            result.adopted += 1
-                        }
+                        Ok(AdoptOutcome::Adopted | AdoptOutcome::Healed) => result.adopted += 1,
                         Ok(AdoptOutcome::Orphaned) => result.skipped += 1,
                         Err(e) => result.errors.push(format!("{name}: {e}")),
                     }
@@ -692,8 +690,7 @@ mod tests {
         assert!(Linker::is_symlink(&link));
         assert!(!link.exists(), "target is supposed to be dangling");
 
-        let outcome =
-            Scanner::adopt_entry(&link, name, &paths, &db, CliTarget::Claude).unwrap();
+        let outcome = Scanner::adopt_entry(&link, name, &paths, &db, CliTarget::Claude).unwrap();
         assert_eq!(outcome, AdoptOutcome::Healed);
 
         // After healing, the symlink must resolve to the managed dir.
@@ -723,8 +720,7 @@ mod tests {
         std::os::unix::fs::symlink(&dead_target, &link).unwrap();
 
         let outcome =
-            Scanner::adopt_entry(&link, "unknown-skill", &paths, &db, CliTarget::Claude)
-                .unwrap();
+            Scanner::adopt_entry(&link, "unknown-skill", &paths, &db, CliTarget::Claude).unwrap();
         assert_eq!(outcome, AdoptOutcome::Orphaned);
 
         // Orphan untouched: still a dangling symlink, still pointing at the dead target.
