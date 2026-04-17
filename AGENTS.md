@@ -67,6 +67,7 @@ File-level LLM docs follow the convention `<name>.LLM.md` as a sibling to the so
 | core::paths | [src/core/paths.rs](src/core/paths.rs) | [src/core/paths.LLM.md](src/core/paths.LLM.md) | `AppPaths` resolver + legacy-dir migration |
 | core::resource | [src/core/resource.rs](src/core/resource.rs) | [src/core/resource.LLM.md](src/core/resource.LLM.md) | `Resource` / `ResourceKind` domain types |
 | core::scanner | [src/core/scanner.rs](src/core/scanner.rs) | [src/core/scanner.LLM.md](src/core/scanner.LLM.md) | Filesystem discovery + adoption of unmanaged skills |
+| core::transcript_stats | [src/core/transcript_stats.rs](src/core/transcript_stats.rs) | [src/core/transcript_stats.LLM.md](src/core/transcript_stats.LLM.md) | Usage counts mined from Claude Code transcripts, with incremental on-disk cache |
 | core::updater | [src/core/updater.rs](src/core/updater.rs) | [src/core/updater.LLM.md](src/core/updater.LLM.md) | Self-update: check, download, verify, replace binary |
 | mcp::tools | [src/mcp/tools.rs](src/mcp/tools.rs) | [src/mcp/tools.LLM.md](src/mcp/tools.LLM.md) | 30 `sm_*` tools exposed to MCP clients |
 | mcp::dazi_tools | [src/mcp/dazi_tools.rs](src/mcp/dazi_tools.rs) | [src/mcp/dazi_tools.LLM.md](src/mcp/dazi_tools.LLM.md) | 12 additional Dazi tools (feature=dazi) |
@@ -86,6 +87,7 @@ Small `mod.rs` wiring files without substance are not separately documented; the
 - **Data directory auto-migrates** from `~/.skill-manager/` → `~/.runai/` on first launch (v0.5.0 transition). DB file, symlinks, and CLI MCP entries all get renamed. `RUNE_DATA_DIR` and `SKILL_MANAGER_DATA_DIR` env vars both honored.
 - **MCP self-registration** runs on first launch if not already present in a CLI's config. Idempotent — re-running does nothing if the entry already matches.
 - **Market lists are disk-cached** under `~/.runai/market-cache/`; refresh is background, 1-hour TTL. UI loads instantly from cache.
+- **Usage stats are incrementally cached** at `~/.runai/transcript-scan-cache.json`. `transcript_stats::scan_default` fingerprints each jsonl by `(mtime, size)` and only re-parses changed files — critical, because `tui::app::reload` is called on every tab switch and each full re-scan of `~/.claude/projects/` (~400 files / 230MB on power users) was adding ~165ms per keystroke.
 - **Market install fetches the full skill dir**, not just `SKILL.md` — skills often have assets.
 - **DB only carries metadata**, never runtime enabled state (that's filesystem). Old tables are preserved for rollback safety.
 - **Symlinks in Windows** require Developer Mode or Administrator — `linker.rs` uses `symlink_dir`; failures surface as permission errors.
