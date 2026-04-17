@@ -1515,7 +1515,7 @@ mod tests {
     #[test]
     fn usage_stats_aggregates_claude_transcripts() {
         // Serialized at process level — the env var is global.
-        static ENV_LOCK: Mutex<()> = Mutex::new(());
+        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let _guard = ENV_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
