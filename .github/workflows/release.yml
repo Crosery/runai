@@ -28,6 +28,10 @@ jobs:
             os: macos-latest
             asset: runai-darwin-arm64.tar.gz
             cross: false
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            asset: runai-windows-amd64.zip
+            cross: false
 
     runs-on: ${{ matrix.os }}
 
@@ -40,6 +44,7 @@ jobs:
 
       - name: Determine features
         id: features
+        shell: bash
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
           if [[ "$TAG" == *"-dazi"* ]]; then
@@ -53,6 +58,7 @@ jobs:
         run: cargo install cross --locked
 
       - name: Build
+        shell: bash
         run: |
           if [ "${{ matrix.cross }}" = "true" ]; then
             cross build --release --target ${{ matrix.target }} ${{ steps.features.outputs.flags }}
@@ -60,11 +66,18 @@ jobs:
             cargo build --release --target ${{ matrix.target }} ${{ steps.features.outputs.flags }}
           fi
 
-      - name: Package
+      - name: Package (tar.gz)
+        if: matrix.os != 'windows-latest'
         run: |
           cd target/${{ matrix.target }}/release
           tar czf ../../../${{ matrix.asset }} runai
           cd ../../..
+
+      - name: Package (zip)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path target/${{ matrix.target }}/release/runai.exe -DestinationPath ${{ matrix.asset }}
 
       - uses: actions/upload-artifact@v4
         with:
@@ -80,7 +93,7 @@ jobs:
           merge-multiple: true
 
       - name: Generate checksums
-        run: sha256sum *.tar.gz > checksums.txt
+        run: sha256sum runai-*.tar.gz runai-*.zip > checksums.txt
 
       - name: Create release
         env:
@@ -91,4 +104,4 @@ jobs:
             --repo "${{ github.repository }}" \
             --title "$TAG" \
             --generate-notes \
-            *.tar.gz checksums.txt
+            runai-*.tar.gz runai-*.zip checksums.txt
