@@ -24,4 +24,4 @@ Run a battery of environment checks — `runai doctor` output. Inspects `~/.runa
 
 ## Gotchas
 - New checks go in `run_doctor`'s body — keep them ordered by "user-fixable-first". Deep system checks last.
-- `Warn` vs `Fail`: use Warn for optional features (Dazi session missing), Fail for things that prevent basic operation (missing `~/.runai/` write permission).
+- `Warn` vs `Fail`: use Warn for optional features (e.g. a non-default CLI target config missing), Fail for things that prevent basic operation (missing `~/.runai/` write permission).

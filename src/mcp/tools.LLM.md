@@ -7,7 +7,7 @@ role: mcp-server
 # mcp::tools
 
 ## Purpose
-The rmcp-exposed tool surface. 30 `sm_*` tools that MCP clients (Claude Code / Codex / Gemini / OpenCode as consumers) can call. Each tool is thin — it delegates to `SkillManager` or other core modules and serializes the result.
+The rmcp-exposed tool surface. 18 `sm_*` tools that MCP clients (Claude Code / Codex / Gemini / OpenCode as consumers) can call. Each tool is thin — it delegates to `SkillManager` or other core modules and serializes the result.
 
 ## Tool families (see README "MCP Tools" table for full list)
 
@@ -29,9 +29,9 @@ The rmcp-exposed tool surface. 30 `sm_*` tools that MCP clients (Claude Code / C
 
 ## Touch points
 - **Upstream**: MCP clients via stdio JSON-RPC (rmcp `tool_router`).
-- **Downstream**: `SkillManager` (almost everything), `market`, `Database`, `dazi` (feature-gated).
+- **Downstream**: `SkillManager` (almost everything), `market`, `Database`.
 
 ## Gotchas
 - stdout must carry only JSON-RPC frames — `tracing::subscriber::fmt()` in `main.rs` writes to stderr for this reason. Any `println!` / `print!` in a tool path will break Codex CLI silently.
-- Adding a new tool: register in `tool_router`, add schema via `#[tool]` / `#[args]` macros, update `README.md` feature list + tool count (currently 30 / 42 with Dazi).
+- Adding a new tool: register in `tool_router`, add schema via `#[tool]` / `#[args]` macros, update `README.md` feature list + tool count (currently 18).
 - Arg names must match the rmcp schema exactly — snake_case, no Rust keyword collisions.

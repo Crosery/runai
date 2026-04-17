@@ -11,7 +11,7 @@ Pure rendering. Takes `&App` + `&mut Frame`, draws the current tab, modal dialog
 
 ## Public API (internal)
 - `draw(frame, app)` — top-level entry; dispatches to per-tab draw functions.
-- Per-tab: `draw_skills`, `draw_mcps`, `draw_groups`, `draw_market`, (optional) `draw_dazi`.
+- Per-tab: `render_resources` (Skills + MCPs), `render_groups`, `render_market`.
 - Widgets: `draw_footer`, `draw_help_overlay`, `draw_search_bar`, `draw_install_modal`, etc.
 
 ## Key invariants

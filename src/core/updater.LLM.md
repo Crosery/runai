@@ -29,4 +29,4 @@ Self-update flow: check GitHub releases in background, download the matching ass
 - macOS asset is `darwin-*` not `macos-*` — changing `release.yml` names requires matching `asset_name`.
 - Windows: asset is `.zip` containing `runai.exe`. Extraction goes through `extract_from_zip`; `extract_from_tar_gz` handles unix.
 - `PermissionsExt::from_mode(0o755)` is `cfg(unix)`-gated; Windows does not need chmod after write.
-- `is_dazi` variant matching: tag ending `-dazi` only matches when built with `feature = "dazi"`; otherwise non-dazi releases are selected.
+- Release tags with a `-` suffix (variant/pre-release tags) are skipped — only clean `vX.Y.Z` tags are consumed as upgrade candidates.

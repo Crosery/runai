@@ -3,7 +3,6 @@ pub mod backup;
 pub mod channel;
 pub mod classifier;
 pub mod cli_target;
-pub mod dazi;
 pub mod db;
 pub mod doctor;
 pub mod group;

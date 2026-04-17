@@ -42,17 +42,6 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Determine features
-        id: features
-        shell: bash
-        run: |
-          TAG="${GITHUB_REF#refs/tags/}"
-          if [[ "$TAG" == *"-dazi"* ]]; then
-            echo "flags=--features dazi" >> "$GITHUB_OUTPUT"
-          else
-            echo "flags=" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Install cross
         if: matrix.cross
         run: cargo install cross --locked
@@ -61,9 +50,9 @@ jobs:
         shell: bash
         run: |
           if [ "${{ matrix.cross }}" = "true" ]; then
-            cross build --release --target ${{ matrix.target }} ${{ steps.features.outputs.flags }}
+            cross build --release --target ${{ matrix.target }}
           else
-            cargo build --release --target ${{ matrix.target }} ${{ steps.features.outputs.flags }}
+            cargo build --release --target ${{ matrix.target }}
           fi
 
       - name: Package (tar.gz)

@@ -49,10 +49,9 @@ pub fn asset_name(os: &str, arch: &str) -> Option<String> {
     }
 }
 
-/// Parse a GitHub tag (e.g. "v0.7.0" or "v0.7.0-dazi") into a clean semver::Version.
+/// Parse a GitHub tag (e.g. "v0.7.0") into a clean semver::Version.
 pub fn parse_tag_version(tag: &str) -> Option<semver::Version> {
     let s = tag.strip_prefix('v').unwrap_or(tag);
-    let s = s.strip_suffix("-dazi").unwrap_or(s);
     semver::Version::parse(s).ok()
 }
 
@@ -129,14 +128,9 @@ async fn check_for_update_inner(data_dir: &Path) -> Result<()> {
         .context("failed to parse releases JSON")?;
 
     let current = current_version();
-    let is_dazi = cfg!(feature = "dazi");
 
-    // Find the latest release matching our build variant
-    let matching_release = releases.iter().find(|r| {
-        let tag = &r.tag_name;
-        let tag_is_dazi = tag.ends_with("-dazi");
-        if is_dazi { tag_is_dazi } else { !tag_is_dazi }
-    });
+    // Skip tags with a build suffix (e.g. variant tags produced on other branches).
+    let matching_release = releases.iter().find(|r| !r.tag_name.contains('-'));
 
     let release = match matching_release {
         Some(r) => r,
@@ -282,14 +276,10 @@ pub async fn perform_update(data_dir: &Path) -> Result<String> {
         .context("failed to parse releases JSON")?;
 
     let current = current_version();
-    let is_dazi = cfg!(feature = "dazi");
 
     let release = releases
         .iter()
-        .find(|r| {
-            let tag_is_dazi = r.tag_name.ends_with("-dazi");
-            if is_dazi { tag_is_dazi } else { !tag_is_dazi }
-        })
+        .find(|r| !r.tag_name.contains('-'))
         .context("no matching release found")?;
 
     let latest =
@@ -477,16 +467,6 @@ mod tests {
         assert!(
             v.pre.is_empty(),
             "should be a clean version, no pre-release"
-        );
-    }
-
-    #[test]
-    fn strips_v_prefix_with_dazi_suffix() {
-        let v = parse_tag_version("v0.7.0-dazi").unwrap();
-        assert_eq!(v, semver::Version::new(0, 7, 0));
-        assert!(
-            v.pre.is_empty(),
-            "should be a clean version, not pre-release"
         );
     }
 

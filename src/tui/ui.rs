@@ -42,13 +42,7 @@ fn render_header(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let chunks = Layout::horizontal([Constraint::Min(0), Constraint::Length(32)]).split(area);
 
     // Left: tabs only, flush left
-    let tab_labels = [
-        i.tab_skills(),
-        i.tab_mcps(),
-        i.tab_groups(),
-        i.tab_market(),
-        i.tab_dazi(),
-    ];
+    let tab_labels = [i.tab_skills(), i.tab_mcps(), i.tab_groups(), i.tab_market()];
     let mut tab_spans = Vec::new();
     tab_spans.push(Span::raw(" "));
     for (tab, label) in Tab::ALL.iter().zip(tab_labels.iter()) {
@@ -104,7 +98,6 @@ fn render_body(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     match app.tab {
         Tab::Groups => render_groups(f, app, t, area),
         Tab::Market => render_market(f, app, t, area),
-        Tab::Dazi => render_dazi(f, app, t, area),
         _ => render_resources(f, app, t, area),
     }
 }
@@ -343,146 +336,6 @@ fn render_market(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     f.render_stateful_widget(list, area, &mut state);
 }
 
-fn render_dazi(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
-    use crate::core::dazi::DaziKind;
-
-    let kind_label = app.dazi_kind.label();
-    let loading_indicator = if app.dazi_loading { " ⟳" } else { "" };
-
-    let items: Vec<ListItem> = match app.dazi_kind {
-        DaziKind::Skills => {
-            let visible = app.visible_dazi_skills();
-            visible
-                .iter()
-                .map(|s| {
-                    let marker = if s.installed { "✓" } else { " " };
-                    let marker_color = if s.installed {
-                        t.item_enabled
-                    } else {
-                        t.item_disabled
-                    };
-                    let name_color = if s.installed { t.text_dim } else { t.item_name };
-                    let official = if s.is_official { " ★" } else { "" };
-                    let dl = if s.download_count > 0 {
-                        format!(" ↓{}", s.download_count)
-                    } else {
-                        String::new()
-                    };
-                    let desc: String = if s.description.chars().count() > 40 {
-                        let truncated: String = s.description.chars().take(40).collect();
-                        format!("{truncated}…")
-                    } else {
-                        s.description.clone()
-                    };
-
-                    let line = Line::from(vec![
-                        Span::raw("  "),
-                        Span::styled(marker, Style::default().fg(marker_color)),
-                        Span::raw("  "),
-                        Span::styled(
-                            format!("{:<28}", s.name),
-                            Style::default().fg(name_color).bold(),
-                        ),
-                        Span::styled(
-                            format!("{desc}{official}{dl}"),
-                            Style::default().fg(t.text_dim),
-                        ),
-                    ]);
-                    ListItem::new(line)
-                })
-                .collect()
-        }
-        DaziKind::Agents => {
-            let visible = app.visible_dazi_agents();
-            visible
-                .iter()
-                .map(|a| {
-                    let marker = if a.installed { "✓" } else { " " };
-                    let marker_color = if a.installed {
-                        t.item_enabled
-                    } else {
-                        t.item_disabled
-                    };
-                    let name_color = if a.installed { t.text_dim } else { t.item_name };
-                    let official = if a.is_official { " ★" } else { "" };
-                    let dl = if a.download_count > 0 {
-                        format!(" ↓{}", a.download_count)
-                    } else {
-                        String::new()
-                    };
-                    let display_name = if a.title.is_empty() {
-                        &a.name
-                    } else {
-                        &a.title
-                    };
-
-                    let line = Line::from(vec![
-                        Span::raw("  "),
-                        Span::styled(marker, Style::default().fg(marker_color)),
-                        Span::raw("  "),
-                        Span::styled(
-                            format!("{:<20}", a.name),
-                            Style::default().fg(name_color).bold(),
-                        ),
-                        Span::styled(
-                            format!("{display_name}{official}{dl}"),
-                            Style::default().fg(t.text_highlight),
-                        ),
-                    ]);
-                    ListItem::new(line)
-                })
-                .collect()
-        }
-        DaziKind::Bundles => {
-            let visible = app.visible_dazi_bundles();
-            visible
-                .iter()
-                .map(|b| {
-                    let display_name = if b.source_team_name.is_empty() {
-                        &b.name
-                    } else {
-                        &b.source_team_name
-                    };
-                    let official = if b.is_official { " ★" } else { "" };
-                    let agents = b.agent_refs.len();
-                    let skills = b.skill_refs.len();
-                    let counts = format!(" [{agents}A+{skills}S]");
-
-                    let line = Line::from(vec![
-                        Span::raw("  📦  "),
-                        Span::styled(
-                            format!("{:<25}", display_name),
-                            Style::default().fg(t.item_name).bold(),
-                        ),
-                        Span::styled(
-                            format!("v{}{official}{counts}", b.version),
-                            Style::default().fg(t.text_dim),
-                        ),
-                    ]);
-                    ListItem::new(line)
-                })
-                .collect()
-        }
-    };
-
-    let count = items.len();
-    let title_text = format!(" 搭子 — {kind_label} ({count}){loading_indicator} ◀ [ ] ▶ ");
-
-    let list = List::new(items)
-        .block(
-            Block::default()
-                .title(Span::styled(title_text, Style::default().fg(t.text).bold()))
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(t.border)),
-        )
-        .highlight_style(Style::default().bg(t.item_selected_bg));
-
-    let mut state = ListState::default();
-    state.select(Some(app.selected));
-    f.render_stateful_widget(list, area, &mut state);
-}
-
 fn render_footer(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let i = T::new(app.lang);
     let (left, right) = match app.mode {
@@ -496,7 +349,6 @@ fn render_footer(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
             let help = match app.tab {
                 Tab::Groups => i.help_normal_groups(),
                 Tab::Market => i.help_normal_market(),
-                Tab::Dazi => i.help_normal_dazi(),
                 _ => i.help_normal_skills(),
             };
             (search_info, help.to_string())

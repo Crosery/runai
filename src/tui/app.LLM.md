@@ -17,7 +17,7 @@ The TUI state machine. Owns the `SkillManager`, the currently-selected tab / row
 ## Key invariants
 - **Rendering is pure**: `tui::ui::draw(&App, frame)` must not mutate state. All mutation goes through `App` methods.
 - **Blocking ops are off the UI thread**: long-running I/O (market refresh, install download) is spawned with `std::thread` or `tokio::task::spawn_blocking`, results come back via channels and are applied in the next tick.
-- **Tabs**: Skills / MCPs / Groups / Market / Dazi (the Dazi tab is `cfg(feature = "dazi")`-gated — don't assume 5 tabs always exist).
+- **Tabs**: Skills / MCPs / Groups / Market (4 tabs; `Tab::ALL` is the source of truth).
 - Target switching via digit keys: `1`=Claude, `2`=Codex, `3`=Gemini, `4`=OpenCode. Matches `CliTarget::ALL` ordering.
 
 ## Touch points
@@ -26,5 +26,4 @@ The TUI state machine. Owns the `SkillManager`, the currently-selected tab / row
 
 ## Gotchas
 - Don't store `&SkillManager` — own it (`manager: SkillManager`). TUI is the process's last stop; there's nothing else holding the manager.
-- Dazi token auto-refresh (10-min timer) lives here — if you rip it out, background token expiry is on the user.
 - After terminal teardown (alternate-screen exit), `main.rs` prints update-available notification via `eprintln`. Don't print from inside the TUI loop after `disable_raw_mode` or you'll corrupt the next prompt.

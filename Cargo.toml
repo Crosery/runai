@@ -1,6 +1,6 @@
 [package]
 name = "runai"
-version = "0.8.4"
+version = "0.9.0"
 edition = "2024"
 description = "AI CLI resource manager for skills and MCP servers"
 authors = ["Crosery"]
@@ -40,9 +40,6 @@ tar = "0.4"
 zip = "2"
 tempfile = "3"
 semver = "1"
-
-[features]
-dazi = []
 
 [profile.release]
 strip = true

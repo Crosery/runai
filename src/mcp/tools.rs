@@ -19,17 +19,9 @@ pub struct SmServer {
 impl SmServer {
     pub fn new() -> Result<Self> {
         let manager = SkillManager::new()?;
-        #[cfg(not(feature = "dazi"))]
-        let router = Self::tool_router();
-        #[cfg(feature = "dazi")]
-        let router = {
-            let mut r = Self::tool_router();
-            r.merge(Self::dazi_tool_router());
-            r
-        };
         Ok(Self {
             manager: Mutex::new(manager),
-            tool_router: router,
+            tool_router: Self::tool_router(),
         })
     }
 }
@@ -961,10 +953,6 @@ impl SmServer {
     }
 }
 
-// ── Dazi marketplace tools (conditionally compiled) ──
-#[cfg(feature = "dazi")]
-mod dazi_tools;
-
 #[tool_handler]
 impl ServerHandler for SmServer {
     fn get_info(&self) -> ServerInfo {
@@ -1050,31 +1038,6 @@ mod tests {
             );
         }
 
-        // 12 dazi tools (only present with dazi feature)
-        #[cfg(feature = "dazi")]
-        {
-            let expected_dazi = [
-                "sm_dazi_search",
-                "sm_dazi_install",
-                "sm_dazi_install_bundle",
-                "sm_dazi_list",
-                "sm_dazi_stats",
-                "sm_dazi_publish",
-                "sm_dazi_publish_agent",
-                "sm_dazi_refresh",
-                "sm_dazi_login",
-                "sm_dazi_logout",
-                "sm_dazi_publish_bundle",
-                "sm_dazi_publishable",
-            ];
-            for name in &expected_dazi {
-                assert!(
-                    tool_names.iter().any(|t| t == name),
-                    "Expected dazi tool '{name}' not found"
-                );
-            }
-        }
-
         // 13 removed tools
         let removed = [
             "sm_batch_enable",
@@ -1098,20 +1061,7 @@ mod tests {
             );
         }
 
-        #[cfg(feature = "dazi")]
-        assert_eq!(
-            tools.len(),
-            30,
-            "Expected 30 tools (18 core + 12 dazi), got {}",
-            tools.len()
-        );
-        #[cfg(not(feature = "dazi"))]
-        assert_eq!(
-            tools.len(),
-            18,
-            "Expected 18 tools (core only, no dazi), got {}",
-            tools.len()
-        );
+        assert_eq!(tools.len(), 18, "Expected 18 tools, got {}", tools.len());
     }
 
     #[test]

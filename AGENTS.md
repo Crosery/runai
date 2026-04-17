@@ -54,7 +54,6 @@ File-level LLM docs follow the convention `<name>.LLM.md` as a sibling to the so
 | core::channel | [src/core/channel.rs](src/core/channel.rs) | [src/core/channel.LLM.md](src/core/channel.LLM.md) | Release channel (stable / beta) selection |
 | core::classifier | [src/core/classifier.rs](src/core/classifier.rs) | [src/core/classifier.LLM.md](src/core/classifier.LLM.md) | Classifies installable artifacts into Skill vs MCP vs Agent |
 | core::cli_target | [src/core/cli_target.rs](src/core/cli_target.rs) | [src/core/cli_target.LLM.md](src/core/cli_target.LLM.md) | CliTarget enum + per-target dir/config resolvers |
-| core::dazi | [src/core/dazi.rs](src/core/dazi.rs) | [src/core/dazi.LLM.md](src/core/dazi.LLM.md) | Dazi marketplace HTTP client (feature-gated) |
 | core::db | [src/core/db.rs](src/core/db.rs) | [src/core/db.LLM.md](src/core/db.LLM.md) | SQLite schema + migrations + query layer |
 | core::doctor | [src/core/doctor.rs](src/core/doctor.rs) | [src/core/doctor.LLM.md](src/core/doctor.LLM.md) | `runai doctor` health checks |
 | core::group | [src/core/group.rs](src/core/group.rs) | [src/core/group.LLM.md](src/core/group.LLM.md) | Group definition (TOML on disk) + member type |
@@ -69,8 +68,7 @@ File-level LLM docs follow the convention `<name>.LLM.md` as a sibling to the so
 | core::scanner | [src/core/scanner.rs](src/core/scanner.rs) | [src/core/scanner.LLM.md](src/core/scanner.LLM.md) | Filesystem discovery + adoption of unmanaged skills |
 | core::transcript_stats | [src/core/transcript_stats.rs](src/core/transcript_stats.rs) | [src/core/transcript_stats.LLM.md](src/core/transcript_stats.LLM.md) | Usage counts mined from Claude Code transcripts, with incremental on-disk cache |
 | core::updater | [src/core/updater.rs](src/core/updater.rs) | [src/core/updater.LLM.md](src/core/updater.LLM.md) | Self-update: check, download, verify, replace binary |
-| mcp::tools | [src/mcp/tools.rs](src/mcp/tools.rs) | [src/mcp/tools.LLM.md](src/mcp/tools.LLM.md) | 30 `sm_*` tools exposed to MCP clients |
-| mcp::dazi_tools | [src/mcp/dazi_tools.rs](src/mcp/dazi_tools.rs) | [src/mcp/dazi_tools.LLM.md](src/mcp/dazi_tools.LLM.md) | 12 additional Dazi tools (feature=dazi) |
+| mcp::tools | [src/mcp/tools.rs](src/mcp/tools.rs) | [src/mcp/tools.LLM.md](src/mcp/tools.LLM.md) | 18 `sm_*` tools exposed to MCP clients |
 | tui::app | [src/tui/app.rs](src/tui/app.rs) | [src/tui/app.LLM.md](src/tui/app.LLM.md) | TUI state machine and event loop |
 | tui::ui | [src/tui/ui.rs](src/tui/ui.rs) | [src/tui/ui.LLM.md](src/tui/ui.LLM.md) | Rendering for all TUI tabs/panels |
 | tui::theme | [src/tui/theme.rs](src/tui/theme.rs) | [src/tui/theme.LLM.md](src/tui/theme.LLM.md) | Dark/light color themes |
@@ -92,18 +90,6 @@ Small `mod.rs` wiring files without substance are not separately documented; the
 - **DB only carries metadata**, never runtime enabled state (that's filesystem). Old tables are preserved for rollback safety.
 - **Symlinks in Windows** require Developer Mode or Administrator — `linker.rs` uses `symlink_dir`; failures surface as permission errors.
 - **`dirs::home_dir()` on Windows** (dirs 6.x) uses the Win32 `SHGetKnownFolderPath` API and **ignores HOME / USERPROFILE env vars**, so tests cannot mock home via env. The `manager::tests` module is consequently gated with `#[cfg(not(target_os = "windows"))]`.
-
----
-
-## Dazi marketplace (`feature = "dazi"`)
-
-Optional, compiled out by default. Ships as `v*-dazi` tagged releases (`release.yml` reads tag suffix).
-
-- HTTP client for `dazi.ktvsky.com`, three resource types (Skills ZIP, Agents JSON → SKILL.md, Bundles batch install).
-- Session/token stored at `~/.runai/dazi-{session,token}.json`; token auto-refreshes every 10 min in TUI.
-- Registers `dazi-marketplace` as a remote MCP in CLI configs.
-- `DAZI_BASE_URL` env var overrides the server.
-- 12 extra MCP tools (`sm_dazi_*`) — see [src/mcp/dazi_tools.LLM.md](src/mcp/dazi_tools.LLM.md).
 
 ---
 
@@ -131,7 +117,7 @@ cargo test -- --test-threads=1   # default in CI; SQLite dislikes parallel I/O h
 cargo test --lib <module>        # scope to a module
 ```
 
-**Test count varies by platform**: unix runs 147, Windows skips `manager::tests` (~30 tests) so count drops to ~115. That's intentional — see Key constraints.
+**Test count varies by platform**: unix runs 138, Windows skips `manager::tests` (~30 tests) so count drops to ~108. That's intentional — see Key constraints.
 
 ---
 

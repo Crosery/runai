@@ -48,9 +48,6 @@ impl T {
     pub fn tab_market(&self) -> &'static str {
         self.zh_en("市场", "Market")
     }
-    pub fn tab_dazi(&self) -> &'static str {
-        self.zh_en("搭子", "Dazi")
-    }
 
     // ── Filter modes ──
     pub fn filter_all(&self) -> &'static str {
@@ -80,12 +77,6 @@ impl T {
         self.zh_en(
             "j/k ↕  H/L 切换  ENTER 安装  [ ] 切源  t 主题  ? 帮助  q 退出",
             "j/k ↕  H/L tab  ENTER install  [ ] source  t theme  ? help  q quit",
-        )
-    }
-    pub fn help_normal_dazi(&self) -> &'static str {
-        self.zh_en(
-            "j/k ↕  H/L 切换  ENTER 安装  [ ] 切类型  / 搜索  ? 帮助  q 退出",
-            "j/k ↕  H/L tab  ENTER install  [ ] type  / search  ? help  q quit",
         )
     }
     pub fn help_search(&self) -> &'static str {
