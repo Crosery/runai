@@ -925,9 +925,29 @@ impl SkillManager {
         Ok(())
     }
 
-    /// Get usage stats for all DB resources, sorted by usage_count DESC.
+    /// Get usage stats from Claude Code transcripts, sorted by count DESC.
+    ///
+    /// Sources truth from `~/.claude/projects/**/*.jsonl` — the `record_usage`
+    /// DB path is kept for compatibility but no longer feeds this call.
     pub fn usage_stats(&self) -> Result<Vec<crate::core::resource::UsageStat>> {
-        self.db.get_usage_stats()
+        use crate::core::resource::UsageStat;
+        use crate::core::transcript_stats::{self, StatKind};
+
+        let stats = transcript_stats::scan_default()?;
+        let out = stats
+            .entries
+            .into_iter()
+            .map(|e| UsageStat {
+                id: match e.kind {
+                    StatKind::Skill => format!("skill:{}", e.name),
+                    StatKind::Mcp => format!("mcp:{}", e.name),
+                },
+                name: e.name,
+                count: e.count,
+                last_used_at: e.last_used_at,
+            })
+            .collect();
+        Ok(out)
     }
 
     // --- Internal ---
@@ -1485,28 +1505,6 @@ mod tests {
     }
 
     #[test]
-    fn record_usage_by_name_increments_count() {
-        let tmp = tempfile::tempdir().unwrap();
-        let sm_data = tmp.path().join("sm-data");
-        let skills_dir = sm_data.join("skills");
-        std::fs::create_dir_all(skills_dir.join("my-skill")).unwrap();
-        std::fs::write(skills_dir.join("my-skill/SKILL.md"), "# My Skill\n").unwrap();
-
-        with_home(tmp.path(), || {
-            let mgr = SkillManager::with_base(sm_data.clone()).unwrap();
-            mgr.register_local_skill("my-skill").unwrap();
-
-            mgr.record_usage("my-skill").unwrap();
-            mgr.record_usage("my-skill").unwrap();
-
-            let stats = mgr.usage_stats().unwrap();
-            let entry = stats.iter().find(|s| s.name == "my-skill").unwrap();
-            assert_eq!(entry.count, 2);
-            assert!(entry.last_used_at.is_some());
-        });
-    }
-
-    #[test]
     fn record_usage_unknown_name_errors() {
         let tmp = tempfile::tempdir().unwrap();
         with_home(tmp.path(), || {
@@ -1517,29 +1515,35 @@ mod tests {
     }
 
     #[test]
-    fn usage_stats_returns_all_resources_sorted() {
+    fn usage_stats_aggregates_claude_transcripts() {
+        // Serialized at process level — the env var is global.
+        static ENV_LOCK: Mutex<()> = Mutex::new(());
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
         let tmp = tempfile::tempdir().unwrap();
-        let sm_data = tmp.path().join("sm-data");
-        let skills_dir = sm_data.join("skills");
-        for name in &["alpha", "beta"] {
-            std::fs::create_dir_all(skills_dir.join(name)).unwrap();
-            std::fs::write(skills_dir.join(format!("{name}/SKILL.md")), "# Skill\n").unwrap();
-        }
+        let proj = tmp.path().join("some-proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        let skill = r#"{"type":"assistant","timestamp":"2026-04-17T01:00:00Z","message":{"role":"assistant","content":[{"type":"tool_use","name":"Skill","input":{"skill":"polish"}}]}}"#;
+        let mcp = r#"{"type":"assistant","timestamp":"2026-04-17T02:00:00Z","message":{"role":"assistant","content":[{"type":"tool_use","name":"mcp__runai__sm_list","input":{}}]}}"#;
+        std::fs::write(proj.join("s.jsonl"), format!("{skill}\n{mcp}\n{skill}\n")).unwrap();
 
-        with_home(tmp.path(), || {
-            let mgr = SkillManager::with_base(sm_data.clone()).unwrap();
-            mgr.register_local_skill("alpha").unwrap();
-            mgr.register_local_skill("beta").unwrap();
+        // SAFETY: serialized via ENV_LOCK; no concurrent reader of this var.
+        unsafe { std::env::set_var("RUNAI_TRANSCRIPTS_DIR", tmp.path()) };
 
-            mgr.record_usage("beta").unwrap();
-            mgr.record_usage("beta").unwrap();
-            mgr.record_usage("alpha").unwrap();
+        let mgr = SkillManager::with_base(tmp.path().join("sm-data")).unwrap();
+        let stats = mgr.usage_stats().unwrap();
 
-            let stats = mgr.usage_stats().unwrap();
-            assert_eq!(stats.len(), 2);
-            assert_eq!(stats[0].name, "beta"); // 2 uses, should be first
-            assert_eq!(stats[1].name, "alpha"); // 1 use
-        });
+        unsafe { std::env::remove_var("RUNAI_TRANSCRIPTS_DIR") };
+
+        assert_eq!(stats.len(), 2);
+        assert_eq!(stats[0].name, "polish");
+        assert_eq!(stats[0].count, 2);
+        assert!(stats[0].id.starts_with("skill:"));
+        assert_eq!(stats[1].name, "runai");
+        assert_eq!(stats[1].count, 1);
+        assert!(stats[1].id.starts_with("mcp:"));
     }
 
     #[test]

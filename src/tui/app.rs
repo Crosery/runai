@@ -306,6 +306,26 @@ impl App {
             .list_resources(kind_filter, None)
             .unwrap_or_default();
 
+        // Overlay transcript-derived usage counts and sort by most-used first.
+        if let Ok(stats) = crate::core::transcript_stats::scan_default() {
+            use crate::core::resource::ResourceKind;
+            use crate::core::transcript_stats::StatKind;
+            for r in &mut self.items {
+                let sk = match r.kind {
+                    ResourceKind::Skill => StatKind::Skill,
+                    ResourceKind::Mcp => StatKind::Mcp,
+                };
+                let (count, last) = stats.lookup(sk, &r.name);
+                r.usage_count = count;
+                r.last_used_at = last;
+            }
+            self.items.sort_by(|a, b| {
+                b.usage_count
+                    .cmp(&a.usage_count)
+                    .then_with(|| a.name.cmp(&b.name))
+            });
+        }
+
         self.groups = self
             .mgr
             .list_groups()
