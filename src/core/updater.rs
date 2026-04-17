@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 // ── Constants ──
 
@@ -34,12 +35,13 @@ struct GitHubAsset {
 // ── Platform detection ──
 
 /// Maps OS + arch to the expected asset filename.
+/// Must match the asset names produced by `.github/workflows/release.yml`.
 pub fn asset_name(os: &str, arch: &str) -> Option<String> {
     let suffix = match (os, arch) {
         ("linux", "x86_64") => "linux-amd64",
         ("linux", "aarch64") => "linux-arm64",
-        ("macos", "x86_64") => "macos-amd64",
-        ("macos", "aarch64") => "macos-arm64",
+        ("macos", "x86_64") => "darwin-amd64",
+        ("macos", "aarch64") => "darwin-arm64",
         _ => return None,
     };
     Some(format!("runai-{suffix}.tar.gz"))
@@ -89,9 +91,12 @@ pub fn current_version() -> semver::Version {
 }
 
 /// Build an HTTP client with the required User-Agent header for GitHub API.
+/// Timeouts keep a stalled GitHub from hanging the CLI on exit.
 pub fn http_client() -> Result<reqwest::Client> {
     reqwest::Client::builder()
         .user_agent(format!("runai/{}", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(Duration::from_secs(3))
+        .timeout(Duration::from_secs(10))
         .build()
         .context("failed to build HTTP client")
 }
@@ -186,9 +191,13 @@ async fn check_for_update_inner(data_dir: &Path) -> Result<()> {
 }
 
 /// Read cache and return a notification string if a newer version is available.
+///
+/// The current version is read from the running binary (`CARGO_PKG_VERSION`),
+/// not from the cache — otherwise a manual upgrade between auto-checks would
+/// keep showing the "new version available" notice until the next refresh.
 pub fn update_notification(data_dir: &Path) -> Option<String> {
     let cache = read_cache(data_dir)?;
-    let current = semver::Version::parse(&cache.current_version).ok()?;
+    let current = current_version();
     let latest = semver::Version::parse(&cache.latest_version).ok()?;
     if latest > current {
         Some(format!(
@@ -395,7 +404,15 @@ mod tests {
     fn parses_asset_name_macos_aarch64() {
         assert_eq!(
             asset_name("macos", "aarch64"),
-            Some("runai-macos-arm64.tar.gz".to_string())
+            Some("runai-darwin-arm64.tar.gz".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_asset_name_macos_x86_64() {
+        assert_eq!(
+            asset_name("macos", "x86_64"),
+            Some("runai-darwin-amd64.tar.gz".to_string())
         );
     }
 
