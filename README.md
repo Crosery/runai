@@ -2,7 +2,19 @@
 
 **English** | [中文](README_zh.md)
 
-A terminal-based resource manager for AI CLI skills, MCP servers, and groups. Works across **Claude Code**, **Codex**, **Gemini CLI**, and **OpenCode**.
+<p align="center">
+  <img src="docs/images/runai-logo.png" alt="runai logo" width="180">
+</p>
+
+**runai** — a Swiss Army knife for managing AI CLI skills and MCP servers.
+
+Skills and MCP servers live scattered across Claude Code, Codex, Gemini CLI, and OpenCode — each with its own config file and quirks. runai gives you one TUI (plus a scriptable CLI and an MCP server) to browse, enable, install, search, and back up all of it at once, on **macOS / Linux / Windows**.
+
+- Install any skill from GitHub into all four CLIs with one command
+- 2,000+ skills one-click installable from the built-in market
+- Filesystem is the source of truth: symlink exists = enabled, gone = disabled
+- Native config formats for Claude JSON, Codex TOML, Gemini JSON, OpenCode JSON
+- Native binaries for three OSes; Developer Mode recommended on Windows for symlinks
 
 ![TUI Groups View](docs/images/tui-groups.png)
 

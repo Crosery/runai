@@ -2,7 +2,19 @@
 
 [English](README.md) | **中文**
 
-终端界面的 AI CLI skill/MCP 资源管理器。支持 **Claude Code**、**Codex**、**Gemini CLI** 和 **OpenCode**。
+<p align="center">
+  <img src="docs/images/runai-logo.png" alt="runai logo" width="180">
+</p>
+
+**runai** — 一把管理 AI CLI skills 和 MCP servers 的瑞士军刀。
+
+skills 和 MCP servers 散落在 Claude Code / Codex / Gemini CLI / OpenCode 的各自配置里，格式不一、装多了就乱。runai 给你一个 TUI（外加可脚本化的 CLI 和一个 MCP server）一次搞定浏览、启用、搜索、安装、备份，跨 4 个 CLI、**macOS / Linux / Windows** 三平台。
+
+- 一条命令从 GitHub 把任意 skill 装到所有 CLI
+- 内置市场 2000+ skill 一键安装
+- 文件系统即真源：symlink 在 = 启用，不在 = 禁用
+- 跨 Claude JSON / Codex TOML / Gemini JSON / OpenCode JSON 原生格式同步
+- macOS / Linux / Windows 原生二进制；Windows 上 symlink 需开启开发者模式
 
 ![TUI 分组视图](docs/images/tui-groups.png)
 
@@ -32,6 +44,19 @@ git clone https://github.com/Crosery/runai.git
 cd runai
 cargo install --path .
 ```
+
+### Windows
+
+预编译二进制：从 [releases](https://github.com/Crosery/runai/releases) 下载 `runai-windows-amd64.zip`，把 `runai.exe` 加入 PATH。也可以 `cargo install --path .` 从源码构建。
+
+**软链接前置条件**：runai 用文件系统软链接作为"skill 启用"的真源。Windows 上创建软链接需要满足以下之一：
+
+- 启用**开发者模式**（设置 → 隐私和安全 → 开发者 → 开发人员模式），或
+- 以**管理员身份**运行 shell
+
+否则 `enable` / `install` 在创建软链接时会失败。推荐开开发者模式（不用每次提权）。
+
+四个 CLI 的配置文件路径与 unix 一致（`%USERPROFILE%\.claude.json`、`.codex\config.toml`、`.gemini\settings.json`、`.config\opencode\opencode.json`）—— 已核对各 CLI 源码确认。
 
 ## 快速开始
 
