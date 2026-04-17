@@ -313,13 +313,26 @@ impl SmServer {
         let mgr = self.manager.lock().unwrap();
         let (skills, mcps) = mgr.status(target).unwrap_or((0, 0));
         let (ts, tm) = mgr.resource_count();
-        let result = serde_json::json!({
+
+        let runai_version = env!("CARGO_PKG_VERSION");
+        let pending = crate::core::updater::pending_update_version(mgr.paths().data_dir());
+
+        let mut obj = serde_json::json!({
             "target": target.name(),
             "skills_enabled": skills, "skills_total": ts,
             "mcps_enabled": mcps, "mcps_total": tm,
+            "runai_version": runai_version,
+            "update_available": pending.is_some(),
+        });
+        if let Some(latest) = pending {
+            obj["update_latest"] = serde_json::Value::String(latest);
+            obj["update_hint"] = serde_json::Value::String(
+                "Tell the user a newer runai is available and suggest `runai update`.".into(),
+            );
+        }
+        Json(TextResult {
+            result: obj.to_string(),
         })
-        .to_string();
-        Json(TextResult { result })
     }
 
     // ── Enable/Disable ──
@@ -957,8 +970,24 @@ impl SmServer {
 impl ServerHandler for SmServer {
     fn get_info(&self) -> ServerInfo {
         let mut info = ServerInfo::default();
-        info.instructions = Some(
-            "Runai — AI skill/MCP manager.\n\
+
+        // Check for a pending upgrade ONCE at server handshake. If a release
+        // drops mid-session, `sm_status` will still expose it on each call.
+        let update_line = {
+            let mgr = self.manager.lock().unwrap();
+            crate::core::updater::pending_update_version(mgr.paths().data_dir())
+                .map(|latest| {
+                    format!(
+                        "\n\nUPDATE AVAILABLE: runai v{latest} (current v{}). \
+                         Tell the user to run `runai update`.",
+                        env!("CARGO_PKG_VERSION")
+                    )
+                })
+                .unwrap_or_default()
+        };
+
+        info.instructions = Some(format!(
+            "Runai v{} — AI skill/MCP manager.\n\
              \n\
              SKILL DISCOVERY (proactive):\n\
              1. sm_search → find skills (local + market)\n\
@@ -971,9 +1000,9 @@ impl ServerHandler for SmServer {
              GROUPS: sm_groups, sm_create_group, sm_delete_group, sm_group_members\n\
              STATS: sm_usage_stats\n\
              BACKUP: sm_backup, sm_backups, sm_restore\n\
-             MARKET: sm_market"
-                .into(),
-        );
+             MARKET: sm_market{update_line}",
+            env!("CARGO_PKG_VERSION"),
+        ));
         info.capabilities = rmcp::model::ServerCapabilities::builder()
             .enable_tools()
             .build();

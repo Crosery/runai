@@ -359,21 +359,37 @@ fn render_footer(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let border = Style::default().fg(t.border);
     let version = env!("CARGO_PKG_VERSION");
 
-    let brand_text = format!(" Runai v{version} ");
+    // Check for pending update. Cache read is cheap; refreshes on every frame
+    // so the background update check (written mid-TUI) surfaces without restart.
+    let update_latest = crate::core::updater::pending_update_version(app.mgr.paths().data_dir());
+
+    let brand_text = if let Some(ref latest) = update_latest {
+        format!(" Runai v{version} → v{latest} available ")
+    } else {
+        format!(" Runai v{version} ")
+    };
     let brand_len = brand_text.len() as u16 + 1;
 
     let footer_chunks =
         Layout::horizontal([Constraint::Length(brand_len), Constraint::Min(0)]).split(area);
 
-    // Left: brand + version
-    let brand = Paragraph::new(Line::from(vec![
+    // Left: brand + version (+ update hint if any)
+    let mut brand_spans = vec![
         Span::styled(" Runai ", Style::default().fg(t.brand).bold()),
         Span::styled(
             format!("v{version} "),
             Style::default().fg(t.version).italic(),
         ),
-    ]))
-    .block(Block::default().borders(Borders::TOP).border_style(border));
+    ];
+    if let Some(latest) = update_latest {
+        brand_spans.push(Span::styled(
+            format!("→ v{latest} ({})", i.update_available()),
+            Style::default().fg(t.brand).bold(),
+        ));
+        brand_spans.push(Span::raw(" "));
+    }
+    let brand = Paragraph::new(Line::from(brand_spans))
+        .block(Block::default().borders(Borders::TOP).border_style(border));
     f.render_widget(brand, footer_chunks[0]);
 
     // Right: keybindings + messages

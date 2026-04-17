@@ -186,13 +186,39 @@ async fn check_for_update_inner(data_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Return just the pending-upgrade version string (e.g. "0.8.4"), or None if
+/// no upgrade is available. Shares `update_notification`'s suppression logic
+/// so UIs can render a compact hint without formatting the full notice text.
+pub fn pending_update_version(data_dir: &Path) -> Option<String> {
+    let cache = read_cache(data_dir)?;
+    if cache.current_version == cache.latest_version {
+        return None;
+    }
+    let latest = semver::Version::parse(&cache.latest_version).ok()?;
+    if latest > current_version() {
+        Some(latest.to_string())
+    } else {
+        None
+    }
+}
+
 /// Read cache and return a notification string if a newer version is available.
 ///
 /// The current version is read from the running binary (`CARGO_PKG_VERSION`),
 /// not from the cache — otherwise a manual upgrade between auto-checks would
 /// keep showing the "new version available" notice until the next refresh.
+///
+/// Exception: right after `perform_update` succeeds, the running process is
+/// *still* the old binary (compile-time version lags the on-disk binary). Its
+/// post-command notification check would compare stale compile-time current
+/// against cache.latest and falsely re-notify. `perform_update` writes the
+/// cache with `current_version == latest_version`, which we treat as "just
+/// upgraded, nothing to notify about."
 pub fn update_notification(data_dir: &Path) -> Option<String> {
     let cache = read_cache(data_dir)?;
+    if cache.current_version == cache.latest_version {
+        return None;
+    }
     let current = current_version();
     let latest = semver::Version::parse(&cache.latest_version).ok()?;
     if latest > current {
@@ -535,5 +561,70 @@ mod tests {
             find_checksum_for_asset(checksums, "runai-windows-amd64.tar.gz"),
             None
         );
+    }
+
+    #[test]
+    fn update_notification_suppressed_when_cache_shows_just_upgraded() {
+        // After `perform_update`, the cache is written with current == latest
+        // to signal "update just ran, don't re-notify from the stale process."
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = UpdateCache {
+            latest_version: "99.99.99".to_string(), // strictly newer than compile-time
+            current_version: "99.99.99".to_string(),
+            download_url: String::new(),
+            checksum_url: String::new(),
+            checked_at: chrono::Utc::now(),
+        };
+        write_cache(tmp.path(), &cache).unwrap();
+        assert!(
+            update_notification(tmp.path()).is_none(),
+            "should not notify when cache.current_version == cache.latest_version"
+        );
+    }
+
+    #[test]
+    fn pending_update_version_returns_latest_when_upgrade_available() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = UpdateCache {
+            latest_version: "99.99.99".to_string(),
+            current_version: "0.0.1".to_string(),
+            download_url: String::new(),
+            checksum_url: String::new(),
+            checked_at: chrono::Utc::now(),
+        };
+        write_cache(tmp.path(), &cache).unwrap();
+        assert_eq!(
+            pending_update_version(tmp.path()),
+            Some("99.99.99".to_string())
+        );
+    }
+
+    #[test]
+    fn pending_update_version_none_when_just_upgraded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = UpdateCache {
+            latest_version: "99.99.99".to_string(),
+            current_version: "99.99.99".to_string(),
+            download_url: String::new(),
+            checksum_url: String::new(),
+            checked_at: chrono::Utc::now(),
+        };
+        write_cache(tmp.path(), &cache).unwrap();
+        assert_eq!(pending_update_version(tmp.path()), None);
+    }
+
+    #[test]
+    fn update_notification_fires_when_latest_newer_than_compile_time() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = UpdateCache {
+            latest_version: "99.99.99".to_string(),
+            current_version: "0.0.1".to_string(), // differs from latest → not just-upgraded
+            download_url: String::new(),
+            checksum_url: String::new(),
+            checked_at: chrono::Utc::now(),
+        };
+        write_cache(tmp.path(), &cache).unwrap();
+        let msg = update_notification(tmp.path()).expect("should notify");
+        assert!(msg.contains("99.99.99"), "message should mention latest");
     }
 }

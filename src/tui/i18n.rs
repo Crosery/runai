@@ -82,6 +82,9 @@ impl T {
     pub fn help_search(&self) -> &'static str {
         self.zh_en("ESC 取消  ENTER 确认", "ESC cancel  ENTER confirm")
     }
+    pub fn update_available(&self) -> &'static str {
+        self.zh_en("有新版本 · runai update", "update · runai update")
+    }
 
     // ── Status bar ──
     pub fn status_skills(&self) -> &'static str {

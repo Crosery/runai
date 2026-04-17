@@ -117,7 +117,7 @@ cargo test -- --test-threads=1   # default in CI; SQLite dislikes parallel I/O h
 cargo test --lib <module>        # scope to a module
 ```
 
-**Test count varies by platform**: unix runs 138, Windows skips `manager::tests` (~30 tests) so count drops to ~108. That's intentional — see Key constraints.
+**Test count varies by platform**: unix runs 155, Windows skips `manager::tests` (~30 tests) so count drops to ~125. That's intentional — see Key constraints.
 
 ---
 

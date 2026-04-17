@@ -5,7 +5,7 @@ pub mod ui;
 
 use anyhow::Result;
 use crossterm::{
-    event::{self, Event, KeyCode, KeyModifiers},
+    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -52,6 +52,13 @@ pub fn run_tui(mgr: SkillManager) -> Result<()> {
 
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
+                // Windows crossterm delivers both Press and Release (and Repeat)
+                // events; macOS/Linux only deliver Press by default. Without
+                // this filter, every Windows keystroke fires actions twice —
+                // Tab / H / L navigation "jumping" is the most visible symptom.
+                if key.kind != KeyEventKind::Press {
+                    continue;
+                }
                 if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
                     break;
                 }
