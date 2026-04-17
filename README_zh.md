@@ -16,8 +16,6 @@ skills 和 MCP servers 散落在 Claude Code / Codex / Gemini CLI / OpenCode 的
 - 跨 Claude JSON / Codex TOML / Gemini JSON / OpenCode JSON 原生格式同步
 - macOS / Linux / Windows 原生二进制；Windows 上 symlink 需开启开发者模式
 
-![TUI 分组视图](docs/images/tui-groups.png)
-
 ## 功能特性
 
 - **TUI 终端界面** — 浏览、启用/禁用、搜索 skills 和 MCPs

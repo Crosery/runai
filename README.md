@@ -16,8 +16,6 @@ Skills and MCP servers live scattered across Claude Code, Codex, Gemini CLI, and
 - Native config formats for Claude JSON, Codex TOML, Gemini JSON, OpenCode JSON
 - Native binaries for three OSes; Developer Mode recommended on Windows for symlinks
 
-![TUI Groups View](docs/images/tui-groups.png)
-
 ## Features
 
 - **TUI Interface** — Browse, enable/disable, search skills and MCPs with a terminal UI
