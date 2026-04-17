@@ -992,23 +992,33 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
-    // set_mcp_disabled reads dirs::home_dir() which checks HOME env var.
-    // We serialize tests that modify HOME to avoid races.
+    // `dirs::home_dir()` reads HOME on unix but USERPROFILE on Windows.
+    // We serialize tests that modify that env var to avoid races.
     static HOME_LOCK: Mutex<()> = Mutex::new(());
 
-    /// Helper: temporarily set HOME to a given path, run a closure, restore HOME.
+    #[cfg(unix)]
+    const HOME_VAR: &str = "HOME";
+    #[cfg(windows)]
+    const HOME_VAR: &str = "USERPROFILE";
+
+    /// Helper: temporarily set the platform home env var, run a closure, restore.
     fn with_home<F: FnOnce()>(tmp: &Path, f: F) {
-        let _guard = HOME_LOCK.lock().unwrap();
-        let original = std::env::var("HOME").ok();
-        // SAFETY: we hold HOME_LOCK so no other test thread modifies HOME concurrently.
+        let _guard = HOME_LOCK.lock().unwrap_or_else(|poisoned| {
+            // A prior test panicked while holding the lock. Its env mutations
+            // were localized (restored before panic unwinds the closure? no —
+            // but the next test resets HOME_VAR below), so keep going.
+            poisoned.into_inner()
+        });
+        let original = std::env::var(HOME_VAR).ok();
+        // SAFETY: we hold HOME_LOCK so no other test thread modifies it concurrently.
         unsafe {
-            std::env::set_var("HOME", tmp);
+            std::env::set_var(HOME_VAR, tmp);
         }
         f();
         unsafe {
             match original {
-                Some(v) => std::env::set_var("HOME", v),
-                None => std::env::remove_var("HOME"),
+                Some(v) => std::env::set_var(HOME_VAR, v),
+                None => std::env::remove_var(HOME_VAR),
             }
         }
     }
@@ -1941,6 +1951,12 @@ args = []
             claude_skills.join("test-skill"),
         )
         .unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_dir(
+            "C:\\nonexistent\\path\\test-skill",
+            claude_skills.join("test-skill"),
+        )
+        .unwrap();
 
         with_home(tmp.path(), || {
             let mgr = SkillManager::with_base(sm_data.clone()).unwrap();
@@ -1999,6 +2015,12 @@ args = []
         #[cfg(unix)]
         std::os::unix::fs::symlink(
             "/some/other/path/test-skill",
+            claude_skills.join("test-skill"),
+        )
+        .unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_dir(
+            "C:\\some\\other\\path\\test-skill",
             claude_skills.join("test-skill"),
         )
         .unwrap();

@@ -145,7 +145,9 @@ impl Scanner {
 
         raw.into_iter()
             .filter_map(|path| {
-                let path_str = path.to_string_lossy();
+                // Normalize separators so noise patterns using '/' also match on Windows
+                // where path components are joined with '\'.
+                let path_str = path.to_string_lossy().replace('\\', "/");
 
                 // Filter out noise
                 for noise in Self::NOISE_PATHS {
