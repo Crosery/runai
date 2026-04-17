@@ -987,38 +987,35 @@ impl SkillManager {
     }
 }
 
-#[cfg(test)]
+// Tests rely on `with_home` to redirect `dirs::home_dir()` via the HOME env
+// var. That works on unix, but on Windows the `dirs` 6.x crate resolves home
+// through the Win32 `SHGetKnownFolderPath` API and ignores env vars — there's
+// no way to mock home in-process. Skip the whole module on Windows rather than
+// introduce a production-only escape hatch just for tests. Generic coverage
+// still runs on unix; runtime Windows usage hits the real user home, which is
+// the intended behavior anyway.
+#[cfg(all(test, not(target_os = "windows")))]
 mod tests {
     use super::*;
     use std::sync::Mutex;
 
-    // `dirs::home_dir()` reads HOME on unix but USERPROFILE on Windows.
-    // We serialize tests that modify that env var to avoid races.
     static HOME_LOCK: Mutex<()> = Mutex::new(());
 
-    #[cfg(unix)]
-    const HOME_VAR: &str = "HOME";
-    #[cfg(windows)]
-    const HOME_VAR: &str = "USERPROFILE";
-
-    /// Helper: temporarily set the platform home env var, run a closure, restore.
+    /// Helper: temporarily set HOME, run a closure, restore.
     fn with_home<F: FnOnce()>(tmp: &Path, f: F) {
-        let _guard = HOME_LOCK.lock().unwrap_or_else(|poisoned| {
-            // A prior test panicked while holding the lock. Its env mutations
-            // were localized (restored before panic unwinds the closure? no —
-            // but the next test resets HOME_VAR below), so keep going.
-            poisoned.into_inner()
-        });
-        let original = std::env::var(HOME_VAR).ok();
-        // SAFETY: we hold HOME_LOCK so no other test thread modifies it concurrently.
+        let _guard = HOME_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let original = std::env::var("HOME").ok();
+        // SAFETY: HOME_LOCK prevents other test threads from racing on HOME.
         unsafe {
-            std::env::set_var(HOME_VAR, tmp);
+            std::env::set_var("HOME", tmp);
         }
         f();
         unsafe {
             match original {
-                Some(v) => std::env::set_var(HOME_VAR, v),
-                None => std::env::remove_var(HOME_VAR),
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
             }
         }
     }
