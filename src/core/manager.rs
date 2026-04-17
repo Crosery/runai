@@ -997,9 +997,7 @@ impl SkillManager {
 #[cfg(all(test, not(target_os = "windows")))]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    static HOME_LOCK: Mutex<()> = Mutex::new(());
+    use crate::test_support::HOME_LOCK;
 
     /// Helper: temporarily set HOME, run a closure, restore.
     fn with_home<F: FnOnce()>(tmp: &Path, f: F) {

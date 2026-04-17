@@ -996,10 +996,24 @@ impl ServerHandler for SmServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::HOME_LOCK;
     use rmcp::handler::server::wrapper::Parameters;
+
+    /// These tests open the *real* `~/.runai/runai.db` (via `SmServer::new()` →
+    /// `dirs::home_dir()`). They must hold `HOME_LOCK` while the server lives,
+    /// otherwise a concurrent `with_home` test can swap HOME to a tempdir,
+    /// drop the tempdir, and leave our DB connection pointing at a deleted
+    /// path → `SQLITE_READONLY_DBMOVED`. Declare the guard *before* the server
+    /// so drop order releases the connection first.
+    fn home_guard() -> std::sync::MutexGuard<'static, ()> {
+        HOME_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     #[test]
     fn tool_router_has_expected_tools() {
+        let _guard = home_guard();
         let server = SmServer::new().unwrap();
         let tools = server.tool_router.list_all();
         let tool_names: Vec<String> = tools.iter().map(|t| t.name.to_string()).collect();
@@ -1102,6 +1116,7 @@ mod tests {
 
     #[test]
     fn sm_status_returns_valid_json() {
+        let _guard = home_guard();
         let server = SmServer::new().unwrap();
         let Json(result) = server.sm_status(Parameters(StatusParams { target: None }));
         let parsed: serde_json::Value =
@@ -1129,6 +1144,7 @@ mod tests {
 
     #[test]
     fn sm_backups_returns_string() {
+        let _guard = home_guard();
         let server = SmServer::new().unwrap();
         let Json(result) = server.sm_backups();
         // With no backups, should return "No backups found"
@@ -1141,6 +1157,7 @@ mod tests {
 
     #[test]
     fn sm_search_no_results_suggests_npx_skills_find() {
+        let _guard = home_guard();
         let server = SmServer::new().unwrap();
         let Json(result) = server.sm_search(Parameters(NameParams {
             name: "xyznonexistent99999".into(),
