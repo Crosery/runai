@@ -461,11 +461,14 @@ mod tests {
     fn register_skips_if_path_matches() {
         let tmp = tempfile::tempdir().unwrap();
         let binary = McpRegister::find_binary();
-        write_file(
-            tmp.path(),
-            ".claude.json",
-            &format!(r#"{{"mcpServers":{{"runai":{{"command":"{binary}"}}}}}}"#),
-        );
+        // Build the JSON via serde so Windows paths (containing `\`) get
+        // escaped correctly — plain format! would produce invalid JSON.
+        let config = serde_json::json!({
+            "mcpServers": {
+                "runai": { "command": binary }
+            }
+        });
+        write_file(tmp.path(), ".claude.json", &config.to_string());
 
         let result = McpRegister::register_all(tmp.path());
         assert!(result.skipped.contains(&"claude".to_string()));

@@ -987,20 +987,27 @@ impl SkillManager {
     }
 }
 
-#[cfg(test)]
+// Tests rely on `with_home` to redirect `dirs::home_dir()` via the HOME env
+// var. That works on unix, but on Windows the `dirs` 6.x crate resolves home
+// through the Win32 `SHGetKnownFolderPath` API and ignores env vars — there's
+// no way to mock home in-process. Skip the whole module on Windows rather than
+// introduce a production-only escape hatch just for tests. Generic coverage
+// still runs on unix; runtime Windows usage hits the real user home, which is
+// the intended behavior anyway.
+#[cfg(all(test, not(target_os = "windows")))]
 mod tests {
     use super::*;
     use std::sync::Mutex;
 
-    // set_mcp_disabled reads dirs::home_dir() which checks HOME env var.
-    // We serialize tests that modify HOME to avoid races.
     static HOME_LOCK: Mutex<()> = Mutex::new(());
 
-    /// Helper: temporarily set HOME to a given path, run a closure, restore HOME.
+    /// Helper: temporarily set HOME, run a closure, restore.
     fn with_home<F: FnOnce()>(tmp: &Path, f: F) {
-        let _guard = HOME_LOCK.lock().unwrap();
+        let _guard = HOME_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let original = std::env::var("HOME").ok();
-        // SAFETY: we hold HOME_LOCK so no other test thread modifies HOME concurrently.
+        // SAFETY: HOME_LOCK prevents other test threads from racing on HOME.
         unsafe {
             std::env::set_var("HOME", tmp);
         }
@@ -1941,6 +1948,12 @@ args = []
             claude_skills.join("test-skill"),
         )
         .unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_dir(
+            "C:\\nonexistent\\path\\test-skill",
+            claude_skills.join("test-skill"),
+        )
+        .unwrap();
 
         with_home(tmp.path(), || {
             let mgr = SkillManager::with_base(sm_data.clone()).unwrap();
@@ -1999,6 +2012,12 @@ args = []
         #[cfg(unix)]
         std::os::unix::fs::symlink(
             "/some/other/path/test-skill",
+            claude_skills.join("test-skill"),
+        )
+        .unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_dir(
+            "C:\\some\\other\\path\\test-skill",
             claude_skills.join("test-skill"),
         )
         .unwrap();

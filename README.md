@@ -33,6 +33,19 @@ cd runai
 cargo install --path .
 ```
 
+### Windows
+
+Pre-built binary: download `runai-windows-amd64.zip` from [releases](https://github.com/Crosery/runai/releases) and put `runai.exe` on your PATH. Or build from source with `cargo install --path .`.
+
+**Symlink prerequisite**: runai uses filesystem symlinks as the source of truth for "skill enabled". Windows creating symlinks requires one of:
+
+- **Developer Mode** enabled (Settings → Privacy & security → For developers → Developer Mode), or
+- Running the shell as **Administrator**
+
+Without either, `enable`/`install` will fail when creating the symlink. Developer Mode is the recommended option (no elevation per-invocation).
+
+CLI config files are read from the same user-home paths as unix (`%USERPROFILE%\.claude.json`, `.codex\config.toml`, `.gemini\settings.json`, `.config\opencode\opencode.json`) — verified against each CLI's source.
+
 ## Quick Start
 
 ```bash

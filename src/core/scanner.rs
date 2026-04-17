@@ -145,7 +145,9 @@ impl Scanner {
 
         raw.into_iter()
             .filter_map(|path| {
-                let path_str = path.to_string_lossy();
+                // Normalize separators so noise patterns using '/' also match on Windows
+                // where path components are joined with '\'.
+                let path_str = path.to_string_lossy().replace('\\', "/");
 
                 // Filter out noise
                 for noise in Self::NOISE_PATHS {
@@ -685,6 +687,8 @@ mod tests {
         let dead_target = tmp.path().join("ghost/worktree-skill/skills/wt-sync");
         #[cfg(unix)]
         std::os::unix::fs::symlink(&dead_target, &link).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_dir(&dead_target, &link).unwrap();
 
         // Sanity: baseline state matches the bug's input.
         assert!(Linker::is_symlink(&link));
@@ -718,6 +722,8 @@ mod tests {
         let dead_target = tmp.path().join("nowhere/unknown-skill");
         #[cfg(unix)]
         std::os::unix::fs::symlink(&dead_target, &link).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_dir(&dead_target, &link).unwrap();
 
         let outcome =
             Scanner::adopt_entry(&link, "unknown-skill", &paths, &db, CliTarget::Claude).unwrap();

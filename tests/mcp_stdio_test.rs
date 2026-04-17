@@ -6,14 +6,15 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 fn runai_binary() -> String {
-    // Use cargo-built binary
+    // Use cargo-built binary. EXE_SUFFIX is "" on unix, ".exe" on Windows.
+    let bin_name = format!("runai{}", std::env::consts::EXE_SUFFIX);
     let path = std::env::current_exe()
         .unwrap()
         .parent()
         .unwrap()
         .parent()
         .unwrap()
-        .join("runai");
+        .join(&bin_name);
     if path.exists() {
         return path.to_string_lossy().to_string();
     }

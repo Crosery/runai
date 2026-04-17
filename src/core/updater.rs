@@ -36,15 +36,17 @@ struct GitHubAsset {
 
 /// Maps OS + arch to the expected asset filename.
 /// Must match the asset names produced by `.github/workflows/release.yml`.
+/// Windows ships as `.zip`; everything else as `.tar.gz`.
 pub fn asset_name(os: &str, arch: &str) -> Option<String> {
-    let suffix = match (os, arch) {
-        ("linux", "x86_64") => "linux-amd64",
-        ("linux", "aarch64") => "linux-arm64",
-        ("macos", "x86_64") => "darwin-amd64",
-        ("macos", "aarch64") => "darwin-arm64",
-        _ => return None,
-    };
-    Some(format!("runai-{suffix}.tar.gz"))
+    match (os, arch) {
+        ("linux", "x86_64") => Some("runai-linux-amd64.tar.gz".to_string()),
+        ("linux", "aarch64") => Some("runai-linux-arm64.tar.gz".to_string()),
+        ("macos", "x86_64") => Some("runai-darwin-amd64.tar.gz".to_string()),
+        ("macos", "aarch64") => Some("runai-darwin-arm64.tar.gz".to_string()),
+        ("windows", "x86_64") => Some("runai-windows-amd64.zip".to_string()),
+        ("windows", "aarch64") => Some("runai-windows-arm64.zip".to_string()),
+        _ => None,
+    }
 }
 
 /// Parse a GitHub tag (e.g. "v0.7.0" or "v0.7.0-dazi") into a clean semver::Version.
@@ -156,9 +158,9 @@ async fn check_for_update_inner(data_dir: &Path) -> Result<()> {
         parse_tag_version(&release.tag_name).context("failed to parse release tag as semver")?;
 
     // Find download and checksum URLs for current platform
-    let os = std::env::consts::OS;
-    let os_name = match os {
+    let os_name = match std::env::consts::OS {
         "macos" => "macos",
+        "windows" => "windows",
         _ => "linux",
     };
     let arch = std::env::consts::ARCH;
@@ -222,6 +224,50 @@ pub fn find_checksum_for_asset(checksums_text: &str, asset_name: &str) -> Option
     None
 }
 
+/// Extract a named entry from a tar.gz archive.
+fn extract_from_tar_gz(bytes: &[u8], target_name: &str) -> Result<Vec<u8>> {
+    let decoder = flate2::read::GzDecoder::new(bytes);
+    let mut archive = tar::Archive::new(decoder);
+    for entry in archive.entries().context("failed to read tar entries")? {
+        let mut entry = entry.context("failed to read tar entry")?;
+        let path = entry.path().context("failed to read entry path")?;
+        let file_name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if file_name == target_name {
+            let mut buf = Vec::new();
+            std::io::Read::read_to_end(&mut entry, &mut buf)
+                .context("failed to read binary from tar.gz")?;
+            return Ok(buf);
+        }
+    }
+    anyhow::bail!("binary '{target_name}' not found in tar.gz archive")
+}
+
+/// Extract a named entry from a zip archive (Windows release packaging).
+fn extract_from_zip(bytes: &[u8], target_name: &str) -> Result<Vec<u8>> {
+    use std::io::{Cursor, Read};
+    let mut archive =
+        zip::ZipArchive::new(Cursor::new(bytes)).context("failed to open zip archive")?;
+    for i in 0..archive.len() {
+        let mut file = archive
+            .by_index(i)
+            .context("failed to read zip entry header")?;
+        let file_name = file
+            .enclosed_name()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+            .unwrap_or_default();
+        if file_name == target_name {
+            let mut buf = Vec::new();
+            file.read_to_end(&mut buf)
+                .context("failed to read binary from zip")?;
+            return Ok(buf);
+        }
+    }
+    anyhow::bail!("binary '{target_name}' not found in zip archive")
+}
+
 /// Download the latest release and replace the current binary.
 pub async fn perform_update(data_dir: &Path) -> Result<String> {
     let client = http_client()?;
@@ -256,6 +302,7 @@ pub async fn perform_update(data_dir: &Path) -> Result<String> {
     // Determine platform asset name
     let os_name = match std::env::consts::OS {
         "macos" => "macos",
+        "windows" => "windows",
         _ => "linux",
     };
     let arch = std::env::consts::ARCH;
@@ -307,28 +354,13 @@ pub async fn perform_update(data_dir: &Path) -> Result<String> {
     }
     eprintln!("Checksum verified.");
 
-    // Extract binary from tar.gz
-    let decoder = flate2::read::GzDecoder::new(&asset_bytes[..]);
-    let mut archive = tar::Archive::new(decoder);
-    let mut new_binary: Option<Vec<u8>> = None;
-
-    for entry in archive.entries().context("failed to read tar entries")? {
-        let mut entry = entry.context("failed to read tar entry")?;
-        let path = entry.path().context("failed to read entry path")?;
-        let file_name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-        if file_name == "runai" {
-            let mut buf = Vec::new();
-            std::io::Read::read_to_end(&mut entry, &mut buf)
-                .context("failed to read binary from archive")?;
-            new_binary = Some(buf);
-            break;
-        }
-    }
-
-    let new_binary = new_binary.context("binary 'runai' not found in archive")?;
+    // Extract binary from archive: .zip on Windows, .tar.gz elsewhere.
+    let expected_bin = if cfg!(windows) { "runai.exe" } else { "runai" };
+    let new_binary: Vec<u8> = if expected_asset.ends_with(".zip") {
+        extract_from_zip(&asset_bytes, expected_bin)?
+    } else {
+        extract_from_tar_gz(&asset_bytes, expected_bin)?
+    };
 
     // Replace binary
     let current_exe =
@@ -418,8 +450,24 @@ mod tests {
 
     #[test]
     fn parses_asset_name_unsupported() {
-        assert_eq!(asset_name("windows", "x86_64"), None);
+        assert_eq!(asset_name("freebsd", "x86_64"), None);
         assert_eq!(asset_name("linux", "riscv64"), None);
+    }
+
+    #[test]
+    fn parses_asset_name_windows_x86_64() {
+        assert_eq!(
+            asset_name("windows", "x86_64"),
+            Some("runai-windows-amd64.zip".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_asset_name_windows_aarch64() {
+        assert_eq!(
+            asset_name("windows", "aarch64"),
+            Some("runai-windows-arm64.zip".to_string())
+        );
     }
 
     #[test]
