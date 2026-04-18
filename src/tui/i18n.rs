@@ -82,8 +82,11 @@ impl T {
     pub fn help_search(&self) -> &'static str {
         self.zh_en("ESC 取消  ENTER 确认", "ESC cancel  ENTER confirm")
     }
-    pub fn update_available(&self) -> &'static str {
-        self.zh_en("有新版本 · runai update", "update · runai update")
+    /// Short hint on *how* to upgrade, shown dim in the footer after the new
+    /// version number. Kept brief — the version number itself carries the
+    /// "update available" signal.
+    pub fn update_hint(&self) -> &'static str {
+        self.zh_en("运行 runai update", "runai update")
     }
 
     // ── Status bar ──
