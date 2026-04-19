@@ -363,12 +363,20 @@ fn render_footer(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     // so the background update check (written mid-TUI) surfaces without restart.
     let update_latest = crate::core::updater::pending_update_version(app.mgr.paths().data_dir());
 
-    let brand_text = if let Some(ref latest) = update_latest {
-        format!(" Runai v{version} → v{latest} available ")
+    // Width estimate for the left chunk. `chars().count()` is a visual-width
+    // approximation (good for ASCII, off by 1 col per CJK char — acceptable
+    // since the only CJK here is the short i18n hint). The `● ` glyph counts
+    // as 2 chars but renders 1–2 cols depending on the terminal; the +2
+    // slack at the end prevents truncation of the last char.
+    let hint = i.update_hint();
+    let brand_text_len = if let Some(ref latest) = update_latest {
+        format!(" Runai v{version}  ● v{latest} · {hint} ")
+            .chars()
+            .count()
     } else {
-        format!(" Runai v{version} ")
+        format!(" Runai v{version} ").chars().count()
     };
-    let brand_len = brand_text.len() as u16 + 1;
+    let brand_len = brand_text_len as u16 + 2;
 
     let footer_chunks =
         Layout::horizontal([Constraint::Length(brand_len), Constraint::Min(0)]).split(area);
@@ -377,15 +385,27 @@ fn render_footer(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let mut brand_spans = vec![
         Span::styled(" Runai ", Style::default().fg(t.brand).bold()),
         Span::styled(
-            format!("v{version} "),
+            format!("v{version}"),
             Style::default().fg(t.version).italic(),
         ),
     ];
     if let Some(latest) = update_latest {
+        // Design goal: look like a healthy "you can upgrade" hint, not a
+        // shout. Amber signal-dot + bold version carries the alert; the
+        // command hint is dim italic so the eye lands on the version first.
+        //
+        // Reference: gh CLI / cargo / starship all use a coloured marker +
+        // bolded version number; the verbose "available" wording is dropped.
+        brand_spans.push(Span::styled("  ● ", Style::default().fg(t.tag_warning)));
         brand_spans.push(Span::styled(
-            format!("→ v{latest} ({})", i.update_available()),
-            Style::default().fg(t.brand).bold(),
+            format!("v{latest}"),
+            Style::default().fg(t.tag_warning).bold(),
         ));
+        brand_spans.push(Span::styled(
+            format!(" · {hint}"),
+            Style::default().fg(t.text_dim).italic(),
+        ));
+    } else {
         brand_spans.push(Span::raw(" "));
     }
     let brand = Paragraph::new(Line::from(brand_spans))

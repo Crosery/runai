@@ -394,7 +394,18 @@ pub fn run(cli: Cli) -> Result<()> {
             let rt = tokio::runtime::Runtime::new()?;
             let msg = rt.block_on(crate::core::updater::perform_update(&data_dir))?;
             println!("{msg}");
-            Ok(())
+            // Exit immediately. Two reasons:
+            // 1. The running process is still the *old* binary in memory
+            //    (CARGO_PKG_VERSION is a compile-time constant) — any
+            //    `update_notification` that runs on the way out compares
+            //    stale current against fresh latest and re-notifies.
+            // 2. `main.rs` spawned a background `check_for_update` that
+            //    main joins before its post-exit notification. If that
+            //    check finishes after `perform_update` wrote its
+            //    just-upgraded suppression signal, it overwrites the
+            //    cache with the stale current_version and defeats the
+            //    suppression. Skipping straight to exit sidesteps both.
+            std::process::exit(0);
         }
         Some(Commands::Doctor) => {
             println!("runai doctor v{}\n", env!("CARGO_PKG_VERSION"));
