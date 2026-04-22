@@ -680,6 +680,10 @@ command = "other-cmd"
         );
 
         let migrated = McpRegister::migrate_all(tmp.path());
+        assert_eq!(
+            migrated, 1,
+            "cleaning up the old entry should still count as a migration"
+        );
 
         let content = std::fs::read_to_string(tmp.path().join(".claude.json")).unwrap();
         let v: serde_json::Value = serde_json::from_str(&content).unwrap();
