@@ -6,6 +6,7 @@ use crate::core::resource::Resource;
 use crate::tui::i18n::{Lang, T};
 use crossterm::event::{KeyCode, KeyEvent};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::mpsc;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -26,6 +27,141 @@ impl Tab {
             Tab::Groups => "Groups",
             Tab::Market => "Market",
         }
+    }
+}
+
+#[cfg(all(test, not(target_os = "windows")))]
+mod tests {
+    use super::*;
+    use crate::core::resource::{ResourceKind, Source};
+    use crate::test_support::HOME_LOCK;
+    use crossterm::event::KeyModifiers;
+
+    fn with_home<F: FnOnce()>(tmp: &std::path::Path, f: F) {
+        let _guard = HOME_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let original = std::env::var("HOME").ok();
+        unsafe {
+            std::env::set_var("HOME", tmp);
+        }
+        f();
+        unsafe {
+            match original {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn app_with_skill(tmp: &std::path::Path) -> (App, PathBuf) {
+        let mgr = SkillManager::with_base(tmp.join("data")).unwrap();
+        let skill_dir = tmp.join("data").join("skills").join("demo-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        let resource = Resource {
+            id: "local:demo-skill".into(),
+            name: "demo-skill".into(),
+            kind: ResourceKind::Skill,
+            description: "demo".into(),
+            directory: skill_dir.clone(),
+            source: Source::Local {
+                path: skill_dir.clone(),
+            },
+            installed_at: 0,
+            enabled: HashMap::new(),
+            usage_count: 0,
+            last_used_at: None,
+        };
+        mgr.db().insert_resource(&resource).unwrap();
+
+        let mut app = App::new(mgr);
+        app.reload();
+        app.tab = Tab::Skills;
+        app.selected = 0;
+        (app, skill_dir)
+    }
+
+    #[test]
+    fn delete_key_opens_confirmation_without_deleting_resource() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_home(tmp.path(), || {
+            let (mut app, skill_dir) = app_with_skill(tmp.path());
+
+            app.handle_key(key(KeyCode::Char('d')));
+
+            assert!(matches!(app.mode, InputMode::ConfirmDelete));
+            assert!(matches!(
+                app.pending_delete,
+                Some(PendingDelete::Resource { .. })
+            ));
+            assert!(
+                app.mgr
+                    .db()
+                    .get_resource("local:demo-skill")
+                    .unwrap()
+                    .is_some(),
+                "resource should remain until confirmation"
+            );
+            assert!(skill_dir.exists(), "managed directory should remain");
+        });
+    }
+
+    #[test]
+    fn enter_confirms_pending_resource_delete() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_home(tmp.path(), || {
+            let (mut app, skill_dir) = app_with_skill(tmp.path());
+
+            app.handle_key(key(KeyCode::Char('d')));
+            app.handle_key(key(KeyCode::Enter));
+
+            assert!(matches!(app.mode, InputMode::Normal));
+            assert!(
+                app.mgr
+                    .db()
+                    .get_resource("local:demo-skill")
+                    .unwrap()
+                    .is_none(),
+                "resource should be deleted after confirmation"
+            );
+            assert!(!skill_dir.exists(), "managed directory should be deleted");
+        });
+    }
+
+    #[test]
+    fn source_delete_requires_confirmation() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_home(tmp.path(), || {
+            let mgr = SkillManager::with_base(tmp.path().join("data")).unwrap();
+            let mut app = App::new(mgr);
+            app.sources.push(SourceEntry {
+                owner: "example".into(),
+                repo: "skills".into(),
+                branch: "main".into(),
+                skill_prefix: String::new(),
+                label: "custom".into(),
+                description: "custom source".into(),
+                builtin: false,
+                enabled: true,
+            });
+            app.source_pick_idx = app.sources.len() - 1;
+            app.mode = InputMode::SourceManager;
+            let before = app.sources.len();
+
+            app.handle_key(key(KeyCode::Char('d')));
+
+            assert!(matches!(app.mode, InputMode::ConfirmDelete));
+            assert_eq!(app.sources.len(), before, "source should remain");
+
+            app.handle_key(key(KeyCode::Enter));
+
+            assert!(matches!(app.mode, InputMode::SourceManager));
+            assert_eq!(app.sources.len(), before - 1, "source should be removed");
+        });
     }
 }
 
@@ -73,6 +209,42 @@ pub enum InputMode {
     Help,
     /// Rename group
     RenameGroup,
+    /// Confirm a pending destructive delete/remove action
+    ConfirmDelete,
+}
+
+#[derive(Clone, PartialEq)]
+pub enum PendingDelete {
+    Resource {
+        id: String,
+        name: String,
+        kind: String,
+        directory: PathBuf,
+    },
+    Group {
+        id: String,
+        name: String,
+    },
+    GroupMember {
+        group_id: String,
+        group_name: String,
+        resource_id: String,
+        resource_name: String,
+    },
+    Source {
+        repo_id: String,
+        label: String,
+    },
+}
+
+impl PendingDelete {
+    fn return_mode(&self) -> InputMode {
+        match self {
+            PendingDelete::GroupMember { .. } => InputMode::GroupDetail,
+            PendingDelete::Source { .. } => InputMode::SourceManager,
+            PendingDelete::Resource { .. } | PendingDelete::Group { .. } => InputMode::Normal,
+        }
+    }
 }
 
 pub struct App {
@@ -91,6 +263,7 @@ pub struct App {
     pub create_name: String,
     pub group_pick_idx: usize,
     pub message: Option<String>,
+    pub pending_delete: Option<PendingDelete>,
     pub status: (usize, usize, usize, usize),
     /// Max usage_count across currently-loaded items. Used by the render layer
     /// to scale per-row heat bars. Recomputed in `reload()`.
@@ -149,6 +322,7 @@ impl App {
             create_name: String::new(),
             group_pick_idx: 0,
             message: None,
+            pending_delete: None,
             status: (0, 0, 0, 0),
             max_usage_count: 0,
             first_launch_info: None,
@@ -426,6 +600,7 @@ impl App {
                 self.mode = InputMode::Normal;
             }
             InputMode::RenameGroup => self.handle_rename_group_key(key),
+            InputMode::ConfirmDelete => self.handle_confirm_delete_key(key),
             InputMode::Normal => self.handle_normal_key(key),
         }
     }
@@ -604,12 +779,12 @@ impl App {
 
             // Delete group
             KeyCode::Char('d') if self.tab == Tab::Groups => {
-                self.delete_selected_group();
+                self.confirm_delete_selected_group();
             }
 
             // Delete skill/mcp
             KeyCode::Char('d') if self.tab == Tab::Skills || self.tab == Tab::Mcps => {
-                self.delete_selected_resource();
+                self.confirm_delete_selected_resource();
             }
 
             _ => {}
@@ -800,39 +975,133 @@ impl App {
         }
     }
 
-    fn delete_selected_resource(&mut self) {
+    fn confirm_delete_selected_resource(&mut self) {
         let visible = self.visible_items();
-        let entry = visible
-            .get(self.selected)
-            .map(|r| (r.id.clone(), r.name.clone(), r.directory.clone()));
-        if let Some((id, name, dir)) = entry {
-            // Remove symlinks from all CLIs
-            for target in CliTarget::ALL {
-                let link = target.skills_dir().join(&name);
-                if link.is_symlink() {
-                    let _ = std::fs::remove_file(&link);
-                }
-            }
-            // Remove managed directory
-            if dir.exists() {
-                let _ = std::fs::remove_dir_all(&dir);
-            }
-            // Remove from DB
-            let _ = self.mgr.db().delete_resource(&id);
-            self.message = Some(format!("Deleted '{name}'"));
-            self.reload();
+        let entry = visible.get(self.selected).map(|r| {
+            (
+                r.id.clone(),
+                r.name.clone(),
+                r.kind.as_str().to_string(),
+                r.directory.clone(),
+            )
+        });
+        if let Some((id, name, kind, directory)) = entry {
+            self.pending_delete = Some(PendingDelete::Resource {
+                id,
+                name,
+                kind,
+                directory,
+            });
+            self.mode = InputMode::ConfirmDelete;
         }
     }
 
-    fn delete_selected_group(&mut self) {
+    fn delete_pending_resource(&mut self, id: String, name: String, dir: PathBuf) {
+        // Remove symlinks from all CLIs
+        for target in CliTarget::ALL {
+            let link = target.skills_dir().join(&name);
+            if link.is_symlink() {
+                let _ = std::fs::remove_file(&link);
+            }
+        }
+        // Remove managed directory
+        if dir.exists() {
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        // Remove from DB
+        let _ = self.mgr.db().delete_resource(&id);
+        self.message = Some(format!("Deleted '{name}'"));
+        self.reload();
+    }
+
+    fn confirm_delete_selected_group(&mut self) {
         let visible = self.visible_groups();
         if let Some((id, name, _, _)) = visible.get(self.selected) {
-            let path = self.mgr.paths().groups_dir().join(format!("{id}.toml"));
-            if path.exists() {
-                let _ = std::fs::remove_file(&path);
+            self.pending_delete = Some(PendingDelete::Group {
+                id: id.clone(),
+                name: name.clone(),
+            });
+            self.mode = InputMode::ConfirmDelete;
+        }
+    }
+
+    fn delete_pending_group(&mut self, id: String, name: String) {
+        let path = self.mgr.paths().groups_dir().join(format!("{id}.toml"));
+        if path.exists() {
+            let _ = std::fs::remove_file(&path);
+        }
+        self.message = Some(format!("Group '{name}' deleted"));
+        self.reload();
+    }
+
+    fn handle_confirm_delete_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = self
+                    .pending_delete
+                    .as_ref()
+                    .map(PendingDelete::return_mode)
+                    .unwrap_or(InputMode::Normal);
+                self.pending_delete = None;
             }
-            self.message = Some(format!("Group '{name}' deleted"));
-            self.reload();
+            KeyCode::Enter => {
+                if let Some(pending) = self.pending_delete.take() {
+                    let next_mode = pending.return_mode();
+                    self.mode = next_mode;
+                    match pending {
+                        PendingDelete::Resource {
+                            id,
+                            name,
+                            directory,
+                            ..
+                        } => {
+                            self.mode = InputMode::Normal;
+                            self.delete_pending_resource(id, name, directory);
+                        }
+                        PendingDelete::Group { id, name } => {
+                            self.mode = InputMode::Normal;
+                            self.delete_pending_group(id, name);
+                        }
+                        PendingDelete::GroupMember {
+                            group_id,
+                            resource_id,
+                            resource_name,
+                            ..
+                        } => {
+                            let _ = self.mgr.db().remove_group_member(&group_id, &resource_id);
+                            self.reload_group_detail();
+                            if self.detail_idx >= self.detail_members.len()
+                                && !self.detail_members.is_empty()
+                            {
+                                self.detail_idx = self.detail_members.len() - 1;
+                            }
+                            self.message = Some(format!("Removed '{resource_name}' from group"));
+                        }
+                        PendingDelete::Source { repo_id, label } => {
+                            if let Some(idx) =
+                                self.sources.iter().position(|src| src.repo_id() == repo_id)
+                            {
+                                self.sources.remove(idx);
+                                let _ = market::save_sources(
+                                    self.mgr.paths().data_dir(),
+                                    &self.sources,
+                                );
+                                if self.source_pick_idx >= self.sources.len()
+                                    && !self.sources.is_empty()
+                                {
+                                    self.source_pick_idx = self.sources.len() - 1;
+                                }
+                                self.market_cache.remove(&repo_id);
+                                self.market_fetching.remove(&repo_id);
+                                self.message = Some(format!("Removed '{label}'"));
+                            }
+                        }
+                    }
+                } else {
+                    self.mode = InputMode::Normal;
+                }
+            }
+            _ => {}
         }
     }
 
@@ -1077,15 +1346,13 @@ impl App {
             // Remove member from group
             KeyCode::Char('d') => {
                 if let Some(r) = self.detail_members.get(self.detail_idx) {
-                    let rid = r.id.clone();
-                    let gid = self.detail_group_id.clone();
-                    let _ = self.mgr.db().remove_group_member(&gid, &rid);
-                    self.reload_group_detail();
-                    if self.detail_idx >= self.detail_members.len()
-                        && !self.detail_members.is_empty()
-                    {
-                        self.detail_idx = self.detail_members.len() - 1;
-                    }
+                    self.pending_delete = Some(PendingDelete::GroupMember {
+                        group_id: self.detail_group_id.clone(),
+                        group_name: self.detail_group_name.clone(),
+                        resource_id: r.id.clone(),
+                        resource_name: r.name.clone(),
+                    });
+                    self.mode = InputMode::ConfirmDelete;
                 }
             }
             // Add skill/mcp to this group
@@ -1237,18 +1504,13 @@ impl App {
                 // Delete user-added source
                 if let Some(src) = self.sources.get(self.source_pick_idx) {
                     if src.builtin {
-                        self.message =
-                            Some("Can't delete built-in source (disable it instead)".into());
+                        self.message = Some(self.t().cant_delete_builtin().into());
                     } else {
-                        let label = src.label.clone();
-                        let rid = src.repo_id();
-                        self.sources.remove(self.source_pick_idx);
-                        let _ = market::save_sources(self.mgr.paths().data_dir(), &self.sources);
-                        if self.source_pick_idx >= self.sources.len() && !self.sources.is_empty() {
-                            self.source_pick_idx = self.sources.len() - 1;
-                        }
-                        self.market_cache.remove(&rid);
-                        self.message = Some(format!("Removed '{label}'"));
+                        self.pending_delete = Some(PendingDelete::Source {
+                            repo_id: src.repo_id(),
+                            label: src.label.clone(),
+                        });
+                        self.mode = InputMode::ConfirmDelete;
                     }
                 }
             }

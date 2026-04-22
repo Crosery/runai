@@ -120,8 +120,8 @@ impl T {
     }
     pub fn help_group_detail(&self) -> &'static str {
         self.zh_en(
-            "j/k 导航  SPACE 开关  a 添加  d 移除  1234 CLI  ESC 关闭",
-            "j/k navigate  SPACE toggle  a add  d remove  1234 CLI  ESC close",
+            "j/k 导航  SPACE 开关  a 添加  d 移除(确认)  1234 CLI  ESC 关闭",
+            "j/k navigate  SPACE toggle  a add  d remove(confirm)  1234 CLI  ESC close",
         )
     }
 
@@ -142,8 +142,8 @@ impl T {
     }
     pub fn help_sources(&self) -> &'static str {
         self.zh_en(
-            " j/k 导航  SPACE 开关  a 添加  d 删除  ESC 关闭",
-            " j/k navigate  SPACE toggle  a add  d delete  ESC close",
+            " j/k 导航  SPACE 开关  a 添加  d 删除(确认)  ESC 关闭",
+            " j/k navigate  SPACE toggle  a add  d delete(confirm)  ESC close",
         )
     }
     pub fn cant_delete_builtin(&self) -> &'static str {
@@ -204,6 +204,72 @@ impl T {
     }
     pub fn help_dialog(&self) -> &'static str {
         self.zh_en("  ESC 取消  ENTER 确认", "  ESC cancel  ENTER confirm")
+    }
+    pub fn title_confirm_delete(&self) -> &'static str {
+        self.zh_en(" 确认删除/移除 ", " Confirm Delete/Remove ")
+    }
+    pub fn confirm_delete_resource(&self, name: &str, kind: &str) -> String {
+        match self.lang {
+            Lang::Zh => format!("将删除 {kind} '{name}'。"),
+            Lang::En => format!("Delete {kind} '{name}'."),
+        }
+    }
+    pub fn confirm_delete_group(&self, name: &str) -> String {
+        match self.lang {
+            Lang::Zh => format!("将删除分组 '{name}'。"),
+            Lang::En => format!("Delete group '{name}'."),
+        }
+    }
+    pub fn confirm_remove_group_member(&self, resource: &str, group: &str) -> String {
+        match self.lang {
+            Lang::Zh => format!("将从分组 '{group}' 移除 '{resource}'。"),
+            Lang::En => format!("Remove '{resource}' from group '{group}'."),
+        }
+    }
+    pub fn confirm_delete_source(&self, label: &str) -> String {
+        match self.lang {
+            Lang::Zh => format!("将删除市场源 '{label}'。"),
+            Lang::En => format!("Delete market source '{label}'."),
+        }
+    }
+    pub fn confirm_delete_impact_resource(&self) -> &'static str {
+        self.zh_en(
+            "会移除 runai 记录、托管目录，以及所有 CLI 中由 runai 管理的启用链接。",
+            "This removes the runai record, managed directory, and runai-managed enable links in every CLI.",
+        )
+    }
+    pub fn confirm_delete_impact_group(&self) -> &'static str {
+        self.zh_en(
+            "只删除分组定义和成员关系，不删除分组内的技能或 MCP。",
+            "This deletes only the group definition and memberships, not the skills or MCPs inside it.",
+        )
+    }
+    pub fn confirm_delete_impact_group_member(&self) -> &'static str {
+        self.zh_en(
+            "只移除这个分组关系，不删除技能或 MCP 本体。",
+            "This removes only the group membership, not the skill or MCP itself.",
+        )
+    }
+    pub fn confirm_delete_impact_source(&self) -> &'static str {
+        self.zh_en(
+            "只删除这个自定义市场源，不卸载已安装的技能。",
+            "This deletes only the custom market source, not any installed skills.",
+        )
+    }
+    pub fn confirm_delete_irreversible(&self) -> &'static str {
+        self.zh_en(
+            "此操作无法在 runai 内撤销；确认前请核对名称。",
+            "This cannot be undone inside runai; verify the name before confirming.",
+        )
+    }
+    pub fn help_confirm_delete(&self) -> &'static str {
+        self.zh_en("  ESC 取消  ENTER 删除", "  ESC cancel  ENTER delete")
+    }
+    pub fn confirm_no(&self) -> &'static str {
+        self.zh_en("否", "No")
+    }
+    pub fn confirm_yes(&self) -> &'static str {
+        self.zh_en("是", "Yes")
     }
 
     // ── Rename group ──
@@ -331,7 +397,10 @@ impl T {
         )
     }
     pub fn help_d(&self) -> &'static str {
-        self.zh_en("删除选中的技能或 MCP", "Delete selected skill or MCP")
+        self.zh_en(
+            "删除选中的技能或 MCP（需确认）",
+            "Delete selected skill or MCP (confirmation required)",
+        )
     }
     pub fn help_section_groups(&self) -> &'static str {
         self.zh_en("  分组", "  Groups")

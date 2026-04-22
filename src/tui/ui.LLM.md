@@ -12,7 +12,7 @@ Pure rendering. Takes `&App` + `&mut Frame`, draws the current tab, modal dialog
 ## Public API (internal)
 - `draw(frame, app)` — top-level entry; dispatches to per-tab draw functions.
 - Per-tab: `render_resources` (Skills + MCPs), `render_groups`, `render_market`.
-- Widgets: `draw_footer`, `draw_help_overlay`, `draw_search_bar`, `draw_install_modal`, etc.
+- Widgets: `draw_footer`, `draw_help_overlay`, `draw_search_bar`, `draw_install_modal`, `draw_confirm_delete`, etc.
 
 ## Key invariants
 - **No mutation**: must not change `app` state. Any condition that feels like "I want to store this in App for next frame" belongs in `tui::app`, computed before render.
@@ -27,3 +27,4 @@ Pure rendering. Takes `&App` + `&mut Frame`, draws the current tab, modal dialog
 - Every string displayed to the user should go through `i18n` — hardcoded English strings break Chinese users and vice versa.
 - Long-list rendering uses `ratatui::widgets::List` with `state`; the state (scroll offset, selection) lives in `App`, not here.
 - Help overlay is a modal drawn **last** so it occludes the tab — preserve that draw-order if refactoring.
+- Delete confirmation renders from `app.pending_delete` only; it describes the exact impact for resource, group, group member, and market-source removal without performing any mutation.
