@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::str::FromStr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -89,16 +90,6 @@ impl CliTarget {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "claude" => Some(CliTarget::Claude),
-            "codex" => Some(CliTarget::Codex),
-            "gemini" => Some(CliTarget::Gemini),
-            "opencode" => Some(CliTarget::OpenCode),
-            _ => None,
-        }
-    }
-
     /// Path to the MCP config file for this CLI.
     /// Claude: ~/.claude.json
     /// Codex: ~/.codex/config.toml (TOML)
@@ -128,5 +119,19 @@ impl CliTarget {
 impl std::fmt::Display for CliTarget {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.name())
+    }
+}
+
+impl FromStr for CliTarget {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "claude" => Ok(CliTarget::Claude),
+            "codex" => Ok(CliTarget::Codex),
+            "gemini" => Ok(CliTarget::Gemini),
+            "opencode" => Ok(CliTarget::OpenCode),
+            _ => Err(()),
+        }
     }
 }

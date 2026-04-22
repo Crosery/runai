@@ -11,12 +11,13 @@ Pure rendering. Takes `&App` + `&mut Frame`, draws the current tab, modal dialog
 
 ## Public API (internal)
 - `draw(frame, app)` — top-level entry; dispatches to per-tab draw functions.
-- Per-tab: `render_resources` (Skills + MCPs), `render_groups`, `render_market`.
+- Per-tab: `render_resources` (Skills + MCPs), `render_groups`, `render_market`, `render_trash`.
 - Widgets: `draw_footer`, `draw_help_overlay`, `draw_search_bar`, `draw_install_modal`, `draw_confirm_delete`, etc.
 
 ## Key invariants
 - **No mutation**: must not change `app` state. Any condition that feels like "I want to store this in App for next frame" belongs in `tui::app`, computed before render.
 - Each tab fills `frame.size()` minus a shared header/footer — layout uses `ratatui::layout::{Layout, Constraint}` consistently.
+- Trash is rendered as a dedicated global table, and the header swaps the per-target status summary for a global trash count when that tab is active.
 - Colors are always looked up via `tui::theme`, never hardcoded — dark/light theme switch is a one-call operation.
 
 ## Touch points

@@ -16,7 +16,7 @@ Enumerate the four supported CLIs and resolve each one's per-CLI paths + config 
 - `target.agents_skills_dir() -> PathBuf` — legacy `~/.claude-code/...` path for migration.
 - `target.settings_path() -> PathBuf` — user-scoped settings file the CLI reads.
 - `target.mcp_config_path() -> PathBuf` — where MCP entries live for this CLI.
-- `target.from_str(s) -> Option<Self>`.
+- `s.parse::<CliTarget>() -> Result<CliTarget, ()>` — accepts `claude`, `codex`, `gemini`, `opencode`.
 - `target.uses_toml() -> bool` — Codex only.
 - `target.uses_opencode_format() -> bool` — OpenCode's `command: [..]` array form.
 
@@ -30,4 +30,4 @@ Enumerate the four supported CLIs and resolve each one's per-CLI paths + config 
 
 ## Gotchas
 - The four `ALL` entries are ordered Claude → Codex → Gemini → OpenCode — TUI tab numbering `1/2/3/4` and serialization depend on this order, don't reshuffle.
-- Adding a 5th target: plumb it through `ALL`, `name/from_str`, all four path resolvers, `uses_toml`, `uses_opencode_format`, and every file in `mcp_register.rs` (each CLI has its own format-specific writer).
+- Adding a 5th target: plumb it through `ALL`, `name()/FromStr`, all four path resolvers, `uses_toml`, `uses_opencode_format`, and every file in `mcp_register.rs` (each CLI has its own format-specific writer).

@@ -1,9 +1,9 @@
-/// Skill/MCP classifier for automatic grouping.
-///
-/// Groups skills by:
-/// 1. Collection/series (superpower, impeccable, ECC, bmad, academic)
-/// 2. Language/framework (Python, Rust, Go, Java, Kotlin, etc.)
-/// 3. Functional category (Testing, Workflow, Design/UI, DevOps, etc.)
+//! Skill/MCP classifier for automatic grouping.
+//!
+//! Groups skills by:
+//! 1. Collection/series (superpower, impeccable, ECC, bmad, academic)
+//! 2. Language/framework (Python, Rust, Go, Java, Kotlin, etc.)
+//! 3. Functional category (Testing, Workflow, Design/UI, DevOps, etc.)
 
 /// (pattern, group_name) — matched against skill name (lowercased).
 const NAME_RULES: &[(&str, &str)] = &[

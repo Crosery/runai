@@ -12,13 +12,14 @@ The TUI state machine. Owns the `SkillManager`, the currently-selected tab / row
 ## Public API (internal, non-`pub` outside the crate)
 - `struct App` — all TUI state: active tab, list indices, search filter, theme, pending modals, async task handles, and a reference to `SkillManager`.
 - Event dispatch entry: `App::on_key(key)` (or similar) — called from `tui::mod::run_tui` on each `crossterm::Event::Key`.
-- Action handlers: `on_toggle_enable`, `on_install_from_market`, `on_switch_target`, `on_theme_toggle`, `on_search`, etc.
-- `PendingDelete` + `InputMode::ConfirmDelete` — destructive `d` actions are staged first and only execute after Enter in the confirmation dialog.
+- Action handlers: `on_toggle_enable`, `on_install_from_market`, `on_switch_target`, `on_theme_toggle`, `on_search`, trash restore/purge, etc.
+- `PendingDelete` + `InputMode::ConfirmDelete` — destructive `d` actions are staged first and only execute after Enter in the confirmation dialog; resource deletion moves to trash, not permanent purge.
 
 ## Key invariants
 - **Rendering is pure**: `tui::ui::draw(&App, frame)` must not mutate state. All mutation goes through `App` methods.
 - **Blocking ops are off the UI thread**: long-running I/O (market refresh, install download) is spawned with `std::thread` or `tokio::task::spawn_blocking`, results come back via channels and are applied in the next tick.
-- **Tabs**: Skills / MCPs / Groups / Market (4 tabs; `Tab::ALL` is the source of truth).
+- **Tabs**: Skills / MCPs / Groups / Market / Trash (5 tabs; `Tab::ALL` is the source of truth).
+- Trash is a **global** view. It ignores `active_target` for listing, but restores skills/MCPs with the targets captured when the item was deleted.
 - Target switching via digit keys: `1`=Claude, `2`=Codex, `3`=Gemini, `4`=OpenCode. Matches `CliTarget::ALL` ordering.
 - Delete/remove shortcuts must not mutate disk or DB directly. They populate `pending_delete` and switch to `ConfirmDelete`; Esc cancels, Enter performs the stored action.
 

@@ -158,6 +158,10 @@ impl AppPaths {
         self.base.join("groups")
     }
 
+    pub fn trash_dir(&self) -> PathBuf {
+        self.base.join("trash")
+    }
+
     pub fn db_path(&self) -> PathBuf {
         // Try new name first, fallback to old name for compat
         let new_db = self.base.join("runai.db");
@@ -177,6 +181,7 @@ impl AppPaths {
         std::fs::create_dir_all(self.skills_dir())?;
         std::fs::create_dir_all(self.mcps_dir())?;
         std::fs::create_dir_all(self.groups_dir())?;
+        std::fs::create_dir_all(self.trash_dir())?;
         Ok(())
     }
 }

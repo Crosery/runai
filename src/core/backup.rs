@@ -11,7 +11,6 @@ use crate::core::paths::AppPaths;
 ///   codex-settings.json
 ///   opencode-settings.json
 ///   timestamp        <- file containing the timestamp string
-
 const BACKUPS_DIR: &str = "backups";
 
 /// Copy a directory, preserving symlinks as symlinks (not following them).

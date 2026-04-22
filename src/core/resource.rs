@@ -1,7 +1,9 @@
 use crate::core::cli_target::CliTarget;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::str::FromStr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -17,12 +19,16 @@ impl ResourceKind {
             ResourceKind::Mcp => "mcp",
         }
     }
+}
 
-    pub fn from_str(s: &str) -> Option<Self> {
+impl FromStr for ResourceKind {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "skill" => Some(ResourceKind::Skill),
-            "mcp" => Some(ResourceKind::Mcp),
-            _ => None,
+            "skill" => Ok(ResourceKind::Skill),
+            "mcp" => Ok(ResourceKind::Mcp),
+            _ => Err(()),
         }
     }
 }
@@ -92,6 +98,30 @@ impl Resource {
     pub fn is_enabled_for(&self, target: CliTarget) -> bool {
         self.enabled.get(&target).copied().unwrap_or(false)
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrashEntry {
+    pub id: String,
+    pub resource_id: String,
+    pub name: String,
+    pub kind: ResourceKind,
+    pub description: String,
+    pub directory: PathBuf,
+    pub source: Source,
+    pub installed_at: i64,
+    pub usage_count: u64,
+    pub last_used_at: Option<i64>,
+    pub deleted_at: i64,
+    pub payload_path: Option<PathBuf>,
+    #[serde(default)]
+    pub enabled_targets: Vec<CliTarget>,
+    #[serde(default)]
+    pub group_ids: Vec<String>,
+    #[serde(default)]
+    pub mcp_configs: HashMap<CliTarget, Value>,
+    #[serde(default)]
+    pub disabled_backup: Option<Value>,
 }
 
 /// Usage statistics for a resource.

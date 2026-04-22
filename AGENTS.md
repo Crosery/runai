@@ -29,7 +29,7 @@
   - `core/` — business logic. 19 files, see Module index. `manager.rs` is the orchestration hub.
   - `mcp/` — rmcp-based MCP server exposing tool calls to host CLIs (stdio transport).
   - `tui/` — ratatui + crossterm full-screen UI. `app.rs` is the state machine; `ui.rs` renders.
-- **Data layout**: `~/.runai/` holds `skills/`, `mcps/`, `groups/`, `backups/`, `market-cache/`, `runai.db` (SQLite via rusqlite bundled). On Windows: `%APPDATA%\runai\` (via `dirs::data_dir`).
+- **Data layout**: `~/.runai/` holds `skills/`, `mcps/`, `groups/`, `trash/`, `backups/`, `market-cache/`, `runai.db` (SQLite via rusqlite bundled). On Windows: `%APPDATA%\runai\` (via `dirs::data_dir`).
 - **Source of truth**:
   - Skill **enabled** = symlink exists at `<cli-home>/<target>/skills/<name>` pointing at `~/.runai/skills/<name>`.
   - MCP **enabled** = entry present in target CLI's config file (no `"disabled": true`).
@@ -68,7 +68,7 @@ File-level LLM docs follow the convention `<name>.LLM.md` as a sibling to the so
 | core::scanner | [src/core/scanner.rs](src/core/scanner.rs) | [src/core/scanner.LLM.md](src/core/scanner.LLM.md) | Filesystem discovery + adoption of unmanaged skills |
 | core::transcript_stats | [src/core/transcript_stats.rs](src/core/transcript_stats.rs) | [src/core/transcript_stats.LLM.md](src/core/transcript_stats.LLM.md) | Usage counts mined from Claude Code transcripts, with incremental on-disk cache |
 | core::updater | [src/core/updater.rs](src/core/updater.rs) | [src/core/updater.LLM.md](src/core/updater.LLM.md) | Self-update: check, download, verify, replace binary |
-| mcp::tools | [src/mcp/tools.rs](src/mcp/tools.rs) | [src/mcp/tools.LLM.md](src/mcp/tools.LLM.md) | 18 `sm_*` tools exposed to MCP clients |
+| mcp::tools | [src/mcp/tools.rs](src/mcp/tools.rs) | [src/mcp/tools.LLM.md](src/mcp/tools.LLM.md) | 21 `sm_*` tools exposed to MCP clients |
 | tui::app | [src/tui/app.rs](src/tui/app.rs) | [src/tui/app.LLM.md](src/tui/app.LLM.md) | TUI state machine and event loop |
 | tui::ui | [src/tui/ui.rs](src/tui/ui.rs) | [src/tui/ui.LLM.md](src/tui/ui.LLM.md) | Rendering for all TUI tabs/panels |
 | tui::theme | [src/tui/theme.rs](src/tui/theme.rs) | [src/tui/theme.LLM.md](src/tui/theme.LLM.md) | Dark/light color themes |
@@ -82,6 +82,7 @@ Small `mod.rs` wiring files without substance are not separately documented; the
 
 - **Scanner never auto-runs at startup.** It's explicit (`runai scan` / `runai discover`) — auto-running risks clobbering user symlinks.
 - **Scanner is defensive.** It skips missing source dirs and missing `SKILL.md` rather than erroring; orphan symlinks are left alone, only matching-name broken symlinks are healed.
+- **Delete means trash-first.** `runai uninstall`, TUI delete, and MCP `sm_delete` move resources into `~/.runai/trash/` plus DB trash metadata; only trash purge is permanent.
 - **Data directory auto-migrates** from `~/.skill-manager/` → `~/.runai/` on first launch (v0.5.0 transition). DB file, symlinks, and CLI MCP entries all get renamed. `RUNE_DATA_DIR` and `SKILL_MANAGER_DATA_DIR` env vars both honored.
 - **MCP self-registration** runs on first launch if not already present in a CLI's config. Idempotent — re-running does nothing if the entry already matches.
 - **Market lists are disk-cached** under `~/.runai/market-cache/`; refresh is background, 1-hour TTL. UI loads instantly from cache.
@@ -104,7 +105,7 @@ cargo build
 
 ## Build & CI
 
-- **CI** (`.github/workflows/ci.yml`): `cargo fmt --check` → `cargo clippy -W all` → `cargo test -- --test-threads=1`, matrix = `[ubuntu-latest, macos-latest, windows-latest]`, `fail-fast: false`.
+- **CI** (`.github/workflows/ci.yml`): `cargo fmt --check` → `cargo clippy --all-targets -- -W clippy::all` → `cargo test -- --test-threads=1`, matrix = `[ubuntu-latest, macos-latest, windows-latest]`, `fail-fast: false`.
 - **Release** (`.github/workflows/release.yml`): triggered by `v*` tags; matrix produces `runai-{linux,darwin,windows}-{amd64,arm64}.{tar.gz,zip}` + `checksums.txt`. Windows target skipped for arm64 (no MSVC cross from runner host); all others present.
 - **HOME mocking** in `manager::tests` uses `HOME` env var — unix only. Do not assume it works on Windows (see Key constraints).
 
@@ -117,7 +118,7 @@ cargo test -- --test-threads=1   # default in CI; SQLite dislikes parallel I/O h
 cargo test --lib <module>        # scope to a module
 ```
 
-**Test count varies by platform**: unix runs 155, Windows skips `manager::tests` (~30 tests) so count drops to ~125. That's intentional — see Key constraints.
+**Test count varies by platform**: unix currently runs 158 tests; Windows still skips `manager::tests` because HOME mocking is unix-only, so the count is lower there. That's intentional — see Key constraints.
 
 ---
 

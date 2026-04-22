@@ -23,10 +23,11 @@ Skills and MCP servers live scattered across Claude Code, Codex, Gemini CLI, and
 - **Groups** — Organize skills/MCPs into groups, batch enable/disable, rename
 - **One-Step Install** — `runai install owner/repo` downloads, registers, groups, and enables
 - **Market Install** — Browse 2000+ skills, Enter to install directly from TUI Market tab
+- **Trash & Restore** — Deletes go into a global trash tab first, with restore and permanent purge
 - **Skill Discovery** — Built-in recursive scanner finds all SKILL.md on disk in seconds
 - **Unified Search** — `sm_search` searches installed resources and market at once
 - **Usage Tracking** — Track skill usage count and last-used time, identify unused skills
-- **MCP Server** — 30 tools exposed via MCP protocol, auto-registered to all CLIs on first launch
+- **MCP Server** — 21 tools exposed via MCP protocol, auto-registered to all CLIs on first launch
 - **Batch Operations** — Batch enable/disable/delete/install multiple resources in one call
 - **Multi-CLI Config** — Native format support: Claude JSON, Codex TOML, OpenCode custom JSON, Gemini JSON
 - **Dark/Light Theme** — Press `t` to toggle, optimized for both terminal backgrounds
@@ -79,6 +80,9 @@ runai discover
 runai list                    # List all skills and MCPs
 runai status                  # Show enabled counts
 runai enable brainstorming    # Enable a skill
+runai uninstall brainstorming # Move a resource into trash
+runai trash list              # List trash entries
+runai trash restore brainstorming
 runai scan                    # Scan known directories
 runai backup                  # Create a backup
 ```
@@ -90,9 +94,12 @@ Footer shows essential keys. Press `?` for full help panel.
 | Key | Action |
 |-----|--------|
 | `j/k` | Navigate up/down |
-| `H/L` or `Tab` | Switch tabs (Skills / MCPs / Groups / Market) |
+| `H/L` or `Tab` | Switch tabs (Skills / MCPs / Groups / Market / Trash) |
 | `Space` | Toggle enable/disable |
 | `Enter` | Open group detail / Install from market |
+| `d` | Move selected skill/MCP into trash |
+| `r` | Restore selected trash entry (Trash tab) |
+| `Shift+D` | Permanently delete selected trash entry (Trash tab) |
 | `/` | Search filter |
 | `1234` | Switch CLI target (Claude/Codex/Gemini/OpenCode) |
 | `i` | Install from GitHub |
@@ -100,9 +107,9 @@ Footer shows essential keys. Press `?` for full help panel.
 | `?` | Help panel (all keybindings) |
 | `q` | Quit |
 
-## MCP Tools (30)
+## MCP Tools (21)
 
-When running as MCP server (`runai mcp-serve`), 30 tools are available:
+When running as MCP server (`runai mcp-serve`), 21 tools are available:
 
 **Skills & MCPs**
 
@@ -111,11 +118,9 @@ When running as MCP server (`runai mcp-serve`), 30 tools are available:
 | `sm_list` | List skills/MCPs with usage count (supports kind/group/target filters) |
 | `sm_status` | Enabled/total counts per CLI target |
 | `sm_enable` / `sm_disable` | Toggle skill/MCP for a CLI (supports fuzzy group name) |
-| `sm_delete` | Remove a skill/MCP (files + symlinks + DB) |
+| `sm_delete` | Move a skill/MCP into global trash |
 | `sm_scan` | Scan known directories for new skills |
-| `sm_discover` | Find all SKILL.md on disk, returns unmanaged skills |
 | `sm_search` | Unified search across installed resources + market |
-| `sm_batch_enable` / `sm_batch_disable` | Batch toggle multiple by name list |
 
 **Install**
 
@@ -124,8 +129,6 @@ When running as MCP server (`runai mcp-serve`), 30 tools are available:
 | `sm_install` | Returns CLI command for fast GitHub install (agent runs via Bash) |
 | `sm_market` | Browse cached market skills (filter by source/search/repo path) |
 | `sm_market_install` | Returns CLI command for market install |
-| `sm_batch_install` | Returns CLI commands for installing multiple skills at once |
-| `sm_sources` | List/add/remove/enable/disable market sources |
 
 **Groups**
 
@@ -133,15 +136,20 @@ When running as MCP server (`runai mcp-serve`), 30 tools are available:
 |------|-------------|
 | `sm_groups` | List all groups with member counts |
 | `sm_create_group` / `sm_delete_group` | Create or delete a group |
-| `sm_group_add` / `sm_group_remove` | Add/remove members (single `name` or batch `names`) |
-| `sm_update_group` | Update group name and/or description |
-| `sm_group_enable` / `sm_group_disable` | Batch toggle all members (fuzzy group match) |
+| `sm_group_members` | Add/remove/update group members and metadata |
+
+**Trash**
+
+| Tool | Description |
+|------|-------------|
+| `sm_trash` | List global trash entries |
+| `sm_trash_restore` | Restore a trash entry by trash ID or resource name |
+| `sm_trash_purge` | Permanently delete a trash entry by trash ID or resource name |
 
 **Usage Tracking**
 
 | Tool | Description |
 |------|-------------|
-| `sm_record_usage` | Record a usage event for a skill or MCP |
 | `sm_usage_stats` | Show usage statistics sorted by most used |
 
 **Backup & Utility**
@@ -151,8 +159,6 @@ When running as MCP server (`runai mcp-serve`), 30 tools are available:
 | `sm_backup` | Create timestamped backup |
 | `sm_restore` | Restore from backup (latest or by timestamp) |
 | `sm_backups` | List all available backups |
-| `sm_register` | Register MCP to all CLI configs |
-| `sm_batch_delete` | Delete multiple resources at once |
 
 ## Multi-CLI Config Formats
 
@@ -169,6 +175,7 @@ All data stored in `~/.runai/`:
 - `skills/` — Managed skill directories (each with SKILL.md)
 - `mcps/` — Disabled MCP config backups (JSON)
 - `groups/` — Group definitions (TOML files)
+- `trash/` — Deleted resource payloads kept for restore/purge
 - `backups/` — Timestamped full backups
 - `market-cache/` — Cached market skill lists (JSON, 1hr TTL)
 - `market-sources.json` — Custom market sources

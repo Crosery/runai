@@ -2,7 +2,7 @@ use crate::core::cli_target::CliTarget;
 use crate::core::group::{Group, GroupKind};
 use crate::core::manager::SkillManager;
 use crate::core::market::{self, Market, MarketSkill, SourceEntry};
-use crate::core::resource::Resource;
+use crate::core::resource::{Resource, TrashEntry};
 use crate::tui::i18n::{Lang, T};
 use crossterm::event::{KeyCode, KeyEvent};
 use std::collections::HashMap;
@@ -15,10 +15,11 @@ pub enum Tab {
     Mcps,
     Groups,
     Market,
+    Trash,
 }
 
 impl Tab {
-    pub const ALL: &[Tab] = &[Tab::Skills, Tab::Mcps, Tab::Groups, Tab::Market];
+    pub const ALL: &[Tab] = &[Tab::Skills, Tab::Mcps, Tab::Groups, Tab::Market, Tab::Trash];
 
     pub fn label(&self) -> &'static str {
         match self {
@@ -26,6 +27,7 @@ impl Tab {
             Tab::Mcps => "MCPs",
             Tab::Groups => "Groups",
             Tab::Market => "Market",
+            Tab::Trash => "Trash",
         }
     }
 }
@@ -254,6 +256,7 @@ pub struct App {
     pub lang: Lang,
     pub active_target: CliTarget,
     pub items: Vec<Resource>,
+    pub trash_items: Vec<TrashEntry>,
     pub groups: Vec<(String, String, usize, usize)>,
     pub selected: usize,
     pub search: String,
@@ -309,6 +312,7 @@ impl App {
             lang: Lang::Zh,
             active_target: CliTarget::Claude,
             items: Vec::new(),
+            trash_items: Vec::new(),
             groups: Vec::new(),
             selected: 0,
             search: String::new(),
@@ -451,13 +455,14 @@ impl App {
         let kind_filter = match self.tab {
             Tab::Skills => Some(crate::core::resource::ResourceKind::Skill),
             Tab::Mcps => Some(crate::core::resource::ResourceKind::Mcp),
-            Tab::Groups | Tab::Market => None,
+            Tab::Groups | Tab::Market | Tab::Trash => None,
         };
 
         self.items = self
             .mgr
             .list_resources(kind_filter, None)
             .unwrap_or_default();
+        self.trash_items = self.mgr.list_trash().unwrap_or_default();
 
         // Overlay transcript-derived usage counts and sort by most-used first.
         if let Ok(stats) = crate::core::transcript_stats::scan_default() {
@@ -536,20 +541,32 @@ impl App {
             .collect()
     }
 
+    pub fn visible_trash(&self) -> Vec<&TrashEntry> {
+        let q = self.search.to_lowercase();
+        self.trash_items
+            .iter()
+            .filter(|entry| {
+                q.is_empty()
+                    || entry.name.to_lowercase().contains(&q)
+                    || entry.resource_id.to_lowercase().contains(&q)
+            })
+            .collect()
+    }
+
     pub fn visible_market(&self) -> Vec<&MarketSkill> {
         let q = self.search.to_lowercase();
         let enabled = self.enabled_sources();
-        if let Some(src) = enabled.get(self.market_source_idx) {
-            if let Some(skills) = self.market_cache.get(&src.repo_id()) {
-                return skills
-                    .iter()
-                    .filter(|s| {
-                        q.is_empty()
-                            || s.name.to_lowercase().contains(&q)
-                            || s.source_label.to_lowercase().contains(&q)
-                    })
-                    .collect();
-            }
+        if let Some(src) = enabled.get(self.market_source_idx)
+            && let Some(skills) = self.market_cache.get(&src.repo_id())
+        {
+            return skills
+                .iter()
+                .filter(|s| {
+                    q.is_empty()
+                        || s.name.to_lowercase().contains(&q)
+                        || s.source_label.to_lowercase().contains(&q)
+                })
+                .collect();
         }
         Vec::new()
     }
@@ -568,6 +585,7 @@ impl App {
         match self.tab {
             Tab::Groups => self.visible_groups().len(),
             Tab::Market => self.visible_market().len(),
+            Tab::Trash => self.visible_trash().len(),
             _ => self.visible_items().len(),
         }
     }
@@ -777,6 +795,11 @@ impl App {
                 }
             }
 
+            // Restore from trash
+            KeyCode::Char('r') if self.tab == Tab::Trash => {
+                self.restore_selected_trash();
+            }
+
             // Delete group
             KeyCode::Char('d') if self.tab == Tab::Groups => {
                 self.confirm_delete_selected_group();
@@ -785,6 +808,11 @@ impl App {
             // Delete skill/mcp
             KeyCode::Char('d') if self.tab == Tab::Skills || self.tab == Tab::Mcps => {
                 self.confirm_delete_selected_resource();
+            }
+
+            // Purge from trash
+            KeyCode::Char('D') if self.tab == Tab::Trash => {
+                self.purge_selected_trash();
             }
 
             _ => {}
@@ -959,7 +987,7 @@ impl App {
                     self.reload();
                 }
             }
-            _ => {
+            Tab::Skills | Tab::Mcps => {
                 let visible = self.visible_items();
                 if let Some(r) = visible.get(self.selected) {
                     let id = r.id.clone();
@@ -972,6 +1000,7 @@ impl App {
                     self.reload();
                 }
             }
+            Tab::Market | Tab::Trash => {}
         }
     }
 
@@ -996,22 +1025,38 @@ impl App {
         }
     }
 
-    fn delete_pending_resource(&mut self, id: String, name: String, dir: PathBuf) {
-        // Remove symlinks from all CLIs
-        for target in CliTarget::ALL {
-            let link = target.skills_dir().join(&name);
-            if link.is_symlink() {
-                let _ = std::fs::remove_file(&link);
-            }
+    fn delete_pending_resource(&mut self, id: String, name: String) {
+        match self.mgr.trash_resource(&id) {
+            Ok(_) => self.message = Some(format!("Moved '{name}' to trash")),
+            Err(e) => self.message = Some(format!("Error: {e}")),
         }
-        // Remove managed directory
-        if dir.exists() {
-            let _ = std::fs::remove_dir_all(&dir);
-        }
-        // Remove from DB
-        let _ = self.mgr.db().delete_resource(&id);
-        self.message = Some(format!("Deleted '{name}'"));
         self.reload();
+    }
+
+    fn restore_selected_trash(&mut self) {
+        let visible = self.visible_trash();
+        if let Some(entry) = visible.get(self.selected) {
+            let trash_id = entry.id.clone();
+            let name = entry.name.clone();
+            match self.mgr.restore_from_trash(&trash_id) {
+                Ok(_) => self.message = Some(format!("Restored '{name}'")),
+                Err(e) => self.message = Some(format!("Error: {e}")),
+            }
+            self.reload();
+        }
+    }
+
+    fn purge_selected_trash(&mut self) {
+        let visible = self.visible_trash();
+        if let Some(entry) = visible.get(self.selected) {
+            let trash_id = entry.id.clone();
+            let name = entry.name.clone();
+            match self.mgr.purge_trash(&trash_id) {
+                Ok(_) => self.message = Some(format!("Permanently deleted '{name}'")),
+                Err(e) => self.message = Some(format!("Error: {e}")),
+            }
+            self.reload();
+        }
     }
 
     fn confirm_delete_selected_group(&mut self) {
@@ -1049,14 +1094,9 @@ impl App {
                     let next_mode = pending.return_mode();
                     self.mode = next_mode;
                     match pending {
-                        PendingDelete::Resource {
-                            id,
-                            name,
-                            directory,
-                            ..
-                        } => {
+                        PendingDelete::Resource { id, name, .. } => {
                             self.mode = InputMode::Normal;
-                            self.delete_pending_resource(id, name, directory);
+                            self.delete_pending_resource(id, name);
                         }
                         PendingDelete::Group { id, name } => {
                             self.mode = InputMode::Normal;

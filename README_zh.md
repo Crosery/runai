@@ -23,10 +23,11 @@ skills 和 MCP servers 散落在 Claude Code / Codex / Gemini CLI / OpenCode 的
 - **分组管理** — 将 skills/MCPs 组织成组，批量启用/禁用，重命名
 - **一键安装** — `runai install owner/repo` 自动下载、注册、分组、启用
 - **市场安装** — 浏览 2000+ skills，TUI Market 标签页 Enter 直接安装
+- **垃圾桶与恢复** — 删除先进入全局垃圾桶，可恢复，也可彻底删除
 - **Skill 发现** — 内置递归扫描器，秒级发现磁盘上所有 SKILL.md
 - **统一搜索** — `sm_search` 同时搜索已安装资源和市场
 - **使用追踪** — 记录 skill 使用次数和最后使用时间，识别未使用的 skill
-- **MCP 服务器** — 30 个工具通过 MCP 协议暴露，首次启动自动注册到所有 CLI
+- **MCP 服务器** — 21 个工具通过 MCP 协议暴露，首次启动自动注册到所有 CLI
 - **批量操作** — 批量启用/禁用/删除/安装，一次调用完成
 - **多 CLI 配置** — 原生支持：Claude JSON、Codex TOML、OpenCode 自定义 JSON、Gemini JSON
 - **深色/亮色主题** — 按 `t` 切换，适配两种终端背景
@@ -79,6 +80,9 @@ runai discover
 runai list                    # 列出所有 skills 和 MCPs
 runai status                  # 查看启用数量
 runai enable brainstorming    # 启用某个 skill
+runai uninstall brainstorming # 将资源移入垃圾桶
+runai trash list              # 查看垃圾桶
+runai trash restore brainstorming
 runai scan                    # 扫描已知目录
 runai backup                  # 创建备份
 ```
@@ -90,9 +94,12 @@ runai backup                  # 创建备份
 | 按键 | 操作 |
 |------|------|
 | `j/k` | 上下导航 |
-| `H/L` 或 `Tab` | 切换标签页（Skills / MCPs / Groups / Market） |
+| `H/L` 或 `Tab` | 切换标签页（Skills / MCPs / Groups / Market / Trash） |
 | `Space` | 启用/禁用 |
 | `Enter` | 打开分组详情 / 从市场安装 |
+| `d` | 将选中的 skill/MCP 移入垃圾桶 |
+| `r` | 恢复选中的垃圾桶条目（Trash 标签页） |
+| `Shift+D` | 彻底删除选中的垃圾桶条目（Trash 标签页） |
 | `/` | 搜索过滤 |
 | `1234` | 切换 CLI 目标（Claude/Codex/Gemini/OpenCode） |
 | `i` | 从 GitHub 安装 |
@@ -100,9 +107,9 @@ runai backup                  # 创建备份
 | `?` | 帮助面板（所有快捷键） |
 | `q` | 退出 |
 
-## MCP 工具（30 个）
+## MCP 工具（21 个）
 
-作为 MCP 服务器运行时（`runai mcp-serve`），提供 30 个工具：
+作为 MCP 服务器运行时（`runai mcp-serve`），提供 21 个工具：
 
 **Skills 和 MCPs**
 
@@ -111,11 +118,9 @@ runai backup                  # 创建备份
 | `sm_list` | 列出 skills/MCPs 及使用次数（支持按类型/分组/目标过滤） |
 | `sm_status` | 各 CLI 的启用/总数统计 |
 | `sm_enable` / `sm_disable` | 启用/禁用（支持模糊组名匹配） |
-| `sm_delete` | 删除 skill/MCP（文件 + 软链接 + 数据库） |
+| `sm_delete` | 将 skill/MCP 移入全局垃圾桶 |
 | `sm_scan` | 扫描已知目录发现新 skills |
-| `sm_discover` | 全盘发现 SKILL.md，返回未管理的 skill 列表 |
 | `sm_search` | 统一搜索已安装资源 + 市场 |
-| `sm_batch_enable` / `sm_batch_disable` | 批量启用/禁用多个 |
 
 **安装**
 
@@ -124,8 +129,6 @@ runai backup                  # 创建备份
 | `sm_install` | 返回 CLI 安装命令（AI 通过 Bash 执行，避免代理超时） |
 | `sm_market` | 浏览缓存的市场 skills（按源/关键词/路径过滤） |
 | `sm_market_install` | 返回市场安装 CLI 命令 |
-| `sm_batch_install` | 返回批量安装多个 skill 的 CLI 命令 |
-| `sm_sources` | 列出/添加/删除/启用/禁用市场源 |
 
 **分组**
 
@@ -133,15 +136,20 @@ runai backup                  # 创建备份
 |------|------|
 | `sm_groups` | 列出所有分组及成员数 |
 | `sm_create_group` / `sm_delete_group` | 创建/删除分组 |
-| `sm_group_add` / `sm_group_remove` | 添加/移除成员（支持单个 `name` 或批量 `names`） |
-| `sm_update_group` | 更新分组名称和/或描述 |
-| `sm_group_enable` / `sm_group_disable` | 批量启用/禁用分组成员（模糊组名匹配） |
+| `sm_group_members` | 添加/移除成员，或更新分组元数据 |
+
+**垃圾桶**
+
+| 工具 | 说明 |
+|------|------|
+| `sm_trash` | 列出全局垃圾桶条目 |
+| `sm_trash_restore` | 按垃圾桶 ID 或资源名恢复条目 |
+| `sm_trash_purge` | 按垃圾桶 ID 或资源名彻底删除条目 |
 
 **使用追踪**
 
 | 工具 | 说明 |
 |------|------|
-| `sm_record_usage` | 记录 skill 或 MCP 的使用事件 |
 | `sm_usage_stats` | 查看使用统计，按使用次数排序 |
 
 **备份与工具**
@@ -151,8 +159,6 @@ runai backup                  # 创建备份
 | `sm_backup` | 创建带时间戳的备份 |
 | `sm_restore` | 从备份恢复（默认最新，可指定时间戳） |
 | `sm_backups` | 列出所有可用备份 |
-| `sm_register` | 注册 MCP 到所有 CLI 配置 |
-| `sm_batch_delete` | 批量删除多个资源 |
 
 ## 多 CLI 配置格式
 
@@ -169,6 +175,7 @@ runai backup                  # 创建备份
 - `skills/` — 托管的 skill 目录（每个包含 SKILL.md）
 - `mcps/` — 被禁用的 MCP 配置备份（JSON）
 - `groups/` — 分组定义（TOML 文件）
+- `trash/` — 已删除但仍可恢复/彻底删除的资源载荷
 - `backups/` — 带时间戳的完整备份
 - `market-cache/` — 市场 skill 列表缓存（JSON，1 小时有效期）
 - `market-sources.json` — 自定义市场源

@@ -264,10 +264,10 @@ pub fn find_skill_in_sources(
                 continue;
             }
         }
-        if let Some(cached) = load_cache(data_dir, src) {
-            if let Some(skill) = cached.into_iter().find(|s| s.name == skill_name) {
-                return Some(skill);
-            }
+        if let Some(cached) = load_cache(data_dir, src)
+            && let Some(skill) = cached.into_iter().find(|s| s.name == skill_name)
+        {
+            return Some(skill);
         }
     }
     None
@@ -745,7 +745,7 @@ mod tests {
         // Find by repo_id
         let found = find_skill_in_sources(
             data_dir,
-            &[source.clone()],
+            std::slice::from_ref(&source),
             "find-skills",
             Some("mxyhi/ok-skills"),
         );
@@ -754,7 +754,7 @@ mod tests {
         // Find by label
         let found = find_skill_in_sources(
             data_dir,
-            &[source.clone()],
+            std::slice::from_ref(&source),
             "find-skills",
             Some("OK Skills"),
         );

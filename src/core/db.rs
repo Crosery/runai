@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::core::cli_target::CliTarget;
-use crate::core::resource::{Resource, ResourceKind, Source, UsageStat};
+use crate::core::resource::{Resource, ResourceKind, Source, TrashEntry, UsageStat};
 
 pub struct Database {
     conn: Connection,
@@ -46,6 +46,15 @@ impl Database {
                 resource_id TEXT NOT NULL,
                 PRIMARY KEY (group_id, resource_id),
                 FOREIGN KEY (resource_id) REFERENCES resources(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS trash_entries (
+                id TEXT PRIMARY KEY,
+                resource_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                kind TEXT NOT NULL CHECK (kind IN ('skill', 'mcp')),
+                deleted_at INTEGER NOT NULL,
+                payload_json TEXT NOT NULL
             );",
         )?;
 
@@ -86,13 +95,28 @@ impl Database {
             )?;
         }
 
+        if version < 4 {
+            self.conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS trash_entries (
+                    id TEXT PRIMARY KEY,
+                    resource_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    kind TEXT NOT NULL CHECK (kind IN ('skill', 'mcp')),
+                    deleted_at INTEGER NOT NULL,
+                    payload_json TEXT NOT NULL
+                 );
+                 DELETE FROM schema_version;
+                 INSERT INTO schema_version VALUES (4);",
+            )?;
+        }
+
         Ok(())
     }
 
     pub fn insert_resource(&self, res: &Resource) -> Result<()> {
         self.conn.execute(
             "INSERT INTO resources (id, name, kind, description, directory, source_type, source_meta, installed_at, usage_count, last_used_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, NULL)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 description = excluded.description,
@@ -108,6 +132,8 @@ impl Database {
                 res.source.source_type(),
                 res.source.to_meta_json(),
                 res.installed_at,
+                res.usage_count as i64,
+                res.last_used_at,
             ],
         )?;
         Ok(())
@@ -132,7 +158,7 @@ impl Database {
         Ok(Some(Resource {
             id: row.get(0)?,
             name: row.get(1)?,
-            kind: ResourceKind::from_str(&kind_str).unwrap_or(ResourceKind::Skill),
+            kind: kind_str.parse().unwrap_or(ResourceKind::Skill),
             description: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
             directory: PathBuf::from(row.get::<_, String>(4)?),
             source: Source::from_meta_json(&source_type, &source_meta).unwrap_or(Source::Local {
@@ -185,7 +211,7 @@ impl Database {
             Ok(Resource {
                 id: row.get(0)?,
                 name: row.get(1)?,
-                kind: ResourceKind::from_str(&kind_str).unwrap_or(ResourceKind::Skill),
+                kind: kind_str.parse().unwrap_or(ResourceKind::Skill),
                 description: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
                 directory: PathBuf::from(row.get::<_, String>(4)?),
                 source: Source::from_meta_json(&source_type, &source_meta).unwrap_or(
@@ -245,6 +271,62 @@ impl Database {
         Ok(())
     }
 
+    pub fn insert_trash_entry(&self, entry: &TrashEntry) -> Result<()> {
+        let payload_json = serde_json::to_string(entry)?;
+        self.conn.execute(
+            "INSERT INTO trash_entries (id, resource_id, name, kind, deleted_at, payload_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(id) DO UPDATE SET
+                resource_id = excluded.resource_id,
+                name = excluded.name,
+                kind = excluded.kind,
+                deleted_at = excluded.deleted_at,
+                payload_json = excluded.payload_json",
+            params![
+                entry.id,
+                entry.resource_id,
+                entry.name,
+                entry.kind.as_str(),
+                entry.deleted_at,
+                payload_json,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_trash_entry(&self, id: &str) -> Result<Option<TrashEntry>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT payload_json FROM trash_entries WHERE id = ?1")?;
+        let mut rows = stmt.query(params![id])?;
+        let row = match rows.next()? {
+            Some(r) => r,
+            None => return Ok(None),
+        };
+        let payload_json: String = row.get(0)?;
+        Ok(Some(serde_json::from_str(&payload_json)?))
+    }
+
+    pub fn list_trash_entries(&self) -> Result<Vec<TrashEntry>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT payload_json FROM trash_entries ORDER BY deleted_at DESC, name ASC")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+
+        let mut entries = Vec::new();
+        for row in rows {
+            let payload_json = row?;
+            entries.push(serde_json::from_str(&payload_json)?);
+        }
+        Ok(entries)
+    }
+
+    pub fn delete_trash_entry(&self, id: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM trash_entries WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
     pub fn delete_resource(&self, id: &str) -> Result<()> {
         self.conn
             .execute("DELETE FROM resources WHERE id = ?1", params![id])?;
@@ -290,6 +372,15 @@ impl Database {
         for row in rows {
             groups.push(row?);
         }
+        Ok(groups)
+    }
+
+    pub fn take_groups_for_resource(&self, resource_id: &str) -> Result<Vec<String>> {
+        let groups = self.get_groups_for_resource(resource_id)?;
+        self.conn.execute(
+            "DELETE FROM group_members WHERE resource_id = ?1",
+            params![resource_id],
+        )?;
         Ok(groups)
     }
 
@@ -348,7 +439,7 @@ mod tests {
             .conn
             .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 3);
+        assert_eq!(version, 4);
     }
 
     #[test]
@@ -512,6 +603,47 @@ mod tests {
             "last_used_at should survive re-insert"
         );
         assert_eq!(loaded.description, "v2", "description should be updated");
+    }
+
+    #[test]
+    fn trash_entries_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = Database::open(&tmp.path().join("test.db")).unwrap();
+
+        let entry = TrashEntry {
+            id: "trash:1".into(),
+            resource_id: "local:foo".into(),
+            name: "foo".into(),
+            kind: ResourceKind::Skill,
+            description: "desc".into(),
+            directory: PathBuf::from("/tmp/foo"),
+            source: Source::Local {
+                path: PathBuf::from("/tmp/foo"),
+            },
+            installed_at: 1,
+            usage_count: 3,
+            last_used_at: Some(4),
+            deleted_at: 2,
+            payload_path: Some(PathBuf::from("/tmp/trash/foo")),
+            enabled_targets: vec![CliTarget::Claude, CliTarget::Codex],
+            group_ids: vec!["grp".into()],
+            mcp_configs: HashMap::new(),
+            disabled_backup: None,
+        };
+
+        db.insert_trash_entry(&entry).unwrap();
+
+        let listed = db.list_trash_entries().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "trash:1");
+        assert_eq!(listed[0].enabled_targets.len(), 2);
+
+        let loaded = db.get_trash_entry("trash:1").unwrap().unwrap();
+        assert_eq!(loaded.name, "foo");
+        assert_eq!(loaded.group_ids, vec!["grp".to_string()]);
+
+        db.delete_trash_entry("trash:1").unwrap();
+        assert!(db.get_trash_entry("trash:1").unwrap().is_none());
     }
 
     #[test]

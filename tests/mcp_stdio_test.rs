@@ -25,9 +25,11 @@ fn runai_binary() -> String {
 #[test]
 fn mcp_stdout_only_contains_valid_jsonrpc() {
     let binary = runai_binary();
+    let temp_home = tempfile::tempdir().unwrap();
 
     let mut child = Command::new(&binary)
         .arg("mcp-serve")
+        .env("HOME", temp_home.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

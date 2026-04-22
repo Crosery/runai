@@ -171,36 +171,12 @@ fn check_mcp_server() -> CheckResult {
 
 /// Check each CLI config for runai registration.
 fn check_cli_registrations(home: &Path) -> Vec<CheckResult> {
-    let mut results = Vec::new();
-
-    // Claude
-    results.push(check_json_registration(
-        home,
-        ".claude.json",
-        "Claude",
-        "mcpServers",
-    ));
-
-    // Gemini
-    results.push(check_json_registration(
-        home,
-        ".gemini/settings.json",
-        "Gemini",
-        "mcpServers",
-    ));
-
-    // Codex
-    results.push(check_codex_registration(home));
-
-    // OpenCode
-    results.push(check_json_registration(
-        home,
-        ".config/opencode/opencode.json",
-        "OpenCode",
-        "mcp",
-    ));
-
-    results
+    vec![
+        check_json_registration(home, ".claude.json", "Claude", "mcpServers"),
+        check_json_registration(home, ".gemini/settings.json", "Gemini", "mcpServers"),
+        check_codex_registration(home),
+        check_json_registration(home, ".config/opencode/opencode.json", "OpenCode", "mcp"),
+    ]
 }
 
 fn check_json_registration(
