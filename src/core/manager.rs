@@ -4,7 +4,7 @@ use crate::core::db::Database;
 use crate::core::group::Group;
 use crate::core::linker::Linker;
 use crate::core::paths::AppPaths;
-use crate::core::resource::{Resource, ResourceKind, Source};
+use crate::core::resource::{Resource, ResourceKind, Source, TrashEntry};
 use crate::core::scanner::Scanner;
 use anyhow::{Result, bail};
 use std::collections::HashMap;
@@ -147,6 +147,29 @@ impl SkillManager {
         &self.db
     }
 
+    fn trash_entry_id(resource_id: &str, deleted_at_ms: i64) -> String {
+        format!("trash:{deleted_at_ms}:{resource_id}")
+    }
+
+    fn trash_payload_path(&self, name: &str, deleted_at_ms: i64) -> PathBuf {
+        let slug = name
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '-'
+                }
+            })
+            .collect::<String>()
+            .trim_matches('-')
+            .to_string();
+        let slug = if slug.is_empty() { "resource" } else { &slug };
+        self.paths
+            .trash_dir()
+            .join(format!("{deleted_at_ms}-{slug}"))
+    }
+
     // --- Scan ---
 
     pub fn scan(&self) -> Result<crate::core::scanner::ScanResult> {
@@ -236,85 +259,85 @@ impl SkillManager {
         }
     }
 
-    /// Disable MCP: save config to backup, remove entry from CLI config file.
-    fn remove_mcp(&self, mcp_name: &str, target: CliTarget) -> Result<()> {
+    fn read_mcp_backup(&self, mcp_name: &str) -> Result<Option<serde_json::Value>> {
+        let backup_path = self.paths.mcps_dir().join(format!("{mcp_name}.json"));
+        if !backup_path.exists() {
+            return Ok(None);
+        }
+        let backup_content = std::fs::read_to_string(&backup_path)?;
+        Ok(Some(serde_json::from_str(&backup_content)?))
+    }
+
+    fn write_mcp_backup(&self, mcp_name: &str, entry: &serde_json::Value) -> Result<()> {
+        let backup_dir = self.paths.mcps_dir();
+        std::fs::create_dir_all(&backup_dir)?;
+        let backup_path = backup_dir.join(format!("{mcp_name}.json"));
+        std::fs::write(&backup_path, serde_json::to_string_pretty(entry)?)?;
+        Ok(())
+    }
+
+    fn remove_mcp_backup(&self, mcp_name: &str) -> Result<()> {
+        let backup_path = self.paths.mcps_dir().join(format!("{mcp_name}.json"));
+        if backup_path.exists() {
+            std::fs::remove_file(backup_path)?;
+        }
+        Ok(())
+    }
+
+    fn remove_mcp_entry_from_target(
+        &self,
+        mcp_name: &str,
+        target: CliTarget,
+    ) -> Result<Option<serde_json::Value>> {
         let config_path = Self::cli_config_path(target);
         if !config_path.exists() {
-            return Ok(());
+            return Ok(None);
         }
 
         let content = std::fs::read_to_string(&config_path)?;
 
         if target.uses_toml() {
-            // Codex: TOML format
             let mut table: toml::Table = content.parse()?;
-            if let Some(toml::Value::Table(servers)) = table.get_mut("mcp_servers") {
-                if let Some(entry) = servers.remove(mcp_name) {
-                    // Save backup as JSON for cross-format restore
-                    let backup_dir = self.paths.mcps_dir();
-                    std::fs::create_dir_all(&backup_dir)?;
-                    let backup_path = backup_dir.join(format!("{mcp_name}.json"));
-                    let json_entry = toml_to_json_mcp(&entry);
-                    std::fs::write(&backup_path, serde_json::to_string_pretty(&json_entry)?)?;
-
-                    std::fs::write(&config_path, toml::to_string_pretty(&table)?)?;
-                }
+            let removed = if let Some(toml::Value::Table(servers)) = table.get_mut("mcp_servers") {
+                servers
+                    .remove(mcp_name)
+                    .map(|entry| toml_to_json_mcp(&entry))
+            } else {
+                None
+            };
+            if removed.is_some() {
+                std::fs::write(&config_path, toml::to_string_pretty(&table)?)?;
             }
+            Ok(removed)
         } else {
-            // JSON format (Claude/Gemini/OpenCode)
             let mut config: serde_json::Value = serde_json::from_str(&content)?;
             let mcp_key = if target.uses_opencode_format() {
                 "mcp"
             } else {
                 "mcpServers"
             };
-            if let Some(servers) = config.get_mut(mcp_key).and_then(|s| s.as_object_mut()) {
-                if let Some(entry) = servers.remove(mcp_name) {
-                    let backup_dir = self.paths.mcps_dir();
-                    std::fs::create_dir_all(&backup_dir)?;
-                    let backup_path = backup_dir.join(format!("{mcp_name}.json"));
-                    std::fs::write(&backup_path, serde_json::to_string_pretty(&entry)?)?;
-
-                    std::fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
-                }
+            let removed =
+                if let Some(servers) = config.get_mut(mcp_key).and_then(|s| s.as_object_mut()) {
+                    servers.remove(mcp_name)
+                } else {
+                    None
+                };
+            if removed.is_some() {
+                std::fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
             }
+            Ok(removed)
         }
-
-        Ok(())
     }
 
-    /// Enable MCP: restore saved config back into CLI config file.
-    ///
-    /// If no backup exists (MCP was never disabled from this CLI), falls back to
-    /// discovering the MCP definition from any other registered CLI config and
-    /// cross-registering it into the target CLI. This allows enabling a
-    /// Claude-only MCP for Codex without requiring a prior disable/backup cycle.
-    fn restore_mcp(&self, mcp_name: &str, target: CliTarget) -> Result<()> {
+    fn write_mcp_entry_to_target(
+        &self,
+        mcp_name: &str,
+        target: CliTarget,
+        entry: &serde_json::Value,
+    ) -> Result<()> {
         let config_path = Self::cli_config_path(target);
+        let mut entry = entry.clone();
 
-        // Read backup — fall back to discovery if no backup exists
-        let backup_path = self.paths.mcps_dir().join(format!("{mcp_name}.json"));
-        let mut entry: serde_json::Value = if backup_path.exists() {
-            let backup_content = std::fs::read_to_string(&backup_path)?;
-            serde_json::from_str(&backup_content)?
-        } else {
-            // No backup: try to discover from any CLI config that has this MCP
-            let home = dirs::home_dir().unwrap_or_default();
-            let discovered = crate::core::mcp_discovery::McpDiscovery::discover_all(&home);
-            let found = discovered.into_iter().find(|e| e.name == mcp_name);
-            match found {
-                Some(e) => serde_json::json!({
-                    "command": e.command,
-                    "args": e.args,
-                }),
-                None => bail!(
-                    "MCP '{mcp_name}' not found in any CLI config. \
-                     Register it first with your CLI (e.g. 'claude mcp add')."
-                ),
-            }
-        };
-
-        // Remove disabled field if present (clean restore)
         if let Some(obj) = entry.as_object_mut() {
             obj.remove("disabled");
         }
@@ -324,7 +347,6 @@ impl SkillManager {
         }
 
         if target.uses_toml() {
-            // Codex: restore into TOML config.toml
             let mut table: toml::Table = if config_path.exists() {
                 std::fs::read_to_string(&config_path)?.parse()?
             } else {
@@ -338,7 +360,6 @@ impl SkillManager {
             }
             std::fs::write(&config_path, toml::to_string_pretty(&table)?)?;
         } else {
-            // JSON format
             let mut config: serde_json::Value = if config_path.exists() {
                 serde_json::from_str(&std::fs::read_to_string(&config_path)?)?
             } else {
@@ -351,7 +372,6 @@ impl SkillManager {
                 "mcpServers"
             };
 
-            // For OpenCode, convert backup JSON to OpenCode format
             if target.uses_opencode_format() {
                 entry = json_to_opencode_mcp(&entry);
             }
@@ -369,7 +389,46 @@ impl SkillManager {
 
             std::fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
         }
+
         Ok(())
+    }
+
+    /// Disable MCP: save config to backup, remove entry from CLI config file.
+    fn remove_mcp(&self, mcp_name: &str, target: CliTarget) -> Result<()> {
+        if let Some(entry) = self.remove_mcp_entry_from_target(mcp_name, target)? {
+            self.write_mcp_backup(mcp_name, &entry)?;
+        }
+
+        Ok(())
+    }
+
+    /// Enable MCP: restore saved config back into CLI config file.
+    ///
+    /// If no backup exists (MCP was never disabled from this CLI), falls back to
+    /// discovering the MCP definition from any other registered CLI config and
+    /// cross-registering it into the target CLI. This allows enabling a
+    /// Claude-only MCP for Codex without requiring a prior disable/backup cycle.
+    fn restore_mcp(&self, mcp_name: &str, target: CliTarget) -> Result<()> {
+        // Read backup — fall back to discovery if no backup exists
+        let entry: serde_json::Value = if let Some(entry) = self.read_mcp_backup(mcp_name)? {
+            entry
+        } else {
+            // No backup: try to discover from any CLI config that has this MCP
+            let home = dirs::home_dir().unwrap_or_default();
+            let discovered = crate::core::mcp_discovery::McpDiscovery::discover_all(&home);
+            let found = discovered.into_iter().find(|e| e.name == mcp_name);
+            match found {
+                Some(e) => serde_json::json!({
+                    "command": e.command,
+                    "args": e.args,
+                }),
+                None => bail!(
+                    "MCP '{mcp_name}' not found in any CLI config. \
+                     Register it first with your CLI (e.g. 'claude mcp add')."
+                ),
+            }
+        };
+        self.write_mcp_entry_to_target(mcp_name, target, &entry)
     }
 
     fn cli_config_path(target: CliTarget) -> PathBuf {
@@ -505,37 +564,37 @@ impl SkillManager {
 
             // 2. Disabled MCPs from backup dir (removed from config by SM)
             let mcps_dir = self.paths.mcps_dir();
-            if mcps_dir.exists() {
-                if let Ok(entries) = std::fs::read_dir(&mcps_dir) {
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        if path.extension().and_then(|e| e.to_str()) != Some("json") {
-                            continue;
-                        }
-                        let name = path
-                            .file_stem()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or("")
-                            .to_string();
-                        if name.is_empty() || seen.contains(&name) {
-                            continue;
-                        }
-                        // This MCP was disabled by SM — show as disabled
-                        mcp_resources.push(Resource {
-                            id: format!("mcp:{name}"),
-                            name,
-                            kind: ResourceKind::Mcp,
-                            description: String::new(),
-                            directory: PathBuf::new(),
-                            source: Source::Local {
-                                path: PathBuf::new(),
-                            },
-                            installed_at: 0,
-                            enabled: HashMap::new(), // no targets = disabled
-                            usage_count: 0,
-                            last_used_at: None,
-                        });
+            if mcps_dir.exists()
+                && let Ok(entries) = std::fs::read_dir(&mcps_dir)
+            {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                        continue;
                     }
+                    let name = path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("")
+                        .to_string();
+                    if name.is_empty() || seen.contains(&name) {
+                        continue;
+                    }
+                    // This MCP was disabled by SM — show as disabled
+                    mcp_resources.push(Resource {
+                        id: format!("mcp:{name}"),
+                        name,
+                        kind: ResourceKind::Mcp,
+                        description: String::new(),
+                        directory: PathBuf::new(),
+                        source: Source::Local {
+                            path: PathBuf::new(),
+                        },
+                        installed_at: 0,
+                        enabled: HashMap::new(), // no targets = disabled
+                        usage_count: 0,
+                        last_used_at: None,
+                    });
                 }
             }
 
@@ -566,21 +625,246 @@ impl SkillManager {
         map
     }
 
-    pub fn uninstall(&self, resource_id: &str) -> Result<()> {
+    fn remove_skill_links(&self, name: &str) -> Result<()> {
+        for target in CliTarget::ALL {
+            for link in [
+                target.skills_dir().join(name),
+                target.agents_skills_dir().join(name),
+            ] {
+                if Linker::is_our_symlink(&link, self.paths.data_dir()) {
+                    Linker::remove_link(&link)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn list_trash(&self) -> Result<Vec<TrashEntry>> {
+        self.db.list_trash_entries()
+    }
+
+    pub fn find_trash_id(&self, query: &str) -> Option<String> {
+        let entries = self.list_trash().ok()?;
+        if let Some(entry) = entries.iter().find(|entry| entry.id == query) {
+            return Some(entry.id.clone());
+        }
+        entries
+            .into_iter()
+            .find(|entry| entry.name == query)
+            .map(|entry| entry.id)
+    }
+
+    pub fn trash_resource(&self, resource_id: &str) -> Result<TrashEntry> {
+        let now = chrono::Utc::now();
+        let deleted_at = now.timestamp();
+        let deleted_at_ms = now.timestamp_millis();
+
+        if let Some(mcp_name) = resource_id.strip_prefix("mcp:") {
+            let mut enabled_targets = Vec::new();
+            let mut mcp_configs = HashMap::new();
+            for target in CliTarget::ALL {
+                if let Some(entry) = self.remove_mcp_entry_from_target(mcp_name, *target)? {
+                    enabled_targets.push(*target);
+                    mcp_configs.insert(*target, entry);
+                }
+            }
+
+            let disabled_backup = self.read_mcp_backup(mcp_name)?;
+            self.remove_mcp_backup(mcp_name)?;
+            let group_ids = self.db.take_groups_for_resource(resource_id)?;
+
+            if mcp_configs.is_empty() && disabled_backup.is_none() {
+                bail!("resource not found: {resource_id}");
+            }
+
+            let entry = TrashEntry {
+                id: Self::trash_entry_id(resource_id, deleted_at_ms),
+                resource_id: resource_id.to_string(),
+                name: mcp_name.to_string(),
+                kind: ResourceKind::Mcp,
+                description: String::new(),
+                directory: PathBuf::new(),
+                source: Source::Local {
+                    path: PathBuf::new(),
+                },
+                installed_at: 0,
+                usage_count: 0,
+                last_used_at: None,
+                deleted_at,
+                payload_path: None,
+                enabled_targets,
+                group_ids,
+                mcp_configs,
+                disabled_backup,
+            };
+            self.db.insert_trash_entry(&entry)?;
+            return Ok(entry);
+        }
+
         let resource = self
             .db
             .get_resource(resource_id)?
             .ok_or_else(|| anyhow::anyhow!("resource not found: {resource_id}"))?;
 
-        for target in CliTarget::ALL {
-            let link = target.skills_dir().join(&resource.name);
-            if Linker::is_our_symlink(&link, self.paths.data_dir()) {
-                Linker::remove_link(&link)?;
+        let enabled_map = self.check_skill_symlinks(&resource.name);
+        let enabled_targets = CliTarget::ALL
+            .iter()
+            .copied()
+            .filter(|target| enabled_map.get(target).copied().unwrap_or(false))
+            .collect::<Vec<_>>();
+        let payload_path = self.trash_payload_path(&resource.name, deleted_at_ms);
+
+        self.remove_skill_links(&resource.name)?;
+        if resource.directory.exists() {
+            if let Some(parent) = payload_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            Linker::move_dir(&resource.directory, &payload_path)?;
+        } else {
+            bail!(
+                "resource directory missing: {}",
+                resource.directory.display()
+            );
+        }
+
+        let group_ids = self.db.take_groups_for_resource(resource_id)?;
+        self.db.delete_resource(resource_id)?;
+
+        let entry = TrashEntry {
+            id: Self::trash_entry_id(resource_id, deleted_at_ms),
+            resource_id: resource.id.clone(),
+            name: resource.name.clone(),
+            kind: resource.kind,
+            description: resource.description.clone(),
+            directory: resource.directory.clone(),
+            source: resource.source.clone(),
+            installed_at: resource.installed_at,
+            usage_count: resource.usage_count,
+            last_used_at: resource.last_used_at,
+            deleted_at,
+            payload_path: Some(payload_path),
+            enabled_targets,
+            group_ids,
+            mcp_configs: HashMap::new(),
+            disabled_backup: None,
+        };
+        self.db.insert_trash_entry(&entry)?;
+        Ok(entry)
+    }
+
+    pub fn uninstall(&self, resource_id: &str) -> Result<()> {
+        let _ = self.trash_resource(resource_id)?;
+        Ok(())
+    }
+
+    pub fn restore_from_trash(&self, trash_id: &str) -> Result<()> {
+        let entry = self
+            .db
+            .get_trash_entry(trash_id)?
+            .ok_or_else(|| anyhow::anyhow!("trash entry not found: {trash_id}"))?;
+
+        match entry.kind {
+            ResourceKind::Skill => {
+                let payload_path = entry
+                    .payload_path
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("trash payload missing for {}", entry.name))?;
+                if !payload_path.exists() {
+                    bail!("trash payload missing: {}", payload_path.display());
+                }
+                if entry.directory.exists() || self.db.get_resource(&entry.resource_id)?.is_some() {
+                    bail!("resource already exists: {}", entry.name);
+                }
+                if let Some(parent) = entry.directory.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                Linker::move_dir(&payload_path, &entry.directory)?;
+
+                let resource = Resource {
+                    id: entry.resource_id.clone(),
+                    name: entry.name.clone(),
+                    kind: entry.kind,
+                    description: entry.description.clone(),
+                    directory: entry.directory.clone(),
+                    source: entry.source.clone(),
+                    installed_at: entry.installed_at,
+                    enabled: HashMap::new(),
+                    usage_count: entry.usage_count,
+                    last_used_at: entry.last_used_at,
+                };
+                self.db.insert_resource(&resource)?;
+                for group_id in &entry.group_ids {
+                    self.db.add_group_member(group_id, &entry.resource_id)?;
+                }
+                for target in &entry.enabled_targets {
+                    self.enable_resource(&entry.resource_id, *target, None)?;
+                }
+            }
+            ResourceKind::Mcp => {
+                let mcp_status = Self::read_mcp_status_from_configs();
+                for target in entry.mcp_configs.keys() {
+                    if mcp_status
+                        .get(&entry.name)
+                        .and_then(|targets| targets.get(target))
+                        .copied()
+                        .unwrap_or(false)
+                    {
+                        bail!("MCP already exists for {} on {}", entry.name, target.name());
+                    }
+                }
+
+                if entry.disabled_backup.is_some()
+                    && self
+                        .paths
+                        .mcps_dir()
+                        .join(format!("{}.json", entry.name))
+                        .exists()
+                {
+                    bail!("disabled MCP backup already exists: {}", entry.name);
+                }
+
+                for (target, mcp_entry) in &entry.mcp_configs {
+                    self.write_mcp_entry_to_target(&entry.name, *target, mcp_entry)?;
+                }
+                if let Some(ref disabled_backup) = entry.disabled_backup {
+                    self.write_mcp_backup(&entry.name, disabled_backup)?;
+                }
+                for group_id in &entry.group_ids {
+                    self.db.add_group_member(group_id, &entry.resource_id)?;
+                }
             }
         }
 
-        self.db.delete_resource(resource_id)?;
+        self.db.delete_trash_entry(trash_id)?;
         Ok(())
+    }
+
+    pub fn purge_trash(&self, trash_id: &str) -> Result<()> {
+        let entry = self
+            .db
+            .get_trash_entry(trash_id)?
+            .ok_or_else(|| anyhow::anyhow!("trash entry not found: {trash_id}"))?;
+
+        if let Some(payload_path) = entry.payload_path
+            && payload_path.exists()
+        {
+            if payload_path.is_dir() {
+                std::fs::remove_dir_all(&payload_path)?;
+            } else {
+                std::fs::remove_file(&payload_path)?;
+            }
+        }
+
+        self.db.delete_trash_entry(trash_id)?;
+        Ok(())
+    }
+
+    pub fn empty_trash(&self) -> Result<usize> {
+        let entries = self.list_trash()?;
+        for entry in &entries {
+            self.purge_trash(&entry.id)?;
+        }
+        Ok(entries.len())
     }
 
     // --- Group management ---
@@ -901,7 +1185,7 @@ impl SkillManager {
         let mut errors = Vec::new();
         for name in names {
             match self.find_resource_id(name) {
-                Some(id) => match self.uninstall(&id) {
+                Some(id) => match self.trash_resource(&id) {
                     Ok(_) => deleted += 1,
                     Err(e) => errors.push(format!("{name}: {e}")),
                 },
@@ -970,14 +1254,14 @@ impl SkillManager {
         let mut total_mcp_names: std::collections::HashSet<String> =
             active_mcps.keys().cloned().collect();
         let mcps_dir = self.paths.mcps_dir();
-        if mcps_dir.exists() {
-            if let Ok(entries) = std::fs::read_dir(&mcps_dir) {
-                for entry in entries.flatten() {
-                    if entry.path().extension().and_then(|e| e.to_str()) == Some("json") {
-                        if let Some(name) = entry.path().file_stem().and_then(|s| s.to_str()) {
-                            total_mcp_names.insert(name.to_string());
-                        }
-                    }
+        if mcps_dir.exists()
+            && let Ok(entries) = std::fs::read_dir(&mcps_dir)
+        {
+            for entry in entries.flatten() {
+                if entry.path().extension().and_then(|e| e.to_str()) == Some("json")
+                    && let Some(name) = entry.path().file_stem().and_then(|s| s.to_str())
+                {
+                    total_mcp_names.insert(name.to_string());
                 }
             }
         }
@@ -1001,6 +1285,9 @@ impl SkillManager {
         // Check MCP config files
         let mcp_status = Self::read_mcp_status_from_configs();
         if mcp_status.contains_key(name) {
+            return Some(format!("mcp:{name}"));
+        }
+        if self.paths.mcps_dir().join(format!("{name}.json")).exists() {
             return Some(format!("mcp:{name}"));
         }
         None
@@ -1499,6 +1786,96 @@ mod tests {
             assert!(mgr.find_resource_id("skill-c").is_some());
             assert!(mgr.find_resource_id("skill-a").is_none());
             assert!(mgr.find_resource_id("skill-b").is_none());
+        });
+    }
+
+    #[test]
+    fn trash_and_restore_skill_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm_data = tmp.path().join("sm-data");
+        let skill_dir = sm_data.join("skills").join("test-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(skill_dir.join("SKILL.md"), "# Test\n").unwrap();
+
+        with_home(tmp.path(), || {
+            let mgr = SkillManager::with_base(sm_data.clone()).unwrap();
+            mgr.register_local_skill("test-skill").unwrap();
+            let resource_id = mgr.find_resource_id("test-skill").unwrap();
+            mgr.db().add_group_member("grp", &resource_id).unwrap();
+            mgr.enable_resource(&resource_id, CliTarget::Claude, None)
+                .unwrap();
+
+            let trash = mgr.trash_resource(&resource_id).unwrap();
+            assert!(mgr.find_resource_id("test-skill").is_none());
+            assert!(trash.payload_path.as_ref().unwrap().exists());
+            assert!(!skill_dir.exists(), "skill dir should move into trash");
+            assert!(
+                !CliTarget::Claude.skills_dir().join("test-skill").exists(),
+                "enabled symlink should be removed"
+            );
+            assert!(
+                mgr.db()
+                    .get_groups_for_resource(&resource_id)
+                    .unwrap()
+                    .is_empty()
+            );
+
+            mgr.restore_from_trash(&trash.id).unwrap();
+
+            assert!(skill_dir.exists(), "skill dir should be restored");
+            assert!(mgr.find_resource_id("test-skill").is_some());
+            assert!(
+                CliTarget::Claude.skills_dir().join("test-skill").exists(),
+                "enabled symlink should be restored"
+            );
+            assert_eq!(
+                mgr.db().get_groups_for_resource(&resource_id).unwrap(),
+                vec!["grp".to_string()]
+            );
+            assert!(mgr.list_trash().unwrap().is_empty());
+        });
+    }
+
+    #[test]
+    fn trash_and_restore_mcp_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_home(tmp.path(), || {
+            let mgr = SkillManager::with_base(tmp.path().join("sm-data")).unwrap();
+            let claude_config = tmp.path().join(".claude.json");
+            std::fs::write(
+                &claude_config,
+                serde_json::json!({
+                    "mcpServers": {
+                        "test-mcp": {
+                            "command": "node",
+                            "args": ["server.js"]
+                        }
+                    }
+                })
+                .to_string(),
+            )
+            .unwrap();
+            mgr.db().add_group_member("grp", "mcp:test-mcp").unwrap();
+
+            let resource_id = mgr.find_resource_id("test-mcp").unwrap();
+            let trash = mgr.trash_resource(&resource_id).unwrap();
+
+            let config_after_delete = std::fs::read_to_string(&claude_config).unwrap();
+            assert!(!config_after_delete.contains("test-mcp"));
+            assert_eq!(
+                mgr.db().get_groups_for_resource("mcp:test-mcp").unwrap(),
+                Vec::<String>::new()
+            );
+
+            mgr.restore_from_trash(&trash.id).unwrap();
+
+            let config_after_restore = std::fs::read_to_string(&claude_config).unwrap();
+            assert!(config_after_restore.contains("test-mcp"));
+            assert_eq!(
+                mgr.db().get_groups_for_resource("mcp:test-mcp").unwrap(),
+                vec!["grp".to_string()]
+            );
+            assert!(mgr.list_trash().unwrap().is_empty());
         });
     }
 
@@ -2039,7 +2416,7 @@ args = []
 
             // Symlink should be gone
             assert!(
-                !claude_skills.join("test-skill").symlink_metadata().is_ok(),
+                claude_skills.join("test-skill").symlink_metadata().is_err(),
                 "symlink should be removed"
             );
         });

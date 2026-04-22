@@ -11,14 +11,17 @@ clap-based CLI entry point. Parses subcommands, constructs a `SkillManager`, dis
 
 ## Public API
 - `struct Cli` (clap `Parser`) — top-level arg parser.
-- `enum Commands` — all subcommands: `Scan`, `Discover`, `List`, `Enable`, `Disable`, `Install`, `MarketInstall`, `Uninstall`, `Restore`, `Backup`, `Group(GroupCommands)`, `Status`, `McpServe`, `Register`, `Unregister`, `Usage`, `Update`, `Doctor`.
+- `enum Commands` — all subcommands: `Scan`, `Discover`, `List`, `Enable`, `Disable`, `Install`, `MarketInstall`, `Uninstall`, `Trash(TrashCommands)`, `Restore`, `Backup`, `Group(GroupCommands)`, `Status`, `McpServe`, `Register`, `Unregister`, `Usage`, `Update`, `Doctor`.
 - `enum GroupCommands` — `Create`, `Add`, `Remove`, `List`.
+- `enum TrashCommands` — `List`, `Restore`, `Purge`, `Empty`.
 - `run(cli) -> Result<()>` — top dispatch.
 
 ## Key invariants
 - Manager construction honors `RUNE_DATA_DIR` → `SKILL_MANAGER_DATA_DIR` → default, in that order.
 - `Enable` / `Disable` first check if the name matches a group (via `list_groups` contains), otherwise treat as resource — group-name wins over resource-name with same id.
 - `Install` supports `owner/repo`, `owner/repo@branch`, and bare GitHub URLs (strips prefix + trailing `/`).
+- `Uninstall` is trash-first: it delegates to `SkillManager::uninstall`, which now moves the resource into global trash instead of purging it permanently.
+- `TrashCommands::{Restore,Purge}` resolve either an exact trash entry ID or a resource name through `SkillManager::find_trash_id`.
 - `McpServe` runs a Tokio runtime inline and blocks on `mcp::serve()`; it is the **only** subcommand that takes over the process for stdio I/O.
 
 ## Touch points

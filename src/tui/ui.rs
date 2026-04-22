@@ -42,7 +42,13 @@ fn render_header(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let chunks = Layout::horizontal([Constraint::Min(0), Constraint::Length(32)]).split(area);
 
     // Left: tabs only, flush left
-    let tab_labels = [i.tab_skills(), i.tab_mcps(), i.tab_groups(), i.tab_market()];
+    let tab_labels = [
+        i.tab_skills(),
+        i.tab_mcps(),
+        i.tab_groups(),
+        i.tab_market(),
+        i.tab_trash(),
+    ];
     let mut tab_spans = Vec::new();
     tab_spans.push(Span::raw(" "));
     for (tab, label) in Tab::ALL.iter().zip(tab_labels.iter()) {
@@ -67,30 +73,45 @@ fn render_header(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     f.render_widget(tabs_widget, chunks[0]);
 
     // Right: target + counts
-    let (es, ts, em, tm) = app.status;
-    let target_name = app.active_target.name();
-    let status = Paragraph::new(Line::from(vec![
-        Span::styled(
-            format!("[{target_name}] "),
-            Style::default().fg(t.brand).bold(),
-        ),
-        Span::styled(format!("{es}"), Style::default().fg(t.status_skills).bold()),
-        Span::styled(
-            format!("/{ts} {}  ", i.status_skills()),
-            Style::default().fg(t.status_dim),
-        ),
-        Span::styled(format!("{em}"), Style::default().fg(t.status_mcps).bold()),
-        Span::styled(
-            format!("/{tm} {}", i.status_mcp()),
-            Style::default().fg(t.status_dim),
-        ),
-    ]))
-    .alignment(Alignment::Right)
-    .block(
-        Block::default()
-            .borders(Borders::BOTTOM)
-            .border_style(border),
-    );
+    let status_line = if app.tab == Tab::Trash {
+        Line::from(vec![
+            Span::styled("[global] ", Style::default().fg(t.brand).bold()),
+            Span::styled(
+                format!("{}", app.trash_items.len()),
+                Style::default().fg(t.tag_warning).bold(),
+            ),
+            Span::styled(
+                format!(" {}", i.status_trash()),
+                Style::default().fg(t.status_dim),
+            ),
+        ])
+    } else {
+        let (es, ts, em, tm) = app.status;
+        let target_name = app.active_target.name();
+        Line::from(vec![
+            Span::styled(
+                format!("[{target_name}] "),
+                Style::default().fg(t.brand).bold(),
+            ),
+            Span::styled(format!("{es}"), Style::default().fg(t.status_skills).bold()),
+            Span::styled(
+                format!("/{ts} {}  ", i.status_skills()),
+                Style::default().fg(t.status_dim),
+            ),
+            Span::styled(format!("{em}"), Style::default().fg(t.status_mcps).bold()),
+            Span::styled(
+                format!("/{tm} {}", i.status_mcp()),
+                Style::default().fg(t.status_dim),
+            ),
+        ])
+    };
+    let status = Paragraph::new(status_line)
+        .alignment(Alignment::Right)
+        .block(
+            Block::default()
+                .borders(Borders::BOTTOM)
+                .border_style(border),
+        );
     f.render_widget(status, chunks[1]);
 }
 
@@ -98,6 +119,7 @@ fn render_body(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     match app.tab {
         Tab::Groups => render_groups(f, app, t, area),
         Tab::Market => render_market(f, app, t, area),
+        Tab::Trash => render_trash(f, app, t, area),
         _ => render_resources(f, app, t, area),
     }
 }
@@ -211,8 +233,7 @@ fn render_groups(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let visible = app.visible_groups();
     let items: Vec<ListItem> = visible
         .iter()
-        .enumerate()
-        .map(|(_, (id, name, total, enabled))| {
+        .map(|(id, name, total, enabled)| {
             let all_on = *total > 0 && *enabled == *total;
             let partial = *enabled > 0 && *enabled < *total;
             let marker = if all_on {
@@ -264,6 +285,78 @@ fn render_groups(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let mut state = ListState::default();
     state.select(Some(app.selected));
     f.render_stateful_widget(list, area, &mut state);
+}
+
+fn render_trash(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
+    let i = T::new(app.lang);
+    let visible = app.visible_trash();
+
+    let rows: Vec<Row> = visible
+        .iter()
+        .map(|entry| {
+            let kind_color = match entry.kind.as_str() {
+                "skill" => t.item_kind,
+                _ => t.item_kind_mcp,
+            };
+            let deleted_ago = crate::core::resource::format_time_ago(Some(entry.deleted_at));
+            let mut scope_parts: Vec<String> = entry
+                .enabled_targets
+                .iter()
+                .map(|target| target.name().to_string())
+                .collect();
+            if entry.disabled_backup.is_some() {
+                scope_parts.push(i.trash_scope_backup().into());
+            }
+            if !entry.group_ids.is_empty() {
+                scope_parts.push(i.trash_groups_suffix(entry.group_ids.len()));
+            }
+            if scope_parts.is_empty() {
+                scope_parts.push(i.trash_scope_global().into());
+            }
+
+            let name = Line::from(vec![
+                Span::raw(" "),
+                Span::styled(
+                    format!("{:6}", entry.kind.as_str()),
+                    Style::default().fg(kind_color),
+                ),
+                Span::raw(" "),
+                Span::styled(entry.name.clone(), Style::default().fg(t.item_name).bold()),
+            ]);
+
+            Row::new(vec![
+                Cell::from(name),
+                Cell::from(Line::from(Span::styled(
+                    deleted_ago,
+                    Style::default().fg(t.text_highlight),
+                ))),
+                Cell::from(Line::from(Span::styled(
+                    scope_parts.join(", "),
+                    Style::default().fg(t.item_desc),
+                ))),
+            ])
+        })
+        .collect();
+
+    let title = format!(" {} ({}) ", i.title_trash(), visible.len());
+    let widths = [
+        Constraint::Length(40),
+        Constraint::Length(12),
+        Constraint::Min(10),
+    ];
+    let table = Table::new(rows, widths)
+        .block(
+            Block::default()
+                .title(Span::styled(title, Style::default().fg(t.text).bold()))
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(t.border)),
+        )
+        .row_highlight_style(Style::default().bg(t.item_selected_bg));
+
+    let mut state = TableState::default();
+    state.select(Some(app.selected));
+    f.render_stateful_widget(table, area, &mut state);
 }
 
 fn render_market(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
@@ -349,6 +442,7 @@ fn render_footer(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
             let help = match app.tab {
                 Tab::Groups => i.help_normal_groups(),
                 Tab::Market => i.help_normal_market(),
+                Tab::Trash => i.help_normal_trash(),
                 _ => i.help_normal_skills(),
             };
             (search_info, help.to_string())
@@ -1040,6 +1134,16 @@ fn render_help(f: &mut Frame, app: &App, t: &Theme) {
         Line::from(vec![
             Span::styled(" s       ", ks),
             Span::styled(i.help_s_market(), ds),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(i.help_section_trash(), ss)),
+        Line::from(vec![
+            Span::styled(" r       ", ks),
+            Span::styled(i.help_r_trash(), ds),
+        ]),
+        Line::from(vec![
+            Span::styled(" D       ", ks),
+            Span::styled(i.help_d_trash(), ds),
         ]),
         Line::from(""),
         Line::from(Span::styled(

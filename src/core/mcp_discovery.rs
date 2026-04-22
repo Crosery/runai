@@ -61,17 +61,17 @@ impl McpDiscovery {
 
         // 2. ~/.claude/mcp-configs/*.json
         let mcp_configs_dir = home.join(".claude").join("mcp-configs");
-        if mcp_configs_dir.is_dir() {
-            if let Ok(dir) = std::fs::read_dir(&mcp_configs_dir) {
-                for entry in dir.flatten() {
-                    let path = entry.path();
-                    if path.extension().and_then(|e| e.to_str()) == Some("json") {
-                        if let Ok(entries) = Self::parse_mcp_config_file(&path, "claude") {
-                            for e in entries {
-                                if !results.iter().any(|r| r.name == e.name) {
-                                    results.push(e);
-                                }
-                            }
+        if mcp_configs_dir.is_dir()
+            && let Ok(dir) = std::fs::read_dir(&mcp_configs_dir)
+        {
+            for entry in dir.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) == Some("json")
+                    && let Ok(entries) = Self::parse_mcp_config_file(&path, "claude")
+                {
+                    for e in entries {
+                        if !results.iter().any(|r| r.name == e.name) {
+                            results.push(e);
                         }
                     }
                 }

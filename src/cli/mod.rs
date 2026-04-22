@@ -1,7 +1,6 @@
 use crate::core::cli_target::CliTarget;
 use crate::core::group::{Group, GroupKind, GroupMember, MemberType};
 use crate::core::manager::SkillManager;
-use crate::core::resource::ResourceKind;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
@@ -57,6 +56,11 @@ pub enum Commands {
     },
     /// Uninstall a resource
     Uninstall { name: String },
+    /// Trash management
+    Trash {
+        #[command(subcommand)]
+        command: TrashCommands,
+    },
     /// Restore from backup (uses latest backup by default)
     Restore {
         /// Backup timestamp (omit for latest)
@@ -116,6 +120,18 @@ pub enum GroupCommands {
     Remove { group: String, resource: String },
     /// List all groups
     List,
+}
+
+#[derive(Subcommand)]
+pub enum TrashCommands {
+    /// List trash entries
+    List,
+    /// Restore a trashed resource by trash ID or resource name
+    Restore { query: String },
+    /// Permanently delete a trashed resource by trash ID or resource name
+    Purge { query: String },
+    /// Permanently delete everything in trash
+    Empty,
 }
 
 pub fn run(cli: Cli) -> Result<()> {
@@ -188,8 +204,8 @@ pub fn run(cli: Cli) -> Result<()> {
             kind,
             target,
         }) => {
-            let kind_filter = kind.as_deref().and_then(ResourceKind::from_str);
-            let target_filter = target.as_deref().and_then(CliTarget::from_str);
+            let kind_filter = kind.as_deref().and_then(|k| k.parse().ok());
+            let target_filter = target.as_deref().and_then(|t| t.parse().ok());
 
             let resources = if let Some(group_id) = &group {
                 mgr.db().get_group_members(group_id)?
@@ -220,8 +236,9 @@ pub fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Some(Commands::Enable { name, target }) => {
-            let target = CliTarget::from_str(&target)
-                .ok_or_else(|| anyhow::anyhow!("unknown target: {target}"))?;
+            let target = target
+                .parse::<CliTarget>()
+                .map_err(|_| anyhow::anyhow!("unknown target: {target}"))?;
             let groups = mgr.list_groups()?;
             if groups.iter().any(|(id, _)| id == &name) {
                 mgr.enable_group(&name, target, None)?;
@@ -234,8 +251,9 @@ pub fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Some(Commands::Disable { name, target }) => {
-            let target = CliTarget::from_str(&target)
-                .ok_or_else(|| anyhow::anyhow!("unknown target: {target}"))?;
+            let target = target
+                .parse::<CliTarget>()
+                .map_err(|_| anyhow::anyhow!("unknown target: {target}"))?;
             let groups = mgr.list_groups()?;
             if groups.iter().any(|(id, _)| id == &name) {
                 mgr.disable_group(&name, target, None)?;
@@ -297,7 +315,11 @@ pub fn run(cli: Cli) -> Result<()> {
         Some(Commands::Uninstall { name }) => {
             let resource_id = find_resource_id_by_name(&mgr, &name)?;
             mgr.uninstall(&resource_id)?;
-            println!("Resource '{name}' uninstalled");
+            println!("Resource '{name}' moved to trash");
+            Ok(())
+        }
+        Some(Commands::Trash { command }) => {
+            handle_trash_command(&mgr, command)?;
             Ok(())
         }
         Some(Commands::Backup) => {
@@ -332,8 +354,9 @@ pub fn run(cli: Cli) -> Result<()> {
         }
         Some(Commands::Group { command }) => handle_group_command(&mgr, command),
         Some(Commands::Status { target }) => {
-            let target = CliTarget::from_str(&target)
-                .ok_or_else(|| anyhow::anyhow!("unknown target: {target}"))?;
+            let target = target
+                .parse::<CliTarget>()
+                .map_err(|_| anyhow::anyhow!("unknown target: {target}"))?;
             let (skills, mcps) = mgr.status(target)?;
             let (total_skills, total_mcps) = mgr.resource_count();
             println!("Target: {target}");
@@ -367,7 +390,7 @@ pub fn run(cli: Cli) -> Result<()> {
             if stats.is_empty() {
                 println!("No usage data yet.");
             } else {
-                println!("{:>5}  {:>10}  {:<5}  {}", "uses", "last", "type", "name");
+                println!("{:>5}  {:>10}  {:<5}  name", "uses", "last", "type");
                 for (i, s) in stats.iter().enumerate() {
                     if i >= limit {
                         break;
@@ -519,4 +542,52 @@ fn handle_group_command(mgr: &SkillManager, command: GroupCommands) -> Result<()
 fn find_resource_id_by_name(mgr: &SkillManager, name: &str) -> Result<String> {
     mgr.find_resource_id(name)
         .ok_or_else(|| anyhow::anyhow!("resource not found: {name}"))
+}
+
+fn find_trash_id_by_query(mgr: &SkillManager, query: &str) -> Result<String> {
+    mgr.find_trash_id(query)
+        .ok_or_else(|| anyhow::anyhow!("trash entry not found: {query}"))
+}
+
+fn handle_trash_command(mgr: &SkillManager, command: TrashCommands) -> Result<()> {
+    match command {
+        TrashCommands::List => {
+            use crate::core::resource::format_time_ago;
+
+            let entries = mgr.list_trash()?;
+            if entries.is_empty() {
+                println!("Trash is empty.");
+            } else {
+                for entry in &entries {
+                    let deleted = format_time_ago(Some(entry.deleted_at));
+                    println!(
+                        "  [{}] {} — {} ({})",
+                        entry.kind.as_str(),
+                        entry.id,
+                        entry.name,
+                        deleted
+                    );
+                }
+                println!("\nTotal: {} trashed resources", entries.len());
+            }
+            Ok(())
+        }
+        TrashCommands::Restore { query } => {
+            let trash_id = find_trash_id_by_query(mgr, &query)?;
+            mgr.restore_from_trash(&trash_id)?;
+            println!("Restored '{query}'");
+            Ok(())
+        }
+        TrashCommands::Purge { query } => {
+            let trash_id = find_trash_id_by_query(mgr, &query)?;
+            mgr.purge_trash(&trash_id)?;
+            println!("Permanently deleted '{query}'");
+            Ok(())
+        }
+        TrashCommands::Empty => {
+            let count = mgr.empty_trash()?;
+            println!("Emptied trash ({count} items)");
+            Ok(())
+        }
+    }
 }

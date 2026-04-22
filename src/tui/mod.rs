@@ -50,22 +50,22 @@ pub fn run_tui(mgr: SkillManager) -> Result<()> {
         app.poll_market();
         app.poll_config_changes();
 
-        if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                // Windows crossterm delivers both Press and Release (and Repeat)
-                // events; macOS/Linux only deliver Press by default. Without
-                // this filter, every Windows keystroke fires actions twice —
-                // Tab / H / L navigation "jumping" is the most visible symptom.
-                if key.kind != KeyEventKind::Press {
-                    continue;
-                }
-                if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-                    break;
-                }
-                match key.code {
-                    KeyCode::Char('q') if !app.is_blocking_quit() => break,
-                    _ => app.handle_key(key),
-                }
+        if event::poll(Duration::from_millis(100))?
+            && let Event::Key(key) = event::read()?
+        {
+            // Windows crossterm delivers both Press and Release (and Repeat)
+            // events; macOS/Linux only deliver Press by default. Without
+            // this filter, every Windows keystroke fires actions twice —
+            // Tab / H / L navigation "jumping" is the most visible symptom.
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+                break;
+            }
+            match key.code {
+                KeyCode::Char('q') if !app.is_blocking_quit() => break,
+                _ => app.handle_key(key),
             }
         }
     }

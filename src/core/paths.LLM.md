@@ -12,7 +12,7 @@ Resolve and own every runai-owned path. Houses the standalone `data_dir()` helpe
 ## Public API
 - `data_dir() -> PathBuf` — standalone (no `AppPaths` needed). Precedence: `RUNE_DATA_DIR` > `SKILL_MANAGER_DATA_DIR` > platform default (`~/.runai` unix, `%APPDATA%\runai` windows via `dirs::data_dir`).
 - `AppPaths::default_path()` / `with_base(base)` — constructors; `default_path` runs migration on first call.
-- `AppPaths::{data_dir, skills_dir, mcps_dir, groups_dir, db_path, config_path}` — all derived from `base`.
+- `AppPaths::{data_dir, skills_dir, mcps_dir, groups_dir, trash_dir, db_path, config_path}` — all derived from `base`.
 - `AppPaths::ensure_dirs()` — `mkdir -p` for every owned subdirectory.
 
 ## Key invariants
@@ -22,6 +22,7 @@ Resolve and own every runai-owned path. Houses the standalone `data_dir()` helpe
 
 ## Touch points
 - **Upstream**: Everyone. `SkillManager` / CLI / TUI / MCP / backup all receive an `AppPaths`.
+- `trash_dir()` is the global payload location for deleted resources; keep it sibling to `skills/` and `mcps/`, not under per-target directories.
 - **Downstream**: `dirs` crate (`home_dir`, `data_dir`), `std::fs::rename` for migration.
 
 ## Gotchas

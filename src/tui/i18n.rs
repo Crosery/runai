@@ -48,6 +48,9 @@ impl T {
     pub fn tab_market(&self) -> &'static str {
         self.zh_en("市场", "Market")
     }
+    pub fn tab_trash(&self) -> &'static str {
+        self.zh_en("垃圾桶", "Trash")
+    }
 
     // ── Filter modes ──
     pub fn filter_all(&self) -> &'static str {
@@ -63,8 +66,8 @@ impl T {
     // ── Footer help ──
     pub fn help_normal_skills(&self) -> &'static str {
         self.zh_en(
-            "j/k ↕  H/L 切换  SPACE 开关  f 过滤  / 搜索  t 主题  ? 帮助  q 退出",
-            "j/k ↕  H/L tab  SPACE toggle  f filter  / search  t theme  ? help  q quit",
+            "j/k ↕  H/L 切换  SPACE 开关  d 删除  f 过滤  / 搜索  t 主题  ? 帮助  q 退出",
+            "j/k ↕  H/L tab  SPACE toggle  d trash  f filter  / search  t theme  ? help  q quit",
         )
     }
     pub fn help_normal_groups(&self) -> &'static str {
@@ -77,6 +80,12 @@ impl T {
         self.zh_en(
             "j/k ↕  H/L 切换  ENTER 安装  [ ] 切源  t 主题  ? 帮助  q 退出",
             "j/k ↕  H/L tab  ENTER install  [ ] source  t theme  ? help  q quit",
+        )
+    }
+    pub fn help_normal_trash(&self) -> &'static str {
+        self.zh_en(
+            "j/k ↕  H/L 切换  r 恢复  D 永久删除  / 搜索  t 主题  ? 帮助  q 退出",
+            "j/k ↕  H/L tab  r restore  D purge  / search  t theme  ? help  q quit",
         )
     }
     pub fn help_search(&self) -> &'static str {
@@ -96,6 +105,9 @@ impl T {
     pub fn status_mcp(&self) -> &'static str {
         self.zh_en("mcp ", "mcp ")
     }
+    pub fn status_trash(&self) -> &'static str {
+        self.zh_en("垃圾桶", "trash")
+    }
 
     // ── List titles ──
     pub fn title_groups(&self) -> &'static str {
@@ -109,6 +121,21 @@ impl T {
             " 市场 — 无可用源 (按 's') ",
             " Market — No sources enabled (press 's') ",
         )
+    }
+    pub fn title_trash(&self) -> &'static str {
+        self.zh_en("垃圾桶", "Trash")
+    }
+    pub fn trash_scope_backup(&self) -> &'static str {
+        self.zh_en("停用备份", "backup")
+    }
+    pub fn trash_scope_global(&self) -> &'static str {
+        self.zh_en("全局", "global")
+    }
+    pub fn trash_groups_suffix(&self, count: usize) -> String {
+        match self.lang {
+            Lang::Zh => format!("{count} 个分组"),
+            Lang::En => format!("{count} groups"),
+        }
     }
 
     // ── Group detail ──
@@ -331,7 +358,10 @@ impl T {
         )
     }
     pub fn help_d(&self) -> &'static str {
-        self.zh_en("删除选中的技能或 MCP", "Delete selected skill or MCP")
+        self.zh_en(
+            "将选中的技能或 MCP 移入垃圾桶",
+            "Move selected skill or MCP to trash",
+        )
     }
     pub fn help_section_groups(&self) -> &'static str {
         self.zh_en("  分组", "  Groups")
@@ -353,6 +383,15 @@ impl T {
     }
     pub fn help_s_market(&self) -> &'static str {
         self.zh_en("源管理器 (市场标签)", "Source manager (Market tab)")
+    }
+    pub fn help_section_trash(&self) -> &'static str {
+        self.zh_en("  垃圾桶", "  Trash")
+    }
+    pub fn help_r_trash(&self) -> &'static str {
+        self.zh_en("恢复选中项", "Restore selected item")
+    }
+    pub fn help_d_trash(&self) -> &'static str {
+        self.zh_en("永久删除选中项", "Permanently delete selected item")
     }
     pub fn help_close(&self) -> &'static str {
         self.zh_en("  按任意键关闭", "  Press any key to close")

@@ -17,7 +17,8 @@ role: runtime
 - `scan()` — delegate to scanner.
 - `register_local_skill(name)` — add a skill that's already under `skills/` to the DB.
 - `enable_resource(id, target, group?)` / `disable_resource(...)` — for skill: create/remove symlink; for MCP: edit target's config file.
-- `uninstall(id)` — remove files, symlinks across all targets, and DB row.
+- `trash_resource(id)` / `uninstall(id)` — move a skill/MCP into global trash. `uninstall` is now a compatibility wrapper over `trash_resource`.
+- `list_trash()` / `find_trash_id(query)` / `restore_from_trash(id)` / `purge_trash(id)` / `empty_trash()`.
 - `list_resources(kind?, target?)` — unified listing (Skills from DB + MCPs by reading each CLI's config live via `mcp_discovery`).
 - `find_resource_id(name)` / `find_group_id(query)` — fuzzy lookup.
 - `record_usage(name)` / `usage_stats()` — usage tracking (DB-backed).
@@ -28,14 +29,15 @@ role: runtime
 **Install**:
 - `install_github_repo(owner, repo, branch, target)` — fetch, classify, register, group.
 - `register_and_group_skills(...)` — called after market install.
-- `batch_delete(names) -> (count, failed)`.
+- `batch_delete(names) -> (count, failed)` — now batch-trash, not permanent delete.
 
 **Status**: `status(target) -> (enabled_skills, enabled_mcps)`, `resource_count()`, `is_first_launch()`.
 
 ## Key invariants
 - **MCP enabled state is never in DB.** Re-read every `list_resources` / `status` call from CLI config files (`mcp_discovery::discover_all`). Caching this would go stale.
 - **Skill enabled state is never in DB.** It's the filesystem (symlink exists). DB only stores metadata and group membership.
-- `enable_resource(group=Some)` also records the resource under the group in DB — keep the `group` param flowing through install paths.
+- Delete is **trash-first** across CLI / TUI / MCP. Restoring a skill rebuilds its managed directory + enabled symlinks; restoring an MCP rebuilds live config entries + disabled backup JSON.
+- Trash capture removes group memberships from the active DB and stores them in the trash entry so the normal Groups view does not show ghost resources.
 - `disable_rune_self` — refuses to disable runai's own MCP entry across CLIs (guard rail).
 
 ## Touch points
@@ -44,5 +46,6 @@ role: runtime
 
 ## Gotchas
 - `list_resources` has non-trivial dedup logic: MCPs can live in multiple CLIs, show once with combined enable-state.
+- `find_resource_id(name)` must check disabled MCP backup files in `mcps/` in addition to live configs, otherwise trashed/disabled MCPs become unaddressable from CLI/MCP entrypoints.
 - `with_home` test helper uses `HOME` env var; the whole `tests` module is `#[cfg(not(target_os = "windows"))]` because `dirs 6.x` on Windows uses Win32 API and ignores env vars.
 - Enable/disable takes a `target: CliTarget`. Group enable/disable delegates to per-resource with the same target — it is **not** an all-targets operation.

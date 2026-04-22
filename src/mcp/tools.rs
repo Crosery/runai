@@ -71,6 +71,12 @@ pub struct UnifiedDeleteParams {
 }
 
 #[derive(Deserialize, schemars::JsonSchema, Default)]
+pub struct TrashQueryParams {
+    /// Trash entry ID or resource name
+    pub query: String,
+}
+
+#[derive(Deserialize, schemars::JsonSchema, Default)]
 pub struct StatusParams {
     /// CLI target: claude, codex, gemini, opencode
     pub target: Option<String>,
@@ -176,7 +182,7 @@ fn is_safe_shell_arg(s: &str) -> bool {
 }
 
 fn parse_target(s: Option<&str>) -> CliTarget {
-    CliTarget::from_str(s.unwrap_or("claude")).unwrap_or(CliTarget::Claude)
+    s.unwrap_or("claude").parse().unwrap_or(CliTarget::Claude)
 }
 
 /// Notify Claude Code to reload a specific MCP server after config changes.
@@ -247,10 +253,7 @@ impl SmServer {
             };
             mgr.get_group_members(&gid).unwrap_or_default()
         } else {
-            let kind_filter = p
-                .kind
-                .as_deref()
-                .and_then(crate::core::resource::ResourceKind::from_str);
+            let kind_filter = p.kind.as_deref().and_then(|kind| kind.parse().ok());
             mgr.list_resources(kind_filter, None).unwrap_or_default()
         };
 
@@ -467,7 +470,7 @@ impl SmServer {
     }
 
     #[tool(
-        description = "Delete skill(s)/MCP(s) (files+symlinks+DB). Pass 'name' for single or 'names' for multiple."
+        description = "Move skill(s)/MCP(s) into trash. Pass 'name' for single or 'names' for multiple."
     )]
     fn sm_delete(&self, Parameters(p): Parameters<UnifiedDeleteParams>) -> Json<TextResult> {
         let all_names = collect_names(p.name, p.names);
@@ -480,8 +483,13 @@ impl SmServer {
         let mut results = Vec::new();
         for name in &all_names {
             let msg = match mgr.find_resource_id(name) {
-                Some(id) => match mgr.uninstall(&id) {
-                    Ok(_) => format!("Deleted '{name}'"),
+                Some(id) => match mgr.trash_resource(&id) {
+                    Ok(_) => {
+                        if id.starts_with("mcp:") {
+                            sync_claude_mcp(name);
+                        }
+                        format!("Moved '{name}' to trash")
+                    }
                     Err(e) => format!("'{name}': {e}"),
                 },
                 None => format!("Not found: '{name}'. Run sm_list to see available resources."),
@@ -491,6 +499,94 @@ impl SmServer {
         Json(TextResult {
             result: results.join("\n"),
         })
+    }
+
+    #[tool(description = "List trash entries managed globally by runai.")]
+    fn sm_trash(&self) -> Json<TextResult> {
+        use crate::core::resource::format_time_ago;
+
+        let mgr = self.manager.lock().unwrap();
+        match mgr.list_trash() {
+            Ok(entries) => {
+                if entries.is_empty() {
+                    Json(TextResult {
+                        result: "Trash is empty.".into(),
+                    })
+                } else {
+                    let mut lines = vec![format!("{} trashed resources:", entries.len())];
+                    for entry in &entries {
+                        lines.push(format!(
+                            "  [{}] {} — {} ({})",
+                            entry.kind.as_str(),
+                            entry.id,
+                            entry.name,
+                            format_time_ago(Some(entry.deleted_at))
+                        ));
+                    }
+                    Json(TextResult {
+                        result: lines.join("\n"),
+                    })
+                }
+            }
+            Err(e) => Json(TextResult {
+                result: format!("Error: {e}"),
+            }),
+        }
+    }
+
+    #[tool(description = "Restore a trashed resource by trash entry ID or resource name.")]
+    fn sm_trash_restore(&self, Parameters(p): Parameters<TrashQueryParams>) -> Json<TextResult> {
+        let mgr = self.manager.lock().unwrap();
+        let entry = match mgr
+            .list_trash()
+            .unwrap_or_default()
+            .into_iter()
+            .find(|entry| entry.id == p.query || entry.name == p.query)
+        {
+            Some(entry) => entry,
+            None => {
+                return Json(TextResult {
+                    result: format!("Trash entry not found: '{}'", p.query),
+                });
+            }
+        };
+
+        let result = match mgr.restore_from_trash(&entry.id) {
+            Ok(_) => {
+                if entry.kind == crate::core::resource::ResourceKind::Mcp {
+                    sync_claude_mcp(&entry.name);
+                }
+                format!("Restored '{}'", entry.name)
+            }
+            Err(e) => format!("'{}': {e}", entry.name),
+        };
+        Json(TextResult { result })
+    }
+
+    #[tool(
+        description = "Permanently delete a trashed resource by trash entry ID or resource name."
+    )]
+    fn sm_trash_purge(&self, Parameters(p): Parameters<TrashQueryParams>) -> Json<TextResult> {
+        let mgr = self.manager.lock().unwrap();
+        let entry = match mgr
+            .list_trash()
+            .unwrap_or_default()
+            .into_iter()
+            .find(|entry| entry.id == p.query || entry.name == p.query)
+        {
+            Some(entry) => entry,
+            None => {
+                return Json(TextResult {
+                    result: format!("Trash entry not found: '{}'", p.query),
+                });
+            }
+        };
+
+        let result = match mgr.purge_trash(&entry.id) {
+            Ok(_) => format!("Permanently deleted '{}'", entry.name),
+            Err(e) => format!("'{}': {e}", entry.name),
+        };
+        Json(TextResult { result })
     }
 
     // ── Group management ──
@@ -724,14 +820,14 @@ impl SmServer {
                 });
             }
         }
-        if let Some(ref src) = p.source {
-            if !is_safe_shell_arg(src) {
-                return Json(TextResult {
-                    result: format!(
-                        "Invalid source: '{src}'. Only alphanumeric, -, _, ., /, @ allowed."
-                    ),
-                });
-            }
+        if let Some(ref src) = p.source
+            && !is_safe_shell_arg(src)
+        {
+            return Json(TextResult {
+                result: format!(
+                    "Invalid source: '{src}'. Only alphanumeric, -, _, ., /, @ allowed."
+                ),
+            });
         }
         let cmds: Vec<String> = all_names
             .iter()
@@ -995,9 +1091,10 @@ impl ServerHandler for SmServer {
              3. Fallback: Bash `npx skills find <keyword>` or `runai install owner/repo`\n\
              4. After install → sm_scan, sm_enable\n\
              \n\
-             CORE: sm_list, sm_status, sm_enable, sm_disable, sm_search, sm_scan\n\
+             CORE: sm_list, sm_status, sm_enable, sm_disable, sm_search, sm_scan, sm_delete\n\
              INSTALL: sm_install(repo), sm_market_install\n\
              GROUPS: sm_groups, sm_create_group, sm_delete_group, sm_group_members\n\
+             TRASH: sm_trash, sm_trash_restore, sm_trash_purge\n\
              STATS: sm_usage_stats\n\
              BACKUP: sm_backup, sm_backups, sm_restore\n\
              MARKET: sm_market{update_line}",
@@ -1016,135 +1113,148 @@ mod tests {
     use crate::test_support::HOME_LOCK;
     use rmcp::handler::server::wrapper::Parameters;
 
-    /// These tests open the *real* `~/.runai/runai.db` (via `SmServer::new()` →
-    /// `dirs::home_dir()`). They must hold `HOME_LOCK` while the server lives,
-    /// otherwise a concurrent `with_home` test can swap HOME to a tempdir,
-    /// drop the tempdir, and leave our DB connection pointing at a deleted
-    /// path → `SQLITE_READONLY_DBMOVED`. Declare the guard *before* the server
-    /// so drop order releases the connection first.
-    fn home_guard() -> std::sync::MutexGuard<'static, ()> {
-        HOME_LOCK
+    fn with_temp_home_server<F: FnOnce(&SmServer)>(f: F) {
+        let _guard = HOME_LOCK
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let original = std::env::var("HOME").ok();
+        unsafe {
+            std::env::set_var("HOME", tmp.path());
+        }
+
+        let server = SmServer::new().unwrap();
+        f(&server);
+        drop(server);
+
+        unsafe {
+            match original {
+                Some(value) => std::env::set_var("HOME", value),
+                None => std::env::remove_var("HOME"),
+            }
+        }
     }
 
     #[test]
     fn tool_router_has_expected_tools() {
-        let _guard = home_guard();
-        let server = SmServer::new().unwrap();
-        let tools = server.tool_router.list_all();
-        let tool_names: Vec<String> = tools.iter().map(|t| t.name.to_string()).collect();
-        eprintln!("Registered tools: {}", tools.len());
-        for name in &tool_names {
-            eprintln!("  - {name}");
-        }
+        with_temp_home_server(|server| {
+            let tools = server.tool_router.list_all();
+            let tool_names: Vec<String> = tools.iter().map(|t| t.name.to_string()).collect();
+            eprintln!("Registered tools: {}", tools.len());
+            for name in &tool_names {
+                eprintln!("  - {name}");
+            }
 
-        // 18 core expected tools
-        let expected_core = [
-            "sm_list",
-            "sm_status",
-            "sm_enable",
-            "sm_disable",
-            "sm_search",
-            "sm_scan",
-            "sm_delete",
-            "sm_install",
-            "sm_market",
-            "sm_market_install",
-            "sm_groups",
-            "sm_create_group",
-            "sm_delete_group",
-            "sm_group_members",
-            "sm_usage_stats",
-            "sm_backup",
-            "sm_backups",
-            "sm_restore",
-        ];
-        for name in &expected_core {
-            assert!(
-                tool_names.iter().any(|t| t == name),
-                "Expected core tool '{name}' not found"
-            );
-        }
+            // 21 core expected tools
+            let expected_core = [
+                "sm_list",
+                "sm_status",
+                "sm_enable",
+                "sm_disable",
+                "sm_search",
+                "sm_scan",
+                "sm_delete",
+                "sm_trash",
+                "sm_trash_restore",
+                "sm_trash_purge",
+                "sm_install",
+                "sm_market",
+                "sm_market_install",
+                "sm_groups",
+                "sm_create_group",
+                "sm_delete_group",
+                "sm_group_members",
+                "sm_usage_stats",
+                "sm_backup",
+                "sm_backups",
+                "sm_restore",
+            ];
+            for name in &expected_core {
+                assert!(
+                    tool_names.iter().any(|t| t == name),
+                    "Expected core tool '{name}' not found"
+                );
+            }
 
-        // 13 removed tools
-        let removed = [
-            "sm_batch_enable",
-            "sm_batch_disable",
-            "sm_batch_delete",
-            "sm_batch_install",
-            "sm_group_enable",
-            "sm_group_disable",
-            "sm_group_add",
-            "sm_group_remove",
-            "sm_update_group",
-            "sm_register",
-            "sm_record_usage",
-            "sm_discover",
-            "sm_sources",
-        ];
-        for name in &removed {
-            assert!(
-                !tool_names.iter().any(|t| t == name),
-                "Removed tool '{name}' should not be present"
-            );
-        }
+            // 13 removed tools
+            let removed = [
+                "sm_batch_enable",
+                "sm_batch_disable",
+                "sm_batch_delete",
+                "sm_batch_install",
+                "sm_group_enable",
+                "sm_group_disable",
+                "sm_group_add",
+                "sm_group_remove",
+                "sm_update_group",
+                "sm_register",
+                "sm_record_usage",
+                "sm_discover",
+                "sm_sources",
+            ];
+            for name in &removed {
+                assert!(
+                    !tool_names.iter().any(|t| t == name),
+                    "Removed tool '{name}' should not be present"
+                );
+            }
 
-        assert_eq!(tools.len(), 18, "Expected 18 tools, got {}", tools.len());
+            assert_eq!(tools.len(), 21, "Expected 21 tools, got {}", tools.len());
+        });
     }
 
     #[test]
     fn sm_status_returns_valid_json() {
-        let _guard = home_guard();
-        let server = SmServer::new().unwrap();
-        let Json(result) = server.sm_status(Parameters(StatusParams { target: None }));
-        let parsed: serde_json::Value =
-            serde_json::from_str(&result.result).expect("sm_status should return valid JSON");
+        with_temp_home_server(|server| {
+            let Json(result) = server.sm_status(Parameters(StatusParams { target: None }));
+            let parsed: serde_json::Value =
+                serde_json::from_str(&result.result).expect("sm_status should return valid JSON");
 
-        assert!(parsed.get("target").is_some(), "missing 'target' field");
-        assert!(
-            parsed.get("skills_enabled").is_some(),
-            "missing 'skills_enabled' field"
-        );
-        assert!(
-            parsed.get("skills_total").is_some(),
-            "missing 'skills_total' field"
-        );
-        assert!(
-            parsed.get("mcps_enabled").is_some(),
-            "missing 'mcps_enabled' field"
-        );
-        assert!(
-            parsed.get("mcps_total").is_some(),
-            "missing 'mcps_total' field"
-        );
-        assert_eq!(parsed["target"], "claude");
+            assert!(parsed.get("target").is_some(), "missing 'target' field");
+            assert!(
+                parsed.get("skills_enabled").is_some(),
+                "missing 'skills_enabled' field"
+            );
+            assert!(
+                parsed.get("skills_total").is_some(),
+                "missing 'skills_total' field"
+            );
+            assert!(
+                parsed.get("mcps_enabled").is_some(),
+                "missing 'mcps_enabled' field"
+            );
+            assert!(
+                parsed.get("mcps_total").is_some(),
+                "missing 'mcps_total' field"
+            );
+            assert_eq!(parsed["target"], "claude");
+        });
     }
 
     #[test]
     fn sm_backups_returns_string() {
-        let _guard = home_guard();
-        let server = SmServer::new().unwrap();
-        let Json(result) = server.sm_backups();
-        // With no backups, should return "No backups found"
-        // With backups, should return newline-separated timestamps
-        assert!(
-            !result.result.is_empty(),
-            "sm_backups should return a non-empty string"
-        );
+        with_temp_home_server(|server| {
+            let Json(result) = server.sm_backups();
+            // With no backups, should return "No backups found"
+            // With backups, should return newline-separated timestamps
+            assert!(
+                !result.result.is_empty(),
+                "sm_backups should return a non-empty string"
+            );
+        });
     }
 
     #[test]
     fn sm_search_no_results_suggests_npx_skills_find() {
-        let _guard = home_guard();
-        let server = SmServer::new().unwrap();
-        let Json(result) = server.sm_search(Parameters(NameParams {
-            name: "xyznonexistent99999".into(),
-        }));
-        assert!(
-            result.result.contains("npx skills find"),
-            "no-results message should suggest npx skills find, got: {}",
-            result.result
-        );
+        with_temp_home_server(|server| {
+            let Json(result) = server.sm_search(Parameters(NameParams {
+                name: "xyznonexistent99999".into(),
+            }));
+            assert!(
+                result.result.contains("npx skills find"),
+                "no-results message should suggest npx skills find, got: {}",
+                result.result
+            );
+        });
     }
 }
