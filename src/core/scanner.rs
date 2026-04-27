@@ -369,16 +369,22 @@ impl Scanner {
         // `rm -rf /tmp/x` permanently deleted 5 skills.
         //
         // Trigger condition: actual_source resolves into the DEFAULT data
-        // dir's skills/ subtree, BUT the active RUNE_DATA_DIR points
-        // somewhere else. Bail loudly rather than rename real data away.
-        let default_skills = crate::core::paths::data_dir().join("skills");
+        // dir's skills/ subtree, BUT the active data dir points somewhere
+        // else. Bail loudly rather than rename real data away.
+        //
+        // CRITICAL: must use `default_data_dir_no_env()` not `data_dir()` —
+        // `data_dir()` reads RUNE_DATA_DIR itself, so in the dangerous case
+        // it returns the override and the comparison degenerates to "always
+        // equal". Verified by physical e2e test: the original implementation
+        // using `data_dir()` silently let the rename through.
+        let default_skills = crate::core::paths::default_data_dir_no_env().join("skills");
         let active_data = paths.data_dir().to_path_buf();
         if actual_source.starts_with(&default_skills)
-            && active_data != crate::core::paths::data_dir()
+            && active_data != crate::core::paths::default_data_dir_no_env()
         {
             anyhow::bail!(
                 "refused to adopt '{}': source path {} is inside the default \
-                 data dir, but RUNE_DATA_DIR is set to {} — adopting would \
+                 data dir, but the active data dir is {} — adopting would \
                  std::fs::rename real user data out of the default location. \
                  If you really want to test scan in isolation, also set HOME \
                  to a tempdir so the scanner sees no real user skills.\n\

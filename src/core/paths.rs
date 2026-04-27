@@ -10,6 +10,18 @@ pub fn data_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("SKILL_MANAGER_DATA_DIR") {
         return PathBuf::from(dir);
     }
+    default_data_dir_no_env()
+}
+
+/// Resolve the OS-default data directory **without consulting any env vars**.
+/// This is the path runai would use if `RUNE_DATA_DIR` / `SKILL_MANAGER_DATA_DIR`
+/// were unset.
+///
+/// Used by guards that need to detect "user has overridden the data dir" — if
+/// the active path differs from this, the override is in effect. `data_dir()`
+/// itself can NOT be used for this check: it returns the override when set,
+/// so comparing `data_dir() == data_dir()` is always true.
+pub fn default_data_dir_no_env() -> PathBuf {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
     if cfg!(windows) {
         dirs::data_dir().unwrap_or(home).join("runai")
@@ -186,9 +198,66 @@ impl AppPaths {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "windows")))]
 mod tests {
     use super::*;
+    use crate::test_support::HOME_LOCK;
+
+    /// Regression: the 2026-04-27 incident's first guard impl used
+    /// `paths::data_dir()` to compute "the default location" — but that
+    /// function reads RUNE_DATA_DIR itself, so when the user set RUNE_DATA_DIR
+    /// the comparison degenerated to "active == active" and the guard never
+    /// fired. `default_data_dir_no_env()` must IGNORE the env vars even when
+    /// they're present.
+    #[test]
+    fn default_data_dir_no_env_ignores_rune_data_dir() {
+        let _guard = HOME_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let orig_home = std::env::var("HOME").ok();
+        let orig_rdd = std::env::var("RUNE_DATA_DIR").ok();
+        let orig_smdd = std::env::var("SKILL_MANAGER_DATA_DIR").ok();
+        // SAFETY: HOME_LOCK serializes env mutation across tests.
+        unsafe {
+            std::env::set_var("HOME", tmp.path());
+            std::env::set_var("RUNE_DATA_DIR", "/tmp/should-be-ignored");
+            std::env::set_var("SKILL_MANAGER_DATA_DIR", "/tmp/also-ignored");
+        }
+
+        let no_env_result = default_data_dir_no_env();
+        let env_result = data_dir();
+
+        unsafe {
+            match orig_home {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+            match orig_rdd {
+                Some(v) => std::env::set_var("RUNE_DATA_DIR", v),
+                None => std::env::remove_var("RUNE_DATA_DIR"),
+            }
+            match orig_smdd {
+                Some(v) => std::env::set_var("SKILL_MANAGER_DATA_DIR", v),
+                None => std::env::remove_var("SKILL_MANAGER_DATA_DIR"),
+            }
+        }
+
+        assert_eq!(
+            no_env_result,
+            tmp.path().join(".runai"),
+            "default_data_dir_no_env must use HOME-derived path even when env vars are set"
+        );
+        assert_eq!(
+            env_result,
+            std::path::PathBuf::from("/tmp/should-be-ignored"),
+            "data_dir SHOULD honor RUNE_DATA_DIR (different function, contract preserved)"
+        );
+        assert_ne!(
+            no_env_result, env_result,
+            "no_env vs env must diverge when env is set — that's the whole point"
+        );
+    }
 
     #[test]
     fn migrate_renames_dir_db_and_fixes_symlinks() {
