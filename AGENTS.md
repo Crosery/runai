@@ -5,6 +5,101 @@
 
 ---
 
+## 安全契约 / Safety Contract（读到这里，先停下来）
+
+> **这个项目管理用户的 skill 资产。Skill 是用户的动态私产 —— 每次代码改动都可能永久销毁它们。**
+> This project manages user skill assets. A wrong line in `std::fs::rename` / `remove_file` / `Linker::remove_link` can permanently destroy years of user work. There is **no git fallback** — these paths are not under version control.
+
+### 项目身份（你在动谁的东西）
+
+runai 在用户 home 里直接读写：
+
+- `~/.runai/skills/` — 用户 skill 真实文件（不是副本）
+- `~/.runai/{mcps,groups,trash,backups,market-cache}/` — 其他受管资产
+- `~/.runai/runai.db` — 元数据 / 分组 / 用量
+- `~/.{claude,codex,gemini,opencode}/skills/` — 启用状态的 symlink
+- `~/.claude.json` / `~/.codex/config.toml` / `~/.gemini/settings.json` / `~/.config/opencode/opencode.json` — 4 个 CLI 的 config
+
+任何会写 / 删 / 移这些路径的代码 = 在动用户私产。
+
+### 已经造成的损失（同根因复发）
+
+- **2026-04-20**：`runai scan` 在非默认 `RUNE_DATA_DIR` 下，把用户默认 `~/.runai/skills/` 的真实目录 `rename` 走，skill 永久消失。
+- **2026-04-27**：同根因再发，5 个用户 skill 永久丢失，另 56 个靠 `~/.runai_bak`（4-23 mtime）+ 历史 install 记录 + transcript 重放才回收。
+
+详细复盘和加固规则（**改 `scanner` / `linker` / `paths` / `manager` 之前必读**）：
+
+- `~/.claude/vault/40-postmortems/2026-04-27-runai-scan-renamed-source.md`
+- `~/.claude/vault/50-playbook/symlink-safety.md`
+
+如果你不是 Claude Code 跑在 crosery 的机器上，没有那个 vault 路径 —— 这两份记录的核心已经压到下面 5 条契约里。
+
+### 5 条铁律（不满足就不算完成任务）
+
+**1. 先识别"动用户私产"的边界。** 写代码前回答：这次改动是否触发以下任一？
+
+- 写 / 删 / 重命名 `~/.runai/{skills,mcps,groups,trash,backups}/*`
+- 创建 / 删除 `~/.{claude,codex,gemini,opencode}/skills/*` 下的 symlink
+- 修改 4 个 CLI 的 config 文件
+- 修改 `runai.db` 中影响文件系统的字段（`directory`、`symlink_path` 类）
+
+任一为是 → **高危改动**，下面 4 条全部生效。
+
+**2. 高危改动必须有"物理 e2e"测试，不能只有单元测试。** 4-27 的修复单元测试通过、物理 e2e 失败 —— 因为单测用的是 mock 的 paths 函数，没暴露 `paths::data_dir()` 会读 `RUNE_DATA_DIR` 这个真实路径解析行为。
+
+物理 e2e = 真实文件系统 + 真实 binary（`./target/debug/runai`）+ 隔离的 HOME 测试环境。强制流程：
+
+- **构建隔离测试环境**：`HOME=$(mktemp -d)`，预置测试用 skill 和 config，跑命令时显式注入 `HOME` / `RUNE_DATA_DIR`。**绝不在真实 `~/.runai/` 上跑任何测试。**
+- **覆盖所有破坏性触发路径**：`scan` / `discover` / `migrate` / `adopt` / `register` / `unregister` / `uninstall` / `doctor --fix` / `restore` / dedupe —— 每一个会写文件系统的子命令都要单独跑一遍，验证它没有动测试环境之外的任何路径。
+- **跨 `RUNE_DATA_DIR` 验证**：默认 home 一遍，`RUNE_DATA_DIR=<其他路径>` 一遍。两次行为都要正确。**这是 4-20 / 4-27 的根因区，必须双跑。**
+- **跨 4 个 CLI target 验证**：`claude` / `codex` / `gemini` / `opencode` 各跑一遍 enable / disable，确保 symlink 创建和清理在所有目标上对称。
+- **物理验证清单写进 PR / 提交描述**：列出"我跑了哪些命令、分别检查了哪些路径不动 / 哪些路径正确改变"。没有这份清单，PR 不算 ready。
+
+如果你没条件构建上面的测试环境，**任务就不算完成**。明说"我做不出物理 e2e，请你介入" —— 承认做不到 > 假装做到了。
+
+**3. 危险 syscall 必须先沙箱再上真实流程。** `std::fs::rename` / `remove_file` / `remove_dir_all` / `Linker::remove_link` / `create_link_force` —— 这些 API 在写测试时优先在 `mktemp -d` 沙箱里跑通，再放进真实代码路径。直接在真实 `~/.runai/` 上"试一下" = 4-27 复发。
+
+**4. 删除 / 重命名前必须验证"我要动的就是我以为的那个"。** 在调 `remove_*` / `rename` 之前，必须 log 或 assert：
+
+- 目标路径 canonicalize 后的结果
+- 当前进程的 effective HOME / `RUNE_DATA_DIR`
+- 这个路径属于"应该被动的范围"还是"用户私产范围"
+
+`scanner::adopt_entry` 现在就有这种 guard：如果 `actual_source` 落在默认 `~/.runai/skills/` 但当前活跃 data dir 不是默认 → 这是跨 data dir 操作，bail，不要 rename。
+
+**关键细节**：用 `default_data_dir_no_env()` 而不是 `paths::data_dir()` —— 后者读 `RUNE_DATA_DIR`，会让 baseline 被同一个 env 污染，guard 形同虚设（这是 bug 5 第一版的错）。
+
+任何新写的删除 / 重命名都要参考这个模式加 guard，不要省。
+
+**5. "自动修复"类功能默认关、显式触发、写文档。** 任何带"自动修复"语义的子命令（`doctor --fix` / 自动 migrate / 自动 dedupe）：
+
+- 默认不能在用户没显式触发时跑
+- 文档里要明确写"这个命令会改 / 删 X Y Z"
+- 即使 idempotent，执行前也要 log 即将改的路径
+
+`SkillManager::new()` 里的 silent dedupe 是已知例外（只动数据库元数据，不动文件系统）。任何**碰文件系统**的自动行为都禁止默默执行。
+
+### AI 自检（每次跑 Bash 前过一遍）
+
+| 你想跑的命令 | 必须先做的事 |
+|---|---|
+| `cargo run -- scan` / `discover` / `migrate` / `register` / `unregister` | 先 `export HOME=$(mktemp -d)` 准备测试 skill。**绝不在真实 home 跑** |
+| `cargo run -- doctor --fix` | 同上。这是**写操作**不是读操作（4-27 当天有 AI 把它当读操作跑了，删了 39 个 symlink） |
+| `cargo run -- uninstall` | 同上，会动 trash |
+| `rm -rf` 任何 `~/.runai/` 或 `~/.{claude,codex,gemini,opencode}/skills/` 子路径 | 停。问用户。**永远不自主删** |
+| 测试新写的 `Linker` / `scanner` / `paths` / `manager` 函数 | 沙箱单元测试 + 隔离 HOME 物理 e2e，双轨 |
+
+### 不要再犯的错（用户原话级别）
+
+- 把 `--fix` / `--migrate` 当读命令在测试脚本里跑
+- 单元测试通过就报"已验证"，不跑物理 e2e
+- 用 `paths::data_dir()`（读 env）当 baseline 去比对，应该用 `default_data_dir_no_env()`
+- "应该不会动用户文件吧" —— 任何"应该"都要 grep / 跑命令证实
+- 提交后才想"刚才那个改动会影响 register 吗" —— 提交前就要列受影响场景
+- "测试环境搭不出来就先这样" —— 没物理 e2e = 任务未完成，明说做不到
+
+---
+
 ## Maintenance invariants (read first, enforce always)
 
 **Every code change must ship its documentation update in the same commit.** Missing docs = half-finished work, treat the PR as not ready to merge.
