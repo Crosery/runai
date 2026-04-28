@@ -26,7 +26,7 @@
 - **Language/runtime**: Rust 2024 edition, single static binary, no runtime dependencies.
 - **Top-level crates/modules** under `src/`:
   - `cli/` — clap subcommand dispatch. Every user-facing subcommand lives here.
-  - `core/` — business logic. 19 files, see Module index. `manager.rs` is the orchestration hub.
+  - `core/` — business logic. 20 files, see Module index. `manager.rs` is the orchestration hub.
   - `mcp/` — rmcp-based MCP server exposing tool calls to host CLIs (stdio transport).
   - `tui/` — ratatui + crossterm full-screen UI. `app.rs` is the state machine; `ui.rs` renders.
 - **Data layout**: `~/.runai/` holds `skills/`, `mcps/`, `groups/`, `trash/`, `backups/`, `market-cache/`, `runai.db` (SQLite via rusqlite bundled). On Windows: `%APPDATA%\runai\` (via `dirs::data_dir`).
@@ -61,6 +61,7 @@ File-level LLM docs follow the convention `<name>.LLM.md` as a sibling to the so
 | core::linker | [src/core/linker.rs](src/core/linker.rs) | [src/core/linker.LLM.md](src/core/linker.LLM.md) | Cross-platform symlink create/remove/detect |
 | core::manager | [src/core/manager.rs](src/core/manager.rs) | [src/core/manager.LLM.md](src/core/manager.LLM.md) | `SkillManager` — orchestrates everything |
 | core::market | [src/core/market.rs](src/core/market.rs) | [src/core/market.LLM.md](src/core/market.LLM.md) | Market source list + skill index cache (1h TTL) |
+| core::mcp_canonical | [src/core/mcp_canonical.rs](src/core/mcp_canonical.rs) | [src/core/mcp_canonical.LLM.md](src/core/mcp_canonical.LLM.md) | Canonical MCP entry shape + per-CLI ↔ canonical converters |
 | core::mcp_discovery | [src/core/mcp_discovery.rs](src/core/mcp_discovery.rs) | [src/core/mcp_discovery.LLM.md](src/core/mcp_discovery.LLM.md) | Discover MCP entries from existing CLI configs |
 | core::mcp_register | [src/core/mcp_register.rs](src/core/mcp_register.rs) | [src/core/mcp_register.LLM.md](src/core/mcp_register.LLM.md) | Self-register runai as an MCP across all four CLIs |
 | core::paths | [src/core/paths.rs](src/core/paths.rs) | [src/core/paths.LLM.md](src/core/paths.LLM.md) | `AppPaths` resolver + legacy-dir migration |
@@ -80,6 +81,7 @@ Small `mod.rs` wiring files without substance are not separately documented; the
 
 ## Key constraints (load-bearing, do not break silently)
 
+- **MCP backup files in `~/.runai/mcps/<name>.json` are always canonical shape** (Claude/Gemini-style: `command:string` + `args:array`). `manager::remove_mcp_entry_from_target` normalizes via `mcp_canonical::to_canonical` before persisting; `manager::write_mcp_entry_to_target` re-emits per target via `from_canonical_for_json_target` / `canonical_to_codex_toml`. Without this, an MCP disabled from OpenCode (`command:[bin, args...]` + `enabled:bool` + `type:"local"`) would be written verbatim into `~/.claude.json`, breaking Claude Code's MCP parser — root cause of the 2026-04-28 incident. Corrupt entries (empty command) are refused at write time. `SkillManager::new()` runs `migrate_mcp_backups` once at startup to convert legacy OpenCode-shaped backups in place and quarantine corrupt ones into `mcps/.corrupt/`.
 - **Scanner never auto-runs at startup.** It's explicit (`runai scan` / `runai discover`) — auto-running risks clobbering user symlinks.
 - **Scanner is defensive.** It skips missing source dirs and missing `SKILL.md` rather than erroring; orphan symlinks are left alone, only matching-name broken symlinks are healed.
 - **Delete means trash-first.** `runai uninstall`, TUI delete, and MCP `sm_delete` move resources into `~/.runai/trash/` plus DB trash metadata; only trash purge is permanent.
@@ -118,7 +120,7 @@ cargo test -- --test-threads=1   # default in CI; SQLite dislikes parallel I/O h
 cargo test --lib <module>        # scope to a module
 ```
 
-**Test count varies by platform**: unix currently runs 158 tests; Windows still skips `manager::tests` because HOME mocking is unix-only, so the count is lower there. That's intentional — see Key constraints.
+**Test count varies by platform**: unix currently runs 182 lib tests + 6 integration tests (5 mcp_canonical_e2e + 1 mcp_stdio) = 188 active, plus 1 ignored (`install_test::test_real_install_minimax`, manual network test). Windows skips `manager::tests` and `mcp_canonical_e2e` because HOME mocking + symlinks are unix-only — the count is lower there. That's intentional — see Key constraints.
 
 ---
 

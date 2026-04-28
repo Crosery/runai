@@ -3,116 +3,16 @@ use crate::core::cli_target::CliTarget;
 use crate::core::db::Database;
 use crate::core::group::Group;
 use crate::core::linker::Linker;
+use crate::core::mcp_canonical::{
+    canonical_to_codex_toml, codex_toml_to_canonical, from_canonical_for_json_target, is_corrupt,
+    to_canonical,
+};
 use crate::core::paths::AppPaths;
 use crate::core::resource::{Resource, ResourceKind, Source, TrashEntry};
 use crate::core::scanner::Scanner;
 use anyhow::{Result, bail};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-
-/// Convert a TOML MCP entry to JSON (for backup storage).
-fn toml_to_json_mcp(val: &toml::Value) -> serde_json::Value {
-    match val {
-        toml::Value::Table(t) => {
-            let mut obj = serde_json::Map::new();
-            for (k, v) in t {
-                obj.insert(k.clone(), toml_val_to_json(v));
-            }
-            serde_json::Value::Object(obj)
-        }
-        other => toml_val_to_json(other),
-    }
-}
-
-fn toml_val_to_json(val: &toml::Value) -> serde_json::Value {
-    match val {
-        toml::Value::String(s) => serde_json::Value::String(s.clone()),
-        toml::Value::Integer(i) => serde_json::json!(i),
-        toml::Value::Boolean(b) => serde_json::json!(b),
-        toml::Value::Array(a) => serde_json::Value::Array(a.iter().map(toml_val_to_json).collect()),
-        toml::Value::Table(t) => {
-            let mut obj = serde_json::Map::new();
-            for (k, v) in t {
-                obj.insert(k.clone(), toml_val_to_json(v));
-            }
-            serde_json::Value::Object(obj)
-        }
-        _ => serde_json::Value::Null,
-    }
-}
-
-/// Convert a JSON MCP entry to TOML (for restoring into config.toml).
-fn json_to_toml_mcp(val: &serde_json::Value) -> toml::Value {
-    match val {
-        serde_json::Value::Object(obj) => {
-            let mut table = toml::Table::new();
-            for (k, v) in obj {
-                table.insert(k.clone(), json_val_to_toml(v));
-            }
-            toml::Value::Table(table)
-        }
-        other => json_val_to_toml(other),
-    }
-}
-
-fn json_val_to_toml(val: &serde_json::Value) -> toml::Value {
-    match val {
-        serde_json::Value::String(s) => toml::Value::String(s.clone()),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                toml::Value::Integer(i)
-            } else {
-                toml::Value::String(n.to_string())
-            }
-        }
-        serde_json::Value::Bool(b) => toml::Value::Boolean(*b),
-        serde_json::Value::Array(a) => toml::Value::Array(a.iter().map(json_val_to_toml).collect()),
-        serde_json::Value::Object(obj) => {
-            let mut table = toml::Table::new();
-            for (k, v) in obj {
-                table.insert(k.clone(), json_val_to_toml(v));
-            }
-            toml::Value::Table(table)
-        }
-        serde_json::Value::Null => toml::Value::String(String::new()),
-    }
-}
-
-/// Convert JSON MCP backup to OpenCode format.
-/// Handles both standard format (command=string, args=array) and
-/// OpenCode native format (command=array) since backup may contain either.
-fn json_to_opencode_mcp(entry: &serde_json::Value) -> serde_json::Value {
-    let command_val = entry.get("command");
-
-    let command_arr = if let Some(arr) = command_val.and_then(|v| v.as_array()) {
-        // Already OpenCode format: command is an array
-        arr.clone()
-    } else {
-        // Standard format: command is string, args is separate array
-        let cmd = command_val
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let args: Vec<String> = entry
-            .get("args")
-            .and_then(|v| v.as_array())
-            .map(|a| {
-                a.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let mut arr = vec![serde_json::Value::String(cmd)];
-        arr.extend(args.into_iter().map(serde_json::Value::String));
-        arr
-    };
-
-    serde_json::json!({
-        "command": command_arr,
-        "enabled": true,
-        "type": "local",
-    })
-}
 
 pub struct SkillManager {
     paths: AppPaths,
@@ -128,6 +28,8 @@ impl SkillManager {
 
         let paths = AppPaths::default_path();
         paths.ensure_dirs()?;
+        // Normalize MCP backups to canonical shape; quarantine corrupt ones.
+        let _ = Self::migrate_mcp_backups(&paths);
         let db = Database::open(&paths.db_path())?;
         Ok(Self { paths, db })
     }
@@ -135,8 +37,83 @@ impl SkillManager {
     pub fn with_base(base: PathBuf) -> Result<Self> {
         let paths = AppPaths::with_base(base);
         paths.ensure_dirs()?;
+        let _ = Self::migrate_mcp_backups(&paths);
         let db = Database::open(&paths.db_path())?;
         Ok(Self { paths, db })
+    }
+
+    /// Walk `~/.runai/mcps/*.json` and normalize backups in place:
+    ///   - Rewrite OpenCode-shaped entries (command:array) into canonical (command:string + args).
+    ///   - Move corrupt entries (empty command) into `mcps/.corrupt/<name>.json`.
+    ///   - Leave already-canonical entries untouched (idempotent).
+    ///
+    /// Returns `(rewritten, quarantined)` for diagnostics. Errors are logged, never propagated.
+    pub fn migrate_mcp_backups(paths: &AppPaths) -> (usize, usize) {
+        let mcps_dir = paths.mcps_dir();
+        if !mcps_dir.exists() {
+            return (0, 0);
+        }
+
+        let entries = match std::fs::read_dir(&mcps_dir) {
+            Ok(d) => d,
+            Err(_) => return (0, 0),
+        };
+
+        let mut rewritten = 0usize;
+        let mut quarantined = 0usize;
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() || path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            let name = match path.file_stem().and_then(|s| s.to_str()) {
+                Some(n) => n.to_string(),
+                None => continue,
+            };
+
+            let raw = match std::fs::read_to_string(&path) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            let value: serde_json::Value = match serde_json::from_str(&raw) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+
+            if is_corrupt(&value) {
+                let corrupt_dir = mcps_dir.join(".corrupt");
+                if std::fs::create_dir_all(&corrupt_dir).is_err() {
+                    continue;
+                }
+                let dest = corrupt_dir.join(format!("{name}.json"));
+                eprintln!(
+                    "[runai] quarantining corrupt MCP backup '{name}' -> {}",
+                    dest.display()
+                );
+                if std::fs::rename(&path, &dest).is_ok() {
+                    quarantined += 1;
+                }
+                continue;
+            }
+
+            let canonical = to_canonical(&value);
+            if canonical == value {
+                continue; // already canonical
+            }
+            match serde_json::to_string_pretty(&canonical)
+                .ok()
+                .and_then(|out| std::fs::write(&path, out).ok())
+            {
+                Some(()) => {
+                    eprintln!("[runai] normalized MCP backup '{name}' to canonical format");
+                    rewritten += 1;
+                }
+                None => continue,
+            }
+        }
+
+        (rewritten, quarantined)
     }
 
     pub fn paths(&self) -> &AppPaths {
@@ -284,6 +261,11 @@ impl SkillManager {
         Ok(())
     }
 
+    /// Read the named MCP entry out of `target`'s config file, normalize it
+    /// into canonical (Claude/Gemini-style) JSON, and remove it from the file.
+    /// Returns `None` if the entry is absent or the config file doesn't exist.
+    ///
+    /// The returned canonical Value is what callers should persist as backup.
     fn remove_mcp_entry_from_target(
         &self,
         mcp_name: &str,
@@ -301,7 +283,7 @@ impl SkillManager {
             let removed = if let Some(toml::Value::Table(servers)) = table.get_mut("mcp_servers") {
                 servers
                     .remove(mcp_name)
-                    .map(|entry| toml_to_json_mcp(&entry))
+                    .map(|entry| codex_toml_to_canonical(&entry))
             } else {
                 None
             };
@@ -318,7 +300,7 @@ impl SkillManager {
             };
             let removed =
                 if let Some(servers) = config.get_mut(mcp_key).and_then(|s| s.as_object_mut()) {
-                    servers.remove(mcp_name)
+                    servers.remove(mcp_name).map(|raw| to_canonical(&raw))
                 } else {
                     None
                 };
@@ -329,16 +311,26 @@ impl SkillManager {
         }
     }
 
+    /// Write a canonical entry into `target`'s config file, in `target`'s native shape.
+    /// Refuses to write entries flagged corrupt by `mcp_canonical::is_corrupt`.
     fn write_mcp_entry_to_target(
         &self,
         mcp_name: &str,
         target: CliTarget,
-        entry: &serde_json::Value,
+        canonical: &serde_json::Value,
     ) -> Result<()> {
-        let config_path = Self::cli_config_path(target);
-        let mut entry = entry.clone();
+        if is_corrupt(canonical) {
+            bail!(
+                "refusing to write corrupt MCP entry '{mcp_name}' to {} (empty/missing command)",
+                target.name()
+            );
+        }
 
-        if let Some(obj) = entry.as_object_mut() {
+        let config_path = Self::cli_config_path(target);
+
+        // Strip transient `disabled` before emitting — enabling means "disabled is gone".
+        let mut canonical = canonical.clone();
+        if let Some(obj) = canonical.as_object_mut() {
             obj.remove("disabled");
         }
 
@@ -356,7 +348,7 @@ impl SkillManager {
                 .entry("mcp_servers")
                 .or_insert_with(|| toml::Value::Table(toml::Table::new()));
             if let toml::Value::Table(s) = servers {
-                s.insert(mcp_name.to_string(), json_to_toml_mcp(&entry));
+                s.insert(mcp_name.to_string(), canonical_to_codex_toml(&canonical));
             }
             std::fs::write(&config_path, toml::to_string_pretty(&table)?)?;
         } else {
@@ -372,9 +364,7 @@ impl SkillManager {
                 "mcpServers"
             };
 
-            if target.uses_opencode_format() {
-                entry = json_to_opencode_mcp(&entry);
-            }
+            let target_entry = from_canonical_for_json_target(&canonical, target);
 
             let servers = config
                 .as_object_mut()
@@ -385,7 +375,7 @@ impl SkillManager {
             servers
                 .as_object_mut()
                 .ok_or_else(|| anyhow::anyhow!("{mcp_key} is not an object"))?
-                .insert(mcp_name.to_string(), entry);
+                .insert(mcp_name.to_string(), target_entry);
 
             std::fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
         }
@@ -2522,6 +2512,230 @@ args = []
                 !content.contains("design-gateway"),
                 "design-gateway should not appear in Codex config"
             );
+        });
+    }
+
+    // --- migrate_mcp_backups: regression for the cross-CLI schema bug ---
+
+    #[test]
+    fn migrate_mcp_backups_normalizes_opencode_shaped_backup() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::with_base(tmp.path().to_path_buf());
+        std::fs::create_dir_all(paths.mcps_dir()).unwrap();
+        let backup = paths.mcps_dir().join("foo.json");
+        std::fs::write(
+            &backup,
+            r#"{"command":["/bin/foo","arg1"],"enabled":true,"type":"local"}"#,
+        )
+        .unwrap();
+
+        let (rewritten, quarantined) = SkillManager::migrate_mcp_backups(&paths);
+        assert_eq!(rewritten, 1);
+        assert_eq!(quarantined, 0);
+
+        let after: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&backup).unwrap()).unwrap();
+        assert_eq!(after["command"], serde_json::json!("/bin/foo"));
+        assert_eq!(after["args"], serde_json::json!(["arg1"]));
+        assert!(after.get("enabled").is_none(), "OpenCode enabled stripped");
+        assert!(after.get("type").is_none(), "OpenCode type stripped");
+    }
+
+    #[test]
+    fn migrate_mcp_backups_quarantines_corrupt_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::with_base(tmp.path().to_path_buf());
+        std::fs::create_dir_all(paths.mcps_dir()).unwrap();
+        let backup = paths.mcps_dir().join("broken.json");
+        std::fs::write(&backup, r#"{"command":[""],"enabled":true,"type":"local"}"#).unwrap();
+
+        let (rewritten, quarantined) = SkillManager::migrate_mcp_backups(&paths);
+        assert_eq!(rewritten, 0);
+        assert_eq!(quarantined, 1);
+
+        assert!(!backup.exists(), "corrupt backup moved out of mcps/");
+        let corrupt = paths.mcps_dir().join(".corrupt").join("broken.json");
+        assert!(corrupt.exists(), "corrupt backup landed in mcps/.corrupt/");
+    }
+
+    #[test]
+    fn migrate_mcp_backups_is_idempotent_on_canonical_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::with_base(tmp.path().to_path_buf());
+        std::fs::create_dir_all(paths.mcps_dir()).unwrap();
+        let backup = paths.mcps_dir().join("clean.json");
+        let original = r#"{
+  "command": "/bin/foo",
+  "args": ["x"]
+}"#;
+        std::fs::write(&backup, original).unwrap();
+
+        let (rewritten, quarantined) = SkillManager::migrate_mcp_backups(&paths);
+        assert_eq!(rewritten, 0);
+        assert_eq!(quarantined, 0);
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), original);
+    }
+
+    #[test]
+    fn write_mcp_entry_refuses_corrupt_canonical() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_realistic_claude_json(tmp.path());
+
+        with_home(tmp.path(), || {
+            let mgr = SkillManager::with_base(tmp.path().join("sm-data")).unwrap();
+            // Pretend a backup already canonical but with empty command
+            let canonical = serde_json::json!({ "command": "", "args": [] });
+            let res = mgr.write_mcp_entry_to_target("bad", CliTarget::Claude, &canonical);
+            assert!(
+                res.is_err(),
+                "corrupt canonical entries must not be written"
+            );
+        });
+    }
+
+    #[test]
+    fn cross_cli_disable_opencode_then_enable_claude_writes_canonical_to_claude() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Pre-existing OpenCode config with `crosery-search` registered natively
+        let oc_dir = tmp.path().join(".config").join("opencode");
+        std::fs::create_dir_all(&oc_dir).unwrap();
+        std::fs::write(
+            oc_dir.join("opencode.json"),
+            r#"{
+                "mcp": {
+                    "crosery-search": {
+                        "command": ["/bin/crosery-search", "--port", "9999"],
+                        "enabled": true,
+                        "type": "local"
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        // Empty Claude config
+        std::fs::write(tmp.path().join(".claude.json"), r#"{"mcpServers":{}}"#).unwrap();
+
+        with_home(tmp.path(), || {
+            let mgr = SkillManager::with_base(tmp.path().join("sm-data")).unwrap();
+            // Disable from OpenCode → backup stored canonical
+            mgr.disable_resource("mcp:crosery-search", CliTarget::OpenCode, None)
+                .unwrap();
+
+            let backup_path = mgr.paths.mcps_dir().join("crosery-search.json");
+            let backup: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&backup_path).unwrap()).unwrap();
+            assert_eq!(
+                backup["command"],
+                serde_json::json!("/bin/crosery-search"),
+                "backup stores canonical command (string, not array)"
+            );
+            assert_eq!(backup["args"], serde_json::json!(["--port", "9999"]));
+
+            // Enable for Claude → must emit Claude-shaped entry
+            mgr.enable_resource("mcp:crosery-search", CliTarget::Claude, None)
+                .unwrap();
+
+            let claude: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(tmp.path().join(".claude.json")).unwrap(),
+            )
+            .unwrap();
+            let entry = &claude["mcpServers"]["crosery-search"];
+            assert_eq!(
+                entry["command"],
+                serde_json::json!("/bin/crosery-search"),
+                "Claude entry has command as string"
+            );
+            assert_eq!(entry["args"], serde_json::json!(["--port", "9999"]));
+            assert!(
+                entry.get("enabled").is_none(),
+                "Claude does not get OpenCode-only `enabled` field"
+            );
+            assert!(
+                entry.get("type").is_none()
+                    || entry.get("type").and_then(|v| v.as_str()) != Some("local"),
+                "Claude does not get OpenCode `type:local`"
+            );
+        });
+    }
+
+    #[test]
+    fn cross_cli_disable_claude_then_enable_opencode_emits_command_array() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join(".claude.json"),
+            r#"{"mcpServers":{"foo":{"command":"/bin/foo","args":["x","y"]}}}"#,
+        )
+        .unwrap();
+        let oc_dir = tmp.path().join(".config").join("opencode");
+        std::fs::create_dir_all(&oc_dir).unwrap();
+        std::fs::write(oc_dir.join("opencode.json"), r#"{"mcp":{}}"#).unwrap();
+
+        with_home(tmp.path(), || {
+            let mgr = SkillManager::with_base(tmp.path().join("sm-data")).unwrap();
+            mgr.disable_resource("mcp:foo", CliTarget::Claude, None)
+                .unwrap();
+            mgr.enable_resource("mcp:foo", CliTarget::OpenCode, None)
+                .unwrap();
+
+            let oc: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(oc_dir.join("opencode.json")).unwrap(),
+            )
+            .unwrap();
+            let entry = &oc["mcp"]["foo"];
+            assert_eq!(
+                entry["command"],
+                serde_json::json!(["/bin/foo", "x", "y"]),
+                "OpenCode entry has command as array (cmd + args merged)"
+            );
+            assert_eq!(entry["enabled"], serde_json::json!(true));
+            assert_eq!(entry["type"], serde_json::json!("local"));
+        });
+    }
+
+    #[test]
+    fn codex_disable_then_enable_preserves_tools_subtable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let codex_dir = tmp.path().join(".codex");
+        std::fs::create_dir_all(&codex_dir).unwrap();
+        std::fs::write(
+            codex_dir.join("config.toml"),
+            r#"[mcp_servers.design-gateway]
+type = "stdio"
+command = "/bin/dg"
+args = ["server.js"]
+
+[mcp_servers.design-gateway.env]
+DG_KEY = "secret"
+
+[mcp_servers.design-gateway.tools.cdp_navigate]
+approval_mode = "approve"
+
+[mcp_servers.design-gateway.tools.export_node_as_image]
+approval_mode = "approve"
+"#,
+        )
+        .unwrap();
+
+        with_home(tmp.path(), || {
+            let mgr = SkillManager::with_base(tmp.path().join("sm-data")).unwrap();
+            mgr.disable_resource("mcp:design-gateway", CliTarget::Codex, None)
+                .unwrap();
+            mgr.enable_resource("mcp:design-gateway", CliTarget::Codex, None)
+                .unwrap();
+
+            let after = std::fs::read_to_string(codex_dir.join("config.toml")).unwrap();
+            assert!(
+                after.contains("approval_mode = \"approve\""),
+                "Codex tools.* approval_mode preserved across disable/enable"
+            );
+            assert!(
+                after.contains("DG_KEY = \"secret\""),
+                "Codex env subtable preserved"
+            );
+            assert!(after.contains("cdp_navigate"), "tool 1 preserved");
+            assert!(after.contains("export_node_as_image"), "tool 2 preserved");
         });
     }
 }

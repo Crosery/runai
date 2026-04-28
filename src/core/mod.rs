@@ -10,6 +10,7 @@ pub mod installer;
 pub mod linker;
 pub mod manager;
 pub mod market;
+pub mod mcp_canonical;
 pub mod mcp_discovery;
 pub mod mcp_register;
 pub mod paths;

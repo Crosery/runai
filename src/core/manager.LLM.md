@@ -36,6 +36,9 @@ role: runtime
 ## Key invariants
 - **MCP enabled state is never in DB.** Re-read every `list_resources` / `status` call from CLI config files (`mcp_discovery::discover_all`). Caching this would go stale.
 - **Skill enabled state is never in DB.** It's the filesystem (symlink exists). DB only stores metadata and group membership.
+- **MCP backups in `~/.runai/mcps/<name>.json` are always canonical shape** (Claude/Gemini-style: `command:string` + `args:array`). `remove_mcp_entry_from_target` runs `mcp_canonical::to_canonical` before persisting; `write_mcp_entry_to_target` runs `from_canonical_for_json_target` / `canonical_to_codex_toml` per target on the way out. This is the only contract that lets cross-CLI disable→enable (e.g. disable from OpenCode → enable for Claude) round-trip without corrupting Claude's `mcpServers` schema. Root-cause for the 2026-04-28 fix.
+- **Corrupt MCP entries (empty command) are refused at write time.** `write_mcp_entry_to_target` calls `mcp_canonical::is_corrupt` and bails. Migration on startup quarantines pre-existing corrupt backups into `~/.runai/mcps/.corrupt/`.
+- **`SkillManager::new()` and `with_base()` auto-run `migrate_mcp_backups`** to normalize legacy OpenCode-shaped backups into canonical and quarantine corrupt ones. Idempotent. Logs via stderr when changes occur.
 - Delete is **trash-first** across CLI / TUI / MCP. Restoring a skill rebuilds its managed directory + enabled symlinks; restoring an MCP rebuilds live config entries + disabled backup JSON.
 - Trash capture removes group memberships from the active DB and stores them in the trash entry so the normal Groups view does not show ghost resources.
 - `disable_rune_self` — refuses to disable runai's own MCP entry across CLIs (guard rail).
