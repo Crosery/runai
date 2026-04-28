@@ -40,6 +40,9 @@ tar = "0.4"
 zip = "2"
 tempfile = "3"
 semver = "1"
+# Filesystem event watcher (TUI live reload)
+notify = "8"
+notify-debouncer-mini = "0.6"
 
 [profile.release]
 strip = true

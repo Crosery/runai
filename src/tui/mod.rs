@@ -11,8 +11,10 @@ use crossterm::{
 };
 use ratatui::prelude::*;
 use std::io;
+use std::sync::mpsc;
 use std::time::Duration;
 
+use crate::core::config_watcher::ConfigWatcher;
 use crate::core::manager::SkillManager;
 use app::{App, InputMode};
 
@@ -34,6 +36,12 @@ pub fn run_tui(mgr: SkillManager) -> Result<()> {
         app.prefetch_market();
     }
 
+    // Live filesystem watcher: events from the 4 CLI MCP configs / skills dirs /
+    // runai mcps backup dir trigger a reload before the next redraw. Held for the
+    // lifetime of the TUI; dropping at function return stops the watcher.
+    let (watch_tx, watch_rx) = mpsc::channel::<()>();
+    let _watcher = ConfigWatcher::start(watch_tx).ok();
+
     loop {
         terminal.draw(|f| ui::render(f, &app))?;
 
@@ -46,9 +54,17 @@ pub fn run_tui(mgr: SkillManager) -> Result<()> {
             continue; // re-render immediately with results
         }
 
-        // Poll async market loading + config file changes
+        // Drain watcher events: any pending fs change collapses to a single reload.
+        let mut should_reload = false;
+        while watch_rx.try_recv().is_ok() {
+            should_reload = true;
+        }
+        if should_reload {
+            app.reload();
+        }
+
+        // Poll async market loading
         app.poll_market();
-        app.poll_config_changes();
 
         if event::poll(Duration::from_millis(100))?
             && let Event::Key(key) = event::read()?

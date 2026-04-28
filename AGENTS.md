@@ -54,6 +54,7 @@ File-level LLM docs follow the convention `<name>.LLM.md` as a sibling to the so
 | core::channel | [src/core/channel.rs](src/core/channel.rs) | [src/core/channel.LLM.md](src/core/channel.LLM.md) | Release channel (stable / beta) selection |
 | core::classifier | [src/core/classifier.rs](src/core/classifier.rs) | [src/core/classifier.LLM.md](src/core/classifier.LLM.md) | Classifies installable artifacts into Skill vs MCP vs Agent |
 | core::cli_target | [src/core/cli_target.rs](src/core/cli_target.rs) | [src/core/cli_target.LLM.md](src/core/cli_target.LLM.md) | CliTarget enum + per-target dir/config resolvers |
+| core::config_watcher | [src/core/config_watcher.rs](src/core/config_watcher.rs) | [src/core/config_watcher.LLM.md](src/core/config_watcher.LLM.md) | notify-based watcher for 4 CLI MCP configs + skills dirs + mcps backup; drives TUI live reload |
 | core::db | [src/core/db.rs](src/core/db.rs) | [src/core/db.LLM.md](src/core/db.LLM.md) | SQLite schema + migrations + query layer |
 | core::doctor | [src/core/doctor.rs](src/core/doctor.rs) | [src/core/doctor.LLM.md](src/core/doctor.LLM.md) | `runai doctor` health checks |
 | core::group | [src/core/group.rs](src/core/group.rs) | [src/core/group.LLM.md](src/core/group.LLM.md) | Group definition (TOML on disk) + member type |

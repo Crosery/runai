@@ -273,8 +273,6 @@ pub struct App {
     pub max_usage_count: u64,
     pub first_launch_info: Option<FirstLaunchInfo>,
     pub scan_log: Vec<String>,
-    /// Last known mtime of CLI config files for change detection
-    config_mtimes: HashMap<String, std::time::SystemTime>,
     // Market
     pub market_source_idx: usize,
     pub sources: Vec<SourceEntry>,
@@ -331,7 +329,6 @@ impl App {
             max_usage_count: 0,
             first_launch_info: None,
             scan_log: Vec::new(),
-            config_mtimes: HashMap::new(),
             detail_group_id: String::new(),
             detail_group_name: String::new(),
             detail_members: Vec::new(),
@@ -387,67 +384,6 @@ impl App {
                 }
                 let _ = tx.send(result.map(|e| e.skills).map_err(|e| e.to_string()));
             });
-        }
-    }
-
-    /// Check if any CLI config file changed since last check. If so, sync and reload.
-    /// Cheap: only stat() calls, no file reads unless mtime changed.
-    pub fn poll_config_changes(&mut self) {
-        let home = dirs::home_dir().unwrap_or_default();
-        let configs = [
-            home.join(".claude.json"),
-            home.join(".gemini/settings.json"),
-            home.join(".codex/settings.json"),
-            home.join(".opencode/settings.json"),
-        ];
-        let mut changed = false;
-        for path in &configs {
-            let key = path.to_string_lossy().to_string();
-            let mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
-            if let Some(mt) = mtime {
-                let prev = self.config_mtimes.get(&key);
-                if prev != Some(&mt) {
-                    self.config_mtimes.insert(key, mt);
-                    changed = true;
-                }
-            }
-        }
-        // Also watch skills directories
-        for target in crate::core::cli_target::CliTarget::ALL {
-            let skills_dir = target.skills_dir();
-            if skills_dir.exists() {
-                let key = skills_dir.to_string_lossy().to_string();
-                let mtime = std::fs::metadata(&skills_dir)
-                    .and_then(|m| m.modified())
-                    .ok();
-                if let Some(mt) = mtime {
-                    let prev = self.config_mtimes.get(&key);
-                    if prev != Some(&mt) {
-                        self.config_mtimes.insert(key, mt);
-                        changed = true;
-                    }
-                }
-            }
-        }
-
-        // Watch mcp-configs directory
-        let mcp_configs = home.join(".claude").join("mcp-configs");
-        if mcp_configs.exists() {
-            let key = mcp_configs.to_string_lossy().to_string();
-            let mtime = std::fs::metadata(&mcp_configs)
-                .and_then(|m| m.modified())
-                .ok();
-            if let Some(mt) = mtime {
-                let prev = self.config_mtimes.get(&key);
-                if prev != Some(&mt) {
-                    self.config_mtimes.insert(key, mt);
-                    changed = true;
-                }
-            }
-        }
-
-        if changed {
-            self.reload();
         }
     }
 
