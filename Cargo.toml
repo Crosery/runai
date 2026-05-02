@@ -1,6 +1,6 @@
 [package]
 name = "runai"
-version = "0.10.1"
+version = "0.10.2"
 edition = "2024"
 description = "AI CLI resource manager for skills and MCP servers"
 authors = ["Crosery"]
