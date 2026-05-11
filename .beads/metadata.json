@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "runai",
+  "project_id": "237ac301-c10d-4acf-9e54-f64d56db1e4d"
+}
