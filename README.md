@@ -92,6 +92,22 @@ runai group delete my-group   # Remove a group definition (members untouched)
 runai group update my-group --name "New Name" --description "..."
 ```
 
+## Skill auto-routing (opt-in)
+
+Tell Claude Code which installed skills are relevant for each prompt — without typing skill names yourself. A small LLM picks top-K skills from your installed set and runai emits their full `SKILL.md` content into the Claude Code conversation via a `UserPromptSubmit` hook.
+
+Disabled by default. To enable:
+
+```bash
+runai recommend setup          # interactive: pick provider, paste API key, choose model
+runai recommend hook-snippet   # prints the JSON to drop into ~/.claude/settings.json
+runai recommend status         # shows current config (API key redacted)
+```
+
+Default provider is OpenAI-compatible with DeepSeek (`deepseek-v4-flash`, ~1s per route, very cheap). Anthropic Messages API also supported (set `provider = "anthropic"`, `model = "claude-haiku-4-5-20251001"`). Any OpenAI-compatible backend works — Moonshot, Groq, vLLM, etc.
+
+API key can also come from env `RUNAI_RECOMMEND_API_KEY`. Config lives at `~/.runai/config.toml` with `0o600` permission.
+
 ## TUI Keybindings
 
 Footer shows essential keys. Press `?` for full help panel.

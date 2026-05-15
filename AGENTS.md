@@ -161,6 +161,7 @@ File-level LLM docs follow the convention `<name>.LLM.md` as a sibling to the so
 | core::mcp_discovery | [src/core/mcp_discovery.rs](src/core/mcp_discovery.rs) | [src/core/mcp_discovery.LLM.md](src/core/mcp_discovery.LLM.md) | Discover MCP entries from existing CLI configs |
 | core::mcp_register | [src/core/mcp_register.rs](src/core/mcp_register.rs) | [src/core/mcp_register.LLM.md](src/core/mcp_register.LLM.md) | Self-register runai as an MCP across all four CLIs |
 | core::paths | [src/core/paths.rs](src/core/paths.rs) | [src/core/paths.LLM.md](src/core/paths.LLM.md) | `AppPaths` resolver + legacy-dir migration |
+| core::recommend | [src/core/recommend.rs](src/core/recommend.rs) | [src/core/recommend.LLM.md](src/core/recommend.LLM.md) | Opt-in LLM skill router for `UserPromptSubmit` hook (DeepSeek / Anthropic / any OpenAI-compat backend) |
 | core::resource | [src/core/resource.rs](src/core/resource.rs) | [src/core/resource.LLM.md](src/core/resource.LLM.md) | `Resource` / `ResourceKind` domain types |
 | core::scanner | [src/core/scanner.rs](src/core/scanner.rs) | [src/core/scanner.LLM.md](src/core/scanner.LLM.md) | Filesystem discovery + adoption of unmanaged skills |
 | core::search | [src/core/search.rs](src/core/search.rs) | [src/core/search.LLM.md](src/core/search.LLM.md) | nucleo (fzf v2) fuzzy matcher shared by sm_search / sm_market / CLI search & market |
@@ -220,7 +221,7 @@ cargo test -- --test-threads=1   # default in CI; SQLite dislikes parallel I/O h
 cargo test --lib <module>        # scope to a module
 ```
 
-**Test count varies by platform**: unix currently runs 199 lib tests + 20 integration tests (7 safety_e2e + 5 cli_target_symmetry + 7 mcp_canonical_e2e + 1 mcp_stdio) = 219 active, plus 1 ignored (`install_test::test_real_install_minimax`, manual network test). Windows skips `manager::tests`, `safety_e2e`, `cli_target_symmetry`, and `mcp_canonical_e2e` because HOME mocking + symlinks are unix-only — the count is lower there. That's intentional — see Key constraints.
+**Test count varies by platform**: unix currently runs 207 lib tests + 20 integration tests (7 safety_e2e + 5 cli_target_symmetry + 7 mcp_canonical_e2e + 1 mcp_stdio) = 227 active, plus 1 ignored (`install_test::test_real_install_minimax`, manual network test). Windows skips `manager::tests`, `safety_e2e`, `cli_target_symmetry`, and `mcp_canonical_e2e` because HOME mocking + symlinks are unix-only — the count is lower there. That's intentional — see Key constraints.
 
 ---
 
