@@ -98,14 +98,25 @@ jobs:
           # no annotation body.
           NOTES_FILE=$(mktemp)
           git tag -l --format='%(contents:body)' "$TAG" > "$NOTES_FILE"
+
+          # Auto-detect pre-release tags. Any tag with a suffix like -alpha,
+          # -beta, -rc, -pre, -preview, -dev gets marked as a GitHub prerelease
+          # so it does not become the "Latest release" badge.
+          PRERELEASE_FLAG=""
+          case "$TAG" in
+            *-alpha*|*-beta*|*-rc*|*-pre*|*-preview*|*-dev*)
+              PRERELEASE_FLAG="--prerelease"
+              ;;
+          esac
+
           if [ -s "$NOTES_FILE" ]; then
-            gh release create "$TAG" \
+            gh release create "$TAG" $PRERELEASE_FLAG \
               --repo "${{ github.repository }}" \
               --title "$TAG" \
               --notes-file "$NOTES_FILE" \
               runai-*.tar.gz runai-*.zip checksums.txt
           else
-            gh release create "$TAG" \
+            gh release create "$TAG" $PRERELEASE_FLAG \
               --repo "${{ github.repository }}" \
               --title "$TAG" \
               --generate-notes \
