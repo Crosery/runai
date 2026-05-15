@@ -77,6 +77,10 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
@@ -89,8 +93,21 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
-          gh release create "$TAG" \
-            --repo "${{ github.repository }}" \
-            --title "$TAG" \
-            --generate-notes \
-            runai-*.tar.gz runai-*.zip checksums.txt
+          # Release body comes from the annotated tag message (everything after
+          # the subject line). Fall back to auto-generated notes if the tag has
+          # no annotation body.
+          NOTES_FILE=$(mktemp)
+          git tag -l --format='%(contents:body)' "$TAG" > "$NOTES_FILE"
+          if [ -s "$NOTES_FILE" ]; then
+            gh release create "$TAG" \
+              --repo "${{ github.repository }}" \
+              --title "$TAG" \
+              --notes-file "$NOTES_FILE" \
+              runai-*.tar.gz runai-*.zip checksums.txt
+          else
+            gh release create "$TAG" \
+              --repo "${{ github.repository }}" \
+              --title "$TAG" \
+              --generate-notes \
+              runai-*.tar.gz runai-*.zip checksums.txt
+          fi
