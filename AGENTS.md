@@ -208,7 +208,7 @@ cargo build
 ## Build & CI
 
 - **CI** (`.github/workflows/ci.yml`): `cargo fmt --check` → `cargo clippy --all-targets -- -W clippy::all` → `cargo test -- --test-threads=1`, matrix = `[ubuntu-latest, macos-latest, windows-latest]`, `fail-fast: false`.
-- **Release** (`.github/workflows/release.yml`): triggered by `v*` tags; matrix produces `runai-{linux,darwin,windows}-{amd64,arm64}.{tar.gz,zip}` + `checksums.txt`. Windows target skipped for arm64 (no MSVC cross from runner host); all others present.
+- **Release** (`.github/workflows/release.yml`): triggered by `v*` tags; matrix produces `runai-{linux,darwin,windows}-{amd64,arm64}.{tar.gz,zip}` + `checksums.txt`. Windows target skipped for arm64 (no MSVC cross from runner host); all others present. Release body comes from the **annotated tag message body** (`git tag -a vX.Y.Z -m "..."`), with fallback to GitHub auto-generated notes when the tag has no annotation. Always use `git tag -a` and write a real changelog in the message — that becomes the GitHub release page.
 - **HOME mocking** in `manager::tests` uses `HOME` env var — unix only. Do not assume it works on Windows (see Key constraints).
 
 ---
