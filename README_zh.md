@@ -92,6 +92,22 @@ runai group delete my-group   # 删除一个 group 定义（不动成员）
 runai group update my-group --name "新名字" --description "..."
 ```
 
+## Skill 自动路由（默认关闭）
+
+通过 Claude Code 的 `UserPromptSubmit` hook，让小模型按用户每次的 prompt 从已装 skill 中选最相关的几个，把它们的完整 `SKILL.md` 注入主 Claude 上下文。无需手敲 skill 名。
+
+默认关闭。开启：
+
+```bash
+runai recommend setup          # 交互：选 provider、粘 API key、选 model
+runai recommend hook-snippet   # 打印要塞到 ~/.claude/settings.json 的 hook JSON
+runai recommend status         # 查看当前配置（API key 脱敏）
+```
+
+默认 provider 是 OpenAI 兼容（DeepSeek `deepseek-v4-flash`，~1s/次，便宜）。也支持 Anthropic Messages API（`provider = "anthropic"`，`model = "claude-haiku-4-5-20251001"`）。任何 OpenAI 兼容服务都能接：Moonshot / Groq / vLLM 等。
+
+API key 也能走环境变量 `RUNAI_RECOMMEND_API_KEY`。配置在 `~/.runai/config.toml`，unix 下权限 `0o600`。
+
 ## TUI 快捷键
 
 底部显示常用按键，按 `?` 打开完整帮助面板。

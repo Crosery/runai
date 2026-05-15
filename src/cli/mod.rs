@@ -114,6 +114,23 @@ pub enum Commands {
         #[arg(long)]
         fix: bool,
     },
+    /// LLM-driven skill router (off by default; run `runai recommend setup`).
+    Recommend {
+        #[command(subcommand)]
+        command: Option<RecommendCommands>,
+        /// Run router for the given prompt (positional, no subcommand)
+        prompt: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum RecommendCommands {
+    /// Interactive setup: pick provider, paste API key, write ~/.runai/config.toml
+    Setup,
+    /// Show current router config (api_key redacted)
+    Status,
+    /// Print the hook JSON snippet to drop into ~/.claude/settings.json
+    HookSnippet,
 }
 
 #[derive(Subcommand)]
@@ -605,6 +622,10 @@ pub fn run(cli: Cli) -> Result<()> {
             //    suppression. Skipping straight to exit sidesteps both.
             std::process::exit(0);
         }
+        Some(Commands::Recommend { command, prompt }) => {
+            handle_recommend(&mgr, command, prompt)?;
+            Ok(())
+        }
         Some(Commands::Doctor { fix }) => {
             println!("runai doctor v{}\n", env!("CARGO_PKG_VERSION"));
             let results = crate::core::doctor::run_doctor();
@@ -767,6 +788,208 @@ fn find_resource_id_by_name(mgr: &SkillManager, name: &str) -> Result<String> {
 fn find_trash_id_by_query(mgr: &SkillManager, query: &str) -> Result<String> {
     mgr.find_trash_id(query)
         .ok_or_else(|| anyhow::anyhow!("trash entry not found: {query}"))
+}
+
+fn handle_recommend(
+    mgr: &SkillManager,
+    command: Option<RecommendCommands>,
+    prompt: Option<String>,
+) -> Result<()> {
+    use crate::core::recommend::{Provider, RecommendConfig, format_for_hook, recommend};
+
+    match (command, prompt) {
+        (None, prompt_opt) => {
+            // Resolve user prompt + transcript path. Precedence:
+            //   1. positional `prompt` arg if given
+            //   2. stdin JSON (Claude Code hook protocol: {prompt, transcript_path, ...})
+            // Stdin-JSON mode lets the router see recent conversation history,
+            // which is how "use figma-component-mapping" replies get auto-routed
+            // to the right skill on the next round.
+            let (user_prompt, transcript_path) = match prompt_opt {
+                Some(p) => (p, None),
+                None => {
+                    use std::io::Read;
+                    let mut buf = String::new();
+                    if std::io::stdin().read_to_string(&mut buf).is_err() || buf.trim().is_empty() {
+                        anyhow::bail!(
+                            "usage: runai recommend <prompt> | runai recommend setup | runai recommend status | runai recommend hook-snippet\n(or pipe Claude Code's UserPromptSubmit hook JSON via stdin)"
+                        );
+                    }
+                    let v: serde_json::Value = serde_json::from_str(&buf)
+                        .map_err(|e| anyhow::anyhow!("parse hook stdin JSON: {e}"))?;
+                    let p = v
+                        .get("prompt")
+                        .and_then(|x| x.as_str())
+                        .or_else(|| v.get("user_prompt").and_then(|x| x.as_str()))
+                        .unwrap_or("")
+                        .to_string();
+                    let tp = v
+                        .get("transcript_path")
+                        .and_then(|x| x.as_str())
+                        .map(std::path::PathBuf::from);
+                    (p, tp)
+                }
+            };
+
+            let cfg = RecommendConfig::load(mgr.paths())?;
+            if !cfg.enabled {
+                return Ok(());
+            }
+            match recommend(mgr, &user_prompt, transcript_path.as_deref()) {
+                Ok(skills) => {
+                    let out = format_for_hook(&skills);
+                    if !out.is_empty() {
+                        print!("{out}");
+                    }
+                }
+                Err(e) => {
+                    eprintln!("# runai recommend skipped: {e}");
+                }
+            }
+            Ok(())
+        }
+        (Some(RecommendCommands::Setup), _) => {
+            recommend_setup(mgr)?;
+            Ok(())
+        }
+        (Some(RecommendCommands::Status), _) => {
+            let cfg = RecommendConfig::load(mgr.paths())?;
+            println!("enabled:        {}", cfg.enabled);
+            println!(
+                "provider:       {}",
+                match cfg.provider {
+                    Provider::OpenaiCompat => "openai-compat",
+                    Provider::Anthropic => "anthropic",
+                }
+            );
+            println!("base_url:       {}", cfg.base_url);
+            println!("model:          {}", cfg.model);
+            let key_status = if !cfg.api_key.is_empty() {
+                "set in config"
+            } else if std::env::var("RUNAI_RECOMMEND_API_KEY").is_ok() {
+                "set via RUNAI_RECOMMEND_API_KEY"
+            } else {
+                "missing"
+            };
+            println!("api_key:        {key_status}");
+            println!("top_k:          {}", cfg.top_k);
+            println!("min_prompt_len: {}", cfg.min_prompt_len);
+            println!("config file:    {}", mgr.paths().config_path().display());
+            Ok(())
+        }
+        (Some(RecommendCommands::HookSnippet), _) => {
+            println!(
+                r#"Add this to ~/.claude/settings.json:
+
+{{
+  "hooks": {{
+    "UserPromptSubmit": [
+      {{
+        "hooks": [
+          {{ "type": "command", "command": "runai recommend" }}
+        ]
+      }}
+    ]
+  }}
+}}
+
+Claude Code pipes the hook JSON (prompt, transcript_path, ...) to stdin.
+runai recommend reads it, looks at recent conversation history, and emits
+the picked SKILL.md to stdout — which Claude Code injects as additional
+context for the upcoming turn."#
+            );
+            Ok(())
+        }
+    }
+}
+
+fn recommend_setup(mgr: &SkillManager) -> Result<()> {
+    use crate::core::recommend::{Provider, RecommendConfig};
+    use std::io::{BufRead, Write};
+
+    let stdin = std::io::stdin();
+    let mut stdout = std::io::stdout();
+    let mut lock = stdin.lock();
+
+    let mut cur = RecommendConfig::load(mgr.paths()).unwrap_or_default();
+
+    let ask = |prompt: &str, default: &str, lock: &mut std::io::StdinLock<'_>| -> Result<String> {
+        print!("{prompt} [{default}]: ");
+        std::io::stdout().flush()?;
+        let mut line = String::new();
+        lock.read_line(&mut line)?;
+        let trimmed = line.trim().to_string();
+        if trimmed.is_empty() {
+            Ok(default.to_string())
+        } else {
+            Ok(trimmed)
+        }
+    };
+
+    writeln!(
+        stdout,
+        "runai recommend setup\n\
+         留空回车保留默认。Provider 选 openai-compat（DeepSeek / Moonshot / Groq 等）或 anthropic。"
+    )?;
+
+    let provider_str = ask(
+        "provider (openai-compat / anthropic)",
+        match cur.provider {
+            Provider::OpenaiCompat => "openai-compat",
+            Provider::Anthropic => "anthropic",
+        },
+        &mut lock,
+    )?;
+    cur.provider = match provider_str.as_str() {
+        "anthropic" => Provider::Anthropic,
+        _ => Provider::OpenaiCompat,
+    };
+
+    let default_base = match cur.provider {
+        Provider::OpenaiCompat => {
+            if cur.base_url.is_empty() {
+                "https://api.deepseek.com/v1"
+            } else {
+                cur.base_url.as_str()
+            }
+        }
+        Provider::Anthropic => {
+            if cur.base_url.is_empty() || cur.base_url.contains("deepseek") {
+                "https://api.anthropic.com"
+            } else {
+                cur.base_url.as_str()
+            }
+        }
+    };
+    cur.base_url = ask("base_url", default_base, &mut lock)?;
+
+    let default_model = match cur.provider {
+        Provider::OpenaiCompat => "deepseek-v4-flash",
+        Provider::Anthropic => "claude-haiku-4-5-20251001",
+    };
+    let model_default = if cur.model.is_empty() {
+        default_model
+    } else {
+        cur.model.as_str()
+    };
+    cur.model = ask("model", model_default, &mut lock)?;
+
+    print!("api_key (input hidden? no — paste then enter): ");
+    stdout.flush()?;
+    let mut key_line = String::new();
+    lock.read_line(&mut key_line)?;
+    let key_trimmed = key_line.trim().to_string();
+    if !key_trimmed.is_empty() {
+        cur.api_key = key_trimmed;
+    }
+
+    cur.enabled = true;
+    cur.save(mgr.paths())?;
+    println!(
+        "\nSaved to {}\nenabled=true. To wire the hook, run:\n  runai recommend hook-snippet",
+        mgr.paths().config_path().display()
+    );
+    Ok(())
 }
 
 fn handle_trash_command(mgr: &SkillManager, command: TrashCommands) -> Result<()> {
