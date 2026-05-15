@@ -739,14 +739,17 @@ impl SmServer {
                 }
             }
             if let Some(cached) = crate::core::market::load_cache(&data_dir, src) {
+                let mut matcher = crate::core::search::new_matcher();
                 for mut skill in cached {
                     skill.installed = installed.contains(&skill.name);
                     if let Some(ref search) = p.search {
-                        let q = search.to_lowercase();
-                        let matches = skill.name.to_lowercase().contains(&q)
-                            || skill.repo_path.to_lowercase().contains(&q)
-                            || skill.source_label.to_lowercase().contains(&q);
-                        if !matches {
+                        let matched = crate::core::search::fuzzy_score_any(
+                            &mut matcher,
+                            search,
+                            &[&skill.name, &skill.repo_path, &skill.source_label],
+                        )
+                        .is_some();
+                        if !matched {
                             continue;
                         }
                     }
@@ -886,23 +889,26 @@ impl SmServer {
         description = "Search across installed resources AND market. Returns local matches first, then market results. Use for finding skills/MCPs to enable or install."
     )]
     fn sm_search(&self, Parameters(p): Parameters<NameParams>) -> Json<TextResult> {
+        use crate::core::search::{fuzzy_score_any, new_matcher};
         let mgr = self.manager.lock().unwrap();
-        let q = p.name.to_lowercase();
+        let q = p.name.clone();
+        let mut matcher = new_matcher();
         let mut lines = Vec::new();
 
-        // 1. Search installed resources
+        // 1. Search installed resources (fuzzy on name + description)
         let resources = mgr.list_resources(None, None).unwrap_or_default();
-        let mut local_matches: Vec<_> = resources
+        let mut local_scored: Vec<(&_, u32)> = resources
             .iter()
-            .filter(|r| {
-                r.name.to_lowercase().contains(&q) || r.description.to_lowercase().contains(&q)
+            .filter_map(|r| {
+                fuzzy_score_any(&mut matcher, &q, &[&r.name, &r.description]).map(|s| (r, s))
             })
             .collect();
-        local_matches.sort_by(|a, b| b.usage_count.cmp(&a.usage_count));
+        // Higher score first; tiebreak by usage_count desc.
+        local_scored.sort_by(|a, b| b.1.cmp(&a.1).then(b.0.usage_count.cmp(&a.0.usage_count)));
 
-        if !local_matches.is_empty() {
-            lines.push(format!("── Installed ({}) ──", local_matches.len()));
-            for r in &local_matches {
+        if !local_scored.is_empty() {
+            lines.push(format!("── Installed ({}) ──", local_scored.len()));
+            for (r, _) in &local_scored {
                 let icon = if r.enabled.values().any(|&v| v) {
                     "●"
                 } else {
@@ -917,11 +923,11 @@ impl SmServer {
             }
         }
 
-        // 2. Search market
+        // 2. Search market (fuzzy on name + repo_path)
         let data_dir = mgr.paths().data_dir().to_path_buf();
         let sources = crate::core::market::load_sources(&data_dir);
         let installed_names: Vec<String> = resources.iter().map(|r| r.name.clone()).collect();
-        let mut market_matches = Vec::new();
+        let mut market_scored: Vec<(String, u32)> = Vec::new();
 
         for src in &sources {
             if !src.enabled {
@@ -932,14 +938,17 @@ impl SmServer {
                     if installed_names.contains(&skill.name) {
                         continue;
                     }
-                    if skill.name.to_lowercase().contains(&q)
-                        || skill.repo_path.to_lowercase().contains(&q)
+                    if let Some(score) =
+                        fuzzy_score_any(&mut matcher, &q, &[&skill.name, &skill.repo_path])
                     {
-                        market_matches.push(format!("  {} ({})", skill.name, skill.source_label));
+                        market_scored
+                            .push((format!("  {} ({})", skill.name, skill.source_label), score));
                     }
                 }
             }
         }
+        market_scored.sort_by(|a, b| b.1.cmp(&a.1));
+        let market_matches: Vec<String> = market_scored.into_iter().map(|(s, _)| s).collect();
 
         if !market_matches.is_empty() {
             lines.push(format!("\n── Market ({}) ──", market_matches.len()));

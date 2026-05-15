@@ -43,6 +43,8 @@ semver = "1"
 # Filesystem event watcher (TUI live reload)
 notify = "8"
 notify-debouncer-mini = "0.6"
+# Fuzzy matcher (fzf v2 algorithm) for sm_search / sm_market / CLI search & market
+nucleo-matcher = "0.3"
 
 [profile.release]
 strip = true

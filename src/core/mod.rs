@@ -17,5 +17,6 @@ pub mod mcp_register;
 pub mod paths;
 pub mod resource;
 pub mod scanner;
+pub mod search;
 pub mod transcript_stats;
 pub mod updater;
