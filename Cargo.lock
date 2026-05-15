@@ -1995,7 +1995,7 @@ dependencies = [
 
 [[package]]
 name = "runai"
-version = "0.10.2"
+version = "0.11.0-beta"
 dependencies = [
  "anyhow",
  "assert_cmd",
