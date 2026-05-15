@@ -2,10 +2,22 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
+use crate::core::db::RouterEvent;
 use crate::core::manager::SkillManager;
 use crate::core::paths::AppPaths;
 use crate::core::resource::ResourceKind;
+
+// All router prompts and hook output templates live in src/core/prompts/ so
+// they are not scattered through the code. Edit those files to retune wording;
+// the placeholders below are substituted with str::replace at runtime.
+const SYSTEM_PROMPT_TEMPLATE: &str = include_str!("prompts/recommend_system.md");
+const USER_MSG_TEMPLATE: &str = include_str!("prompts/recommend_user.md");
+const HISTORY_PREFIX_TEMPLATE: &str = include_str!("prompts/recommend_history_prefix.md");
+const HOOK_INLINE_TEMPLATE: &str = include_str!("prompts/hook_inline.md");
+const HOOK_POINTER_TEMPLATE: &str = include_str!("prompts/hook_pointer.md");
+const HOOK_MULTI_TEMPLATE: &str = include_str!("prompts/hook_multi.md");
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecommendConfig {
@@ -34,7 +46,7 @@ impl Default for RecommendConfig {
             model: "deepseek-v4-flash".into(),
             api_key: String::new(),
             top_k: 3,
-            min_prompt_len: 10,
+            min_prompt_len: 0,
         }
     }
 }
@@ -138,8 +150,13 @@ pub fn recommend(
     let candidate_listing: String = candidates
         .iter()
         .map(|r| {
-            let desc: String = r.description.chars().take(120).collect();
-            format!("- {}: {}", r.name, desc)
+            let desc: String = r.description.chars().take(160).collect();
+            let usage_tag = if r.usage_count > 0 {
+                format!(" [used:{}]", r.usage_count)
+            } else {
+                String::new()
+            };
+            format!("- {}{usage_tag}: {desc}", r.name)
         })
         .collect::<Vec<_>>()
         .join("\n");
@@ -150,15 +167,66 @@ pub fn recommend(
     let history_block = if history.is_empty() {
         String::new()
     } else {
-        format!("最近对话历史（用于判断当前 prompt 是否在回应上一轮 skill 选择）:\n{history}\n\n")
+        HISTORY_PREFIX_TEMPLATE.replace("{HISTORY}", &history)
     };
 
-    let user_msg = format!(
-        "{history_block}候选 skill:\n{candidate_listing}\n\n用户当前 prompt:\n{user_prompt}\n\n只输出 skill name，每行一个，最多 {} 个。第一个是 primary 推荐。完全不相关就输出空。",
-        cfg.top_k
-    );
+    let user_msg = USER_MSG_TEMPLATE
+        .replace("{HISTORY_BLOCK}", &history_block)
+        .replace("{CANDIDATE_LISTING}", &candidate_listing)
+        .replace("{USER_PROMPT}", user_prompt)
+        .replace("{TOP_K}", &cfg.top_k.to_string());
 
-    let chosen_names = call_router(&cfg, &api_key, &user_msg)?;
+    let started = Instant::now();
+    let call_result = call_router(&cfg, &api_key, &user_msg);
+    let latency_ms = started.elapsed().as_millis() as i64;
+
+    let (chosen_names, stats, status, error_msg) = match call_result {
+        Ok((names, stats)) => (names, stats, "ok".to_string(), None),
+        Err(e) => (
+            Vec::new(),
+            RouterCallStats::default(),
+            "error".to_string(),
+            Some(e.to_string()),
+        ),
+    };
+    if std::env::var("RUNAI_RECOMMEND_DEBUG").is_ok() {
+        eprintln!(
+            "[recommend debug] candidates={}, chosen={:?}, latency_ms={}, tokens={}",
+            candidates.len(),
+            chosen_names,
+            latency_ms,
+            stats.total_tokens
+        );
+    }
+
+    // Persist the telemetry row regardless of success/failure so users can
+    // audit cost & error rate. Best-effort: DB write failure does not block
+    // the hook.
+    let chosen_json = serde_json::to_string(&chosen_names).unwrap_or_else(|_| "[]".to_string());
+    let ev = RouterEvent {
+        ts: chrono::Utc::now().timestamp(),
+        provider: match cfg.provider {
+            Provider::OpenaiCompat => "openai-compat".into(),
+            Provider::Anthropic => "anthropic".into(),
+        },
+        model: cfg.model.clone(),
+        prompt_tokens: stats.prompt_tokens,
+        completion_tokens: stats.completion_tokens,
+        reasoning_tokens: stats.reasoning_tokens,
+        total_tokens: stats.total_tokens,
+        cache_hit_tokens: stats.cache_hit_tokens,
+        cache_miss_tokens: stats.cache_miss_tokens,
+        latency_ms,
+        chosen_skills_json: chosen_json,
+        candidate_count: candidates.len() as i64,
+        status,
+        error_msg: error_msg.clone(),
+    };
+    let _ = mgr.db().insert_router_event(&ev);
+
+    if let Some(err) = error_msg {
+        bail!(err);
+    }
 
     let by_name: std::collections::HashMap<String, _> =
         candidates.iter().map(|r| (r.name.clone(), r)).collect();
@@ -187,7 +255,27 @@ pub fn recommend(
             });
         }
     }
+    write_last_recommend(mgr.paths(), &out);
     Ok(out)
+}
+
+/// Write the most-recent router decision to `<data_dir>/last-recommend.json`.
+/// Statusline tools (omc-hud, claude-hud, custom shell scripts) can read this
+/// to surface the active skill in Claude Code's bottom bar. Best-effort: any
+/// write error is silently swallowed so it never blocks the hook.
+fn write_last_recommend(paths: &AppPaths, skills: &[RecommendedSkill]) {
+    let primary = skills.first().map(|s| s.name.as_str());
+    let alternates: Vec<&str> = skills.iter().skip(1).map(|s| s.name.as_str()).collect();
+    let entry = serde_json::json!({
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+        "primary": primary,
+        "alternates": alternates,
+        "count": skills.len(),
+    });
+    let path = paths.data_dir().join("last-recommend.json");
+    if let Ok(text) = serde_json::to_string_pretty(&entry) {
+        let _ = fs::write(&path, text);
+    }
 }
 
 /// Format recommended skills as the `UserPromptSubmit` hook stdout text.
@@ -197,53 +285,118 @@ pub fn format_for_hook(skills: &[RecommendedSkill]) -> String {
     if skills.is_empty() {
         return String::new();
     }
-    let mut buf = String::new();
-    buf.push_str("# Skill recommendations (runai recommend)\n\n");
 
-    let primary = &skills[0];
-    buf.push_str(&format!(
-        "Primary pick — full SKILL.md injected below. Use it directly.\n\n## {}\npath: `{}`\n\n",
-        primary.name,
-        primary.path.display()
-    ));
-    buf.push_str(&primary.content);
-    if !primary.content.ends_with('\n') {
-        buf.push('\n');
-    }
-    buf.push_str("\n---\n\n");
+    if skills.len() == 1 {
+        // Single match. Claude Code caps UserPromptSubmit hook stdout (and
+        // JSON additionalContext) at 10,000 chars — anything larger gets
+        // persisted to a temp file with a 2 KB preview, forcing the main
+        // agent to Read that temp file. So:
+        //   - small SKILL.md (~≤ 8 KB after instruction overhead) → inline the
+        //     full content, zero Read needed.
+        //   - large SKILL.md → point at the path, main agent Reads it once.
+        const INLINE_BUDGET: usize = 8000;
+        let primary = &skills[0];
 
-    let alternates = &skills[1..];
-    if !alternates.is_empty() {
-        buf.push_str(
-            "Other skills also looked relevant. If the primary pick is wrong, surface this list to the user and ask which to use; runai will inject the chosen one's full SKILL.md on the next prompt round:\n\n",
-        );
-        for s in alternates {
-            buf.push_str(&format!("- {}: {}\n", s.name, s.description));
+        if !primary.content.is_empty() && primary.content.len() <= INLINE_BUDGET {
+            HOOK_INLINE_TEMPLATE
+                .replace("{NAME}", &primary.name)
+                .replace("{PATH}", &primary.path.display().to_string())
+                .replace("{CONTENT}", &primary.content)
+        } else {
+            let desc_short: String = primary.description.chars().take(200).collect();
+            HOOK_POINTER_TEMPLATE
+                .replace("{NAME}", &primary.name)
+                .replace("{PATH}", &primary.path.display().to_string())
+                .replace("{DESC}", &desc_short)
         }
-        buf.push('\n');
+    } else {
+        let candidates: String = skills
+            .iter()
+            .map(|s| format!("- **{}** — {}", s.name, s.description))
+            .collect::<Vec<_>>()
+            .join("\n");
+        HOOK_MULTI_TEMPLATE.replace("{CANDIDATES}", &candidates)
     }
-    buf
 }
 
-fn call_router(cfg: &RecommendConfig, api_key: &str, user_msg: &str) -> Result<Vec<String>> {
+#[derive(Debug, Default, Clone)]
+struct RouterCallStats {
+    prompt_tokens: i64,
+    completion_tokens: i64,
+    reasoning_tokens: i64,
+    total_tokens: i64,
+    cache_hit_tokens: i64,
+    cache_miss_tokens: i64,
+}
+
+fn call_router(
+    cfg: &RecommendConfig,
+    api_key: &str,
+    user_msg: &str,
+) -> Result<(Vec<String>, RouterCallStats)> {
     match cfg.provider {
         Provider::OpenaiCompat => call_openai_compat(cfg, api_key, user_msg),
         Provider::Anthropic => call_anthropic(cfg, api_key, user_msg),
     }
 }
 
-const SYSTEM_PROMPT: &str = "你是 skill router。根据用户 prompt 从候选 skill 列表中选出最相关的几个。\
-     只输出 skill name（每行一个），不要解释，不要包装。完全不相关就输出空。";
+fn parse_openai_usage(v: &serde_json::Value) -> RouterCallStats {
+    let u = match v.get("usage") {
+        Some(u) => u,
+        None => return RouterCallStats::default(),
+    };
+    let get_i64 = |k: &str| -> i64 { u.get(k).and_then(|x| x.as_i64()).unwrap_or(0) };
+    let reasoning = u
+        .get("completion_tokens_details")
+        .and_then(|d| d.get("reasoning_tokens"))
+        .and_then(|x| x.as_i64())
+        .unwrap_or(0);
+    RouterCallStats {
+        prompt_tokens: get_i64("prompt_tokens"),
+        completion_tokens: get_i64("completion_tokens"),
+        reasoning_tokens: reasoning,
+        total_tokens: get_i64("total_tokens"),
+        cache_hit_tokens: get_i64("prompt_cache_hit_tokens"),
+        cache_miss_tokens: get_i64("prompt_cache_miss_tokens"),
+    }
+}
 
-fn call_openai_compat(cfg: &RecommendConfig, api_key: &str, user_msg: &str) -> Result<Vec<String>> {
+fn parse_anthropic_usage(v: &serde_json::Value) -> RouterCallStats {
+    let u = match v.get("usage") {
+        Some(u) => u,
+        None => return RouterCallStats::default(),
+    };
+    let get_i64 = |k: &str| -> i64 { u.get(k).and_then(|x| x.as_i64()).unwrap_or(0) };
+    let input = get_i64("input_tokens");
+    let output = get_i64("output_tokens");
+    RouterCallStats {
+        prompt_tokens: input,
+        completion_tokens: output,
+        reasoning_tokens: 0,
+        total_tokens: input + output,
+        cache_hit_tokens: get_i64("cache_read_input_tokens"),
+        cache_miss_tokens: get_i64("cache_creation_input_tokens"),
+    }
+}
+
+fn call_openai_compat(
+    cfg: &RecommendConfig,
+    api_key: &str,
+    user_msg: &str,
+) -> Result<(Vec<String>, RouterCallStats)> {
     let url = format!("{}/chat/completions", cfg.base_url.trim_end_matches('/'));
+    // Disable thinking on reasoning models so the router answers instantly.
+    // DeepSeek V4 honors `thinking.type=disabled` (drops reasoning_tokens to
+    // None). For non-reasoning models or other OpenAI-compat backends this
+    // field is silently ignored, so it's safe to always send.
+    // max_tokens is intentionally omitted — let the model use its full budget.
     let body = serde_json::json!({
         "model": cfg.model,
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": SYSTEM_PROMPT_TEMPLATE},
             {"role": "user", "content": user_msg},
         ],
-        "max_tokens": 256,
+        "thinking": {"type": "disabled"},
         "stream": false,
     });
     let resp = reqwest::blocking::Client::builder()
@@ -265,15 +418,26 @@ fn call_openai_compat(cfg: &RecommendConfig, api_key: &str, user_msg: &str) -> R
     let content = v["choices"][0]["message"]["content"]
         .as_str()
         .unwrap_or_default();
-    Ok(parse_skill_names(content))
+    if std::env::var("RUNAI_RECOMMEND_DEBUG").is_ok() {
+        eprintln!(
+            "[recommend debug] LLM raw content: {:?}; usage: {}",
+            content,
+            v.get("usage").map(|u| u.to_string()).unwrap_or_default()
+        );
+    }
+    Ok((parse_skill_names(content), parse_openai_usage(&v)))
 }
 
-fn call_anthropic(cfg: &RecommendConfig, api_key: &str, user_msg: &str) -> Result<Vec<String>> {
+fn call_anthropic(
+    cfg: &RecommendConfig,
+    api_key: &str,
+    user_msg: &str,
+) -> Result<(Vec<String>, RouterCallStats)> {
     let url = format!("{}/v1/messages", cfg.base_url.trim_end_matches('/'));
     let body = serde_json::json!({
         "model": cfg.model,
         "max_tokens": 256,
-        "system": SYSTEM_PROMPT,
+        "system": SYSTEM_PROMPT_TEMPLATE,
         "messages": [{"role": "user", "content": user_msg}],
     });
     let resp = reqwest::blocking::Client::builder()
@@ -294,7 +458,7 @@ fn call_anthropic(cfg: &RecommendConfig, api_key: &str, user_msg: &str) -> Resul
     }
     let v: serde_json::Value = resp.json().context("decode router json")?;
     let content = v["content"][0]["text"].as_str().unwrap_or_default();
-    Ok(parse_skill_names(content))
+    Ok((parse_skill_names(content), parse_anthropic_usage(&v)))
 }
 
 /// Read the most recent `n` user/assistant text messages from a Claude Code
@@ -354,6 +518,139 @@ pub fn recent_transcript_messages(transcript_path: &Path, n: usize) -> String {
         .join("\n")
 }
 
+/// Result of attempting to install the UserPromptSubmit hook.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HookInstallStatus {
+    Installed,
+    AlreadyPresent,
+    Removed,
+    NotPresent,
+}
+
+const HOOK_COMMAND: &str = "runai recommend";
+
+/// Install the UserPromptSubmit hook into `<home>/.claude/settings.json`.
+/// Idempotent: re-running when our hook is already present is a no-op.
+/// Other existing hooks (user's own or other tools) are preserved verbatim.
+/// A `.runai-bak` snapshot of the previous settings.json is written next to it.
+pub fn install_claude_hook(home: &Path) -> Result<HookInstallStatus> {
+    let claude_dir = home.join(".claude");
+    let path = claude_dir.join("settings.json");
+    let mut value = read_settings_json(&path)?;
+    let ups_arr = ensure_user_prompt_submit_array(&mut value)?;
+
+    if hook_already_present(ups_arr) {
+        return Ok(HookInstallStatus::AlreadyPresent);
+    }
+
+    ups_arr.push(serde_json::json!({
+        "hooks": [
+            {"type": "command", "command": HOOK_COMMAND}
+        ]
+    }));
+
+    write_settings_json(&path, &value)?;
+    Ok(HookInstallStatus::Installed)
+}
+
+/// Remove the runai-installed hook from settings.json. Leaves unrelated hook
+/// entries (and the rest of the file) untouched.
+pub fn uninstall_claude_hook(home: &Path) -> Result<HookInstallStatus> {
+    let path = home.join(".claude").join("settings.json");
+    if !path.exists() {
+        return Ok(HookInstallStatus::NotPresent);
+    }
+    let mut value = read_settings_json(&path)?;
+    let ups_arr = match get_user_prompt_submit_array(&mut value) {
+        Some(arr) => arr,
+        None => return Ok(HookInstallStatus::NotPresent),
+    };
+    let before = ups_arr.len();
+    ups_arr.retain(|group| {
+        let arr = match group.get("hooks").and_then(|h| h.as_array()) {
+            Some(a) => a,
+            None => return true,
+        };
+        // Drop the whole group only if every hook inside it is ours.
+        let all_ours = !arr.is_empty()
+            && arr
+                .iter()
+                .all(|h| h.get("command").and_then(|c| c.as_str()) == Some(HOOK_COMMAND));
+        !all_ours
+    });
+    if ups_arr.len() == before {
+        return Ok(HookInstallStatus::NotPresent);
+    }
+    write_settings_json(&path, &value)?;
+    Ok(HookInstallStatus::Removed)
+}
+
+fn read_settings_json(path: &Path) -> Result<serde_json::Value> {
+    if !path.exists() {
+        return Ok(serde_json::json!({}));
+    }
+    let txt = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    if txt.trim().is_empty() {
+        return Ok(serde_json::json!({}));
+    }
+    serde_json::from_str(&txt).with_context(|| format!("parse {} as JSON", path.display()))
+}
+
+fn ensure_user_prompt_submit_array(
+    value: &mut serde_json::Value,
+) -> Result<&mut Vec<serde_json::Value>> {
+    let obj = value
+        .as_object_mut()
+        .context("settings.json root must be an object")?;
+    let hooks_entry = obj
+        .entry("hooks".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    let hooks_obj = hooks_entry
+        .as_object_mut()
+        .context("settings.json `hooks` field must be an object")?;
+    let ups = hooks_obj
+        .entry("UserPromptSubmit".to_string())
+        .or_insert_with(|| serde_json::json!([]));
+    ups.as_array_mut()
+        .context("settings.json `hooks.UserPromptSubmit` must be an array")
+}
+
+fn get_user_prompt_submit_array(
+    value: &mut serde_json::Value,
+) -> Option<&mut Vec<serde_json::Value>> {
+    value
+        .as_object_mut()?
+        .get_mut("hooks")?
+        .as_object_mut()?
+        .get_mut("UserPromptSubmit")?
+        .as_array_mut()
+}
+
+fn hook_already_present(ups_arr: &[serde_json::Value]) -> bool {
+    ups_arr.iter().any(|group| {
+        group
+            .get("hooks")
+            .and_then(|h| h.as_array())
+            .is_some_and(|arr| {
+                arr.iter()
+                    .any(|h| h.get("command").and_then(|c| c.as_str()) == Some(HOOK_COMMAND))
+            })
+    })
+}
+
+fn write_settings_json(path: &Path, value: &serde_json::Value) -> Result<()> {
+    if path.exists() {
+        let bak = path.with_extension("json.runai-bak");
+        let _ = fs::copy(path, &bak);
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let pretty = serde_json::to_string_pretty(value)?;
+    fs::write(path, pretty).with_context(|| format!("write {}", path.display()))?;
+    Ok(())
+}
+
 fn parse_skill_names(raw: &str) -> Vec<String> {
     raw.lines()
         .map(|l| l.trim().trim_start_matches('-').trim().trim_matches('`'))
@@ -397,40 +694,67 @@ mod tests {
     }
 
     #[test]
-    fn format_one_skill_includes_name_path_content() {
+    fn format_single_match_small_inlines_full_content() {
         let s = RecommendedSkill {
             name: "figma-alignment".into(),
             description: "align vue/h5 to figma".into(),
             path: PathBuf::from("/x/SKILL.md"),
-            content: "some content".into(),
+            content: "tiny skill content body".into(),
         };
         let out = format_for_hook(&[s]);
-        assert!(out.contains("figma-alignment"));
+        assert!(
+            out.len() < 10_000,
+            "must stay under 10KB hook cap, got {}",
+            out.len()
+        );
+        assert!(out.contains("激活 skill: figma-alignment"));
         assert!(out.contains("/x/SKILL.md"));
-        assert!(out.contains("some content"));
-        assert!(out.contains("---"));
+        assert!(out.contains("DO NOT Read the file path"));
+        assert!(out.contains("tiny skill content body"));
     }
 
     #[test]
-    fn format_multiple_skills_primary_full_alternates_compact() {
-        let primary = RecommendedSkill {
+    fn format_single_match_large_points_at_path_no_inline() {
+        let huge = "x".repeat(9000);
+        let s = RecommendedSkill {
+            name: "huge-skill".into(),
+            description: "a very large skill".into(),
+            path: PathBuf::from("/x/huge/SKILL.md"),
+            content: huge.clone(),
+        };
+        let out = format_for_hook(&[s]);
+        assert!(
+            out.len() < 10_000,
+            "must stay under 10KB hook cap, got {}",
+            out.len()
+        );
+        assert!(out.contains("激活 skill: huge-skill"));
+        assert!(out.contains("/x/huge/SKILL.md"));
+        assert!(out.contains("Read it ONCE"));
+        assert!(!out.contains(&huge), "large content must not be inlined");
+    }
+
+    #[test]
+    fn format_multi_match_surfaces_candidates_without_injection() {
+        let a = RecommendedSkill {
             name: "figma-alignment".into(),
             description: "align vue to figma".into(),
             path: PathBuf::from("/x/figma/SKILL.md"),
-            content: "full skill md content here".into(),
+            content: "should NOT appear in output".into(),
         };
-        let alt = RecommendedSkill {
+        let b = RecommendedSkill {
             name: "figma-component-mapping".into(),
             description: "map figma node to vue component".into(),
             path: PathBuf::from("/x/map/SKILL.md"),
             content: String::new(),
         };
-        let out = format_for_hook(&[primary, alt]);
-        assert!(out.contains("Primary pick"));
-        assert!(out.contains("full skill md content here"));
-        assert!(out.contains("Other skills also looked relevant"));
-        assert!(out.contains("- figma-component-mapping: map figma node to vue component"));
-        // Alternate's full content must NOT be there (it has none).
+        let out = format_for_hook(&[a, b]);
+        assert!(out.contains("Multiple skills"));
+        assert!(out.contains("- **figma-alignment**"));
+        assert!(out.contains("- **figma-component-mapping**"));
+        // No full SKILL.md content for any skill in multi-match mode.
+        assert!(!out.contains("should NOT appear"));
+        assert!(!out.contains("/x/figma/SKILL.md"));
         assert!(!out.contains("/x/map/SKILL.md"));
     }
 
@@ -447,6 +771,113 @@ mod tests {
         let loaded = RecommendConfig::load(&paths).unwrap();
         assert!(loaded.enabled);
         assert_eq!(loaded.api_key, "test-key");
+    }
+
+    #[test]
+    fn install_hook_into_empty_home() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = install_claude_hook(tmp.path()).unwrap();
+        assert_eq!(s, HookInstallStatus::Installed);
+        let txt = fs::read_to_string(tmp.path().join(".claude/settings.json")).unwrap();
+        assert!(txt.contains("UserPromptSubmit"));
+        assert!(txt.contains("runai recommend"));
+    }
+
+    #[test]
+    fn install_hook_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(
+            install_claude_hook(tmp.path()).unwrap(),
+            HookInstallStatus::Installed
+        );
+        assert_eq!(
+            install_claude_hook(tmp.path()).unwrap(),
+            HookInstallStatus::AlreadyPresent
+        );
+    }
+
+    #[test]
+    fn install_hook_preserves_existing_settings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude_dir = tmp.path().join(".claude");
+        fs::create_dir_all(&claude_dir).unwrap();
+        let pre = serde_json::json!({
+            "theme": "dark",
+            "model": "sonnet",
+            "hooks": {
+                "PostToolUse": [
+                    {"hooks": [{"type": "command", "command": "my-formatter"}]}
+                ],
+                "UserPromptSubmit": [
+                    {"hooks": [{"type": "command", "command": "user-existing-hook"}]}
+                ]
+            }
+        });
+        fs::write(
+            claude_dir.join("settings.json"),
+            serde_json::to_string_pretty(&pre).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            install_claude_hook(tmp.path()).unwrap(),
+            HookInstallStatus::Installed
+        );
+        let after: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(claude_dir.join("settings.json")).unwrap())
+                .unwrap();
+        assert_eq!(after["theme"], "dark");
+        assert_eq!(after["model"], "sonnet");
+        assert_eq!(
+            after["hooks"]["PostToolUse"][0]["hooks"][0]["command"],
+            "my-formatter"
+        );
+        let ups = after["hooks"]["UserPromptSubmit"].as_array().unwrap();
+        assert_eq!(ups.len(), 2);
+        assert_eq!(ups[0]["hooks"][0]["command"], "user-existing-hook");
+        assert_eq!(ups[1]["hooks"][0]["command"], "runai recommend");
+        // backup written
+        assert!(claude_dir.join("settings.json.runai-bak").exists());
+    }
+
+    #[test]
+    fn uninstall_hook_removes_only_ours() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude_dir = tmp.path().join(".claude");
+        fs::create_dir_all(&claude_dir).unwrap();
+        let pre = serde_json::json!({
+            "hooks": {
+                "UserPromptSubmit": [
+                    {"hooks": [{"type": "command", "command": "user-existing-hook"}]},
+                    {"hooks": [{"type": "command", "command": "runai recommend"}]}
+                ]
+            }
+        });
+        fs::write(
+            claude_dir.join("settings.json"),
+            serde_json::to_string_pretty(&pre).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            uninstall_claude_hook(tmp.path()).unwrap(),
+            HookInstallStatus::Removed
+        );
+        let after: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(claude_dir.join("settings.json")).unwrap())
+                .unwrap();
+        let ups = after["hooks"]["UserPromptSubmit"].as_array().unwrap();
+        assert_eq!(ups.len(), 1);
+        assert_eq!(ups[0]["hooks"][0]["command"], "user-existing-hook");
+    }
+
+    #[test]
+    fn uninstall_hook_when_missing_is_noop() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(
+            uninstall_claude_hook(tmp.path()).unwrap(),
+            HookInstallStatus::NotPresent
+        );
     }
 
     #[test]

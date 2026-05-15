@@ -131,6 +131,19 @@ pub enum RecommendCommands {
     Status,
     /// Print the hook JSON snippet to drop into ~/.claude/settings.json
     HookSnippet,
+    /// Install the UserPromptSubmit hook into ~/.claude/settings.json (idempotent; backs up the old file)
+    InstallHook,
+    /// Remove the runai-installed UserPromptSubmit hook from ~/.claude/settings.json
+    UninstallHook,
+    /// Show router LLM usage telemetry: tokens per model, latency, recent calls
+    Stats {
+        /// Only count events in the last N hours (omit for all-time)
+        #[arg(long)]
+        hours: Option<i64>,
+        /// Also print the N most recent calls
+        #[arg(long, default_value = "0")]
+        recent: usize,
+    },
 }
 
 #[derive(Subcommand)]
@@ -896,8 +909,96 @@ fn handle_recommend(
 Claude Code pipes the hook JSON (prompt, transcript_path, ...) to stdin.
 runai recommend reads it, looks at recent conversation history, and emits
 the picked SKILL.md to stdout — which Claude Code injects as additional
-context for the upcoming turn."#
+context for the upcoming turn.
+
+To install/uninstall automatically (preserves existing hooks and theme):
+  runai recommend install-hook
+  runai recommend uninstall-hook"#
             );
+            Ok(())
+        }
+        (Some(RecommendCommands::InstallHook), _) => {
+            use crate::core::recommend::{HookInstallStatus, install_claude_hook};
+            let home =
+                dirs::home_dir().ok_or_else(|| anyhow::anyhow!("cannot resolve home directory"))?;
+            let path = home.join(".claude/settings.json");
+            match install_claude_hook(&home)? {
+                HookInstallStatus::Installed => {
+                    println!("hook installed into {}", path.display());
+                    println!(
+                        "backup of prior contents (if any): {}.runai-bak",
+                        path.display()
+                    );
+                }
+                HookInstallStatus::AlreadyPresent => {
+                    println!("hook already present in {}, no changes", path.display());
+                }
+                _ => {}
+            }
+            Ok(())
+        }
+        (Some(RecommendCommands::Stats { hours, recent }), _) => {
+            let since_ts = hours.map(|h| chrono::Utc::now().timestamp() - h * 3600);
+            let summary = mgr.db().router_stats_summary(since_ts)?;
+            let window_label = match hours {
+                Some(h) => format!("last {h}h"),
+                None => "all-time".to_string(),
+            };
+            println!("Router LLM telemetry ({window_label})");
+            println!("  total calls:          {}", summary.total_calls);
+            println!("  errors:               {}", summary.errors);
+            if let Some(ms) = summary.avg_latency_ms {
+                println!("  avg latency (ok):     {ms:.0} ms");
+            }
+            println!("  prompt tokens:        {}", summary.total_prompt_tokens);
+            println!(
+                "  completion tokens:    {}",
+                summary.total_completion_tokens
+            );
+            println!("  reasoning tokens:     {}", summary.total_reasoning_tokens);
+            println!("  total tokens:         {}", summary.total_tokens);
+            if !summary.per_model.is_empty() {
+                println!("\n  per model:");
+                for m in &summary.per_model {
+                    println!(
+                        "    {:<30} {:>6} calls  {:>10} tokens",
+                        m.model, m.calls, m.total_tokens
+                    );
+                }
+            }
+            if recent > 0 {
+                let events = mgr.db().router_recent_events(recent)?;
+                println!("\n  recent calls (newest first):");
+                for ev in &events {
+                    let when = chrono::DateTime::<chrono::Utc>::from_timestamp(ev.ts, 0)
+                        .map(|d| {
+                            d.with_timezone(&chrono::Local)
+                                .format("%m-%d %H:%M:%S")
+                                .to_string()
+                        })
+                        .unwrap_or_default();
+                    println!(
+                        "    {when}  {:<22}  {:>5}t  {:>5}ms  {}",
+                        ev.model, ev.total_tokens, ev.latency_ms, ev.chosen_skills_json
+                    );
+                }
+            }
+            Ok(())
+        }
+        (Some(RecommendCommands::UninstallHook), _) => {
+            use crate::core::recommend::{HookInstallStatus, uninstall_claude_hook};
+            let home =
+                dirs::home_dir().ok_or_else(|| anyhow::anyhow!("cannot resolve home directory"))?;
+            let path = home.join(".claude/settings.json");
+            match uninstall_claude_hook(&home)? {
+                HookInstallStatus::Removed => {
+                    println!("hook removed from {}", path.display());
+                }
+                HookInstallStatus::NotPresent => {
+                    println!("hook not present in {}, no changes", path.display());
+                }
+                _ => {}
+            }
             Ok(())
         }
     }

@@ -141,6 +141,14 @@ pub struct UsageStatsParams {
 }
 
 #[derive(Deserialize, schemars::JsonSchema, Default)]
+pub struct RecommendStatsParams {
+    /// Only count events in the last N hours (omit for all-time)
+    pub hours: Option<i64>,
+    /// Also include the N most recent individual calls
+    pub recent: Option<usize>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema, Default)]
 pub struct RestoreParams {
     /// Backup timestamp (omit to use latest)
     pub timestamp: Option<String>,
@@ -1069,6 +1077,82 @@ impl SmServer {
             })
         }
     }
+
+    #[tool(
+        description = "Show runai recommend router LLM telemetry: total calls, token spend per model, average latency. Pass `hours` to limit the window (e.g. last 24 hours), omit for all-time. Pass `recent` to also include the N newest individual calls. Useful when the user asks 'how much have I spent on the router' / 'router 用量多少' / 'which model picked what'."
+    )]
+    fn sm_recommend_stats(
+        &self,
+        Parameters(p): Parameters<RecommendStatsParams>,
+    ) -> Json<TextResult> {
+        let mgr = self.manager.lock().unwrap();
+        let since_ts = p.hours.map(|h| chrono::Utc::now().timestamp() - h * 3600);
+        let summary = match mgr.db().router_stats_summary(since_ts) {
+            Ok(s) => s,
+            Err(e) => {
+                return Json(TextResult {
+                    result: format!("Error: {e}"),
+                });
+            }
+        };
+        let mut lines = Vec::new();
+        let window_label = match p.hours {
+            Some(h) => format!("last {h}h"),
+            None => "all-time".into(),
+        };
+        lines.push(format!("Router LLM telemetry ({window_label})"));
+        lines.push(format!("  total calls:        {}", summary.total_calls));
+        lines.push(format!("  errors:             {}", summary.errors));
+        if let Some(ms) = summary.avg_latency_ms {
+            lines.push(format!("  avg latency:        {ms:.0} ms"));
+        }
+        lines.push(format!(
+            "  prompt tokens:      {}",
+            summary.total_prompt_tokens
+        ));
+        lines.push(format!(
+            "  completion tokens:  {}",
+            summary.total_completion_tokens
+        ));
+        lines.push(format!(
+            "  reasoning tokens:   {}",
+            summary.total_reasoning_tokens
+        ));
+        lines.push(format!("  total tokens:       {}", summary.total_tokens));
+        if !summary.per_model.is_empty() {
+            lines.push(String::new());
+            lines.push("  per model:".into());
+            for m in &summary.per_model {
+                lines.push(format!(
+                    "    {:<28} {:>5} calls  {:>9} tokens",
+                    m.model, m.calls, m.total_tokens
+                ));
+            }
+        }
+        let recent_n = p.recent.unwrap_or(0);
+        if recent_n > 0 {
+            if let Ok(events) = mgr.db().router_recent_events(recent_n) {
+                lines.push(String::new());
+                lines.push("  recent calls (newest first):".into());
+                for ev in &events {
+                    let when = chrono::DateTime::<chrono::Utc>::from_timestamp(ev.ts, 0)
+                        .map(|d| {
+                            d.with_timezone(&chrono::Local)
+                                .format("%m-%d %H:%M:%S")
+                                .to_string()
+                        })
+                        .unwrap_or_default();
+                    lines.push(format!(
+                        "    {when}  {:<22}  {:>5}t  {:>5}ms  {}",
+                        ev.model, ev.total_tokens, ev.latency_ms, ev.chosen_skills_json
+                    ));
+                }
+            }
+        }
+        Json(TextResult {
+            result: lines.join("\n"),
+        })
+    }
 }
 
 #[tool_handler]
@@ -1208,7 +1292,7 @@ mod tests {
                 );
             }
 
-            assert_eq!(tools.len(), 21, "Expected 21 tools, got {}", tools.len());
+            assert_eq!(tools.len(), 22, "Expected 22 tools, got {}", tools.len());
         });
     }
 

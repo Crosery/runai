@@ -6,6 +6,43 @@ use std::path::{Path, PathBuf};
 use crate::core::cli_target::CliTarget;
 use crate::core::resource::{Resource, ResourceKind, Source, TrashEntry, UsageStat};
 
+#[derive(Debug, Clone)]
+pub struct RouterEvent {
+    pub ts: i64,
+    pub provider: String,
+    pub model: String,
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    pub reasoning_tokens: i64,
+    pub total_tokens: i64,
+    pub cache_hit_tokens: i64,
+    pub cache_miss_tokens: i64,
+    pub latency_ms: i64,
+    pub chosen_skills_json: String,
+    pub candidate_count: i64,
+    pub status: String,
+    pub error_msg: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RouterModelStat {
+    pub model: String,
+    pub calls: i64,
+    pub total_tokens: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct RouterStatsSummary {
+    pub total_calls: i64,
+    pub total_prompt_tokens: i64,
+    pub total_completion_tokens: i64,
+    pub total_reasoning_tokens: i64,
+    pub total_tokens: i64,
+    pub errors: i64,
+    pub avg_latency_ms: Option<f64>,
+    pub per_model: Vec<RouterModelStat>,
+}
+
 pub struct Database {
     conn: Connection,
 }
@@ -110,7 +147,163 @@ impl Database {
             )?;
         }
 
+        if version < 5 {
+            // Router LLM call telemetry. Records every runai recommend run so
+            // users can audit token spend, latency, and which skills the
+            // external router model picked. Privacy-safe: no prompt text.
+            self.conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS router_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts INTEGER NOT NULL,
+                    provider TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                    completion_tokens INTEGER NOT NULL DEFAULT 0,
+                    reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+                    total_tokens INTEGER NOT NULL DEFAULT 0,
+                    cache_hit_tokens INTEGER NOT NULL DEFAULT 0,
+                    cache_miss_tokens INTEGER NOT NULL DEFAULT 0,
+                    latency_ms INTEGER NOT NULL DEFAULT 0,
+                    chosen_skills_json TEXT NOT NULL DEFAULT '[]',
+                    candidate_count INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'ok',
+                    error_msg TEXT
+                 );
+                 CREATE INDEX IF NOT EXISTS idx_router_events_ts ON router_events(ts);
+                 CREATE INDEX IF NOT EXISTS idx_router_events_model ON router_events(model);
+                 DELETE FROM schema_version;
+                 INSERT INTO schema_version VALUES (5);",
+            )?;
+        }
+
         Ok(())
+    }
+
+    pub fn insert_router_event(&self, ev: &RouterEvent) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO router_events (
+                ts, provider, model,
+                prompt_tokens, completion_tokens, reasoning_tokens, total_tokens,
+                cache_hit_tokens, cache_miss_tokens,
+                latency_ms, chosen_skills_json, candidate_count, status, error_msg
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            params![
+                ev.ts,
+                ev.provider,
+                ev.model,
+                ev.prompt_tokens,
+                ev.completion_tokens,
+                ev.reasoning_tokens,
+                ev.total_tokens,
+                ev.cache_hit_tokens,
+                ev.cache_miss_tokens,
+                ev.latency_ms,
+                ev.chosen_skills_json,
+                ev.candidate_count,
+                ev.status,
+                ev.error_msg,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn router_stats_summary(&self, since_ts: Option<i64>) -> Result<RouterStatsSummary> {
+        let (total_calls, total_prompt, total_completion, total_reasoning, total_tokens, errors): (
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+        ) = self.conn.query_row(
+            "SELECT
+                COUNT(*),
+                COALESCE(SUM(prompt_tokens), 0),
+                COALESCE(SUM(completion_tokens), 0),
+                COALESCE(SUM(reasoning_tokens), 0),
+                COALESCE(SUM(total_tokens), 0),
+                COALESCE(SUM(CASE WHEN status != 'ok' THEN 1 ELSE 0 END), 0)
+             FROM router_events
+             WHERE (?1 IS NULL OR ts >= ?1)",
+            params![since_ts],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            },
+        )?;
+        let avg_latency_ms: Option<f64> = self.conn.query_row(
+            "SELECT AVG(latency_ms) FROM router_events WHERE (?1 IS NULL OR ts >= ?1) AND status = 'ok'",
+            params![since_ts],
+            |r| r.get(0),
+        ).ok().flatten();
+        let mut per_model = Vec::new();
+        let mut stmt = self.conn.prepare(
+            "SELECT model, COUNT(*), COALESCE(SUM(total_tokens), 0)
+             FROM router_events
+             WHERE (?1 IS NULL OR ts >= ?1)
+             GROUP BY model
+             ORDER BY 3 DESC",
+        )?;
+        let rows = stmt.query_map(params![since_ts], |r| {
+            Ok(RouterModelStat {
+                model: r.get(0)?,
+                calls: r.get(1)?,
+                total_tokens: r.get(2)?,
+            })
+        })?;
+        for row in rows {
+            per_model.push(row?);
+        }
+        Ok(RouterStatsSummary {
+            total_calls,
+            total_prompt_tokens: total_prompt,
+            total_completion_tokens: total_completion,
+            total_reasoning_tokens: total_reasoning,
+            total_tokens,
+            errors,
+            avg_latency_ms,
+            per_model,
+        })
+    }
+
+    pub fn router_recent_events(&self, limit: usize) -> Result<Vec<RouterEvent>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT ts, provider, model, prompt_tokens, completion_tokens, reasoning_tokens,
+                    total_tokens, cache_hit_tokens, cache_miss_tokens, latency_ms,
+                    chosen_skills_json, candidate_count, status, error_msg
+             FROM router_events
+             ORDER BY ts DESC
+             LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |r| {
+            Ok(RouterEvent {
+                ts: r.get(0)?,
+                provider: r.get(1)?,
+                model: r.get(2)?,
+                prompt_tokens: r.get(3)?,
+                completion_tokens: r.get(4)?,
+                reasoning_tokens: r.get(5)?,
+                total_tokens: r.get(6)?,
+                cache_hit_tokens: r.get(7)?,
+                cache_miss_tokens: r.get(8)?,
+                latency_ms: r.get(9)?,
+                chosen_skills_json: r.get(10)?,
+                candidate_count: r.get(11)?,
+                status: r.get(12)?,
+                error_msg: r.get(13)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
     }
 
     pub fn insert_resource(&self, res: &Resource) -> Result<()> {
@@ -508,7 +701,7 @@ mod tests {
             .conn
             .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 4);
+        assert_eq!(version, 5);
     }
 
     #[test]
