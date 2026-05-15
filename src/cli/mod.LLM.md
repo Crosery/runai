@@ -11,8 +11,8 @@ clap-based CLI entry point. Parses subcommands, constructs a `SkillManager`, dis
 
 ## Public API
 - `struct Cli` (clap `Parser`) — top-level arg parser.
-- `enum Commands` — all subcommands: `Scan`, `Discover`, `List`, `Enable`, `Disable`, `Install`, `MarketInstall`, `Uninstall`, `Trash(TrashCommands)`, `Restore`, `Backup`, `Group(GroupCommands)`, `Status`, `McpServe`, `Register`, `Unregister`, `Usage`, `Update`, `Doctor`.
-- `enum GroupCommands` — `Create`, `Add`, `Remove`, `List`.
+- `enum Commands` — all subcommands: `Scan`, `Discover`, `List`, `Enable`, `Disable`, `Install`, `MarketInstall`, `Uninstall`, `Trash(TrashCommands)`, `Restore`, `Backup`, `Backups`, `Search`, `Market`, `Group(GroupCommands)`, `Status`, `McpServe`, `Register`, `Unregister`, `Usage`, `Update`, `Doctor`.
+- `enum GroupCommands` — `Create`, `Add`, `Remove`, `List`, `Delete`, `Update`.
 - `enum TrashCommands` — `List`, `Restore`, `Purge`, `Empty`.
 - `run(cli) -> Result<()>` — top dispatch.
 
@@ -33,3 +33,4 @@ clap-based CLI entry point. Parses subcommands, constructs a `SkillManager`, dis
 - `find_resource_id_by_name` returns `"resource not found"` error — match the exact message if adding tests.
 - The `--target` arg defaults to `claude`. Explicit target required for non-Claude CLIs.
 - `Doctor { fix: bool }` — when `--fix`, calls `core::doctor::run_doctor_fix()`: prunes dangling symlinks under `~/.{claude,codex,gemini,opencode}/skills/` and reruns the skill-row dedupe. The same dedupe runs silently inside `SkillManager::new()/with_base()` so most of the time `--fix` reports zero — it's the explicit recovery surface for users whose state drifted mid-session.
+- `Search`, `Market`, `Backups`, `GroupCommands::{Delete, Update}` mirror the MCP `sm_search` / `sm_market` / `sm_backups` / `sm_delete_group` / `sm_group_members(action="update")` tools so the CLI surface is functionally on par with MCP. `GroupCommands::Delete` removes only the `.toml` (members untouched, matching MCP semantics).

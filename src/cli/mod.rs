@@ -69,6 +69,19 @@ pub enum Commands {
     },
     /// Create a backup now
     Backup,
+    /// List available backups (newest first)
+    Backups,
+    /// Search across installed resources and market
+    Search { query: String },
+    /// Browse market skills
+    Market {
+        /// Filter by source label or repo
+        #[arg(long)]
+        source: Option<String>,
+        /// Search keyword in name/repo path/source label
+        #[arg(long)]
+        search: Option<String>,
+    },
     /// Group management
     Group {
         #[command(subcommand)]
@@ -126,6 +139,16 @@ pub enum GroupCommands {
     Remove { group: String, resource: String },
     /// List all groups
     List,
+    /// Delete a group (does not delete its members)
+    Delete { id: String },
+    /// Update group metadata (display name and/or description)
+    Update {
+        id: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        description: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -333,6 +356,134 @@ pub fn run(cli: Cli) -> Result<()> {
             match crate::core::backup::create_backup(paths) {
                 Ok(dir) => println!("Backup created: {}", dir.display()),
                 Err(e) => eprintln!("Backup failed: {e}"),
+            }
+            Ok(())
+        }
+        Some(Commands::Backups) => {
+            let paths = mgr.paths();
+            let list = crate::core::backup::list_backups(paths);
+            if list.is_empty() {
+                println!("No backups found.");
+            } else {
+                for ts in &list {
+                    println!("  {ts}");
+                }
+                println!("\nTotal: {} backups", list.len());
+            }
+            Ok(())
+        }
+        Some(Commands::Search { query }) => {
+            let q = query.to_lowercase();
+            let resources = mgr.list_resources(None, None).unwrap_or_default();
+            let mut local_matches: Vec<_> = resources
+                .iter()
+                .filter(|r| {
+                    r.name.to_lowercase().contains(&q) || r.description.to_lowercase().contains(&q)
+                })
+                .collect();
+            local_matches.sort_by(|a, b| b.usage_count.cmp(&a.usage_count));
+
+            if !local_matches.is_empty() {
+                println!("── Installed ({}) ──", local_matches.len());
+                for r in &local_matches {
+                    let icon = if r.enabled.values().any(|&v| v) {
+                        "●"
+                    } else {
+                        "○"
+                    };
+                    let usage = if r.usage_count > 0 {
+                        format!(" [{}x]", r.usage_count)
+                    } else {
+                        String::new()
+                    };
+                    println!("  {icon} {:<5} {}{usage}", r.kind.as_str(), r.name);
+                }
+            }
+
+            let data_dir = mgr.paths().data_dir().to_path_buf();
+            let sources = crate::core::market::load_sources(&data_dir);
+            let installed_names: Vec<String> = resources.iter().map(|r| r.name.clone()).collect();
+            let mut market_matches = Vec::new();
+            for src in &sources {
+                if !src.enabled {
+                    continue;
+                }
+                if let Some(cached) = crate::core::market::load_cache(&data_dir, src) {
+                    for skill in cached {
+                        if installed_names.contains(&skill.name) {
+                            continue;
+                        }
+                        if skill.name.to_lowercase().contains(&q)
+                            || skill.repo_path.to_lowercase().contains(&q)
+                        {
+                            market_matches
+                                .push(format!("  {} ({})", skill.name, skill.source_label));
+                        }
+                    }
+                }
+            }
+
+            if !market_matches.is_empty() {
+                println!("\n── Market ({}) ──", market_matches.len());
+                for line in market_matches.iter().take(20) {
+                    println!("{line}");
+                }
+                println!("Use 'runai market-install <name>' to install.");
+            }
+
+            if local_matches.is_empty() && market_matches.is_empty() {
+                println!("No matches for '{query}'.");
+            }
+            Ok(())
+        }
+        Some(Commands::Market { source, search }) => {
+            let data_dir = mgr.paths().data_dir().to_path_buf();
+            let sources = crate::core::market::load_sources(&data_dir);
+            let installed: Vec<String> = mgr
+                .list_resources(None, None)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|r| r.name)
+                .collect();
+
+            let mut printed = 0usize;
+            for src in &sources {
+                if !src.enabled {
+                    continue;
+                }
+                if let Some(ref filter) = source {
+                    let f = filter.to_lowercase();
+                    if !src.label.to_lowercase().contains(&f)
+                        && !src.repo_id().to_lowercase().contains(&f)
+                    {
+                        continue;
+                    }
+                }
+                if let Some(cached) = crate::core::market::load_cache(&data_dir, src) {
+                    for skill in cached {
+                        if let Some(ref q) = search {
+                            let s = q.to_lowercase();
+                            let hit = skill.name.to_lowercase().contains(&s)
+                                || skill.repo_path.to_lowercase().contains(&s)
+                                || skill.source_label.to_lowercase().contains(&s);
+                            if !hit {
+                                continue;
+                            }
+                        }
+                        let tag = if installed.contains(&skill.name) {
+                            "●"
+                        } else {
+                            "○"
+                        };
+                        println!("  {tag} {:<40} {}", skill.name, skill.source_label);
+                        printed += 1;
+                    }
+                }
+            }
+            if printed == 0 {
+                println!("No market skills matched.");
+            } else {
+                println!("\nTotal: {printed} skills");
             }
             Ok(())
         }
@@ -555,6 +706,35 @@ fn handle_group_command(mgr: &SkillManager, command: GroupCommands) -> Result<()
                         members.len()
                     );
                 }
+            }
+            Ok(())
+        }
+        GroupCommands::Delete { id } => {
+            let path = mgr.paths().groups_dir().join(format!("{id}.toml"));
+            if !path.exists() {
+                anyhow::bail!("Group not found: {id}");
+            }
+            std::fs::remove_file(&path)?;
+            println!("Group '{id}' deleted");
+            Ok(())
+        }
+        GroupCommands::Update {
+            id,
+            name,
+            description,
+        } => {
+            mgr.update_group(&id, name.as_deref(), description.as_deref())?;
+            let mut changes = Vec::new();
+            if let Some(n) = &name {
+                changes.push(format!("name='{n}'"));
+            }
+            if let Some(d) = &description {
+                changes.push(format!("desc='{d}'"));
+            }
+            if changes.is_empty() {
+                println!("Group '{id}' unchanged (pass --name and/or --description)");
+            } else {
+                println!("Group '{id}' updated: {}", changes.join(", "));
             }
             Ok(())
         }

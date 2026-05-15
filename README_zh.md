@@ -85,6 +85,11 @@ runai trash list              # 查看垃圾桶
 runai trash restore brainstorming
 runai scan                    # 扫描已知目录
 runai backup                  # 创建备份
+runai backups                 # 列出已有备份
+runai search figma            # 同时搜索已装资源和市场
+runai market --search figma   # 浏览市场 skill，可选 --source 过滤
+runai group delete my-group   # 删除一个 group 定义（不动成员）
+runai group update my-group --name "新名字" --description "..."
 ```
 
 ## TUI 快捷键

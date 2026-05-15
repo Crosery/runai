@@ -85,6 +85,11 @@ runai trash list              # List trash entries
 runai trash restore brainstorming
 runai scan                    # Scan known directories
 runai backup                  # Create a backup
+runai backups                 # List existing backups
+runai search figma            # Search installed resources and market
+runai market --search figma   # Browse market skills, optional --source filter
+runai group delete my-group   # Remove a group definition (members untouched)
+runai group update my-group --name "New Name" --description "..."
 ```
 
 ## TUI Keybindings
