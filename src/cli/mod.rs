@@ -818,8 +818,8 @@ fn handle_recommend(
             // Stdin-JSON mode lets the router see recent conversation history,
             // which is how "use figma-component-mapping" replies get auto-routed
             // to the right skill on the next round.
-            let (user_prompt, transcript_path) = match prompt_opt {
-                Some(p) => (p, None),
+            let (user_prompt, transcript_path, session_id) = match prompt_opt {
+                Some(p) => (p, None, None),
                 None => {
                     use std::io::Read;
                     let mut buf = String::new();
@@ -840,7 +840,11 @@ fn handle_recommend(
                         .get("transcript_path")
                         .and_then(|x| x.as_str())
                         .map(std::path::PathBuf::from);
-                    (p, tp)
+                    let sid = v
+                        .get("session_id")
+                        .and_then(|x| x.as_str())
+                        .map(String::from);
+                    (p, tp, sid)
                 }
             };
 
@@ -848,9 +852,14 @@ fn handle_recommend(
             if !cfg.enabled {
                 return Ok(());
             }
-            match recommend(mgr, &user_prompt, transcript_path.as_deref()) {
-                Ok(skills) => {
-                    let out = format_for_hook(&skills);
+            match recommend(
+                mgr,
+                &user_prompt,
+                transcript_path.as_deref(),
+                session_id.as_deref(),
+            ) {
+                Ok(decision) => {
+                    let out = format_for_hook(&decision);
                     if !out.is_empty() {
                         print!("{out}");
                     }

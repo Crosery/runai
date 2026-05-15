@@ -15,9 +15,28 @@ use crate::core::resource::ResourceKind;
 const SYSTEM_PROMPT_TEMPLATE: &str = include_str!("prompts/recommend_system.md");
 const USER_MSG_TEMPLATE: &str = include_str!("prompts/recommend_user.md");
 const HISTORY_PREFIX_TEMPLATE: &str = include_str!("prompts/recommend_history_prefix.md");
+const ALREADY_ROUTED_TEMPLATE: &str = include_str!("prompts/recommend_already_routed.md");
 const HOOK_INLINE_TEMPLATE: &str = include_str!("prompts/hook_inline.md");
 const HOOK_POINTER_TEMPLATE: &str = include_str!("prompts/hook_pointer.md");
 const HOOK_MULTI_TEMPLATE: &str = include_str!("prompts/hook_multi.md");
+
+/// Mode tag returned by the router on the first line of its output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RouterMode {
+    /// Skills in this set can be loaded together (e.g. github + writing-skills).
+    Compatible,
+    /// Skills are mutually exclusive — user must pick one (e.g. multiple image gen providers).
+    Exclusive,
+}
+
+impl RouterMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            RouterMode::Compatible => "compatible",
+            RouterMode::Exclusive => "exclusive",
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecommendConfig {
@@ -114,6 +133,13 @@ pub struct RecommendedSkill {
     pub content: String,
 }
 
+/// Full router output: the mode tag plus the ranked skill list.
+#[derive(Debug, Clone)]
+pub struct RouterDecision {
+    pub mode: RouterMode,
+    pub skills: Vec<RecommendedSkill>,
+}
+
 /// Top-level entry: run the router and return the list of recommended skills.
 /// Returns `Ok(Vec::new())` when nothing matches, when disabled, or when prompt
 /// is too short.
@@ -126,17 +152,32 @@ pub fn recommend(
     mgr: &SkillManager,
     user_prompt: &str,
     transcript_path: Option<&Path>,
-) -> Result<Vec<RecommendedSkill>> {
+    session_id: Option<&str>,
+) -> Result<RouterDecision> {
     let cfg = RecommendConfig::load(mgr.paths())?;
     if !cfg.enabled {
-        return Ok(Vec::new());
+        return Ok(RouterDecision {
+            mode: RouterMode::Exclusive,
+            skills: Vec::new(),
+        });
     }
     if user_prompt.trim().chars().count() < cfg.min_prompt_len {
-        return Ok(Vec::new());
+        return Ok(RouterDecision {
+            mode: RouterMode::Exclusive,
+            skills: Vec::new(),
+        });
     }
     let api_key = cfg
         .effective_api_key()
         .context("recommend api_key not configured: run `runai recommend setup` or set RUNAI_RECOMMEND_API_KEY")?;
+
+    let already_routed = match session_id {
+        Some(sid) if !sid.is_empty() => mgr
+            .db()
+            .router_session_routed_skills(sid)
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
 
     let resources = mgr.list_resources(None, None)?;
     let candidates: Vec<_> = resources
@@ -144,7 +185,10 @@ pub fn recommend(
         .filter(|r| r.kind == ResourceKind::Skill)
         .collect();
     if candidates.is_empty() {
-        return Ok(Vec::new());
+        return Ok(RouterDecision {
+            mode: RouterMode::Exclusive,
+            skills: Vec::new(),
+        });
     }
 
     let candidate_listing: String = candidates
@@ -170,8 +214,15 @@ pub fn recommend(
         HISTORY_PREFIX_TEMPLATE.replace("{HISTORY}", &history)
     };
 
+    let already_routed_block = if already_routed.is_empty() {
+        String::new()
+    } else {
+        ALREADY_ROUTED_TEMPLATE.replace("{ALREADY_ROUTED}", &already_routed.join(", "))
+    };
+
     let user_msg = USER_MSG_TEMPLATE
         .replace("{HISTORY_BLOCK}", &history_block)
+        .replace("{ALREADY_ROUTED_BLOCK}", &already_routed_block)
         .replace("{CANDIDATE_LISTING}", &candidate_listing)
         .replace("{USER_PROMPT}", user_prompt)
         .replace("{TOP_K}", &cfg.top_k.to_string());
@@ -180,15 +231,26 @@ pub fn recommend(
     let call_result = call_router(&cfg, &api_key, &user_msg);
     let latency_ms = started.elapsed().as_millis() as i64;
 
-    let (chosen_names, stats, status, error_msg) = match call_result {
-        Ok((names, stats)) => (names, stats, "ok".to_string(), None),
+    let (mode, chosen_names, stats, status, error_msg) = match call_result {
+        Ok((mode, names, stats)) => (mode, names, stats, "ok".to_string(), None),
         Err(e) => (
+            RouterMode::Exclusive,
             Vec::new(),
             RouterCallStats::default(),
             "error".to_string(),
             Some(e.to_string()),
         ),
     };
+    // Drop names that the LLM hallucinated against the candidate set (they
+    // can't be loaded). Also drop anything in already_routed to enforce
+    // session memory at the runai layer regardless of LLM compliance.
+    let already_set: std::collections::HashSet<String> = already_routed.iter().cloned().collect();
+    let candidate_set: std::collections::HashSet<String> =
+        candidates.iter().map(|r| r.name.clone()).collect();
+    let chosen_names: Vec<String> = chosen_names
+        .into_iter()
+        .filter(|n| candidate_set.contains(n) && !already_set.contains(n))
+        .collect();
     if std::env::var("RUNAI_RECOMMEND_DEBUG").is_ok() {
         eprintln!(
             "[recommend debug] candidates={}, chosen={:?}, latency_ms={}, tokens={}",
@@ -221,6 +283,8 @@ pub fn recommend(
         candidate_count: candidates.len() as i64,
         status,
         error_msg: error_msg.clone(),
+        session_id: session_id.unwrap_or("").to_string(),
+        mode: mode.as_str().to_string(),
     };
     let _ = mgr.db().insert_router_event(&ev);
 
@@ -255,19 +319,22 @@ pub fn recommend(
             });
         }
     }
-    write_last_recommend(mgr.paths(), &out);
-    Ok(out)
+    let decision = RouterDecision { mode, skills: out };
+    write_last_recommend(mgr.paths(), &decision);
+    Ok(decision)
 }
 
 /// Write the most-recent router decision to `<data_dir>/last-recommend.json`.
 /// Statusline tools (omc-hud, claude-hud, custom shell scripts) can read this
 /// to surface the active skill in Claude Code's bottom bar. Best-effort: any
 /// write error is silently swallowed so it never blocks the hook.
-fn write_last_recommend(paths: &AppPaths, skills: &[RecommendedSkill]) {
+fn write_last_recommend(paths: &AppPaths, decision: &RouterDecision) {
+    let skills = &decision.skills;
     let primary = skills.first().map(|s| s.name.as_str());
     let alternates: Vec<&str> = skills.iter().skip(1).map(|s| s.name.as_str()).collect();
     let entry = serde_json::json!({
         "timestamp": chrono::Utc::now().to_rfc3339(),
+        "mode": decision.mode.as_str(),
         "primary": primary,
         "alternates": alternates,
         "count": skills.len(),
@@ -278,12 +345,76 @@ fn write_last_recommend(paths: &AppPaths, skills: &[RecommendedSkill]) {
     }
 }
 
+/// Format a COMPATIBLE multi-skill set. Each skill becomes its own inline
+/// block if its content fits the per-skill budget; otherwise it shows as a
+/// pointer line telling the main agent to Read once. The total output is hard
+/// capped at 9 KB to stay under Claude Code's 10 KB UserPromptSubmit cap.
+fn format_compatible_set(skills: &[RecommendedSkill]) -> String {
+    const HARD_BUDGET: usize = 9000;
+    const PER_SKILL_INLINE_LIMIT: usize = 4000;
+
+    let mut buf = String::new();
+    buf.push_str("# Skill recommendations (runai recommend)\n\n");
+    buf.push_str(
+        "**Compatible skill set — these skills can be combined; load them all and use as needed.** Start your reply with one short line listing the activated skills, e.g. `激活 skills: a, b, c`. Then follow the inlined SKILL.md content directly. For any skill below shown as `(too large — Read once)`, Read its path exactly once.\n\n",
+    );
+    buf.push_str(&format!(
+        "激活 skills: {}\n\n",
+        skills
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    ));
+
+    for s in skills {
+        let header = format!("---\n## {}\nSource path: `{}`\n", s.name, s.path.display());
+        if buf.len() + header.len() > HARD_BUDGET {
+            buf.push_str(&format!(
+                "\n(Remaining skills omitted to stay under 10 KB hook cap. Read these one-by-one as needed: {})\n",
+                skills
+                    .iter()
+                    .skip_while(|x| x.name != s.name)
+                    .map(|x| x.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+            break;
+        }
+        buf.push_str(&header);
+        if !s.content.is_empty()
+            && s.content.len() <= PER_SKILL_INLINE_LIMIT
+            && buf.len() + s.content.len() < HARD_BUDGET
+        {
+            buf.push('\n');
+            buf.push_str(&s.content);
+            if !s.content.ends_with('\n') {
+                buf.push('\n');
+            }
+        } else {
+            buf.push_str(&format!(
+                "(too large — Read once at the path above; what it does: {})\n",
+                s.description.chars().take(160).collect::<String>()
+            ));
+        }
+    }
+    buf
+}
+
 /// Format recommended skills as the `UserPromptSubmit` hook stdout text.
 /// Output is plain markdown; Claude Code injects hook stdout as additional
 /// context before the user prompt.
-pub fn format_for_hook(skills: &[RecommendedSkill]) -> String {
+pub fn format_for_hook(decision: &RouterDecision) -> String {
+    let skills = &decision.skills;
     if skills.is_empty() {
         return String::new();
+    }
+
+    // Multi-skill + COMPATIBLE → inline all primaries' SKILL.md if they fit
+    // under the 10 KB hook cap. Each compatible skill becomes its own inline
+    // block. Falls back to pointer mode for the over-budget ones.
+    if skills.len() > 1 && decision.mode == RouterMode::Compatible {
+        return format_compatible_set(skills);
     }
 
     if skills.len() == 1 {
@@ -333,10 +464,36 @@ fn call_router(
     cfg: &RecommendConfig,
     api_key: &str,
     user_msg: &str,
-) -> Result<(Vec<String>, RouterCallStats)> {
-    match cfg.provider {
-        Provider::OpenaiCompat => call_openai_compat(cfg, api_key, user_msg),
-        Provider::Anthropic => call_anthropic(cfg, api_key, user_msg),
+) -> Result<(RouterMode, Vec<String>, RouterCallStats)> {
+    let (content_lines, stats) = match cfg.provider {
+        Provider::OpenaiCompat => call_openai_compat(cfg, api_key, user_msg)?,
+        Provider::Anthropic => call_anthropic(cfg, api_key, user_msg)?,
+    };
+    let (mode, names) = split_mode_and_names(content_lines);
+    Ok((mode, names, stats))
+}
+
+/// Pop the first non-empty line as the mode tag; remaining lines are skill
+/// names. Unknown / missing tag defaults to `Exclusive` (the safer choice —
+/// the main agent will ask the user to pick).
+fn split_mode_and_names(content: Vec<String>) -> (RouterMode, Vec<String>) {
+    let mut iter = content.into_iter().filter(|l| !l.is_empty());
+    let first = match iter.next() {
+        Some(s) => s,
+        None => return (RouterMode::Exclusive, Vec::new()),
+    };
+    let upper = first.to_ascii_uppercase();
+    if upper == "COMPATIBLE" {
+        (RouterMode::Compatible, iter.collect())
+    } else if upper == "EXCLUSIVE" {
+        (RouterMode::Exclusive, iter.collect())
+    } else {
+        // First line wasn't a tag — keep its original case as a skill name
+        // and default to Exclusive (safer — main agent will ask user to
+        // pick). Defensive against LLMs that forget the tag.
+        let mut names = vec![first];
+        names.extend(iter);
+        (RouterMode::Exclusive, names)
     }
 }
 
@@ -425,7 +582,7 @@ fn call_openai_compat(
             v.get("usage").map(|u| u.to_string()).unwrap_or_default()
         );
     }
-    Ok((parse_skill_names(content), parse_openai_usage(&v)))
+    Ok((parse_lines(content), parse_openai_usage(&v)))
 }
 
 fn call_anthropic(
@@ -458,7 +615,7 @@ fn call_anthropic(
     }
     let v: serde_json::Value = resp.json().context("decode router json")?;
     let content = v["content"][0]["text"].as_str().unwrap_or_default();
-    Ok((parse_skill_names(content), parse_anthropic_usage(&v)))
+    Ok((parse_lines(content), parse_anthropic_usage(&v)))
 }
 
 /// Read the most recent `n` user/assistant text messages from a Claude Code
@@ -651,7 +808,10 @@ fn write_settings_json(path: &Path, value: &serde_json::Value) -> Result<()> {
     Ok(())
 }
 
-fn parse_skill_names(raw: &str) -> Vec<String> {
+/// Strip bullets / quotes / whitespace from each line of LLM output. Empty
+/// lines are dropped. Caller (split_mode_and_names) interprets the first
+/// non-empty line as either a COMPATIBLE/EXCLUSIVE tag or a skill name.
+fn parse_lines(raw: &str) -> Vec<String> {
     raw.lines()
         .map(|l| l.trim().trim_start_matches('-').trim().trim_matches('`'))
         .filter(|l| !l.is_empty())
@@ -675,7 +835,7 @@ mod tests {
     #[test]
     fn parse_lines_strips_dash_and_backtick() {
         let raw = "figma-alignment\n- another-skill\n`third-skill`\n\n";
-        let names = parse_skill_names(raw);
+        let names = parse_lines(raw);
         assert_eq!(
             names,
             vec!["figma-alignment", "another-skill", "third-skill"]
@@ -684,13 +844,17 @@ mod tests {
 
     #[test]
     fn parse_empty_input() {
-        assert!(parse_skill_names("").is_empty());
-        assert!(parse_skill_names("   \n\n").is_empty());
+        assert!(parse_lines("").is_empty());
+        assert!(parse_lines("   \n\n").is_empty());
+    }
+
+    fn decision(mode: RouterMode, skills: Vec<RecommendedSkill>) -> RouterDecision {
+        RouterDecision { mode, skills }
     }
 
     #[test]
     fn format_empty_skills_returns_empty_string() {
-        assert!(format_for_hook(&[]).is_empty());
+        assert!(format_for_hook(&decision(RouterMode::Exclusive, vec![])).is_empty());
     }
 
     #[test]
@@ -701,7 +865,7 @@ mod tests {
             path: PathBuf::from("/x/SKILL.md"),
             content: "tiny skill content body".into(),
         };
-        let out = format_for_hook(&[s]);
+        let out = format_for_hook(&decision(RouterMode::Exclusive, vec![s]));
         assert!(
             out.len() < 10_000,
             "must stay under 10KB hook cap, got {}",
@@ -722,7 +886,7 @@ mod tests {
             path: PathBuf::from("/x/huge/SKILL.md"),
             content: huge.clone(),
         };
-        let out = format_for_hook(&[s]);
+        let out = format_for_hook(&decision(RouterMode::Exclusive, vec![s]));
         assert!(
             out.len() < 10_000,
             "must stay under 10KB hook cap, got {}",
@@ -735,7 +899,7 @@ mod tests {
     }
 
     #[test]
-    fn format_multi_match_surfaces_candidates_without_injection() {
+    fn format_exclusive_multi_surfaces_candidates_without_injection() {
         let a = RecommendedSkill {
             name: "figma-alignment".into(),
             description: "align vue to figma".into(),
@@ -748,14 +912,74 @@ mod tests {
             path: PathBuf::from("/x/map/SKILL.md"),
             content: String::new(),
         };
-        let out = format_for_hook(&[a, b]);
+        let out = format_for_hook(&decision(RouterMode::Exclusive, vec![a, b]));
         assert!(out.contains("Multiple skills"));
         assert!(out.contains("- **figma-alignment**"));
         assert!(out.contains("- **figma-component-mapping**"));
-        // No full SKILL.md content for any skill in multi-match mode.
         assert!(!out.contains("should NOT appear"));
         assert!(!out.contains("/x/figma/SKILL.md"));
         assert!(!out.contains("/x/map/SKILL.md"));
+    }
+
+    #[test]
+    fn format_compatible_multi_inlines_all_under_budget() {
+        let a = RecommendedSkill {
+            name: "github".into(),
+            description: "gh cli wrapper".into(),
+            path: PathBuf::from("/x/github/SKILL.md"),
+            content: "github skill body — small".into(),
+        };
+        let b = RecommendedSkill {
+            name: "writing-skills".into(),
+            description: "write/edit skills".into(),
+            path: PathBuf::from("/x/writing/SKILL.md"),
+            content: "writing skill body — also small".into(),
+        };
+        let out = format_for_hook(&decision(RouterMode::Compatible, vec![a, b]));
+        assert!(out.contains("Compatible skill set"));
+        assert!(out.contains("激活 skills: github, writing-skills"));
+        assert!(out.contains("github skill body"));
+        assert!(out.contains("writing skill body"));
+        assert!(out.len() < 10_000);
+    }
+
+    #[test]
+    fn split_mode_compatible_then_skills() {
+        let (mode, names) = split_mode_and_names(vec![
+            "COMPATIBLE".into(),
+            "github".into(),
+            "writing-skills".into(),
+        ]);
+        assert_eq!(mode, RouterMode::Compatible);
+        assert_eq!(names, vec!["github", "writing-skills"]);
+    }
+
+    #[test]
+    fn split_mode_exclusive_then_skills() {
+        let (mode, names) = split_mode_and_names(vec![
+            "EXCLUSIVE".into(),
+            "generate-image".into(),
+            "fal-ai-media".into(),
+        ]);
+        assert_eq!(mode, RouterMode::Exclusive);
+        assert_eq!(names, vec!["generate-image", "fal-ai-media"]);
+    }
+
+    #[test]
+    fn split_mode_missing_tag_defaults_to_exclusive() {
+        // If the LLM forgets the tag, treat the first line as a skill and
+        // default mode to Exclusive (safer — user decides).
+        let (mode, names) =
+            split_mode_and_names(vec!["just-one-skill".into(), "another-skill".into()]);
+        assert_eq!(mode, RouterMode::Exclusive);
+        assert_eq!(names, vec!["just-one-skill", "another-skill"]);
+    }
+
+    #[test]
+    fn split_mode_empty_returns_exclusive_empty() {
+        let (mode, names) = split_mode_and_names(vec![]);
+        assert_eq!(mode, RouterMode::Exclusive);
+        assert!(names.is_empty());
     }
 
     #[test]

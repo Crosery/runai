@@ -12,22 +12,34 @@ Opt-in skill auto-routing. A small LLM (default `deepseek-v4-flash` via OpenAI-c
 Disabled by default. User must run `runai recommend setup` (interactive) or write `~/.runai/config.toml` manually before any LLM call happens.
 
 ## Public API
-- `struct RecommendConfig` — `enabled`, `provider`, `base_url`, `model`, `api_key`, `top_k`, `min_prompt_len`. Defaults: disabled, openai-compat, DeepSeek endpoint, `deepseek-v4-flash`, top_k=3, min_prompt_len=10.
+- `struct RecommendConfig` — `enabled`, `provider`, `base_url`, `model`, `api_key`, `top_k`, `min_prompt_len`. Defaults: disabled, openai-compat, DeepSeek endpoint, `deepseek-v4-flash`, top_k=3, min_prompt_len=0.
 - `enum Provider` — `OpenaiCompat` (default) or `Anthropic`.
+- `enum RouterMode` — `Compatible` (skills co-loadable, all primaries inlined) or `Exclusive` (user must pick one).
 - `RecommendConfig::load(paths)` / `save(paths)` — toml at `~/.runai/config.toml`. Save sets `0o600` on unix.
 - `RecommendConfig::effective_api_key()` — config field first, then `RUNAI_RECOMMEND_API_KEY` env.
-- `recommend(mgr, prompt, transcript_path) -> Vec<RecommendedSkill>` — top-level entry. `transcript_path` is the session jsonl (from Claude Code hook stdin); when present, the last 6 user/assistant text messages are appended to the LLM input so the router can recognize replies like "use figma-component-mapping" and pick the right skill on the next round. Returns empty when disabled, prompt too short, or no skills installed.
+- `recommend(mgr, prompt, transcript_path, session_id) -> RouterDecision` — top-level entry. `transcript_path` is the session jsonl (from Claude Code hook stdin); the last 6 user/assistant text messages get appended so the router can recognize replies like "use figma-component-mapping". `session_id` (also from stdin JSON) drives **per-session memory**: every skill name this session has already been recommended is queried from the DB and injected into the LLM prompt as "already_routed", plus runai filters them out a second time on the wire so the same skill can't be re-pushed within one Claude Code session even if the LLM tries.
 - `recent_transcript_messages(path, n)` — read the last `n` user/assistant text messages from a Claude Code transcript jsonl, oldest-first. Tool calls/results filtered out; only plain text kept.
-- `format_for_hook(skills) -> String` — markdown formatter for hook stdout. First skill is `Primary` with full SKILL.md content injected; the rest are `Alternates` with only name+description so the main agent can ask the user which to load.
-- `struct RecommendedSkill { name, description, path, content }` — content is empty for alternates, full SKILL.md for the primary pick.
+- `format_for_hook(decision) -> String` — markdown formatter for hook stdout. Behavior depends on `RouterMode`:
+  - **Single skill**: inline full SKILL.md if `≤ 8 KB`, otherwise pointer mode (`Read once at path`).
+  - **Compatible multi**: every skill inlined as its own section (each ≤ 4 KB per skill, total ≤ 9 KB hard cap); skills that don't fit fall back to pointer lines.
+  - **Exclusive multi**: show name + description for each candidate; instruct main agent NOT to pick — let the user choose, then runai injects the chosen full SKILL.md on the next prompt round automatically.
+- `struct RecommendedSkill { name, description, path, content }` — content is the primary's full SKILL.md (single-match) or each skill's full SKILL.md (compatible-multi); empty for alternates in exclusive-multi mode.
+- `struct RouterDecision { mode, skills }` — what `recommend()` returns; `format_for_hook` takes this.
 
 ## Key invariants
-- **Disabled by default.** `RecommendConfig::default().enabled == false`. Loading a missing config returns default. `recommend()` returns `Ok(vec![])` when disabled — no LLM call, no network, no log.
-- **No LLM call below `min_prompt_len` chars.** Default 10. Short prompts (greetings, yes/no) silently skip routing.
-- **LLM output is filtered against installed skills.** Names returned by the model are intersected with `list_resources(Skill, _)`; hallucinated names are dropped.
-- **Only `SKILL.md` is emitted, and only for the primary pick.** Resolved as `paths.skills_dir().join(name).join("SKILL.md")`. If the file is unreadable, the primary is silently dropped (not erroring the hook). Alternates only surface name+description; their full content arrives on a later prompt round when the user picks one.
+- **Disabled by default.** `RecommendConfig::default().enabled == false`. Loading a missing config returns default. `recommend()` returns an empty `RouterDecision` when disabled — no LLM call, no network, no log.
+- **Per-session de-duplication is enforced on the wire, not only in the prompt.** When `session_id` is present, `db.router_session_routed_skills(sid)` returns the union of every chosen skill across this session's prior `router_events` rows. Two layers of defense:
+  1. Inject `ALREADY_ROUTED: [a, b, c]` into the LLM user message — the router system prompt instructs the model to skip these.
+  2. Post-process: even if the LLM ignores the instruction and re-suggests a previously-routed skill, runai filters it out before `format_for_hook` runs. Net effect: no skill can repeat within one Claude Code session.
+- **Mode tag comes from the LLM, defaults to `Exclusive` on parse failure.** First line of LLM content must be `COMPATIBLE` or `EXCLUSIVE`. Missing/unknown tag → defaults to `Exclusive` (safer — main agent will ask user to pick). `split_mode_and_names` handles the parsing.
+- **LLM output is filtered against installed skills.** Names returned by the model are intersected with `list_resources(Skill, _)`; hallucinated names are dropped silently.
+- **SKILL.md emission policy depends on mode**:
+  - Exclusive single → full SKILL.md inlined (or pointer mode if >8 KB).
+  - Exclusive multi → no full content; candidate list only; user picks → next round becomes single match → full content.
+  - Compatible multi → all skills' full content inlined under a combined 9 KB cap; over-cap skills get pointer lines.
 - **API key never logged or echoed.** `recommend status` shows only `set in config` / `set via env` / `missing`. Config file is `0o600`.
-- **Returns success even when LLM call fails.** Errors go to stderr prefixed with `# runai recommend skipped:` so the hook stdout stays parseable; main Claude continues unimpaired.
+- **Telemetry rows include session_id and mode** (DB schema v6). `runai recommend stats` / `sm_recommend_stats` can slice per-session usage and per-mode distribution.
+- **Returns success even when LLM call fails.** Errors go to stderr prefixed with `# runai recommend skipped:` so the hook stdout stays parseable; main Claude continues unimpaired. The failed call is still persisted with `status='error'` for audit.
 
 ## Touch points
 - **Upstream**: `cli::Commands::Recommend` dispatch; user-facing subcommands `runai recommend <prompt>` / `setup` / `status` / `hook-snippet`.

@@ -22,6 +22,8 @@ pub struct RouterEvent {
     pub candidate_count: i64,
     pub status: String,
     pub error_msg: Option<String>,
+    pub session_id: String,
+    pub mode: String,
 }
 
 #[derive(Debug, Clone)]
@@ -176,6 +178,22 @@ impl Database {
             )?;
         }
 
+        if version < 6 {
+            // Per-session router memory + mode tag. session_id lets the router
+            // see which skills it has already pushed in the same Claude Code
+            // session, so it can avoid re-recommending the same skill on every
+            // turn. mode records whether the picked set was tagged as
+            // 'compatible' (skills can co-load) or 'exclusive' (user must pick
+            // one), defaulting to 'exclusive' for legacy rows.
+            self.conn.execute_batch(
+                "ALTER TABLE router_events ADD COLUMN session_id TEXT NOT NULL DEFAULT '';
+                 ALTER TABLE router_events ADD COLUMN mode TEXT NOT NULL DEFAULT 'exclusive';
+                 CREATE INDEX IF NOT EXISTS idx_router_events_session ON router_events(session_id);
+                 DELETE FROM schema_version;
+                 INSERT INTO schema_version VALUES (6);",
+            )?;
+        }
+
         Ok(())
     }
 
@@ -185,8 +203,9 @@ impl Database {
                 ts, provider, model,
                 prompt_tokens, completion_tokens, reasoning_tokens, total_tokens,
                 cache_hit_tokens, cache_miss_tokens,
-                latency_ms, chosen_skills_json, candidate_count, status, error_msg
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                latency_ms, chosen_skills_json, candidate_count, status, error_msg,
+                session_id, mode
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
                 ev.ts,
                 ev.provider,
@@ -202,9 +221,40 @@ impl Database {
                 ev.candidate_count,
                 ev.status,
                 ev.error_msg,
+                ev.session_id,
+                ev.mode,
             ],
         )?;
         Ok(())
+    }
+
+    /// Return the deduped set of skill names this session has already had
+    /// recommended. Used by the router to avoid re-pushing the same skill on
+    /// every turn within one Claude Code session.
+    pub fn router_session_routed_skills(&self, session_id: &str) -> Result<Vec<String>> {
+        if session_id.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut stmt = self.conn.prepare(
+            "SELECT chosen_skills_json FROM router_events
+             WHERE session_id = ?1 AND status = 'ok'
+             ORDER BY ts DESC
+             LIMIT 50",
+        )?;
+        let rows = stmt.query_map(params![session_id], |r| {
+            let s: String = r.get(0)?;
+            Ok(s)
+        })?;
+        let mut seen = std::collections::BTreeSet::new();
+        for row in rows {
+            let json = row?;
+            if let Ok(arr) = serde_json::from_str::<Vec<String>>(&json) {
+                for name in arr {
+                    seen.insert(name);
+                }
+            }
+        }
+        Ok(seen.into_iter().collect())
     }
 
     pub fn router_stats_summary(&self, since_ts: Option<i64>) -> Result<RouterStatsSummary> {
@@ -276,7 +326,8 @@ impl Database {
         let mut stmt = self.conn.prepare(
             "SELECT ts, provider, model, prompt_tokens, completion_tokens, reasoning_tokens,
                     total_tokens, cache_hit_tokens, cache_miss_tokens, latency_ms,
-                    chosen_skills_json, candidate_count, status, error_msg
+                    chosen_skills_json, candidate_count, status, error_msg,
+                    session_id, mode
              FROM router_events
              ORDER BY ts DESC
              LIMIT ?1",
@@ -297,6 +348,8 @@ impl Database {
                 candidate_count: r.get(11)?,
                 status: r.get(12)?,
                 error_msg: r.get(13)?,
+                session_id: r.get(14)?,
+                mode: r.get(15)?,
             })
         })?;
         let mut out = Vec::new();
@@ -701,7 +754,7 @@ mod tests {
             .conn
             .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 5);
+        assert_eq!(version, 6);
     }
 
     #[test]
