@@ -302,20 +302,20 @@ pub fn recommend(
             bm25_fallback_reason = "bm25-as-signal";
             all_candidates
         } else if bm25_hybrid {
-            // Hybrid score = BM25 * 0.6 + LLM/10 * 0.25 + user/10 * 0.15
-            // (user falls back to llm when unrated so missing manual signal
-            // doesn't drag the skill down). Sort all candidates by this
-            // score, take top K.
+            // Hybrid score = BM25 * 0.4 + LLM/10 * 0.6
+            // User-side ratings are intentionally NOT used — the LLM enrich
+            // pass owns quality scoring end-to-end (incorporating implicit
+            // user feedback when re-enriching). Keeps the system one-axis
+            // simpler and avoids the noise of sparse manual ratings.
             let scores_map = mgr.db().skill_scores_all().unwrap_or_default();
             let mut scored: Vec<(usize, f64)> = all_candidates
                 .iter()
                 .enumerate()
                 .map(|(i, r)| {
                     let bm = bm25_scores.get(&r.name).copied().unwrap_or(0.0);
-                    let (llm, user_opt) = scores_map.get(&r.name).copied().unwrap_or((5, None));
-                    let user_val = user_opt.unwrap_or(llm) as f64 / 10.0;
+                    let (llm, _user_opt) = scores_map.get(&r.name).copied().unwrap_or((5, None));
                     let llm_val = (llm as f64) / 10.0;
-                    let hybrid = bm * 0.6 + llm_val * 0.25 + user_val * 0.15;
+                    let hybrid = bm * 0.4 + llm_val * 0.6;
                     (i, hybrid)
                 })
                 .collect();
@@ -362,22 +362,17 @@ pub fn recommend(
         );
     }
 
-    // Per-skill combined score on a unified 0-10 scale: LLM 40% + user 60%.
-    // When the user hasn't rated, we use the LLM score alone (so unrated
-    // skills don't sink). The router LLM sees this score on every candidate
-    // line and uses it as a tiebreaker alongside prompt relevance.
+    // Per-skill quality score 0-10. Owned entirely by the LLM enrich pass
+    // (it sets llm_score based on SKILL.md clarity + incorporates user
+    // feedback when re-enriching). User-rating column is preserved in DB
+    // for the dashboard but no longer participates in routing scoring.
     let scores_map = mgr.db().skill_scores_all().unwrap_or_default();
     let combined_score = |name: &str| -> Option<i64> {
-        let (llm, user) = scores_map.get(name).copied().unwrap_or((5, None));
-        match user {
-            Some(score) => Some(((llm as f64) * 0.4 + (score as f64) * 0.6).round() as i64),
-            None => {
-                if scores_map.contains_key(name) {
-                    Some(llm)
-                } else {
-                    None
-                }
-            }
+        let (llm, _user) = scores_map.get(name).copied().unwrap_or((5, None));
+        if scores_map.contains_key(name) {
+            Some(llm)
+        } else {
+            None
         }
     };
     // bm25 tags are only emitted in signal mode; in prefilter mode the
