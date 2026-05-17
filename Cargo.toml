@@ -45,6 +45,9 @@ notify = "8"
 notify-debouncer-mini = "0.6"
 # Fuzzy matcher (fzf v2 algorithm) for sm_search / sm_market / CLI search & market
 nucleo-matcher = "0.3"
+# Web dashboard for router telemetry (runai server)
+axum = "0.8"
+tower-http = { version = "0.6", features = ["fs"] }
 
 [profile.release]
 strip = true

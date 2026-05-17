@@ -213,6 +213,7 @@ pub fn recommend(
             skills: Vec::new(),
         });
     }
+    let all_candidates_count = all_candidates.len();
 
     // BM25 prefilter. Without it the LLM sees all ~343 candidates and gets
     // noise-flooded — empirically this is what tanks chosen-rate to ~46%
@@ -248,10 +249,7 @@ pub fn recommend(
     if std::env::var("RUNAI_RECOMMEND_DEBUG").is_ok() {
         eprintln!(
             "[recommend debug] bm25 prefilter: total={}, kept={}",
-            mgr.list_resources(None, None)?
-                .iter()
-                .filter(|r| r.kind == ResourceKind::Skill)
-                .count(),
+            all_candidates_count,
             candidates.len()
         );
     }
@@ -344,6 +342,7 @@ pub fn recommend(
     // the hook.
     let chosen_json = serde_json::to_string(&chosen_names).unwrap_or_else(|_| "[]".to_string());
     let ev = RouterEvent {
+        id: None,
         ts: chrono::Utc::now().timestamp(),
         provider: match cfg.provider {
             Provider::OpenaiCompat => "openai-compat".into(),
@@ -359,11 +358,14 @@ pub fn recommend(
         cache_miss_tokens: stats.cache_miss_tokens,
         latency_ms,
         chosen_skills_json: chosen_json,
-        candidate_count: candidates.len() as i64,
+        candidate_count: all_candidates_count as i64,
         status,
         error_msg: error_msg.clone(),
         session_id: session_id.unwrap_or("").to_string(),
         mode: mode.as_str().to_string(),
+        user_prompt: user_prompt.to_string(),
+        cwd: cwd.unwrap_or("").to_string(),
+        bm25_kept: candidates.len() as i64,
     };
     let _ = mgr.db().insert_router_event(&ev);
 

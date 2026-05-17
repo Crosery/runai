@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>runai · router dashboard</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <header>
+    <h1>runai router telemetry</h1>
+    <nav class="filters">
+      <label>窗口
+        <select id="hours">
+          <option value="">全部</option>
+          <option value="1">1 小时</option>
+          <option value="24" selected>24 小时</option>
+          <option value="168">7 天</option>
+          <option value="720">30 天</option>
+        </select>
+      </label>
+      <label>模型
+        <select id="model">
+          <option value="">全部</option>
+        </select>
+      </label>
+      <label class="hit-only">
+        <input type="checkbox" id="hit_only">
+        只看命中
+      </label>
+      <button id="refresh" type="button">刷新</button>
+    </nav>
+  </header>
+
+  <section id="cards" class="cards">
+    <div class="card"><div class="label">总调用</div><div class="value" id="kpi-total">—</div></div>
+    <div class="card"><div class="label">命中率</div><div class="value" id="kpi-hit">—</div></div>
+    <div class="card"><div class="label">平均延迟</div><div class="value" id="kpi-latency">—</div></div>
+    <div class="card"><div class="label">平均输入 token</div><div class="value" id="kpi-tokens">—</div></div>
+    <div class="card"><div class="label">错误数</div><div class="value" id="kpi-errors">—</div></div>
+  </section>
+
+  <section class="per-model">
+    <h2>按模型分组</h2>
+    <table id="model-table">
+      <thead><tr><th>模型</th><th>调用</th><th>累计 token</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section class="events">
+    <h2>最近事件 <span id="events-count" class="muted"></span></h2>
+    <table id="events-table">
+      <thead>
+        <tr>
+          <th>时间</th>
+          <th>模型</th>
+          <th>状态</th>
+          <th>模式</th>
+          <th>BM25</th>
+          <th>tok</th>
+          <th>延迟</th>
+          <th>chosen</th>
+          <th>prompt</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+    <div class="pager">
+      <button id="prev" type="button">上一页</button>
+      <span id="page-info" class="muted"></span>
+      <button id="next" type="button">下一页</button>
+    </div>
+  </section>
+
+  <dialog id="detail">
+    <header>
+      <h2>事件详情 <span class="muted" id="detail-id"></span></h2>
+      <button id="detail-close" type="button">关闭</button>
+    </header>
+    <div id="detail-body"></div>
+  </dialog>
+
+  <script src="/app.js"></script>
+</body>
+</html>

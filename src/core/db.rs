@@ -8,6 +8,8 @@ use crate::core::resource::{Resource, ResourceKind, Source, TrashEntry, UsageSta
 
 #[derive(Debug, Clone)]
 pub struct RouterEvent {
+    /// SQLite rowid. None when constructed for insert; Some when read back.
+    pub id: Option<i64>,
     pub ts: i64,
     pub provider: String,
     pub model: String,
@@ -24,6 +26,15 @@ pub struct RouterEvent {
     pub error_msg: Option<String>,
     pub session_id: String,
     pub mode: String,
+    /// Original user prompt that triggered this router call. Empty for legacy
+    /// rows written before schema v7. Capped at ~2 KB on insert to bound DB size.
+    pub user_prompt: String,
+    /// Working directory the hook was invoked in (cwd from Claude Code hook JSON).
+    /// Empty for legacy rows.
+    pub cwd: String,
+    /// How many candidates remained after BM25 prefilter (= candidate_count when
+    /// prefilter was bypassed). Lets dashboards see prefilter efficacy.
+    pub bm25_kept: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -47,6 +58,36 @@ pub struct RouterStatsSummary {
 
 pub struct Database {
     conn: Connection,
+}
+
+/// Map a SELECT row to a RouterEvent. Column order MUST be:
+/// id, ts, provider, model, prompt_tokens, completion_tokens, reasoning_tokens,
+/// total_tokens, cache_hit_tokens, cache_miss_tokens, latency_ms,
+/// chosen_skills_json, candidate_count, status, error_msg,
+/// session_id, mode, user_prompt, cwd, bm25_kept.
+fn row_to_router_event(r: &rusqlite::Row<'_>) -> rusqlite::Result<RouterEvent> {
+    Ok(RouterEvent {
+        id: r.get(0)?,
+        ts: r.get(1)?,
+        provider: r.get(2)?,
+        model: r.get(3)?,
+        prompt_tokens: r.get(4)?,
+        completion_tokens: r.get(5)?,
+        reasoning_tokens: r.get(6)?,
+        total_tokens: r.get(7)?,
+        cache_hit_tokens: r.get(8)?,
+        cache_miss_tokens: r.get(9)?,
+        latency_ms: r.get(10)?,
+        chosen_skills_json: r.get(11)?,
+        candidate_count: r.get(12)?,
+        status: r.get(13)?,
+        error_msg: r.get(14)?,
+        session_id: r.get(15)?,
+        mode: r.get(16)?,
+        user_prompt: r.get(17)?,
+        cwd: r.get(18)?,
+        bm25_kept: r.get(19)?,
+    })
 }
 
 impl Database {
@@ -194,18 +235,37 @@ impl Database {
             )?;
         }
 
+        if version < 7 {
+            // Web dashboard needs the original user_prompt and cwd to render
+            // per-event detail. bm25_kept records how many candidates the BM25
+            // prefilter kept (= candidate_count when prefilter bypassed) so
+            // dashboards can show prefilter efficacy.
+            self.conn.execute_batch(
+                "ALTER TABLE router_events ADD COLUMN user_prompt TEXT NOT NULL DEFAULT '';
+                 ALTER TABLE router_events ADD COLUMN cwd TEXT NOT NULL DEFAULT '';
+                 ALTER TABLE router_events ADD COLUMN bm25_kept INTEGER NOT NULL DEFAULT 0;
+                 DELETE FROM schema_version;
+                 INSERT INTO schema_version VALUES (7);",
+            )?;
+        }
+
         Ok(())
     }
 
     pub fn insert_router_event(&self, ev: &RouterEvent) -> Result<()> {
+        // Cap user_prompt to bound DB size — full prompts can be megabytes
+        // when users paste long context. 2 KB is enough to recognise intent in
+        // the dashboard.
+        let user_prompt_capped: String = ev.user_prompt.chars().take(2000).collect();
         self.conn.execute(
             "INSERT INTO router_events (
                 ts, provider, model,
                 prompt_tokens, completion_tokens, reasoning_tokens, total_tokens,
                 cache_hit_tokens, cache_miss_tokens,
                 latency_ms, chosen_skills_json, candidate_count, status, error_msg,
-                session_id, mode
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                session_id, mode,
+                user_prompt, cwd, bm25_kept
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
             params![
                 ev.ts,
                 ev.provider,
@@ -223,6 +283,9 @@ impl Database {
                 ev.error_msg,
                 ev.session_id,
                 ev.mode,
+                user_prompt_capped,
+                ev.cwd,
+                ev.bm25_kept,
             ],
         )?;
         Ok(())
@@ -323,40 +386,92 @@ impl Database {
     }
 
     pub fn router_recent_events(&self, limit: usize) -> Result<Vec<RouterEvent>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT ts, provider, model, prompt_tokens, completion_tokens, reasoning_tokens,
+        self.router_events_paged(None, limit, 0, None, false)
+    }
+
+    /// Paginated query used by the web dashboard. `since_ts` filters to events
+    /// after that UTC seconds timestamp; `model` filters by exact model name;
+    /// `hit_only` keeps only ok-status rows with a non-empty chosen array.
+    pub fn router_events_paged(
+        &self,
+        since_ts: Option<i64>,
+        limit: usize,
+        offset: usize,
+        model: Option<&str>,
+        hit_only: bool,
+    ) -> Result<Vec<RouterEvent>> {
+        let mut sql = String::from(
+            "SELECT id, ts, provider, model, prompt_tokens, completion_tokens, reasoning_tokens,
                     total_tokens, cache_hit_tokens, cache_miss_tokens, latency_ms,
                     chosen_skills_json, candidate_count, status, error_msg,
-                    session_id, mode
-             FROM router_events
-             ORDER BY ts DESC
-             LIMIT ?1",
-        )?;
-        let rows = stmt.query_map(params![limit as i64], |r| {
-            Ok(RouterEvent {
-                ts: r.get(0)?,
-                provider: r.get(1)?,
-                model: r.get(2)?,
-                prompt_tokens: r.get(3)?,
-                completion_tokens: r.get(4)?,
-                reasoning_tokens: r.get(5)?,
-                total_tokens: r.get(6)?,
-                cache_hit_tokens: r.get(7)?,
-                cache_miss_tokens: r.get(8)?,
-                latency_ms: r.get(9)?,
-                chosen_skills_json: r.get(10)?,
-                candidate_count: r.get(11)?,
-                status: r.get(12)?,
-                error_msg: r.get(13)?,
-                session_id: r.get(14)?,
-                mode: r.get(15)?,
-            })
-        })?;
+                    session_id, mode, user_prompt, cwd, bm25_kept
+             FROM router_events WHERE 1=1",
+        );
+        if since_ts.is_some() {
+            sql.push_str(" AND ts >= ?1");
+        } else {
+            sql.push_str(" AND (?1 IS NULL OR 1=1)");
+        }
+        if model.is_some() {
+            sql.push_str(" AND model = ?2");
+        } else {
+            sql.push_str(" AND (?2 IS NULL OR 1=1)");
+        }
+        if hit_only {
+            sql.push_str(" AND status = 'ok' AND chosen_skills_json != '[]'");
+        }
+        sql.push_str(" ORDER BY ts DESC LIMIT ?3 OFFSET ?4");
+
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![since_ts, model, limit as i64, offset as i64], row_to_router_event)?;
         let mut out = Vec::new();
         for row in rows {
             out.push(row?);
         }
         Ok(out)
+    }
+
+    /// Return total count matching the same filters as `router_events_paged`,
+    /// used by the dashboard to render pagination controls.
+    pub fn router_events_count(
+        &self,
+        since_ts: Option<i64>,
+        model: Option<&str>,
+        hit_only: bool,
+    ) -> Result<i64> {
+        let mut sql = String::from("SELECT COUNT(*) FROM router_events WHERE 1=1");
+        if since_ts.is_some() {
+            sql.push_str(" AND ts >= ?1");
+        } else {
+            sql.push_str(" AND (?1 IS NULL OR 1=1)");
+        }
+        if model.is_some() {
+            sql.push_str(" AND model = ?2");
+        } else {
+            sql.push_str(" AND (?2 IS NULL OR 1=1)");
+        }
+        if hit_only {
+            sql.push_str(" AND status = 'ok' AND chosen_skills_json != '[]'");
+        }
+        let n: i64 = self
+            .conn
+            .query_row(&sql, params![since_ts, model], |r| r.get(0))?;
+        Ok(n)
+    }
+
+    pub fn router_event_by_id(&self, id: i64) -> Result<Option<RouterEvent>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, ts, provider, model, prompt_tokens, completion_tokens, reasoning_tokens,
+                    total_tokens, cache_hit_tokens, cache_miss_tokens, latency_ms,
+                    chosen_skills_json, candidate_count, status, error_msg,
+                    session_id, mode, user_prompt, cwd, bm25_kept
+             FROM router_events WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![id], row_to_router_event)?;
+        if let Some(row) = rows.next() {
+            return Ok(Some(row?));
+        }
+        Ok(None)
     }
 
     pub fn insert_resource(&self, res: &Resource) -> Result<()> {
@@ -754,7 +869,7 @@ mod tests {
             .conn
             .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 6);
+        assert_eq!(version, 7);
     }
 
     #[test]

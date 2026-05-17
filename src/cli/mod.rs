@@ -94,6 +94,16 @@ pub enum Commands {
     },
     /// Start MCP server (stdio)
     McpServe,
+    /// Start HTTP dashboard for router telemetry on localhost
+    Server {
+        /// Port to bind (default: 17888)
+        #[arg(long, default_value_t = 17888)]
+        port: u16,
+        /// Host to bind (default: 127.0.0.1 — localhost only).
+        /// Use 0.0.0.0 to expose on LAN, but note the DB contains user prompts.
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+    },
     /// Register runai as MCP server in all CLI configs
     Register,
     /// Unregister runai from all CLI configs
@@ -574,6 +584,11 @@ pub fn run(cli: Cli) -> Result<()> {
         Some(Commands::McpServe) => {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(crate::mcp::serve())?;
+            Ok(())
+        }
+        Some(Commands::Server { port, host }) => {
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(crate::server::serve(&host, port))?;
             Ok(())
         }
         Some(Commands::Register) => {
