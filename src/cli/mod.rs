@@ -168,6 +168,16 @@ pub enum RecommendCommands {
         #[arg(long, default_value = "0")]
         recent: usize,
     },
+    /// Mine implicit feedback signals out of router_events: when a user
+    /// next-prompt in the same session contains negative cues ("不对", "换一个",
+    /// "wrong") about a prior chosen skill, lower that skill's auto rating;
+    /// positive cues ("可以", "完美") raise it. Auto ratings never overwrite
+    /// manual ratings entered via the dashboard. Token cost: 0.
+    MineFeedback {
+        /// Look at events from the last N hours (default 168 = 7 days).
+        #[arg(long, default_value_t = 168)]
+        hours: i64,
+    },
     /// Wipe LLM summaries / scores and/or user ratings. By default clears
     /// BOTH. Use `--only summaries` or `--only ratings` to narrow scope.
     ResetScoring {
@@ -1149,6 +1159,17 @@ To install/uninstall automatically (preserves existing hooks and theme):
                     println!("hook not present in {}, no changes", path.display());
                 }
                 _ => {}
+            }
+            Ok(())
+        }
+        (Some(RecommendCommands::MineFeedback { hours }), _) => {
+            let report = crate::core::feedback::mine_feedback(mgr, hours)?;
+            println!(
+                "feedback mining done (last {hours}h):\n  signals counted:      {}\n  ratings written:      {}\n  skipped (manual present): {}",
+                report.total_signals, report.ratings_written, report.skipped_manual_present
+            );
+            for (skill, score) in &report.per_skill {
+                println!("    {skill:30}  auto={score}");
             }
             Ok(())
         }

@@ -347,6 +347,19 @@ impl Database {
             // code never relies on it.
         }
 
+        if version < 12 {
+            // Distinguish user-entered ratings (network /api/skills/.../rating
+            // POST) from auto-mined ratings (feedback signals dug out of
+            // same-session next-prompt text). 'manual' wins over 'auto' so
+            // the mining pass never overwrites what the user typed in the
+            // dashboard.
+            self.conn.execute_batch(
+                "ALTER TABLE resource_user_rating ADD COLUMN source TEXT NOT NULL DEFAULT 'manual';
+                 DELETE FROM schema_version;
+                 INSERT INTO schema_version VALUES (12);",
+            )?;
+        }
+
         Ok(())
     }
 
@@ -430,20 +443,54 @@ impl Database {
         Ok(())
     }
 
-    /// Upsert a user score (1-10) and optional note for a skill.
-    /// Scores outside 1..=10 are rejected.
+    /// Upsert a user score (1-10) and optional note for a skill. Default
+    /// `source = "manual"` (network POST from dashboard). Use
+    /// `set_user_rating_auto` for transcript-mined feedback that should
+    /// NOT clobber explicit user input.
     pub fn set_user_rating(&self, name: &str, score: i64, note: &str) -> Result<()> {
+        self.set_user_rating_with_source(name, score, note, "manual")
+    }
+
+    /// Upsert an auto-mined user rating. Refuses to overwrite an existing
+    /// manual rating (so dashboard input always wins over mining heuristics).
+    /// Returns Ok(true) if the rating was written, Ok(false) if it was
+    /// skipped because a manual rating exists.
+    pub fn set_user_rating_auto(&self, name: &str, score: i64, note: &str) -> Result<bool> {
+        // Check existing source first
+        let existing_source: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT source FROM resource_user_rating WHERE name = ?1",
+                params![name],
+                |r| r.get(0),
+            )
+            .ok();
+        if existing_source.as_deref() == Some("manual") {
+            return Ok(false);
+        }
+        self.set_user_rating_with_source(name, score, note, "auto")?;
+        Ok(true)
+    }
+
+    fn set_user_rating_with_source(
+        &self,
+        name: &str,
+        score: i64,
+        note: &str,
+        source: &str,
+    ) -> Result<()> {
         if !(1..=10).contains(&score) {
             anyhow::bail!("user score must be 1..=10, got {score}");
         }
         self.conn.execute(
-            "INSERT INTO resource_user_rating (name, score, note, updated_at)
-             VALUES (?1, ?2, ?3, ?4)
+            "INSERT INTO resource_user_rating (name, score, note, updated_at, source)
+             VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(name) DO UPDATE SET
                 score = excluded.score,
                 note  = excluded.note,
-                updated_at = excluded.updated_at",
-            params![name, score, note, chrono::Utc::now().timestamp()],
+                updated_at = excluded.updated_at,
+                source = excluded.source",
+            params![name, score, note, chrono::Utc::now().timestamp(), source],
         )?;
         Ok(())
     }
@@ -864,6 +911,28 @@ impl Database {
                 errors,
                 avg_latency_ms: avg_lat,
             });
+        }
+        Ok(out)
+    }
+
+    /// All router_events newer than `since_ts`, ordered (session_id, ts).
+    /// Used by feedback mining to walk consecutive same-session events and
+    /// treat the next-event's `user_prompt` as feedback on the prior chosen.
+    pub fn router_events_since_ordered(&self, since_ts: i64) -> Result<Vec<RouterEvent>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, ts, provider, model, prompt_tokens, completion_tokens, reasoning_tokens,
+                    total_tokens, cache_hit_tokens, cache_miss_tokens, latency_ms,
+                    chosen_skills_json, candidate_count, status, error_msg,
+                    session_id, mode, user_prompt, cwd, bm25_kept,
+                    llm_raw_response, hook_output
+             FROM router_events
+             WHERE ts >= ?1 AND session_id != ''
+             ORDER BY session_id, ts",
+        )?;
+        let rows = stmt.query_map(params![since_ts], row_to_router_event)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
         }
         Ok(out)
     }
@@ -1299,7 +1368,7 @@ mod tests {
             .conn
             .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 11);
+        assert_eq!(version, 12);
     }
 
     #[test]
