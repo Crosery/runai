@@ -235,26 +235,32 @@ pub fn recommend(
     let bm25_disabled = std::env::var("RUNAI_BM25_DISABLED").is_ok();
     let q_terms = bm25::tokenize(user_prompt);
     let mut bm25_fallback_reason: &'static str = "";
+
+    // Pull AI summaries once; we splice them into the BM25 doc text so a
+    // cross-language query has a chance of bridging EN-only descriptions
+    // (the summary is generated bilingually by `runai recommend enrich`).
+    // Cold start: no summaries yet → BM25 doc == description only → CJK
+    // queries find < 5 hits → fallback to full candidate set (correct but
+    // expensive). As summaries land in DB the fallback rate drops.
+    let summaries = mgr.db().skill_ai_summary_all().unwrap_or_default();
+
     let candidates: Vec<_> = if bm25_disabled {
         bm25_fallback_reason = "disabled-by-env";
         all_candidates
     } else if q_terms.len() < BM25_MIN_QUERY_TERMS {
         bm25_fallback_reason = "query-too-short";
         all_candidates
-    } else if bm25::contains_cjk(user_prompt) {
-        // Cross-language guard: BM25 has no way to bridge CJK tokens against
-        // English-only skill descriptions (and vice-versa) — there's zero
-        // term overlap so the correct skill silently gets filtered out.
-        // Skill descriptions in the corpus are a mix of EN and CJK, so we
-        // can't tell upfront which side the right answer lives on. Cheapest
-        // safe rule: any CJK in the user prompt → pass full candidate set
-        // and let the LLM do the cross-language semantic match itself.
-        bm25_fallback_reason = "cjk-query-bypass";
-        all_candidates
     } else {
         let docs: Vec<String> = all_candidates
             .iter()
-            .map(|r| format!("{} {}", r.name, r.description))
+            .map(|r| {
+                let summary = summaries.get(&r.name).map(String::as_str).unwrap_or("");
+                if summary.is_empty() {
+                    format!("{} {}", r.name, r.description)
+                } else {
+                    format!("{} {} {}", r.name, r.description, summary)
+                }
+            })
             .collect();
         let ranked = bm25::rank(user_prompt, &docs);
         let positive: Vec<(usize, f64)> = ranked
@@ -262,9 +268,12 @@ pub fn recommend(
             .filter(|(_, s)| *s > 0.0)
             .take(BM25_TOP_K)
             .collect();
-        // Sparse-corpus guard: even within one language, if very few skills
-        // term-overlap the query, BM25 isn't trustworthy as a hard filter.
-        // Fall back to the full candidate set and rely on the LLM rerank.
+        // Sparse-corpus guard: when very few skills term-overlap the query,
+        // BM25 isn't trustworthy as a hard filter. Most common cause:
+        // cross-language query (CJK ↔ EN) where the corpus hasn't been
+        // enriched yet. Fall back to the full candidate set and let the
+        // LLM rerank semantically; run `runai recommend enrich` to lift
+        // the BM25 path's coverage and cut tokens.
         if positive.len() < BM25_MIN_POSITIVE_HITS {
             bm25_fallback_reason = if positive.is_empty() {
                 "no-bm25-hits"
@@ -292,18 +301,40 @@ pub fn recommend(
         );
     }
 
+    // Per-skill combined score: LLM 40% + user 60% on a 0-100 scale. When
+    // the user hasn't rated, we use the LLM score alone (so unrated skills
+    // don't sink to zero). The router LLM sees this score on every
+    // candidate line and uses it as a tiebreaker alongside prompt relevance.
+    let scores_map = mgr.db().skill_scores_all().unwrap_or_default();
+    let combined_score = |name: &str| -> Option<i64> {
+        let (llm, user) = scores_map.get(name).copied().unwrap_or((50, None));
+        match user {
+            Some(stars) => {
+                let user100 = stars * 20; // 1..5 stars → 20..100
+                Some(((llm as f64) * 0.4 + (user100 as f64) * 0.6).round() as i64)
+            }
+            None => {
+                // No user rating yet — use llm alone (rounded). Only surface
+                // it on the listing when the enrich pass has run; otherwise
+                // a generic 50 isn't useful signal.
+                if scores_map.contains_key(name) { Some(llm) } else { None }
+            }
+        }
+    };
     let candidate_listing: String = candidates
         .iter()
         .map(|r| {
-            let usage_tag = if r.usage_count > 0 {
-                format!(" [used:{}]", r.usage_count)
-            } else {
-                String::new()
-            };
+            let mut tags = String::new();
+            if r.usage_count > 0 {
+                tags.push_str(&format!(" [used:{}]", r.usage_count));
+            }
+            if let Some(s) = combined_score(&r.name) {
+                tags.push_str(&format!(" [score:{}]", s));
+            }
             // Description is already capped at 200 chars at adoption time
             // (see scanner / classifier). No further truncation here — the
             // router needs the full signal.
-            format!("- {}{usage_tag}: {}", r.name, r.description)
+            format!("- {}{tags}: {}", r.name, r.description)
         })
         .collect::<Vec<_>>()
         .join("\n");
@@ -454,6 +485,171 @@ pub fn recommend(
 
     write_last_recommend(mgr.paths(), &decision);
     Ok(decision)
+}
+
+/// Outcome of an `enrich_skills` run.
+#[derive(Debug, Clone, Default)]
+pub struct EnrichReport {
+    pub generated: usize,
+    pub skipped_have_summary: usize,
+    pub skipped_no_skill_md: usize,
+    pub errors: Vec<(String, String)>,
+}
+
+/// Generate AI summaries for skills missing them. Uses the configured router
+/// LLM (same one the hook calls). Each summary is a short bilingual blurb:
+/// "task / triggers / not-for", stored in `resource_ai_summary`. The next
+/// router call splices these into the BM25 doc text so cross-language queries
+/// can bridge against EN-only descriptions.
+///
+/// `limit = None` means enrich everything missing in one pass. `force=true`
+/// regenerates even skills that already have a summary.
+pub fn enrich_skills(
+    mgr: &SkillManager,
+    limit: Option<usize>,
+    force: bool,
+    verbose: bool,
+) -> Result<EnrichReport> {
+    let cfg = RecommendConfig::load(mgr.paths())?;
+    let api_key = if cfg.provider == Provider::ClaudeCli {
+        String::new()
+    } else {
+        cfg.effective_api_key()
+            .context("enrich: api_key not configured — run `runai recommend setup` first")?
+    };
+
+    let existing = mgr.db().skill_ai_summary_all().unwrap_or_default();
+    let resources = mgr.list_resources(None, None)?;
+    let skills: Vec<_> = resources
+        .into_iter()
+        .filter(|r| r.kind == ResourceKind::Skill)
+        .collect();
+
+    let mut report = EnrichReport::default();
+    let mut processed = 0usize;
+    for r in &skills {
+        if !force && existing.contains_key(&r.name) {
+            report.skipped_have_summary += 1;
+            continue;
+        }
+        let skill_md = mgr.paths().skills_dir().join(&r.name).join("SKILL.md");
+        let body = match fs::read_to_string(&skill_md) {
+            Ok(s) => s,
+            Err(_) => {
+                report.skipped_no_skill_md += 1;
+                continue;
+            }
+        };
+        // Cap SKILL.md slice so we don't blow the LLM context on huge files.
+        let body_slice: String = body.chars().take(4000).collect();
+        let user_msg = build_enrich_prompt(&r.name, &r.description, &body_slice);
+        if verbose {
+            eprintln!("[enrich] {} ({}/{})", r.name, processed + 1, skills.len());
+        }
+        match call_summary_llm(&cfg, &api_key, &user_msg) {
+            Ok(raw) => {
+                let trimmed = raw.trim();
+                if trimmed.is_empty() {
+                    report
+                        .errors
+                        .push((r.name.clone(), "empty summary returned".into()));
+                } else {
+                    let (summary_clean, llm_score) = parse_enrich_response(trimmed);
+                    if summary_clean.is_empty() {
+                        report
+                            .errors
+                            .push((r.name.clone(), "no usable summary lines in response".into()));
+                    } else {
+                        let capped: String = summary_clean.chars().take(600).collect();
+                        if let Err(e) =
+                            mgr.db().set_skill_ai_summary_scored(&r.name, &capped, llm_score)
+                        {
+                            report.errors.push((r.name.clone(), e.to_string()));
+                        } else {
+                            report.generated += 1;
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                report.errors.push((r.name.clone(), e.to_string()));
+            }
+        }
+        processed += 1;
+        if let Some(n) = limit {
+            if processed >= n {
+                break;
+            }
+        }
+    }
+    Ok(report)
+}
+
+/// Build the user-message for the summarisation call. Instruction is bilingual
+/// so summaries also come back bilingual, which is the whole point — that's
+/// what lets BM25 bridge across languages on future queries. Also asks for a
+/// quality score 0-100 that the router will splice into the candidate listing.
+fn build_enrich_prompt(name: &str, description: &str, skill_md: &str) -> String {
+    format!(
+        "你是 skill 索引员 / skill indexer.\n\
+        \n\
+        给定下面这个 skill 的元数据 + SKILL.md 摘要，生成一段简短的双语索引摘要 (Chinese + English keywords mixed) 供 BM25 检索使用，并对 skill 的整体质量打分 0-100。\n\
+        Output FORMAT (strict, exactly 6 short lines, no extras):\n\
+        task: <一句话/one sentence — 解决什么任务 / what task it solves>\n\
+        triggers: <中英文触发词逗号分隔 / comma-separated EN+CJK trigger keywords>\n\
+        inputs: <典型输入 / typical inputs>\n\
+        outputs: <典型输出 / typical outputs>\n\
+        not-for: <不适用场景 / when NOT to use, comma-separated>\n\
+        score: <0-100 — integer reflecting SKILL.md clarity, specificity, usefulness; 50=neutral, 80+=well-defined+useful, <30=vague or trivial>\n\
+        \n\
+        Total length cap: 500 characters total. No prose, no markdown headings, no quote blocks.\n\
+        \n\
+        --- skill name ---\n\
+        {name}\n\
+        \n\
+        --- description (DB) ---\n\
+        {description}\n\
+        \n\
+        --- SKILL.md (first 4KB) ---\n\
+        {skill_md}\n",
+    )
+}
+
+/// Pull `score: NN` out of the enrich-LLM response and return (summary_lines_only, score).
+/// summary_lines_only strips the score line so the BM25 doc text doesn't carry numeric noise.
+/// Falls back to llm_score=50 when the line is missing or unparseable.
+fn parse_enrich_response(raw: &str) -> (String, i64) {
+    let mut score: Option<i64> = None;
+    let mut kept: Vec<&str> = Vec::new();
+    for line in raw.lines() {
+        let lower = line.trim_start().to_ascii_lowercase();
+        if let Some(rest) = lower.strip_prefix("score:") {
+            // Extract the first integer in the rest of the line.
+            let digits: String = rest
+                .chars()
+                .skip_while(|c| !c.is_ascii_digit() && *c != '-')
+                .take_while(|c| c.is_ascii_digit() || *c == '-')
+                .collect();
+            if let Ok(n) = digits.parse::<i64>() {
+                score = Some(n.clamp(0, 100));
+            }
+            continue;
+        }
+        kept.push(line);
+    }
+    let cleaned = kept.join("\n").trim().to_string();
+    (cleaned, score.unwrap_or(50))
+}
+
+/// Dedicated summarisation LLM call. Reuses the configured backend but with
+/// a tighter timeout (no thinking, short output) and returns the raw text.
+fn call_summary_llm(cfg: &RecommendConfig, api_key: &str, user_msg: &str) -> Result<String> {
+    let (raw, _stats) = match cfg.provider {
+        Provider::OpenaiCompat => call_openai_compat(cfg, api_key, user_msg)?,
+        Provider::Anthropic => call_anthropic(cfg, api_key, user_msg)?,
+        Provider::ClaudeCli => call_claude_cli(cfg, user_msg)?,
+    };
+    Ok(raw)
 }
 
 /// Write the most-recent router decision to `<data_dir>/last-recommend.json`.

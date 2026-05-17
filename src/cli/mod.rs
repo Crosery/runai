@@ -168,6 +168,20 @@ pub enum RecommendCommands {
         #[arg(long, default_value = "0")]
         recent: usize,
     },
+    /// Generate bilingual AI summaries for skills (improves BM25 prefilter
+    /// recall, especially for cross-language queries). Idempotent —
+    /// already-summarised skills are skipped unless `--force`.
+    Enrich {
+        /// Process at most N skills this run (omit for all missing)
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Regenerate summaries even for skills that already have one
+        #[arg(long)]
+        force: bool,
+        /// Print per-skill progress
+        #[arg(long)]
+        verbose: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1120,6 +1134,29 @@ To install/uninstall automatically (preserves existing hooks and theme):
                     println!("hook not present in {}, no changes", path.display());
                 }
                 _ => {}
+            }
+            Ok(())
+        }
+        (Some(RecommendCommands::Enrich { limit, force, verbose }), _) => {
+            let (have, _oldest, _newest) = mgr.db().skill_ai_summary_stats().unwrap_or((0, None, None));
+            println!(
+                "enriching skill summaries (currently {have} have summaries)\n\
+                 limit={} force={force}",
+                limit.map(|n| n.to_string()).unwrap_or_else(|| "all".into())
+            );
+            let report = crate::core::recommend::enrich_skills(&mgr, limit, force, verbose)?;
+            println!(
+                "\nenrichment done:\n  generated:           {}\n  skipped (had summary): {}\n  skipped (no SKILL.md): {}\n  errors:              {}",
+                report.generated,
+                report.skipped_have_summary,
+                report.skipped_no_skill_md,
+                report.errors.len()
+            );
+            for (name, msg) in report.errors.iter().take(10) {
+                println!("    {name}: {msg}");
+            }
+            if report.errors.len() > 10 {
+                println!("    ... +{} more", report.errors.len() - 10);
             }
             Ok(())
         }

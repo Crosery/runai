@@ -97,6 +97,39 @@
       <div class="model-strip" id="model-strip"></div>
     </section>
 
+    <section class="panel" aria-label="skills">
+      <header>
+        <h2>Skill 评分</h2>
+        <div class="meta" id="skills-progress"></div>
+      </header>
+      <div class="skills-filters">
+        <input type="text" id="skill-filter" class="ctrl" placeholder="筛选 skill 名 / 描述 / summary" />
+        <select id="skill-sort" class="ctrl">
+          <option value="score-desc">综合分高 → 低</option>
+          <option value="score-asc">综合分低 → 高</option>
+          <option value="used-desc">使用次数高 → 低</option>
+          <option value="name">按名字</option>
+          <option value="unrated">未评分优先</option>
+          <option value="unenriched">未富集优先</option>
+        </select>
+      </div>
+      <div class="events-wrap">
+        <table class="events skills-table">
+          <thead>
+            <tr>
+              <th>skill</th>
+              <th class="num">used</th>
+              <th class="num">LLM</th>
+              <th>用户评分</th>
+              <th class="num">综合</th>
+              <th>summary</th>
+            </tr>
+          </thead>
+          <tbody id="skills-body"></tbody>
+        </table>
+      </div>
+    </section>
+
     <section class="panel" aria-label="events">
       <header>
         <h2>最近事件</h2>

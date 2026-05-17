@@ -115,6 +115,8 @@ pub async fn serve(host: &str, port: u16) -> Result<()> {
         .route("/api/timeline", get(api_timeline))
         .route("/api/events", get(api_events))
         .route("/api/event/{id}", get(api_event_by_id))
+        .route("/api/skills", get(api_skills))
+        .route("/api/skills/{name}/rating", axum::routing::post(api_set_rating).delete(api_clear_rating))
         .with_state(state);
 
     let addr: SocketAddr = format!("{host}:{port}")
@@ -351,6 +353,115 @@ async fn api_timeline(
             })
             .collect(),
     }))
+}
+
+#[derive(Serialize)]
+struct SkillRow {
+    name: String,
+    description: String,
+    usage_count: i64,
+    summary: String,
+    llm_score: i64,
+    user_stars: Option<i64>,
+    combined_score: Option<i64>,
+}
+
+#[derive(Serialize)]
+struct SkillsResponse {
+    total: usize,
+    enriched: usize,
+    rated: usize,
+    skills: Vec<SkillRow>,
+}
+
+async fn api_skills(State(state): State<Arc<AppState>>) -> Result<Json<SkillsResponse>, ApiError> {
+    use crate::core::manager::SkillManager;
+    use crate::core::resource::ResourceKind;
+
+    // SkillManager reads from the same DB but also touches other state; for
+    // a read-only listing it's fine to open it here on demand.
+    let mgr = SkillManager::with_base(state.db_path.parent().unwrap().to_path_buf())
+        .map_err(|e| ApiError::Internal(e))?;
+    let resources = mgr
+        .list_resources(None, None)
+        .map_err(|e| ApiError::Internal(e))?;
+    let db = state.db()?;
+    let summaries = db.skill_ai_summary_all().unwrap_or_default();
+    let scores = db.skill_scores_all().unwrap_or_default();
+
+    let mut skills = Vec::new();
+    let mut enriched = 0usize;
+    let mut rated = 0usize;
+    for r in resources {
+        if r.kind != ResourceKind::Skill {
+            continue;
+        }
+        let summary = summaries.get(&r.name).cloned().unwrap_or_default();
+        let (llm, user) = scores.get(&r.name).copied().unwrap_or((50, None));
+        if !summary.is_empty() {
+            enriched += 1;
+        }
+        if user.is_some() {
+            rated += 1;
+        }
+        let combined: Option<i64> = match user {
+            Some(stars) => {
+                let user100 = stars * 20;
+                Some(((llm as f64) * 0.4 + (user100 as f64) * 0.6).round() as i64)
+            }
+            None => {
+                if scores.contains_key(&r.name) {
+                    Some(llm)
+                } else {
+                    None
+                }
+            }
+        };
+        skills.push(SkillRow {
+            name: r.name.clone(),
+            description: r.description.clone(),
+            usage_count: r.usage_count as i64,
+            summary,
+            llm_score: llm,
+            user_stars: user,
+            combined_score: combined,
+        });
+    }
+    let total = skills.len();
+    // Highest combined score first; un-scored at the bottom
+    skills.sort_by(|a, b| {
+        b.combined_score
+            .unwrap_or(-1)
+            .cmp(&a.combined_score.unwrap_or(-1))
+            .then(a.name.cmp(&b.name))
+    });
+    Ok(Json(SkillsResponse { total, enriched, rated, skills }))
+}
+
+#[derive(Deserialize)]
+struct RatingBody {
+    stars: i64,
+    #[serde(default)]
+    note: String,
+}
+
+async fn api_set_rating(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    Json(body): Json<RatingBody>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let db = state.db()?;
+    db.set_user_rating(&name, body.stars, &body.note)?;
+    Ok(Json(serde_json::json!({"ok": true, "name": name, "stars": body.stars})))
+}
+
+async fn api_clear_rating(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let db = state.db()?;
+    db.delete_user_rating(&name)?;
+    Ok(Json(serde_json::json!({"ok": true, "name": name})))
 }
 
 async fn api_event_by_id(

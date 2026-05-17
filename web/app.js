@@ -312,13 +312,15 @@
     $('#prev').addEventListener('click', () => { state.offset = Math.max(0, state.offset - state.limit); loadEvents(); });
     $('#next').addEventListener('click', () => { state.offset += state.limit; loadEvents(); });
     $('#detail-close').addEventListener('click', () => $('#detail').close());
+    $('#skill-filter').addEventListener('input', (e) => { skillsState.filter = e.target.value; renderSkillsRows(); });
+    $('#skill-sort').addEventListener('change', (e) => { skillsState.sort = e.target.value; renderSkillsRows(); });
   }
 
   async function refresh() {
     if (inFlight) return;
     inFlight = true;
     try {
-      await Promise.all([loadSummary(), loadTimeline(), loadEvents()]);
+      await Promise.all([loadSummary(), loadTimeline(), loadEvents(), loadSkills()]);
       const ind = $('#live-text');
       if (ind) ind.textContent = '实时';
     } catch (e) {
@@ -327,6 +329,150 @@
     } finally {
       inFlight = false;
     }
+  }
+
+  // ------------------------------------------------------------------
+  //  Skills panel + rating
+  // ------------------------------------------------------------------
+  const skillsState = { filter: '', sort: 'score-desc', cache: [] };
+
+  function scoreBadge(score) {
+    if (score == null) return `<span class="score-badge unknown">—</span>`;
+    const klass = score >= 70 ? 'high' : score >= 40 ? 'mid' : 'low';
+    return `<span class="score-badge ${klass}">${score}</span>`;
+  }
+
+  function starsHTML(name, currentStars) {
+    const cells = [1, 2, 3, 4, 5].map((n) => {
+      const active = currentStars && n <= currentStars ? 'active' : '';
+      return `<span class="star ${active}" data-n="${n}">★</span>`;
+    }).join('');
+    const clearBtn = currentStars
+      ? `<button class="stars-clear" data-action="clear">清除</button>`
+      : '';
+    return `<span class="stars" data-name="${name}" data-stars="${currentStars || 0}">${cells}</span>${clearBtn}`;
+  }
+
+  function renderSkillsRows() {
+    let rows = skillsState.cache.slice();
+    const f = skillsState.filter.toLowerCase().trim();
+    if (f) {
+      rows = rows.filter((s) =>
+        s.name.toLowerCase().includes(f) ||
+        (s.description || '').toLowerCase().includes(f) ||
+        (s.summary || '').toLowerCase().includes(f)
+      );
+    }
+    const sort = skillsState.sort;
+    rows.sort((a, b) => {
+      const sa = a.combined_score == null ? -1 : a.combined_score;
+      const sb = b.combined_score == null ? -1 : b.combined_score;
+      switch (sort) {
+        case 'score-asc':  return sa - sb || a.name.localeCompare(b.name);
+        case 'used-desc':  return (b.usage_count - a.usage_count) || sb - sa;
+        case 'name':       return a.name.localeCompare(b.name);
+        case 'unrated':    return (a.user_stars == null ? -1 : 1) - (b.user_stars == null ? -1 : 1) || sb - sa;
+        case 'unenriched': return ((a.summary ? 1 : -1) - (b.summary ? 1 : -1)) || sb - sa;
+        case 'score-desc':
+        default:           return sb - sa || a.name.localeCompare(b.name);
+      }
+    });
+
+    const body = $('#skills-body');
+    body.innerHTML = '';
+    const slice = rows.slice(0, 200);
+    for (const s of slice) {
+      const tr = document.createElement('tr');
+      const summary = s.summary
+        ? `<td class="skill-summary">${escapeHTML(s.summary)}</td>`
+        : `<td class="skill-summary empty">未富集 — 跑 \`runai recommend enrich\` 生成</td>`;
+      tr.innerHTML = `
+        <td class="skill-name">${escapeHTML(s.name)}</td>
+        <td class="num">${s.usage_count || 0}</td>
+        <td class="num">${scoreBadge(s.summary ? s.llm_score : null)}</td>
+        <td>${starsHTML(s.name, s.user_stars)}</td>
+        <td class="num">${scoreBadge(s.combined_score)}</td>
+        ${summary}
+      `;
+      body.appendChild(tr);
+    }
+    if (rows.length > slice.length) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td colspan="6" class="muted" style="text-align:center">显示前 ${slice.length} / ${rows.length} —— 用筛选缩小范围</td>`;
+      body.appendChild(tr);
+    }
+    bindStars();
+  }
+
+  function bindStars() {
+    document.querySelectorAll('#skills-body .stars').forEach((el) => {
+      const name = el.dataset.name;
+      el.querySelectorAll('.star').forEach((star) => {
+        star.addEventListener('mouseover', () => {
+          const n = Number(star.dataset.n);
+          el.setAttribute('data-temp', 'true');
+          el.querySelectorAll('.star').forEach((s2) => {
+            s2.classList.toggle('temp', Number(s2.dataset.n) <= n);
+          });
+        });
+        star.addEventListener('mouseout', () => {
+          el.removeAttribute('data-temp');
+          el.querySelectorAll('.star').forEach((s2) => s2.classList.remove('temp'));
+        });
+        star.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const n = Number(star.dataset.n);
+          await rateSkill(name, n);
+        });
+      });
+    });
+    document.querySelectorAll('#skills-body .stars-clear').forEach((btn) => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const name = btn.previousElementSibling.dataset.name;
+        await clearSkillRating(name);
+      });
+    });
+  }
+
+  async function rateSkill(name, stars) {
+    const res = await fetch(`/api/skills/${encodeURIComponent(name)}/rating`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ stars }),
+    });
+    if (!res.ok) return;
+    // Update local cache immediately for snappy feedback
+    const row = skillsState.cache.find((s) => s.name === name);
+    if (row) {
+      row.user_stars = stars;
+      const llm = row.llm_score ?? 50;
+      row.combined_score = Math.round(llm * 0.4 + stars * 20 * 0.6);
+    }
+    renderSkillsRows();
+  }
+
+  async function clearSkillRating(name) {
+    const res = await fetch(`/api/skills/${encodeURIComponent(name)}/rating`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) return;
+    const row = skillsState.cache.find((s) => s.name === name);
+    if (row) {
+      row.user_stars = null;
+      row.combined_score = row.summary ? row.llm_score : null;
+    }
+    renderSkillsRows();
+  }
+
+  async function loadSkills() {
+    const res = await fetch('/api/skills');
+    if (!res.ok) return;
+    const data = await res.json();
+    skillsState.cache = data.skills;
+    $('#skills-progress').textContent =
+      `${data.total} 个 skill · ${data.enriched} 已富集 · ${data.rated} 已评分`;
+    renderSkillsRows();
   }
 
   function startPolling() {
