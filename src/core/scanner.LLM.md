@@ -15,6 +15,7 @@ Two jobs. (1) **Discover** — recursively walk a directory finding `SKILL.md`, 
 - `Scanner::scan_cli_dir(...)` — iterate entries; `adopt_entry` decides: move real dirs under management, heal matching-name broken symlinks, leave orphan symlinks alone.
 - `Scanner::extract_description(dir)` — parse `SKILL.md` frontmatter `description:`; fall back to first non-empty body line. Handles YAML block scalars (`|` / `>` with optional `-` / `+` chomp indicators) by reading subsequent indented lines until dedent. Result is truncated to 200 chars.
 - `Scanner::is_stale_description(s)` — true for `""`, `"---"`, or any bare block-scalar marker (`|`, `>`, `|-`, …). Used by `scan_managed_dir` / `scan_cli_dir` to auto-refresh DB rows written by the pre-block-scalar parser.
+- `ScanResult.adopted_names: Vec<String>` — names of every skill newly adopted into the managed dir this pass. Populated by `scan_managed_dir` (when a new local skill row is inserted), `scan_cli_dir` (only on `AdoptOutcome::Adopted`, not on `Healed` — healed symlinks already point at an enriched skill), and `scan_agents_dir`. Consumed by `runai scan` (cli/mod.rs) to fire a targeted background enrich for just these names so freshly-adopted skills get an AI summary immediately rather than waiting for the next SessionStart enrich pass.
 
 ## Key invariants
 - **Never auto-runs on startup.** User must invoke `scan` / `discover` explicitly — avoids clobbering existing symlinks.

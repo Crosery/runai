@@ -43,6 +43,11 @@ pub struct RouterEvent {
     /// the main agent receives). Capped at ~6 KB. Empty for rows where the
     /// hook didn't inject anything (chosen=[]) or pre-schema-v8.
     pub hook_output: String,
+    /// Full user-message string sent to the router LLM (history block +
+    /// already_routed list + candidate listing + current user prompt).
+    /// Capped at ~16 KB. Empty for pre-schema-v13 rows. Useful for
+    /// diagnosing mis-routes — answers "what did the model see?".
+    pub llm_input: String,
 }
 
 #[derive(Debug, Clone)]
@@ -106,6 +111,7 @@ fn row_to_router_event(r: &rusqlite::Row<'_>) -> rusqlite::Result<RouterEvent> {
         bm25_kept: r.get(19)?,
         llm_raw_response: r.get(20)?,
         hook_output: r.get(21)?,
+        llm_input: r.get::<_, Option<String>>(22).unwrap_or_default().unwrap_or_default(),
     })
 }
 
@@ -360,6 +366,39 @@ impl Database {
             )?;
         }
 
+        if version < 13 {
+            // Capture the full user-message string sent to the router LLM
+            // (system prompt + history + already_routed + candidate listing +
+            // current prompt). Lets the dashboard show "what the model
+            // literally saw" so users can diagnose mis-routes. Capped on
+            // insert to ~16 KB so the DB doesn't bloat on long sessions.
+            self.conn.execute_batch(
+                "ALTER TABLE router_events ADD COLUMN llm_input TEXT NOT NULL DEFAULT '';
+                 DELETE FROM schema_version;
+                 INSERT INTO schema_version VALUES (13);",
+            )?;
+        }
+
+        if version < 14 {
+            // Per-session adoption log: records skills the main agent
+            // actually pulled in (via `runai recommend used <name>`).
+            // Replaces "this session already saw the skill in router_events"
+            // as the dedup signal — only adopted skills are suppressed from
+            // future recommendations within the same session.
+            self.conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS router_session_adoptions (
+                    session_id TEXT NOT NULL,
+                    skill_name TEXT NOT NULL,
+                    ts INTEGER NOT NULL,
+                    PRIMARY KEY (session_id, skill_name)
+                 );
+                 CREATE INDEX IF NOT EXISTS idx_session_adoptions_session
+                   ON router_session_adoptions(session_id);
+                 DELETE FROM schema_version;
+                 INSERT INTO schema_version VALUES (14);",
+            )?;
+        }
+
         Ok(())
     }
 
@@ -446,7 +485,7 @@ impl Database {
                     total_tokens, cache_hit_tokens, cache_miss_tokens, latency_ms,
                     chosen_skills_json, candidate_count, status, error_msg,
                     session_id, mode, user_prompt, cwd, bm25_kept,
-                    llm_raw_response, hook_output
+                    llm_raw_response, hook_output, llm_input
              FROM router_events re
              WHERE EXISTS (
                 SELECT 1 FROM json_each(re.chosen_skills_json) je WHERE je.value = ?1
@@ -483,7 +522,9 @@ impl Database {
     /// incremental enrich pass to compare SKILL.md mtime against the
     /// stored summary timestamp to decide which skills need re-enriching.
     pub fn skill_ai_summary_timestamps(&self) -> Result<HashMap<String, i64>> {
-        let mut stmt = self.conn.prepare("SELECT name, updated_at FROM resource_ai_summary")?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT name, updated_at FROM resource_ai_summary")?;
         let rows = stmt.query_map([], |r| {
             let n: String = r.get(0)?;
             let ts: i64 = r.get(1)?;
@@ -546,6 +587,11 @@ impl Database {
         let user_prompt_capped: String = ev.user_prompt.chars().take(2000).collect();
         let llm_raw_capped: String = ev.llm_raw_response.chars().take(2000).collect();
         let hook_out_capped: String = ev.hook_output.chars().take(6000).collect();
+        // llm_input is the full user-message string the router sent to the
+        // LLM. Bigger cap (16 KB) since it includes history + candidate
+        // listing + project context block and is the most diagnostic field
+        // for "why did the model pick X" investigations.
+        let llm_input_capped: String = ev.llm_input.chars().take(16000).collect();
         self.conn.execute(
             "INSERT INTO router_events (
                 ts, provider, model,
@@ -554,8 +600,8 @@ impl Database {
                 latency_ms, chosen_skills_json, candidate_count, status, error_msg,
                 session_id, mode,
                 user_prompt, cwd, bm25_kept,
-                llm_raw_response, hook_output
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+                llm_raw_response, hook_output, llm_input
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
             params![
                 ev.ts,
                 ev.provider,
@@ -578,23 +624,27 @@ impl Database {
                 ev.bm25_kept,
                 llm_raw_capped,
                 hook_out_capped,
+                llm_input_capped,
             ],
         )?;
         Ok(())
     }
 
     /// Return the deduped set of skill names this session has already had
-    /// recommended. Used by the router to avoid re-pushing the same skill on
-    /// every turn within one Claude Code session.
+    /// recommended AND actually adopted by the main Claude agent in this
+    /// session. Used by the router to avoid re-pushing skills the agent
+    /// already pulled in — but skills it was offered and *declined* stay
+    /// eligible for future recommendations. Adoption is signalled by the
+    /// `runai recommend used <name>` call.
     pub fn router_session_routed_skills(&self, session_id: &str) -> Result<Vec<String>> {
         if session_id.is_empty() {
             return Ok(Vec::new());
         }
         let mut stmt = self.conn.prepare(
-            "SELECT chosen_skills_json FROM router_events
-             WHERE session_id = ?1 AND status = 'ok'
+            "SELECT skill_name FROM router_session_adoptions
+             WHERE session_id = ?1
              ORDER BY ts DESC
-             LIMIT 50",
+             LIMIT 100",
         )?;
         let rows = stmt.query_map(params![session_id], |r| {
             let s: String = r.get(0)?;
@@ -602,14 +652,27 @@ impl Database {
         })?;
         let mut seen = std::collections::BTreeSet::new();
         for row in rows {
-            let json = row?;
-            if let Ok(arr) = serde_json::from_str::<Vec<String>>(&json) {
-                for name in arr {
-                    seen.insert(name);
-                }
-            }
+            seen.insert(row?);
         }
         Ok(seen.into_iter().collect())
+    }
+
+    /// Record that a skill was adopted (Read + acted on by the main agent)
+    /// in a given Claude Code session. Called by `runai recommend used`.
+    /// Idempotent: PRIMARY KEY (session_id, skill_name) collapses repeated
+    /// adoption signals within one session to a single row.
+    pub fn record_session_adoption(&self, session_id: &str, skill_name: &str) -> Result<()> {
+        if session_id.is_empty() || skill_name.is_empty() {
+            return Ok(());
+        }
+        let now = chrono::Utc::now().timestamp();
+        self.conn.execute(
+            "INSERT INTO router_session_adoptions (session_id, skill_name, ts)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(session_id, skill_name) DO UPDATE SET ts = excluded.ts",
+            params![session_id, skill_name, now],
+        )?;
+        Ok(())
     }
 
     pub fn router_stats_summary(&self, since_ts: Option<i64>) -> Result<RouterStatsSummary> {
@@ -697,7 +760,7 @@ impl Database {
                     total_tokens, cache_hit_tokens, cache_miss_tokens, latency_ms,
                     chosen_skills_json, candidate_count, status, error_msg,
                     session_id, mode, user_prompt, cwd, bm25_kept,
-                    llm_raw_response, hook_output
+                    llm_raw_response, hook_output, llm_input
              FROM router_events WHERE 1=1",
         );
         if since_ts.is_some() {
@@ -811,7 +874,7 @@ impl Database {
                     total_tokens, cache_hit_tokens, cache_miss_tokens, latency_ms,
                     chosen_skills_json, candidate_count, status, error_msg,
                     session_id, mode, user_prompt, cwd, bm25_kept,
-                    llm_raw_response, hook_output
+                    llm_raw_response, hook_output, llm_input
              FROM router_events
              WHERE ts >= ?1 AND session_id != ''
              ORDER BY session_id, ts",
@@ -830,7 +893,7 @@ impl Database {
                     total_tokens, cache_hit_tokens, cache_miss_tokens, latency_ms,
                     chosen_skills_json, candidate_count, status, error_msg,
                     session_id, mode, user_prompt, cwd, bm25_kept,
-                    llm_raw_response, hook_output
+                    llm_raw_response, hook_output, llm_input
              FROM router_events WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map(params![id], row_to_router_event)?;
@@ -1175,9 +1238,9 @@ impl Database {
     /// The router calls this once per request to splice `[group:X,Y]` tags
     /// into the candidate listing without N+1 queries.
     pub fn groups_for_all_resources(&self) -> Result<HashMap<String, Vec<String>>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT resource_id, group_id FROM group_members ORDER BY resource_id, group_id")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT resource_id, group_id FROM group_members ORDER BY resource_id, group_id",
+        )?;
         let rows = stmt.query_map([], |row| {
             let rid: String = row.get(0)?;
             let gid: String = row.get(1)?;
@@ -1255,7 +1318,7 @@ mod tests {
             .conn
             .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 12);
+        assert_eq!(version, 14);
     }
 
     #[test]

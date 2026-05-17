@@ -30,6 +30,11 @@ pub struct ScanResult {
     pub adopted: usize,
     pub skipped: usize,
     pub errors: Vec<String>,
+    /// Names of skills newly adopted into the managed dir this scan pass.
+    /// `runai scan` uses these to spawn a targeted enrich so each newly
+    /// adopted skill gets an AI summary immediately rather than having to
+    /// wait for a SessionStart enrich pass.
+    pub adopted_names: Vec<String>,
 }
 
 /// What happened to a single entry during adoption.
@@ -59,6 +64,7 @@ impl Scanner {
         total.adopted += managed_result.adopted;
         total.skipped += managed_result.skipped;
         total.errors.extend(managed_result.errors);
+        total.adopted_names.extend(managed_result.adopted_names);
 
         // 2. Scan user skills/ directories — adopt (move) foreign entries
         for target in CliTarget::ALL {
@@ -68,6 +74,7 @@ impl Scanner {
                 total.adopted += result.adopted;
                 total.skipped += result.skipped;
                 total.errors.extend(result.errors);
+                total.adopted_names.extend(result.adopted_names);
             }
         }
 
@@ -79,6 +86,7 @@ impl Scanner {
                 total.adopted += result.adopted;
                 total.skipped += result.skipped;
                 total.errors.extend(result.errors);
+                total.adopted_names.extend(result.adopted_names);
             }
         }
 
@@ -90,6 +98,7 @@ impl Scanner {
                 total.adopted += result.adopted;
                 total.skipped += result.skipped;
                 total.errors.extend(result.errors);
+                total.adopted_names.extend(result.adopted_names);
             }
         }
 
@@ -277,6 +286,7 @@ impl Scanner {
             match db.insert_resource(&resource) {
                 Ok(_) => {
                     result.adopted += 1;
+                    result.adopted_names.push(name.clone());
                 }
                 Err(e) => result.errors.push(format!("{name}: {e}")),
             }
@@ -325,7 +335,17 @@ impl Scanner {
                 }
                 EntryType::ForeignSymlink | EntryType::RealDir => {
                     match Self::adopt_entry(&entry_path, &name, paths, db, target) {
-                        Ok(AdoptOutcome::Adopted | AdoptOutcome::Healed) => result.adopted += 1,
+                        Ok(outcome @ (AdoptOutcome::Adopted | AdoptOutcome::Healed)) => {
+                            result.adopted += 1;
+                            // `Adopted` means a new skill row was created;
+                            // `Healed` means we just re-pointed a dangling
+                            // symlink at an already-managed skill. Only the
+                            // first needs fresh enrichment — the healed case
+                            // already has its summary from the prior adopt.
+                            if outcome == AdoptOutcome::Adopted {
+                                result.adopted_names.push(name.clone());
+                            }
+                        }
                         Ok(AdoptOutcome::Orphaned) => result.skipped += 1,
                         Err(e) => result.errors.push(format!("{name}: {e}")),
                     }
@@ -499,8 +519,12 @@ impl Scanner {
                 usage_count: 0,
                 last_used_at: None,
             };
+            let adopted_name = resource.name.clone();
             match db.insert_resource(&resource) {
-                Ok(_) => result.adopted += 1,
+                Ok(_) => {
+                    result.adopted += 1;
+                    result.adopted_names.push(adopted_name);
+                }
                 Err(e) => result
                     .errors
                     .push(format!("{}: {e}", entry.file_name().to_string_lossy())),

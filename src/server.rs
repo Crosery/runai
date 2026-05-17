@@ -248,6 +248,9 @@ struct EventJson {
     /// Markdown block runai injected into Claude Code via hook stdout.
     /// Empty when chosen was empty or for legacy rows.
     hook_output: String,
+    /// Full user message sent to the router LLM (history + already_routed +
+    /// candidate listing + user prompt). Empty for pre-schema-v13 rows.
+    llm_input: String,
     /// Whether the hook actually delivered a non-empty injection. Equivalent
     /// to `chosen` non-empty + status ok, exposed as a flat boolean for the UI.
     injected: bool,
@@ -277,6 +280,7 @@ impl From<RouterEvent> for EventJson {
             error_msg: e.error_msg,
             llm_raw_response: e.llm_raw_response,
             hook_output: e.hook_output,
+            llm_input: e.llm_input,
             injected,
         }
     }

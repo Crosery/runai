@@ -4,6 +4,30 @@ use crate::core::manager::SkillManager;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
+/// Fire-and-forget enrich pass targeted at a specific set of skill names.
+/// Called by install / market-install / scan after a known set of skills has
+/// changed on disk. Detached so the parent command can return immediately —
+/// the enrich worker writes summary + llm_score in the background and the
+/// dashboard's `/skills` view picks them up on its next poll. Silently no-ops
+/// when the router isn't enabled or the names list is empty.
+fn spawn_targeted_enrich(names: &[String]) {
+    if names.is_empty() {
+        return;
+    }
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("recommend").arg("enrich");
+    for n in names {
+        cmd.arg("--name").arg(n);
+    }
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let _ = cmd.spawn();
+}
+
 #[derive(Parser)]
 #[command(
     name = "runai",
@@ -180,6 +204,15 @@ pub enum RecommendCommands {
         #[arg(long)]
         note: String,
     },
+    /// Record that the main Claude agent actually adopted (Read) a
+    /// recommended skill's SKILL.md this turn — bumps the skill's
+    /// usage_count by 1 and updates last_used_at. The hook output for
+    /// single-skill recommendations now sends only a pointer + description,
+    /// so this is the explicit "yes I'm using it" signal from the agent.
+    Used {
+        /// Skill name that was actually adopted
+        skill: String,
+    },
     /// Wipe all LLM summaries (resource_ai_summary) — next enrich rebuilds.
     ResetScoring {
         /// Skip the "are you sure" prompt (for scripts / hooks)
@@ -210,6 +243,12 @@ pub enum RecommendCommands {
         /// 想更快可设 --concurrency 128 (10s) 或 337 (5s)。
         #[arg(long, default_value_t = 32)]
         concurrency: usize,
+        /// Only enrich the named skill(s). Pass `--name X --name Y` to limit
+        /// to a specific subset (e.g. after `runai install` to refresh just
+        /// the freshly downloaded skills). When set, mtime/exists checks are
+        /// bypassed for the listed names — they are always re-enriched.
+        #[arg(long = "name")]
+        names: Vec<String>,
     },
 }
 
@@ -286,6 +325,13 @@ pub fn run(cli: Cli) -> Result<()> {
             );
             for err in &result.errors {
                 eprintln!("  error: {err}");
+            }
+            spawn_targeted_enrich(&result.adopted_names);
+            if !result.adopted_names.is_empty() {
+                println!(
+                    "(spawned background enrich for {} newly-adopted skill(s))",
+                    result.adopted_names.len()
+                );
             }
             Ok(())
         }
@@ -415,6 +461,13 @@ pub fn run(cli: Cli) -> Result<()> {
             for name in &names {
                 println!("  {name}");
             }
+            spawn_targeted_enrich(&names);
+            if !names.is_empty() {
+                println!(
+                    "(spawned background enrich for {} new skill(s) — dashboard /skills will update once summaries land)",
+                    names.len()
+                );
+            }
             Ok(())
         }
         Some(Commands::MarketInstall { name, source }) => {
@@ -438,6 +491,11 @@ pub fn run(cli: Cli) -> Result<()> {
                 let _ = mgr.enable_resource(&id, CliTarget::Claude, None);
             }
             println!("Installed '{name}' from {source_repo}");
+            spawn_targeted_enrich(std::slice::from_ref(&skill.name));
+            println!(
+                "(spawned background enrich for '{}' — dashboard /skills will update once summary lands)",
+                skill.name
+            );
             Ok(())
         }
         Some(Commands::Uninstall { name }) => {
@@ -1128,12 +1186,8 @@ To install/uninstall automatically (preserves existing hooks and theme):
             let cfg = RecommendConfig::load(mgr.paths()).unwrap_or_default();
             if !cfg.enabled {
                 println!();
-                println!(
-                    "next step: router is not configured yet — `enabled = false`."
-                );
-                println!(
-                    "  run `runai recommend setup` to pick a provider + paste an API key."
-                );
+                println!("next step: router is not configured yet — `enabled = false`.");
+                println!("  run `runai recommend setup` to pick a provider + paste an API key.");
                 println!(
                     "  after setup the router auto-enriches all skills and starts routing on the next prompt."
                 );
@@ -1212,6 +1266,24 @@ To install/uninstall automatically (preserves existing hooks and theme):
             );
             Ok(())
         }
+        (Some(RecommendCommands::Used { skill }), _) => {
+            // Session id is best-effort: comes from CLAUDE_SESSION_ID if the
+            // main agent set it (the hook output tells it how), otherwise
+            // empty — usage_count still bumps regardless.
+            let sid = std::env::var("CLAUDE_SESSION_ID").unwrap_or_default();
+            match mgr.record_usage(&skill) {
+                Ok(()) => {}
+                Err(e) => eprintln!("(warn) record_usage: {e}"),
+            }
+            if !sid.is_empty() {
+                let _ = mgr.db().record_session_adoption(&sid, &skill);
+            }
+            println!(
+                "recorded adoption: {skill}{}",
+                if sid.is_empty() { "" } else { " (session-deduped)" }
+            );
+            Ok(())
+        }
         (Some(RecommendCommands::ResetScoring { yes }), _) => {
             if !yes {
                 use std::io::{BufRead, Write};
@@ -1235,6 +1307,7 @@ To install/uninstall automatically (preserves existing hooks and theme):
                 missing_only,
                 verbose,
                 concurrency,
+                names,
             }),
             _,
         ) => {
@@ -1248,18 +1321,29 @@ To install/uninstall automatically (preserves existing hooks and theme):
             };
             let (have, _oldest, _newest) =
                 mgr.db().skill_ai_summary_stats().unwrap_or((0, None, None));
+            let names_label = if names.is_empty() {
+                "all".to_string()
+            } else {
+                format!("only={:?}", names)
+            };
             println!(
                 "enriching skill summaries (currently {have} have summaries)\n\
-                 limit={} mode={:?} concurrency={concurrency}",
+                 limit={} mode={:?} concurrency={concurrency} {names_label}",
                 limit.map(|n| n.to_string()).unwrap_or_else(|| "all".into()),
                 mode,
             );
+            let only_names: Option<&[String]> = if names.is_empty() {
+                None
+            } else {
+                Some(&names[..])
+            };
             let report = crate::core::recommend::enrich_skills(
                 mgr,
                 limit,
                 mode,
                 verbose,
                 concurrency,
+                only_names,
             )?;
             println!(
                 "\nenrichment done:\n  generated:           {}\n  refreshed (stale):   {}\n  skipped (up-to-date): {}\n  skipped (no SKILL.md): {}\n  errors:              {}",
@@ -1405,7 +1489,11 @@ fn recommend_setup(mgr: &SkillManager) -> Result<()> {
     let (already_have, _, _) = mgr.db().skill_ai_summary_stats().unwrap_or((0, None, None));
     let total_skills = mgr
         .list_resources(None, None)
-        .map(|rs| rs.iter().filter(|r| r.kind == crate::core::resource::ResourceKind::Skill).count())
+        .map(|rs| {
+            rs.iter()
+                .filter(|r| r.kind == crate::core::resource::ResourceKind::Skill)
+                .count()
+        })
         .unwrap_or(0);
     let missing = total_skills.saturating_sub(already_have as usize);
     if missing > 0 {
