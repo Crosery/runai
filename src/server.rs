@@ -9,7 +9,7 @@
 //! `include_str!` so the dashboard works offline (same single-binary
 //! philosophy as the rest of runai).
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
@@ -42,6 +42,63 @@ impl AppState {
     fn db(&self) -> Result<Database> {
         Database::open(&self.db_path)
     }
+}
+
+/// Result of `ensure_running`. `AlreadyRunning` is the hot path for repeat
+/// invocations (hook / SessionStart); `Started` happens once per machine boot.
+#[derive(Debug, PartialEq, Eq)]
+pub enum EnsureStatus {
+    AlreadyRunning,
+    Started,
+}
+
+/// Idempotent "is the dashboard up? if not, spawn it" helper. Designed to be
+/// called from Claude Code's SessionStart hook (or any shell rc) so the
+/// dashboard is always reachable without the user remembering to start it.
+///
+/// Behavior:
+/// - If we can TCP-connect to `host:port` within 200ms → return `AlreadyRunning`.
+///   This is the steady-state hot path (< 50ms total).
+/// - Otherwise spawn `runai server --port P --host H` as a detached child with
+///   stdio nullified, then poll the port for up to ~2s and return `Started`
+///   when it comes up. Returns an error only if the spawn itself fails or the
+///   server never binds.
+///
+/// The detached child becomes an orphan when this process exits and is
+/// reparented to init (PID 1), which keeps the server running across the
+/// lifetime of the launching shell / Claude Code session.
+pub fn ensure_running(host: &str, port: u16) -> Result<EnsureStatus> {
+    use std::net::TcpStream;
+    use std::time::Duration;
+
+    let addr_str = format!("{host}:{port}");
+    let sock: SocketAddr = addr_str
+        .parse()
+        .with_context(|| format!("parse {addr_str}"))?;
+    if TcpStream::connect_timeout(&sock, Duration::from_millis(200)).is_ok() {
+        return Ok(EnsureStatus::AlreadyRunning);
+    }
+
+    let exe = std::env::current_exe().context("locate runai binary via current_exe")?;
+    std::process::Command::new(&exe)
+        .arg("server")
+        .arg("--port")
+        .arg(port.to_string())
+        .arg("--host")
+        .arg(host)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .with_context(|| format!("spawn `{}` server daemon", exe.display()))?;
+
+    for _ in 0..40 {
+        std::thread::sleep(Duration::from_millis(50));
+        if TcpStream::connect_timeout(&sock, Duration::from_millis(100)).is_ok() {
+            return Ok(EnsureStatus::Started);
+        }
+    }
+    bail!("started runai server daemon but {addr_str} did not respond within 2s")
 }
 
 pub async fn serve(host: &str, port: u16) -> Result<()> {

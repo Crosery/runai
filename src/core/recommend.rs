@@ -1025,6 +1025,99 @@ pub fn uninstall_claude_hook(home: &Path) -> Result<HookInstallStatus> {
     Ok(HookInstallStatus::Removed)
 }
 
+/// Install or remove a `SessionStart` hook in `~/.claude/settings.json` that
+/// runs `command_str` (e.g. `runai server --ensure`) every time Claude Code
+/// starts a new session. The user's other SessionStart hooks are preserved.
+///
+/// Identification: we match by command-string equality so re-running the
+/// installer is a no-op and uninstall only removes our entry.
+pub fn install_session_start_hook(home: &Path, command_str: &str) -> Result<HookInstallStatus> {
+    let path = home.join(".claude").join("settings.json");
+    let mut value = read_settings_json(&path)?;
+    let arr = ensure_named_hook_array(&mut value, "SessionStart")?;
+    if hook_command_present(arr, command_str) {
+        return Ok(HookInstallStatus::AlreadyPresent);
+    }
+    arr.push(serde_json::json!({
+        "hooks": [{"type": "command", "command": command_str}]
+    }));
+    write_settings_json(&path, &value)?;
+    Ok(HookInstallStatus::Installed)
+}
+
+pub fn uninstall_session_start_hook(home: &Path, command_str: &str) -> Result<HookInstallStatus> {
+    let path = home.join(".claude").join("settings.json");
+    if !path.exists() {
+        return Ok(HookInstallStatus::NotPresent);
+    }
+    let mut value = read_settings_json(&path)?;
+    let arr = match get_named_hook_array(&mut value, "SessionStart") {
+        Some(a) => a,
+        None => return Ok(HookInstallStatus::NotPresent),
+    };
+    let before = arr.len();
+    arr.retain(|group| {
+        let h = match group.get("hooks").and_then(|h| h.as_array()) {
+            Some(a) => a,
+            None => return true,
+        };
+        let all_ours = !h.is_empty()
+            && h.iter()
+                .all(|x| x.get("command").and_then(|c| c.as_str()) == Some(command_str));
+        !all_ours
+    });
+    if arr.len() == before {
+        return Ok(HookInstallStatus::NotPresent);
+    }
+    write_settings_json(&path, &value)?;
+    Ok(HookInstallStatus::Removed)
+}
+
+fn ensure_named_hook_array<'a>(
+    value: &'a mut serde_json::Value,
+    name: &str,
+) -> Result<&'a mut Vec<serde_json::Value>> {
+    let obj = value
+        .as_object_mut()
+        .context("settings.json root must be an object")?;
+    let hooks = obj
+        .entry("hooks".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    let hooks_obj = hooks
+        .as_object_mut()
+        .context("settings.json `hooks` field must be an object")?;
+    let entry = hooks_obj
+        .entry(name.to_string())
+        .or_insert_with(|| serde_json::json!([]));
+    entry
+        .as_array_mut()
+        .with_context(|| format!("settings.json `hooks.{name}` must be an array"))
+}
+
+fn get_named_hook_array<'a>(
+    value: &'a mut serde_json::Value,
+    name: &str,
+) -> Option<&'a mut Vec<serde_json::Value>> {
+    value
+        .as_object_mut()?
+        .get_mut("hooks")?
+        .as_object_mut()?
+        .get_mut(name)?
+        .as_array_mut()
+}
+
+fn hook_command_present(arr: &[serde_json::Value], command_str: &str) -> bool {
+    arr.iter().any(|group| {
+        group
+            .get("hooks")
+            .and_then(|h| h.as_array())
+            .is_some_and(|hs| {
+                hs.iter()
+                    .any(|h| h.get("command").and_then(|c| c.as_str()) == Some(command_str))
+            })
+    })
+}
+
 fn read_settings_json(path: &Path) -> Result<serde_json::Value> {
     if !path.exists() {
         return Ok(serde_json::json!({}));

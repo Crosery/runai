@@ -1,7 +1,7 @@
 use crate::core::cli_target::CliTarget;
 use crate::core::group::{Group, GroupKind, GroupMember, MemberType};
 use crate::core::manager::SkillManager;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -103,6 +103,20 @@ pub enum Commands {
         /// Use 0.0.0.0 to expose on LAN, but note the DB contains user prompts.
         #[arg(long, default_value = "127.0.0.1")]
         host: String,
+        /// Idempotent "ensure-running": exit immediately if the port is
+        /// already serving; otherwise spawn the server as a detached
+        /// background process and return. Designed for SessionStart / shell
+        /// rc auto-launch — call it every session, it stays cheap.
+        #[arg(long)]
+        ensure: bool,
+        /// Install a SessionStart hook in ~/.claude/settings.json that runs
+        /// `runai server --ensure --port <port>` on every new Claude Code
+        /// session so the dashboard auto-launches. Idempotent.
+        #[arg(long, conflicts_with = "uninstall_hook")]
+        install_hook: bool,
+        /// Remove the SessionStart hook installed by `--install-hook`.
+        #[arg(long)]
+        uninstall_hook: bool,
     },
     /// Register runai as MCP server in all CLI configs
     Register,
@@ -586,7 +600,42 @@ pub fn run(cli: Cli) -> Result<()> {
             rt.block_on(crate::mcp::serve())?;
             Ok(())
         }
-        Some(Commands::Server { port, host }) => {
+        Some(Commands::Server {
+            port,
+            host,
+            ensure,
+            install_hook,
+            uninstall_hook,
+        }) => {
+            if install_hook {
+                let home = dirs::home_dir().context("locate home dir")?;
+                let cmd = format!("runai server --ensure --port {port}");
+                let status = crate::core::recommend::install_session_start_hook(&home, &cmd)?;
+                println!(
+                    "SessionStart hook ({cmd}) in {}: {:?}",
+                    home.join(".claude/settings.json").display(),
+                    status
+                );
+                return Ok(());
+            }
+            if uninstall_hook {
+                let home = dirs::home_dir().context("locate home dir")?;
+                let cmd = format!("runai server --ensure --port {port}");
+                let status = crate::core::recommend::uninstall_session_start_hook(&home, &cmd)?;
+                println!("SessionStart hook removal: {:?}", status);
+                return Ok(());
+            }
+            if ensure {
+                match crate::server::ensure_running(&host, port)? {
+                    crate::server::EnsureStatus::AlreadyRunning => {
+                        println!("runai dashboard already running at http://{host}:{port}");
+                    }
+                    crate::server::EnsureStatus::Started => {
+                        println!("runai dashboard started at http://{host}:{port}");
+                    }
+                }
+                return Ok(());
+            }
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(crate::server::serve(&host, port))?;
             Ok(())
