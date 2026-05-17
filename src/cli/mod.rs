@@ -168,6 +168,16 @@ pub enum RecommendCommands {
         #[arg(long, default_value = "0")]
         recent: usize,
     },
+    /// Wipe LLM summaries / scores and/or user ratings. By default clears
+    /// BOTH. Use `--only summaries` or `--only ratings` to narrow scope.
+    ResetScoring {
+        /// "summaries" | "ratings" | "all" (default)
+        #[arg(long, default_value = "all")]
+        only: String,
+        /// Skip the "are you sure" prompt (for scripts / hooks)
+        #[arg(long)]
+        yes: bool,
+    },
     /// Generate bilingual AI summaries for skills (improves BM25 prefilter
     /// recall, especially for cross-language queries). Idempotent —
     /// already-summarised skills are skipped unless `--force`.
@@ -1135,6 +1145,34 @@ To install/uninstall automatically (preserves existing hooks and theme):
                 }
                 _ => {}
             }
+            Ok(())
+        }
+        (Some(RecommendCommands::ResetScoring { only, yes }), _) => {
+            let only = only.to_ascii_lowercase();
+            let (do_sum, do_rat) = match only.as_str() {
+                "summaries" => (true, false),
+                "ratings" => (false, true),
+                "all" | "both" => (true, true),
+                other => anyhow::bail!("--only must be one of summaries|ratings|all, got {other}"),
+            };
+            if !yes {
+                use std::io::{BufRead, Write};
+                print!(
+                    "about to wipe {}{}{}. continue? [y/N] ",
+                    if do_sum { "LLM summaries+scores" } else { "" },
+                    if do_sum && do_rat { " AND " } else { "" },
+                    if do_rat { "user ratings" } else { "" }
+                );
+                std::io::stdout().flush().ok();
+                let stdin = std::io::stdin();
+                let line = stdin.lock().lines().next().transpose()?.unwrap_or_default();
+                if !matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+                    println!("aborted");
+                    return Ok(());
+                }
+            }
+            let (s, r) = mgr.db().reset_scoring(do_sum, do_rat)?;
+            println!("deleted: {s} summaries, {r} user ratings");
             Ok(())
         }
         (Some(RecommendCommands::Enrich { limit, force, verbose }), _) => {

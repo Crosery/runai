@@ -198,8 +198,36 @@
         <div class="section-label">AI 摘要 (BM25 索引信号)</div>
         <div class="prompt-block" id="skill-detail-summary"></div>
 
-        <div class="section-label">SKILL.md 全文 <span class="muted" id="skill-detail-md-meta"></span></div>
-        <div class="prompt-block skill-md-block" id="skill-detail-md"></div>
+        <div class="section-label">使用历史 <span class="muted" id="skill-detail-events-meta"></span></div>
+        <div class="events-wrap">
+          <table class="events">
+            <thead>
+              <tr>
+                <th>时间</th>
+                <th>session</th>
+                <th>模式</th>
+                <th class="num">延迟</th>
+                <th class="num">tokens</th>
+                <th>注入</th>
+                <th>prompt</th>
+              </tr>
+            </thead>
+            <tbody id="skill-detail-events-body"></tbody>
+          </table>
+        </div>
+        <p class="muted skill-events-empty" id="skill-detail-events-empty" hidden>这个 skill 还没被推过任何 prompt</p>
+
+        <div class="section-label">skill 目录 <span class="muted" id="skill-detail-dir-meta"></span></div>
+        <div class="file-browser">
+          <aside class="file-tree" id="file-tree"></aside>
+          <div class="file-viewer">
+            <div class="file-viewer-head">
+              <span class="mono" id="file-viewer-path">—</span>
+              <span class="muted" id="file-viewer-meta"></span>
+            </div>
+            <pre class="prompt-block file-viewer-body" id="file-viewer-body"></pre>
+          </div>
+        </div>
       </section>
     </main>
   </div>

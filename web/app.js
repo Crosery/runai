@@ -413,11 +413,101 @@
       ? `上次更新：${fmtTsFull(d.rating_updated_at)}`
       : '';
     $('#skill-detail-summary').textContent = d.summary || '(尚未富集 — 跑 `runai recommend enrich` 生成)';
-    const md = d.skill_md_content || '(没找到 SKILL.md)';
-    $('#skill-detail-md').textContent = md;
-    $('#skill-detail-md-meta').textContent = d.skill_md_size
-      ? `${d.skill_md_size.toLocaleString()} bytes${d.skill_md_truncated ? ' (truncated)' : ''}`
-      : '';
+
+    // Usage history: events where this skill was chosen
+    const tbody = $('#skill-detail-events-body');
+    tbody.innerHTML = '';
+    const events = d.events || [];
+    $('#skill-detail-events-meta').textContent = events.length ? `${events.length} 次注入` : '';
+    $('#skill-detail-events-empty').hidden = events.length !== 0;
+    for (const e of events) {
+      const tr = document.createElement('tr');
+      tr.dataset.id = e.id ?? '';
+      const injected = e.injected
+        ? `<span class="chip" style="background:var(--success-bg);color:var(--success);border-color:rgba(63,185,80,0.4)">是</span>`
+        : `<span class="chip-empty">否</span>`;
+      const promptShort = e.user_prompt ? e.user_prompt.slice(0, 140) : '<span class="dim">(legacy)</span>';
+      tr.innerHTML = `
+        <td class="mono muted">${fmtTs(e.ts)}</td>
+        <td class="mono muted" title="${escapeHTML(e.session_id || '')}">${escapeHTML((e.session_id || '').slice(0, 8) || '—')}</td>
+        <td class="muted mono">${escapeHTML(e.mode)}</td>
+        <td class="num">${fmtMs(e.latency_ms)} ms</td>
+        <td class="num">${fmtTok(e.prompt_tokens)}</td>
+        <td>${injected}</td>
+        <td class="prompt" title="${escapeHTML(e.user_prompt || '')}">${e.user_prompt ? escapeHTML(promptShort) : promptShort}</td>
+      `;
+      tr.addEventListener('click', () => openDetail(e.id));
+      tbody.appendChild(tr);
+    }
+
+    await loadFileTree(name);
+  }
+
+  async function loadFileTree(name) {
+    const res = await fetch(`/api/skill/${encodeURIComponent(name)}/files`);
+    if (!res.ok) {
+      $('#file-tree').innerHTML = '<div class="muted" style="padding:8px">无法读取 skill 目录</div>';
+      $('#file-viewer-body').textContent = '';
+      return;
+    }
+    const data = await res.json();
+    $('#skill-detail-dir-meta').textContent =
+      `${data.entries.length} 个文件 · ${data.skill_dir}`;
+    const tree = $('#file-tree');
+    tree.innerHTML = '';
+    if (data.entries.length === 0) {
+      tree.innerHTML = '<div class="muted" style="padding:8px">空目录</div>';
+      $('#file-viewer-body').textContent = '';
+      return;
+    }
+    for (const entry of data.entries) {
+      const div = document.createElement('div');
+      div.className = 'ftree-entry' + (entry.is_text ? '' : ' binary');
+      div.dataset.path = entry.path;
+      div.dataset.text = entry.is_text ? '1' : '0';
+      div.innerHTML = `
+        <span class="ftree-name">${escapeHTML(entry.path)}</span>
+        <span class="ftree-size">${fmtBytes(entry.size)}</span>
+      `;
+      div.addEventListener('click', () => selectFile(name, entry.path));
+      tree.appendChild(div);
+    }
+    // Auto-open SKILL.md if present, else the first text file, else first file
+    const preferred =
+      data.entries.find((e) => e.path === 'SKILL.md') ||
+      data.entries.find((e) => e.is_text) ||
+      data.entries[0];
+    if (preferred) selectFile(name, preferred.path);
+  }
+
+  function fmtBytes(n) {
+    if (n == null) return '—';
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+    return `${(n / 1024 / 1024).toFixed(2)} MB`;
+  }
+
+  async function selectFile(name, path) {
+    document.querySelectorAll('#file-tree .ftree-entry').forEach((el) => {
+      el.classList.toggle('active', el.dataset.path === path);
+    });
+    $('#file-viewer-path').textContent = path;
+    $('#file-viewer-body').textContent = '加载中...';
+    const url = `/api/skill/${encodeURIComponent(name)}/file?path=${encodeURIComponent(path)}`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      $('#file-viewer-body').textContent = '(读取失败)';
+      $('#file-viewer-meta').textContent = '';
+      return;
+    }
+    const f = await res.json();
+    $('#file-viewer-meta').textContent =
+      `${fmtBytes(f.size)}${f.truncated ? ' (truncated)' : ''}${f.is_text ? '' : ' · 二进制'}`;
+    if (f.is_text) {
+      $('#file-viewer-body').textContent = f.content || '(空文件)';
+    } else {
+      $('#file-viewer-body').textContent = `(二进制文件 — ${fmtBytes(f.size)} — 不显示内容)`;
+    }
   }
 
   async function saveRating() {

@@ -117,6 +117,8 @@ pub async fn serve(host: &str, port: u16) -> Result<()> {
         .route("/api/event/{id}", get(api_event_by_id))
         .route("/api/skills", get(api_skills))
         .route("/api/skill/{name}", get(api_skill_detail))
+        .route("/api/skill/{name}/files", get(api_skill_files))
+        .route("/api/skill/{name}/file", get(api_skill_file))
         .route("/api/skills/{name}/rating", axum::routing::post(api_set_rating).delete(api_clear_rating))
         .with_state(state);
 
@@ -468,6 +470,9 @@ struct SkillDetailResponse {
     skill_md_content: String,
     skill_md_size: usize,
     skill_md_truncated: bool,
+    /// router_events where this skill was chosen, newest first, up to 50.
+    events: Vec<EventJson>,
+    events_total: usize,
 }
 
 async fn api_skill_detail(
@@ -512,6 +517,9 @@ async fn api_skill_detail(
         }
         Err(_) => (String::new(), false, 0),
     };
+    let event_rows = db.router_events_for_skill(&name, 50).unwrap_or_default();
+    let events_total = event_rows.len();
+    let events: Vec<EventJson> = event_rows.into_iter().map(EventJson::from).collect();
     Ok(Json(SkillDetailResponse {
         name: resource.name.clone(),
         description: resource.description.clone(),
@@ -526,6 +534,8 @@ async fn api_skill_detail(
         skill_md_content,
         skill_md_size: total_size,
         skill_md_truncated: truncated,
+        events,
+        events_total,
     }))
 }
 
@@ -536,6 +546,174 @@ async fn api_clear_rating(
     let db = state.db()?;
     db.delete_user_rating(&name)?;
     Ok(Json(serde_json::json!({"ok": true, "name": name})))
+}
+
+#[derive(Serialize)]
+struct SkillFileEntry {
+    /// Path relative to the skill directory (forward slashes).
+    path: String,
+    size: u64,
+    is_text: bool,
+}
+
+#[derive(Serialize)]
+struct SkillFilesResponse {
+    name: String,
+    skill_dir: String,
+    entries: Vec<SkillFileEntry>,
+}
+
+#[derive(Serialize)]
+struct SkillFileResponse {
+    path: String,
+    size: u64,
+    /// File contents. Empty for binaries; binary files only return metadata.
+    content: String,
+    /// True if the file content was cut off due to size cap.
+    truncated: bool,
+    /// True if we returned content. False for binary/unsupported types —
+    /// `content` will be empty and the UI should display a placeholder.
+    is_text: bool,
+}
+
+#[derive(Deserialize)]
+struct SkillFileQuery {
+    path: String,
+}
+
+async fn api_skill_files(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Result<Json<SkillFilesResponse>, ApiError> {
+    use crate::core::manager::SkillManager;
+    let mgr = SkillManager::with_base(state.db_path.parent().unwrap().to_path_buf())
+        .map_err(ApiError::Internal)?;
+    let skill_dir = mgr.paths().skills_dir().join(&name);
+    if !skill_dir.is_dir() {
+        return Err(ApiError::NotFound);
+    }
+    let mut entries: Vec<SkillFileEntry> = Vec::new();
+    walk_skill_dir(&skill_dir, &skill_dir, &mut entries)?;
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(Json(SkillFilesResponse {
+        name,
+        skill_dir: skill_dir.display().to_string(),
+        entries,
+    }))
+}
+
+fn walk_skill_dir(
+    root: &std::path::Path,
+    dir: &std::path::Path,
+    out: &mut Vec<SkillFileEntry>,
+) -> Result<(), ApiError> {
+    let read = std::fs::read_dir(dir).map_err(|e| ApiError::Internal(e.into()))?;
+    for entry in read {
+        let entry = entry.map_err(|e| ApiError::Internal(e.into()))?;
+        let path = entry.path();
+        let file_name = entry.file_name();
+        let fname_str = file_name.to_string_lossy();
+        // Skip hidden/junk
+        if fname_str.starts_with('.') {
+            continue;
+        }
+        let md = entry.metadata().map_err(|e| ApiError::Internal(e.into()))?;
+        if md.is_dir() {
+            walk_skill_dir(root, &path, out)?;
+        } else if md.is_file() {
+            let rel = path
+                .strip_prefix(root)
+                .map_err(|e| ApiError::Internal(anyhow::anyhow!("strip_prefix: {e}")))?
+                .to_string_lossy()
+                .replace('\\', "/");
+            out.push(SkillFileEntry {
+                path: rel,
+                size: md.len(),
+                is_text: is_text_path(&path),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn is_text_path(p: &std::path::Path) -> bool {
+    let ext = p
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    matches!(
+        ext.as_str(),
+        "md" | "markdown" | "txt" | "json" | "yaml" | "yml" | "toml" | "ini"
+        | "sh" | "bash" | "zsh" | "fish"
+        | "py" | "js" | "ts" | "tsx" | "jsx" | "mjs" | "cjs"
+        | "rs" | "go" | "java" | "c" | "cc" | "cpp" | "h" | "hpp"
+        | "css" | "scss" | "html" | "xml" | "xsd" | "xsl" | "xslt" | "dtd" | "csv" | "tsv" | "log"
+        | "vue" | "svelte" | "rb" | "php" | "lua" | "swift" | "kt" | "kts"
+        | "rst" | "tex" | "sql" | "dockerfile" | "makefile" | "env"
+        | ""
+    )
+}
+
+async fn api_skill_file(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    Query(q): Query<SkillFileQuery>,
+) -> Result<Json<SkillFileResponse>, ApiError> {
+    use crate::core::manager::SkillManager;
+    let mgr = SkillManager::with_base(state.db_path.parent().unwrap().to_path_buf())
+        .map_err(ApiError::Internal)?;
+    let skill_dir = mgr.paths().skills_dir().join(&name);
+    let target = skill_dir.join(&q.path);
+    // SECURITY: canonicalise both, verify target still under skill_dir.
+    // Prevents `?path=../../etc/passwd` style traversal.
+    let root_real = skill_dir
+        .canonicalize()
+        .map_err(|e| ApiError::Internal(e.into()))?;
+    let target_real = match target.canonicalize() {
+        Ok(p) => p,
+        Err(_) => return Err(ApiError::NotFound),
+    };
+    if !target_real.starts_with(&root_real) {
+        return Err(ApiError::NotFound);
+    }
+    let md = target_real
+        .metadata()
+        .map_err(|_| ApiError::NotFound)?;
+    if md.is_dir() {
+        return Err(ApiError::NotFound);
+    }
+    let size = md.len();
+    let is_text = is_text_path(&target_real);
+    const MAX_BYTES: usize = 80_000;
+    let (content, truncated) = if is_text {
+        match std::fs::read_to_string(&target_real) {
+            Ok(s) => {
+                if s.len() > MAX_BYTES {
+                    (s.chars().take(MAX_BYTES).collect::<String>(), true)
+                } else {
+                    (s, false)
+                }
+            }
+            // text by extension but not valid UTF-8 → treat as binary
+            Err(_) => return Ok(Json(SkillFileResponse {
+                path: q.path,
+                size,
+                content: String::new(),
+                truncated: false,
+                is_text: false,
+            })),
+        }
+    } else {
+        (String::new(), false)
+    };
+    Ok(Json(SkillFileResponse {
+        path: q.path,
+        size,
+        content,
+        truncated,
+        is_text,
+    }))
 }
 
 async fn api_event_by_id(

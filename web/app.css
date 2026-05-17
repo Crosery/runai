@@ -837,6 +837,79 @@ dialog .head .id-tag {
   max-height: none;
 }
 
+/* Skill file browser */
+.file-browser {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  gap: 12px;
+  margin-top: 4px;
+}
+@media (max-width: 720px) {
+  .file-browser { grid-template-columns: 1fr; }
+}
+.file-tree {
+  background: var(--bg-canvas);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 6px 4px;
+  max-height: 480px;
+  overflow-y: auto;
+  font-size: 12.5px;
+}
+.file-tree .ftree-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--fg-default);
+  font-family: var(--font-mono);
+  user-select: none;
+}
+.file-tree .ftree-entry:hover { background: var(--bg-subtle); }
+.file-tree .ftree-entry.active {
+  background: var(--accent-subtle);
+  color: var(--accent);
+}
+.file-tree .ftree-entry.binary { color: var(--fg-subtle); }
+.file-tree .ftree-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-tree .ftree-size { color: var(--fg-subtle); font-size: 11px; flex: 0 0 auto; }
+
+.file-viewer {
+  background: var(--bg-canvas);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.file-viewer-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-subtle);
+  font-size: 12px;
+}
+.file-viewer-body {
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  background: var(--bg-canvas);
+  padding: 14px 16px;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  max-height: 480px;
+  min-height: 200px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* Responsive */
 @media (max-width: 720px) {
   .shell { padding: 18px 16px 40px; }

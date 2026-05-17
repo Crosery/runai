@@ -473,6 +473,45 @@ impl Database {
         Ok(())
     }
 
+    /// Wipe all LLM summaries / scores and/or all user ratings.
+    /// Returns (summaries_deleted, ratings_deleted).
+    pub fn reset_scoring(&self, summaries: bool, ratings: bool) -> Result<(usize, usize)> {
+        let mut s = 0usize;
+        let mut r = 0usize;
+        if summaries {
+            s = self.conn.execute("DELETE FROM resource_ai_summary", [])?;
+        }
+        if ratings {
+            r = self.conn.execute("DELETE FROM resource_user_rating", [])?;
+        }
+        Ok((s, r))
+    }
+
+    /// Recent router_events that picked this skill (its name is in chosen
+    /// skills array). Uses json_each so substring matches in other skills'
+    /// names don't bleed in.
+    pub fn router_events_for_skill(&self, name: &str, limit: usize) -> Result<Vec<RouterEvent>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, ts, provider, model, prompt_tokens, completion_tokens, reasoning_tokens,
+                    total_tokens, cache_hit_tokens, cache_miss_tokens, latency_ms,
+                    chosen_skills_json, candidate_count, status, error_msg,
+                    session_id, mode, user_prompt, cwd, bm25_kept,
+                    llm_raw_response, hook_output
+             FROM router_events re
+             WHERE EXISTS (
+                SELECT 1 FROM json_each(re.chosen_skills_json) je WHERE je.value = ?1
+             )
+             ORDER BY ts DESC
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![name, limit as i64], row_to_router_event)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
     /// Look up AI summary for one skill (by name). Returns empty string when
     /// no summary has been generated yet.
     pub fn skill_ai_summary(&self, name: &str) -> Result<String> {
