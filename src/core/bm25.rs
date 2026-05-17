@@ -45,12 +45,19 @@ pub fn tokenize(text: &str) -> Vec<String> {
     tokens
 }
 
-fn is_cjk(c: char) -> bool {
+pub fn is_cjk(c: char) -> bool {
     let u = c as u32;
     (0x4E00..=0x9FFF).contains(&u)        // CJK Unified Ideographs
         || (0x3400..=0x4DBF).contains(&u) // CJK Extension A
         || (0x3040..=0x30FF).contains(&u) // Hiragana + Katakana
         || (0xAC00..=0xD7AF).contains(&u) // Hangul
+}
+
+/// Returns true if the string contains any CJK character. Used by the
+/// recommender to detect cross-language queries that can't be safely
+/// BM25-prefiltered against an English-described skill corpus.
+pub fn contains_cjk(s: &str) -> bool {
+    s.chars().any(is_cjk)
 }
 
 /// Rank `docs` by BM25 relevance to `query`. Returns (doc_index, score)
@@ -180,6 +187,16 @@ mod tests {
         let scores = rank("做 ppt", &docs);
         assert_eq!(scores[0].0, 0, "doc 0 must win for both 做 and ppt");
         assert!(scores[0].1 > scores[1].1);
+    }
+
+    #[test]
+    fn contains_cjk_detects_chinese_and_skips_pure_ascii() {
+        assert!(contains_cjk("做个 ppt"));
+        assert!(contains_cjk("提交模型"));
+        assert!(contains_cjk("hello 世界"));
+        assert!(!contains_cjk("create a frontend page"));
+        assert!(!contains_cjk("figma-alignment"));
+        assert!(!contains_cjk(""));
     }
 
     #[test]

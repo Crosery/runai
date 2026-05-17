@@ -19,6 +19,15 @@ const BM25_TOP_K: usize = 50;
 /// skip BM25 and pass the full candidate set — BM25 on a single token would
 /// pick a near-random top-K and exclude unrelated-but-relevant skills.
 const BM25_MIN_QUERY_TERMS: usize = 2;
+/// Minimum positive-score BM25 hits to trust the prefilter. Below this the
+/// query likely has zero / near-zero term overlap with the skill corpus —
+/// the most common cause is cross-language search (CJK prompt against an
+/// English-only skill description), where the BM25 tokenizer can't bridge.
+/// In that case fall back to passing the full candidate set so the LLM can
+/// do semantic matching instead. LLM rerank on 343 candidates still works
+/// fine (it's the previous default); the BM25 path is a token-saving
+/// optimisation, not a correctness gate.
+const BM25_MIN_POSITIVE_HITS: usize = 5;
 
 // All router prompts and hook output templates live in src/core/prompts/ so
 // they are not scattered through the code. Edit those files to retune wording;
@@ -225,7 +234,22 @@ pub fn recommend(
     // hides legitimate matches whose desc happens to use a synonym.
     let bm25_disabled = std::env::var("RUNAI_BM25_DISABLED").is_ok();
     let q_terms = bm25::tokenize(user_prompt);
-    let candidates: Vec<_> = if bm25_disabled || q_terms.len() < BM25_MIN_QUERY_TERMS {
+    let mut bm25_fallback_reason: &'static str = "";
+    let candidates: Vec<_> = if bm25_disabled {
+        bm25_fallback_reason = "disabled-by-env";
+        all_candidates
+    } else if q_terms.len() < BM25_MIN_QUERY_TERMS {
+        bm25_fallback_reason = "query-too-short";
+        all_candidates
+    } else if bm25::contains_cjk(user_prompt) {
+        // Cross-language guard: BM25 has no way to bridge CJK tokens against
+        // English-only skill descriptions (and vice-versa) — there's zero
+        // term overlap so the correct skill silently gets filtered out.
+        // Skill descriptions in the corpus are a mix of EN and CJK, so we
+        // can't tell upfront which side the right answer lives on. Cheapest
+        // safe rule: any CJK in the user prompt → pass full candidate set
+        // and let the LLM do the cross-language semantic match itself.
+        bm25_fallback_reason = "cjk-query-bypass";
         all_candidates
     } else {
         let docs: Vec<String> = all_candidates
@@ -233,24 +257,38 @@ pub fn recommend(
             .map(|r| format!("{} {}", r.name, r.description))
             .collect();
         let ranked = bm25::rank(user_prompt, &docs);
-        // Keep only docs with positive score; if none score (totally
-        // unrelated prompt) fall back to passing all candidates so the LLM
-        // can still make a semantic judgement.
-        let positive: Vec<_> = ranked.iter().filter(|(_, s)| *s > 0.0).take(BM25_TOP_K).collect();
-        if positive.is_empty() {
+        let positive: Vec<(usize, f64)> = ranked
+            .into_iter()
+            .filter(|(_, s)| *s > 0.0)
+            .take(BM25_TOP_K)
+            .collect();
+        // Sparse-corpus guard: even within one language, if very few skills
+        // term-overlap the query, BM25 isn't trustworthy as a hard filter.
+        // Fall back to the full candidate set and rely on the LLM rerank.
+        if positive.len() < BM25_MIN_POSITIVE_HITS {
+            bm25_fallback_reason = if positive.is_empty() {
+                "no-bm25-hits"
+            } else {
+                "few-bm25-hits"
+            };
             all_candidates
         } else {
             positive
                 .into_iter()
-                .map(|(i, _)| all_candidates[*i].clone())
+                .map(|(i, _)| all_candidates[i].clone())
                 .collect()
         }
     };
     if std::env::var("RUNAI_RECOMMEND_DEBUG").is_ok() {
         eprintln!(
-            "[recommend debug] bm25 prefilter: total={}, kept={}",
+            "[recommend debug] bm25 prefilter: total={}, kept={}, fallback={}",
             all_candidates_count,
-            candidates.len()
+            candidates.len(),
+            if bm25_fallback_reason.is_empty() {
+                "no"
+            } else {
+                bm25_fallback_reason
+            },
         );
     }
 
