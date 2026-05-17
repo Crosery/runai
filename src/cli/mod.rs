@@ -1079,13 +1079,23 @@ To install/uninstall automatically (preserves existing hooks and theme):
             Ok(())
         }
         (Some(RecommendCommands::InstallHook), _) => {
-            use crate::core::recommend::{HookInstallStatus, install_claude_hook};
+            use crate::core::recommend::{
+                HookInstallStatus, install_claude_hook, install_session_start_hook,
+            };
             let home =
                 dirs::home_dir().ok_or_else(|| anyhow::anyhow!("cannot resolve home directory"))?;
             let path = home.join(".claude/settings.json");
+            // Also install a SessionStart hook that runs `runai recommend
+            // enrich --missing-only` so newly installed / edited skills get
+            // AI summaries automatically the next time Claude Code starts.
+            // It's idempotent + fire-and-forget (the enrich pass is itself
+            // a no-op when nothing is missing/stale).
+            let enrich_cmd = "runai recommend enrich --missing-only";
+            let _ = install_session_start_hook(&home, enrich_cmd);
             match install_claude_hook(&home)? {
                 HookInstallStatus::Installed => {
                     println!("hook installed into {}", path.display());
+                    println!("  + SessionStart enrich auto-trigger: {enrich_cmd}");
                     println!(
                         "backup of prior contents (if any): {}.runai-bak",
                         path.display()

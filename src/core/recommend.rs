@@ -272,16 +272,21 @@ pub fn recommend(
         bm25_fallback_reason = "query-too-short";
         all_candidates
     } else {
+        // BM25 doc text: prefer AI summary over raw description (summary is
+        // bilingual + structured task/triggers/inputs/outputs, much higher
+        // signal-to-noise than the typically-English crowdsourced
+        // description). Falls back to description only when enrich hasn't
+        // run for this skill yet.
         let docs: Vec<String> = all_candidates
             .iter()
             .map(|r| {
                 let summary = summaries.get(&r.name).map(String::as_str).unwrap_or("");
+                let body = if summary.is_empty() { r.description.as_str() } else { summary };
                 let groups = groups_of(&r.id).join(" ");
-                match (summary.is_empty(), groups.is_empty()) {
-                    (true, true) => format!("{} {}", r.name, r.description),
-                    (true, false) => format!("{} {} {}", r.name, r.description, groups),
-                    (false, true) => format!("{} {} {}", r.name, r.description, summary),
-                    (false, false) => format!("{} {} {} {}", r.name, r.description, groups, summary),
+                if groups.is_empty() {
+                    format!("{} {}", r.name, body)
+                } else {
+                    format!("{} {} {}", r.name, body, groups)
                 }
             })
             .collect();
@@ -398,10 +403,14 @@ pub fn recommend(
                 let shown: Vec<&str> = gs.iter().take(3).map(String::as_str).collect();
                 tags.push_str(&format!(" [group:{}]", shown.join(",")));
             }
-            // Description is already capped at 200 chars at adoption time
-            // (see scanner / classifier). No further truncation here — the
-            // router needs the full signal.
-            format!("- {}{tags}: {}", r.name, r.description)
+            // Show AI summary (bilingual + structured) when available — it's
+            // higher-signal than the raw description. Falls back to
+            // description for skills that haven't been enriched yet.
+            let body_for_llm = match summaries.get(&r.name) {
+                Some(s) if !s.is_empty() => s.as_str(),
+                _ => r.description.as_str(),
+            };
+            format!("- {}{tags}: {}", r.name, body_for_llm)
         })
         .collect::<Vec<_>>()
         .join("\n");
