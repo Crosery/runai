@@ -1197,6 +1197,26 @@ impl Database {
         Ok(groups)
     }
 
+    /// Batch-load every (resource_id → group_ids) mapping in one round-trip.
+    /// The router calls this once per request to splice `[group:X,Y]` tags
+    /// into the candidate listing without N+1 queries.
+    pub fn groups_for_all_resources(&self) -> Result<HashMap<String, Vec<String>>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT resource_id, group_id FROM group_members ORDER BY resource_id, group_id")?;
+        let rows = stmt.query_map([], |row| {
+            let rid: String = row.get(0)?;
+            let gid: String = row.get(1)?;
+            Ok((rid, gid))
+        })?;
+        let mut out: HashMap<String, Vec<String>> = HashMap::new();
+        for row in rows {
+            let (rid, gid) = row?;
+            out.entry(rid).or_default().push(gid);
+        }
+        Ok(out)
+    }
+
     pub fn take_groups_for_resource(&self, resource_id: &str) -> Result<Vec<String>> {
         let groups = self.get_groups_for_resource(resource_id)?;
         self.conn.execute(

@@ -243,6 +243,15 @@ pub fn recommend(
     // queries find < 5 hits → fallback to full candidate set (correct but
     // expensive). As summaries land in DB the fallback rate drops.
     let summaries = mgr.db().skill_ai_summary_all().unwrap_or_default();
+    // Batch-load group memberships once so we can splice group IDs into
+    // both the BM25 doc (so a query like "figma 对齐" can hit through the
+    // figma group name even if the skill's description doesn't mention
+    // figma) and the candidate listing (LLM sees `[group:figma]` and can
+    // use co-membership as a weak co-load signal).
+    let groups_by_resource = mgr.db().groups_for_all_resources().unwrap_or_default();
+    let groups_of = |resource_id: &str| -> Vec<String> {
+        groups_by_resource.get(resource_id).cloned().unwrap_or_default()
+    };
 
     let candidates: Vec<_> = if bm25_disabled {
         bm25_fallback_reason = "disabled-by-env";
@@ -255,10 +264,12 @@ pub fn recommend(
             .iter()
             .map(|r| {
                 let summary = summaries.get(&r.name).map(String::as_str).unwrap_or("");
-                if summary.is_empty() {
-                    format!("{} {}", r.name, r.description)
-                } else {
-                    format!("{} {} {}", r.name, r.description, summary)
+                let groups = groups_of(&r.id).join(" ");
+                match (summary.is_empty(), groups.is_empty()) {
+                    (true, true) => format!("{} {}", r.name, r.description),
+                    (true, false) => format!("{} {} {}", r.name, r.description, groups),
+                    (false, true) => format!("{} {} {}", r.name, r.description, summary),
+                    (false, false) => format!("{} {} {} {}", r.name, r.description, groups, summary),
                 }
             })
             .collect();
@@ -328,6 +339,12 @@ pub fn recommend(
             }
             if let Some(s) = combined_score(&r.name) {
                 tags.push_str(&format!(" [score:{}]", s));
+            }
+            let gs = groups_of(&r.id);
+            if !gs.is_empty() {
+                // Cap at 3 groups per line to keep candidate listing tight.
+                let shown: Vec<&str> = gs.iter().take(3).map(String::as_str).collect();
+                tags.push_str(&format!(" [group:{}]", shown.join(",")));
             }
             // Description is already capped at 200 chars at adoption time
             // (see scanner / classifier). No further truncation here — the

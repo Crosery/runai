@@ -13,6 +13,11 @@
 
 绝不为了高分推**不相关**的 skill。分数只在多个 skill 同时相关时用来排序，不替代相关性判断。
 
+`[group:X,Y]` 标签是该 skill 所属的功能组（用户手工分类的 skill 簇，例如 figma / github / ktv-car-project）。用法：
+- 多 skill 推荐时，**同组优先 COMPATIBLE 共载**（同组 skill 通常是协作工作流，组合使用收益更高）
+- 跨组的多 skill 通常是 EXCLUSIVE（不同方向，让用户选）
+- 单 skill 推荐时 group 不影响决策，仅作信息
+
 ## 何时单独推 1 个 skill vs 多推让用户选
 
 **默认走 EXCLUSIVE 多匹配 2-3 个，让用户拍板。** 单独只推 1 个 skill 会强制主 agent 走那个 skill，如果你推错主 agent 难纠正。所以**只有以下情况才单独推一个**：
