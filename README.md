@@ -155,7 +155,7 @@ When running as MCP server (`runai mcp-serve`), 21 tools are available:
 
 | Tool | Description |
 |------|-------------|
-| `sm_groups` | List all groups with member counts |
+| `sm_groups` | List all groups with member counts + 200-char description preview (full description via `runai group show <id>` CLI) |
 | `sm_create_group` / `sm_delete_group` | Create or delete a group |
 | `sm_group_members` | Add/remove/update group members and metadata |
 

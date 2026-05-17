@@ -179,6 +179,8 @@ pub enum GroupCommands {
         #[arg(long)]
         description: Option<String>,
     },
+    /// Show one group's full details (description + members)
+    Show { id: String },
 }
 
 #[derive(Subcommand)]
@@ -757,6 +759,50 @@ fn handle_group_command(mgr: &SkillManager, command: GroupCommands) -> Result<()
                         g.name,
                         members.len()
                     );
+                    if !g.description.is_empty() {
+                        let desc: String = g.description.chars().take(120).collect();
+                        let ellipsis = if g.description.chars().count() > 120 {
+                            "…"
+                        } else {
+                            ""
+                        };
+                        println!("      {desc}{ellipsis}");
+                    }
+                }
+                println!("\nTip: `runai group show <id>` for full description + member list.");
+            }
+            Ok(())
+        }
+        GroupCommands::Show { id } => {
+            let groups = mgr.list_groups()?;
+            let (gid, g) = groups
+                .iter()
+                .find(|(gid, _)| gid == &id)
+                .ok_or_else(|| anyhow::anyhow!("group not found: {id}"))?;
+            let members = mgr.db().get_group_members(gid).unwrap_or_default();
+            let kind_str = match g.kind {
+                GroupKind::Default => "default",
+                GroupKind::Ecosystem => "ecosystem",
+                GroupKind::Custom => "custom",
+            };
+            println!("Group: {gid}");
+            println!("  Display name: {}", g.name);
+            println!("  Kind:         {kind_str}");
+            println!("  Members:      {}", members.len());
+            if g.description.is_empty() {
+                println!("  Description:  (none)");
+            } else {
+                println!("  Description:");
+                for line in g.description.lines() {
+                    println!("    {line}");
+                }
+            }
+            if !members.is_empty() {
+                println!("\nMembers:");
+                for r in &members {
+                    let badge = r.kind.as_str();
+                    let desc: String = r.description.chars().take(70).collect();
+                    println!("  [{badge}] {} — {desc}", r.name);
                 }
             }
             Ok(())

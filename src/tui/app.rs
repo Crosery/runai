@@ -257,7 +257,7 @@ pub struct App {
     pub active_target: CliTarget,
     pub items: Vec<Resource>,
     pub trash_items: Vec<TrashEntry>,
-    pub groups: Vec<(String, String, usize, usize)>,
+    pub groups: Vec<(String, String, usize, usize, String)>,
     pub selected: usize,
     pub search: String,
     pub filter_mode: FilterMode,
@@ -431,7 +431,7 @@ impl App {
                     .iter()
                     .filter(|m| m.is_enabled_for(self.active_target))
                     .count();
-                (id, g.name, members.len(), enabled)
+                (id, g.name, members.len(), enabled, g.description)
             })
             .collect();
 
@@ -467,11 +467,11 @@ impl App {
             .collect()
     }
 
-    pub fn visible_groups(&self) -> Vec<&(String, String, usize, usize)> {
+    pub fn visible_groups(&self) -> Vec<&(String, String, usize, usize, String)> {
         let q = self.search.to_lowercase();
         self.groups
             .iter()
-            .filter(|(id, name, _, _)| {
+            .filter(|(id, name, _, _, _)| {
                 q.is_empty() || name.to_lowercase().contains(&q) || id.to_lowercase().contains(&q)
             })
             .collect()
@@ -725,7 +725,7 @@ impl App {
             // Rename group
             KeyCode::Char('r') if self.tab == Tab::Groups => {
                 let visible = self.visible_groups();
-                if let Some((_, name, _, _)) = visible.get(self.selected) {
+                if let Some((_, name, _, _, _)) = visible.get(self.selected) {
                     self.input_buf = name.clone();
                     self.mode = InputMode::RenameGroup;
                 }
@@ -841,7 +841,8 @@ impl App {
                 }
             }
             KeyCode::Enter => {
-                if let Some((group_id, group_name, _, _)) = self.groups.get(self.group_pick_idx) {
+                if let Some((group_id, group_name, _, _, _)) = self.groups.get(self.group_pick_idx)
+                {
                     let resource_id = match self.tab {
                         Tab::Groups | Tab::Market => {
                             self.mode = InputMode::Normal;
@@ -912,7 +913,7 @@ impl App {
         match self.tab {
             Tab::Groups => {
                 let visible = self.visible_groups();
-                if let Some((id, _, total, enabled)) = visible.get(self.selected) {
+                if let Some((id, _, total, enabled, _)) = visible.get(self.selected) {
                     let enable = *enabled == 0 || *enabled < *total;
                     let id = id.clone();
                     if enable {
@@ -997,7 +998,7 @@ impl App {
 
     fn confirm_delete_selected_group(&mut self) {
         let visible = self.visible_groups();
-        if let Some((id, name, _, _)) = visible.get(self.selected) {
+        if let Some((id, name, _, _, _)) = visible.get(self.selected) {
             self.pending_delete = Some(PendingDelete::Group {
                 id: id.clone(),
                 name: name.clone(),
@@ -1094,7 +1095,7 @@ impl App {
                     return;
                 }
                 let visible = self.visible_groups();
-                if let Some((id, _, _, _)) = visible.get(self.selected) {
+                if let Some((id, _, _, _, _)) = visible.get(self.selected) {
                     let id = id.clone();
                     match self.mgr.rename_group(&id, &new_name) {
                         Ok(_) => self.message = Some(format!("Renamed to '{new_name}'")),
@@ -1271,7 +1272,7 @@ impl App {
         let entry = self
             .visible_groups()
             .get(self.selected)
-            .map(|(id, name, _, _)| (id.clone(), name.clone()));
+            .map(|(id, name, _, _, _)| (id.clone(), name.clone()));
         if let Some((id, name)) = entry {
             self.detail_group_id = id;
             self.detail_group_name = name;

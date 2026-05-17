@@ -155,7 +155,7 @@ API key 也能走环境变量 `RUNAI_RECOMMEND_API_KEY`。配置在 `~/.runai/co
 
 | 工具 | 说明 |
 |------|------|
-| `sm_groups` | 列出所有分组及成员数 |
+| `sm_groups` | 列出所有分组及成员数 + 200 字描述预览（完整描述用 `runai group show <id>` CLI 查看） |
 | `sm_create_group` / `sm_delete_group` | 创建/删除分组 |
 | `sm_group_members` | 添加/移除成员，或更新分组元数据 |
 

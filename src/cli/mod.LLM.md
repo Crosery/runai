@@ -11,8 +11,8 @@ clap-based CLI entry point. Parses subcommands, constructs a `SkillManager`, dis
 
 ## Public API
 - `struct Cli` (clap `Parser`) — top-level arg parser.
-- `enum Commands` — all subcommands: `Scan`, `Discover`, `List`, `Enable`, `Disable`, `Install`, `MarketInstall`, `Uninstall`, `Trash(TrashCommands)`, `Restore`, `Backup`, `Backups`, `Search`, `Market`, `Group(GroupCommands)`, `Status`, `McpServe`, `Register`, `Unregister`, `Usage`, `Update`, `Doctor`.
-- `enum GroupCommands` — `Create`, `Add`, `Remove`, `List`, `Delete`, `Update`.
+- `enum Commands` — all subcommands: `Scan`, `Discover`, `List`, `Enable`, `Disable`, `Install`, `MarketInstall`, `Uninstall`, `Trash(TrashCommands)`, `Restore`, `Backup`, `Backups`, `Search`, `Market`, `Group(GroupCommands)`, `Status`, `McpServe`, `Register`, `Unregister`, `Usage`, `Update`, `Doctor`, `Recommend(RecommendCommands)`.
+- `enum GroupCommands` — `Create`, `Add`, `Remove`, `List`, `Delete`, `Update`, `Show { id }`. `List` prints one line per group plus a 120-char description preview (indented). `Show` dumps the full description (preserving newlines) + member list with per-member kind badge and 70-char description snippet; errors with `group not found: <id>` when missing.
 - `enum TrashCommands` — `List`, `Restore`, `Purge`, `Empty`.
 - `run(cli) -> Result<()>` — top dispatch.
 

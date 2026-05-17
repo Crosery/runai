@@ -29,4 +29,5 @@ The TUI state machine. Owns the `SkillManager`, the currently-selected tab / row
 
 ## Gotchas
 - Don't store `&SkillManager` — own it (`manager: SkillManager`). TUI is the process's last stop; there's nothing else holding the manager.
+- `App.groups` is a 5-tuple `(id, name, total, enabled, description)` — `description` is read in `reload()` so `render_groups` can show the preview without re-querying. Every destructuring of `groups` / `visible_groups()` in `app.rs` must use the 5-tuple shape.
 - After terminal teardown (alternate-screen exit), `main.rs` prints update-available notification via `eprintln`. Don't print from inside the TUI loop after `disable_raw_mode` or you'll corrupt the next prompt.

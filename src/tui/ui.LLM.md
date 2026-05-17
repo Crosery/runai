@@ -11,7 +11,7 @@ Pure rendering. Takes `&App` + `&mut Frame`, draws the current tab, modal dialog
 
 ## Public API (internal)
 - `draw(frame, app)` — top-level entry; dispatches to per-tab draw functions.
-- Per-tab: `render_resources` (Skills + MCPs), `render_groups`, `render_market`, `render_trash`.
+- Per-tab: `render_resources` (Skills + MCPs), `render_groups`, `render_market`, `render_trash`. `render_groups` renders each group as a 1- or 2-line `ListItem`: header line (marker + display-name + enabled/total + id), plus a dim 120-char description preview line when `description` is non-empty. Empty descriptions stay 1-line to keep dense groups scannable.
 - Widgets: `draw_footer`, `draw_help_overlay`, `draw_search_bar`, `draw_install_modal`, `draw_confirm_delete`, etc.
 
 ## Key invariants

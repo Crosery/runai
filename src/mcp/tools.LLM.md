@@ -15,7 +15,7 @@ The rmcp-exposed tool surface. 21 `sm_*` tools that MCP clients (Claude Code / C
 
 **Install** (3): `sm_install`, `sm_market`, `sm_market_install`.
 
-**Groups** (4): `sm_groups`, `sm_create_group`, `sm_delete_group`, `sm_group_members`.
+**Groups** (4): `sm_groups`, `sm_create_group`, `sm_delete_group`, `sm_group_members`. `sm_groups` returns one line per group `{id} ({display-name}) — {N} members` plus a second indented line carrying the first 200 chars of `description` (with `…` if truncated). For the full description tell the user to run `runai group show <id>` — there is no MCP equivalent.
 
 **Trash** (3): `sm_trash`, `sm_trash_restore`, `sm_trash_purge`.
 

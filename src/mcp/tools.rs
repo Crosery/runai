@@ -295,7 +295,9 @@ impl SmServer {
         })
     }
 
-    #[tool(description = "List groups with member counts. Returns JSON array.")]
+    #[tool(
+        description = "List groups with member counts and description preview. Description is truncated to 200 chars; for full detail use the runai CLI `runai group show <id>`."
+    )]
     fn sm_groups(&self) -> Json<TextResult> {
         let mgr = self.manager.lock().unwrap();
         let groups = mgr.list_groups().unwrap_or_default();
@@ -306,11 +308,20 @@ impl SmServer {
             });
         }
 
-        // Compact: one line per group
+        // One line per group with description preview (indented on next line if non-empty)
         let mut lines = vec![format!("{} groups:", groups.len())];
         for (id, g) in &groups {
             let members = mgr.get_group_members(id).unwrap_or_default();
             lines.push(format!("  {} ({}) — {} members", id, g.name, members.len()));
+            if !g.description.is_empty() {
+                let preview: String = g.description.chars().take(200).collect();
+                let ellipsis = if g.description.chars().count() > 200 {
+                    "…"
+                } else {
+                    ""
+                };
+                lines.push(format!("      {preview}{ellipsis}"));
+            }
         }
 
         Json(TextResult {
@@ -1130,23 +1141,23 @@ impl SmServer {
             }
         }
         let recent_n = p.recent.unwrap_or(0);
-        if recent_n > 0 {
-            if let Ok(events) = mgr.db().router_recent_events(recent_n) {
-                lines.push(String::new());
-                lines.push("  recent calls (newest first):".into());
-                for ev in &events {
-                    let when = chrono::DateTime::<chrono::Utc>::from_timestamp(ev.ts, 0)
-                        .map(|d| {
-                            d.with_timezone(&chrono::Local)
-                                .format("%m-%d %H:%M:%S")
-                                .to_string()
-                        })
-                        .unwrap_or_default();
-                    lines.push(format!(
-                        "    {when}  {:<22}  {:>5}t  {:>5}ms  {}",
-                        ev.model, ev.total_tokens, ev.latency_ms, ev.chosen_skills_json
-                    ));
-                }
+        if recent_n > 0
+            && let Ok(events) = mgr.db().router_recent_events(recent_n)
+        {
+            lines.push(String::new());
+            lines.push("  recent calls (newest first):".into());
+            for ev in &events {
+                let when = chrono::DateTime::<chrono::Utc>::from_timestamp(ev.ts, 0)
+                    .map(|d| {
+                        d.with_timezone(&chrono::Local)
+                            .format("%m-%d %H:%M:%S")
+                            .to_string()
+                    })
+                    .unwrap_or_default();
+                lines.push(format!(
+                    "    {when}  {:<22}  {:>5}t  {:>5}ms  {}",
+                    ev.model, ev.total_tokens, ev.latency_ms, ev.chosen_skills_json
+                ));
             }
         }
         Json(TextResult {
@@ -1334,6 +1345,64 @@ mod tests {
                 !result.result.is_empty(),
                 "sm_backups should return a non-empty string"
             );
+        });
+    }
+
+    #[test]
+    fn sm_groups_renders_description_preview() {
+        with_temp_home_server(|server| {
+            // Create a group with a long description, verify sm_groups surfaces it.
+            let long_desc =
+                "This describes what the group is for and which skills belong to it.".repeat(5);
+            let _ = server.sm_create_group(Parameters(CreateGroupParams {
+                id: "demo-group".into(),
+                name: "Demo Group".into(),
+                description: Some(long_desc.clone()),
+            }));
+
+            let Json(result) = server.sm_groups();
+            assert!(
+                result.result.contains("demo-group"),
+                "group id missing from output: {}",
+                result.result
+            );
+            assert!(
+                result.result.contains("Demo Group"),
+                "display name missing from output: {}",
+                result.result
+            );
+            assert!(
+                result.result.contains("This describes what"),
+                "description preview missing from output: {}",
+                result.result
+            );
+        });
+
+        with_temp_home_server(|server| {
+            // Empty description must not produce an empty preview line.
+            let _ = server.sm_create_group(Parameters(CreateGroupParams {
+                id: "no-desc".into(),
+                name: "No Desc".into(),
+                description: None,
+            }));
+            let Json(result) = server.sm_groups();
+            // Find the line for "no-desc" and confirm the following line (if any) is another group, not an empty preview.
+            let lines: Vec<&str> = result.result.lines().collect();
+            let idx = lines
+                .iter()
+                .position(|l| l.contains("no-desc"))
+                .expect("no-desc line should exist");
+            if idx + 1 < lines.len() {
+                let next = lines[idx + 1];
+                assert!(
+                    !next.trim_start().is_empty() || next.starts_with("  "),
+                    "should not emit an indented preview line for empty description, got: {next:?}"
+                );
+                assert!(
+                    !next.starts_with("      "),
+                    "should not emit a 6-space description preview line for empty description, got: {next:?}"
+                );
+            }
         });
     }
 

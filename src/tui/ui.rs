@@ -234,7 +234,7 @@ fn render_groups(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let visible = app.visible_groups();
     let items: Vec<ListItem> = visible
         .iter()
-        .map(|(id, name, total, enabled)| {
+        .map(|(id, name, total, enabled, description)| {
             let all_on = *total > 0 && *enabled == *total;
             let partial = *enabled > 0 && *enabled < *total;
             let marker = if all_on {
@@ -252,7 +252,7 @@ fn render_groups(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
                 t.item_disabled
             };
 
-            let line = Line::from(vec![
+            let header = Line::from(vec![
                 Span::raw("  "),
                 Span::styled(marker, Style::default().fg(marker_color)),
                 Span::raw("  "),
@@ -268,7 +268,16 @@ fn render_groups(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
                 Span::styled(id, Style::default().fg(t.text_highlight)),
             ]);
 
-            ListItem::new(line)
+            if description.is_empty() {
+                ListItem::new(header)
+            } else {
+                let desc_text: String = description.chars().take(120).collect();
+                let desc_line = Line::from(vec![
+                    Span::raw("       "),
+                    Span::styled(desc_text, Style::default().fg(t.text_dim)),
+                ]);
+                ListItem::new(vec![header, desc_line])
+            }
         })
         .collect();
 
@@ -578,7 +587,7 @@ fn render_group_picker(f: &mut Frame, app: &App, t: &Theme) {
         .groups
         .iter()
         .enumerate()
-        .map(|(i, (_, name, total, _))| {
+        .map(|(i, (_, name, total, _, _))| {
             let is_sel = i == app.group_pick_idx;
             let line = Line::from(vec![
                 Span::raw(if is_sel { " ▸ " } else { "   " }),
