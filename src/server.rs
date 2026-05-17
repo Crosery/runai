@@ -112,6 +112,7 @@ pub async fn serve(host: &str, port: u16) -> Result<()> {
         .route("/app.js", get(serve_app_js))
         .route("/app.css", get(serve_app_css))
         .route("/api/summary", get(api_summary))
+        .route("/api/timeline", get(api_timeline))
         .route("/api/events", get(api_events))
         .route("/api/event/{id}", get(api_event_by_id))
         .with_state(state);
@@ -287,6 +288,56 @@ async fn api_events(
     Ok(Json(EventsResponse {
         total,
         events: events.into_iter().map(EventJson::from).collect(),
+    }))
+}
+
+#[derive(Deserialize)]
+struct TimelineQuery {
+    /// Window length in hours. 24 -> 24 hourly buckets; 6 -> 6 hourly buckets.
+    hours: Option<i64>,
+    /// Optional bucket width override in seconds. Default = hours * 3600 / 24
+    /// (so 24h -> hourly, 6h -> 15min, etc), capped to keep the chart legible.
+    bucket_secs: Option<i64>,
+}
+
+#[derive(Serialize)]
+struct TimelinePoint {
+    ts_start: i64,
+    total: i64,
+    hits: i64,
+    errors: i64,
+    avg_latency_ms: f64,
+}
+
+#[derive(Serialize)]
+struct TimelineResponse {
+    bucket_secs: i64,
+    points: Vec<TimelinePoint>,
+}
+
+async fn api_timeline(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<TimelineQuery>,
+) -> Result<Json<TimelineResponse>, ApiError> {
+    let hours = q.hours.unwrap_or(24).clamp(1, 720);
+    let target_buckets = 48i64;
+    let default_bucket = ((hours * 3600) / target_buckets).max(60);
+    let bucket_secs = q.bucket_secs.unwrap_or(default_bucket).max(60);
+    let buckets = ((hours * 3600) / bucket_secs).max(1);
+    let db = state.db()?;
+    let raw = db.router_timeline(bucket_secs, buckets)?;
+    Ok(Json(TimelineResponse {
+        bucket_secs,
+        points: raw
+            .into_iter()
+            .map(|b| TimelinePoint {
+                ts_start: b.ts_start,
+                total: b.total,
+                hits: b.hits,
+                errors: b.errors,
+                avg_latency_ms: b.avg_latency_ms,
+            })
+            .collect(),
     }))
 }
 

@@ -45,6 +45,15 @@ pub struct RouterModelStat {
 }
 
 #[derive(Debug, Clone)]
+pub struct TimelineBucket {
+    pub ts_start: i64,
+    pub total: i64,
+    pub hits: i64,
+    pub errors: i64,
+    pub avg_latency_ms: f64,
+}
+
+#[derive(Debug, Clone)]
 pub struct RouterStatsSummary {
     pub total_calls: i64,
     pub total_prompt_tokens: i64,
@@ -457,6 +466,60 @@ impl Database {
             .conn
             .query_row(&sql, params![since_ts, model], |r| r.get(0))?;
         Ok(n)
+    }
+
+    /// Bucketed timeline of router activity for the dashboard chart.
+    /// Returns N buckets of `bucket_secs` width ending at `now`, oldest first.
+    /// Each bucket reports the count of total/hit/error events that fell into it.
+    pub fn router_timeline(
+        &self,
+        bucket_secs: i64,
+        buckets: i64,
+    ) -> Result<Vec<TimelineBucket>> {
+        let now = chrono::Utc::now().timestamp();
+        let start = now - bucket_secs * buckets;
+        let mut stmt = self.conn.prepare(
+            "SELECT
+                CAST((ts - ?1) / ?2 AS INTEGER) AS bucket_idx,
+                COUNT(*) AS total,
+                SUM(CASE WHEN status = 'ok' AND chosen_skills_json != '[]' THEN 1 ELSE 0 END) AS hits,
+                SUM(CASE WHEN status != 'ok' THEN 1 ELSE 0 END) AS errors,
+                COALESCE(AVG(latency_ms), 0) AS avg_lat
+             FROM router_events
+             WHERE ts >= ?1 AND ts < ?3
+             GROUP BY bucket_idx
+             ORDER BY bucket_idx",
+        )?;
+        let mut by_idx: std::collections::HashMap<i64, (i64, i64, i64, f64)> =
+            std::collections::HashMap::new();
+        let rows = stmt.query_map(params![start, bucket_secs, now], |r| {
+            let idx: i64 = r.get(0)?;
+            let total: i64 = r.get(1)?;
+            let hits: i64 = r.get(2).unwrap_or(0);
+            let errors: i64 = r.get(3).unwrap_or(0);
+            let avg_lat: f64 = r.get(4).unwrap_or(0.0);
+            Ok((idx, total, hits, errors, avg_lat))
+        })?;
+        for row in rows {
+            let (idx, total, hits, errors, avg_lat) = row?;
+            by_idx.insert(idx, (total, hits, errors, avg_lat));
+        }
+        let mut out = Vec::with_capacity(buckets as usize);
+        for i in 0..buckets {
+            let ts_start = start + i * bucket_secs;
+            let (total, hits, errors, avg_lat) = by_idx
+                .get(&i)
+                .copied()
+                .unwrap_or((0, 0, 0, 0.0));
+            out.push(TimelineBucket {
+                ts_start,
+                total,
+                hits,
+                errors,
+                avg_latency_ms: avg_lat,
+            });
+        }
+        Ok(out)
     }
 
     pub fn router_event_by_id(&self, id: i64) -> Result<Option<RouterEvent>> {
