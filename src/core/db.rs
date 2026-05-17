@@ -545,6 +545,24 @@ impl Database {
     /// Batch-load all summaries as a `name -> summary` map. Called once at
     /// the start of a router call so each candidate row only costs an O(1)
     /// HashMap lookup instead of an SQL round-trip.
+    /// Batch-load `name -> updated_at` for AI summaries. Used by the
+    /// incremental enrich pass to compare SKILL.md mtime against the
+    /// stored summary timestamp to decide which skills need re-enriching.
+    pub fn skill_ai_summary_timestamps(&self) -> Result<HashMap<String, i64>> {
+        let mut stmt = self.conn.prepare("SELECT name, updated_at FROM resource_ai_summary")?;
+        let rows = stmt.query_map([], |r| {
+            let n: String = r.get(0)?;
+            let ts: i64 = r.get(1)?;
+            Ok((n, ts))
+        })?;
+        let mut out = HashMap::new();
+        for row in rows {
+            let (n, ts) = row?;
+            out.insert(n, ts);
+        }
+        Ok(out)
+    }
+
     pub fn skill_ai_summary_all(&self) -> Result<HashMap<String, String>> {
         let mut stmt = self
             .conn

@@ -505,21 +505,35 @@ pub struct EnrichReport {
     pub generated: usize,
     pub skipped_have_summary: usize,
     pub skipped_no_skill_md: usize,
+    pub refreshed_stale: usize,
     pub errors: Vec<(String, String)>,
 }
 
-/// Generate AI summaries for skills missing them. Uses the configured router
-/// LLM (same one the hook calls). Each summary is a short bilingual blurb:
+/// What to do with skills that already have a summary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnrichMode {
+    /// Only enrich skills that have NO summary at all. Cheapest, used when
+    /// a new skill is installed and only that one needs a first pass.
+    MissingOnly,
+    /// Default: enrich missing skills, plus re-enrich any skill whose
+    /// SKILL.md mtime is newer than the stored summary's updated_at
+    /// (the SKILL.md was edited after the last enrich pass).
+    Stale,
+    /// Re-enrich every skill regardless of state. Expensive — 343 LLM calls.
+    Force,
+}
+
+/// Generate AI summaries for skills. Uses the configured router LLM (same
+/// one the hook calls). Each summary is a short bilingual blurb:
 /// "task / triggers / not-for", stored in `resource_ai_summary`. The next
-/// router call splices these into the BM25 doc text so cross-language queries
-/// can bridge against EN-only descriptions.
+/// router call splices these into the BM25 doc text so cross-language
+/// queries can bridge against EN-only descriptions.
 ///
-/// `limit = None` means enrich everything missing in one pass. `force=true`
-/// regenerates even skills that already have a summary.
+/// `limit = None` means enrich everything that needs it in one pass.
 pub fn enrich_skills(
     mgr: &SkillManager,
     limit: Option<usize>,
-    force: bool,
+    mode: EnrichMode,
     verbose: bool,
 ) -> Result<EnrichReport> {
     let cfg = RecommendConfig::load(mgr.paths())?;
@@ -531,6 +545,8 @@ pub fn enrich_skills(
     };
 
     let existing = mgr.db().skill_ai_summary_all().unwrap_or_default();
+    let existing_ts: std::collections::HashMap<String, i64> =
+        mgr.db().skill_ai_summary_timestamps().unwrap_or_default();
     let resources = mgr.list_resources(None, None)?;
     let skills: Vec<_> = resources
         .into_iter()
@@ -540,11 +556,33 @@ pub fn enrich_skills(
     let mut report = EnrichReport::default();
     let mut processed = 0usize;
     for r in &skills {
-        if !force && existing.contains_key(&r.name) {
+        let skill_md = mgr.paths().skills_dir().join(&r.name).join("SKILL.md");
+        let has_summary = existing.contains_key(&r.name);
+        // Stale check: SKILL.md mtime vs stored summary's updated_at.
+        let is_stale = if has_summary {
+            match fs::metadata(&skill_md).and_then(|m| m.modified()) {
+                Ok(mtime) => {
+                    let mtime_ts = mtime
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs() as i64)
+                        .unwrap_or(0);
+                    let summary_ts = *existing_ts.get(&r.name).unwrap_or(&0);
+                    mtime_ts > summary_ts
+                }
+                Err(_) => false,
+            }
+        } else {
+            false
+        };
+        let should_process = match mode {
+            EnrichMode::Force => true,
+            EnrichMode::Stale => !has_summary || is_stale,
+            EnrichMode::MissingOnly => !has_summary,
+        };
+        if !should_process {
             report.skipped_have_summary += 1;
             continue;
         }
-        let skill_md = mgr.paths().skills_dir().join(&r.name).join("SKILL.md");
         let body = match fs::read_to_string(&skill_md) {
             Ok(s) => s,
             Err(_) => {
@@ -578,6 +616,8 @@ pub fn enrich_skills(
                             .set_skill_ai_summary_scored(&r.name, &capped, llm_score)
                         {
                             report.errors.push((r.name.clone(), e.to_string()));
+                        } else if has_summary {
+                            report.refreshed_stale += 1;
                         } else {
                             report.generated += 1;
                         }

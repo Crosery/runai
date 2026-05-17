@@ -179,15 +179,20 @@ pub enum RecommendCommands {
         yes: bool,
     },
     /// Generate bilingual AI summaries for skills (improves BM25 prefilter
-    /// recall, especially for cross-language queries). Idempotent —
-    /// already-summarised skills are skipped unless `--force`.
+    /// recall, especially for cross-language queries). Default mode picks up
+    /// missing summaries AND re-enriches skills whose SKILL.md mtime is
+    /// newer than the stored summary's timestamp.
     Enrich {
-        /// Process at most N skills this run (omit for all missing)
+        /// Process at most N skills this run (omit for all that need it)
         #[arg(long)]
         limit: Option<usize>,
-        /// Regenerate summaries even for skills that already have one
-        #[arg(long)]
+        /// Regenerate every skill's summary, ignoring mtime/exists checks
+        #[arg(long, conflicts_with = "missing_only")]
         force: bool,
+        /// Only enrich skills that have NO summary yet — skip stale-mtime
+        /// refresh (cheapest mode, for "first launch / new install" use)
+        #[arg(long, conflicts_with = "force")]
+        missing_only: bool,
         /// Print per-skill progress
         #[arg(long)]
         verbose: bool,
@@ -1179,21 +1184,32 @@ To install/uninstall automatically (preserves existing hooks and theme):
             Some(RecommendCommands::Enrich {
                 limit,
                 force,
+                missing_only,
                 verbose,
             }),
             _,
         ) => {
+            use crate::core::recommend::EnrichMode;
+            let mode = if force {
+                EnrichMode::Force
+            } else if missing_only {
+                EnrichMode::MissingOnly
+            } else {
+                EnrichMode::Stale
+            };
             let (have, _oldest, _newest) =
                 mgr.db().skill_ai_summary_stats().unwrap_or((0, None, None));
             println!(
                 "enriching skill summaries (currently {have} have summaries)\n\
-                 limit={} force={force}",
-                limit.map(|n| n.to_string()).unwrap_or_else(|| "all".into())
+                 limit={} mode={:?}",
+                limit.map(|n| n.to_string()).unwrap_or_else(|| "all".into()),
+                mode,
             );
-            let report = crate::core::recommend::enrich_skills(mgr, limit, force, verbose)?;
+            let report = crate::core::recommend::enrich_skills(mgr, limit, mode, verbose)?;
             println!(
-                "\nenrichment done:\n  generated:           {}\n  skipped (had summary): {}\n  skipped (no SKILL.md): {}\n  errors:              {}",
+                "\nenrichment done:\n  generated:           {}\n  refreshed (stale):   {}\n  skipped (up-to-date): {}\n  skipped (no SKILL.md): {}\n  errors:              {}",
                 report.generated,
+                report.refreshed_stale,
                 report.skipped_have_summary,
                 report.skipped_no_skill_md,
                 report.errors.len()
@@ -1309,6 +1325,41 @@ fn recommend_setup(mgr: &SkillManager) -> Result<()> {
         "\nSaved to {}\nenabled=true. To wire the hook, run:\n  runai recommend hook-snippet",
         mgr.paths().config_path().display()
     );
+
+    // Auto-trigger background enrichment for any skill that doesn't have an
+    // AI summary yet. First-run UX: setup finishes immediately, summaries
+    // populate over the next few minutes in the background. Dashboard shows
+    // progress under /skills (enriched / total). Idempotent — re-running
+    // setup later is a no-op when nothing is missing.
+    let (already_have, _, _) = mgr.db().skill_ai_summary_stats().unwrap_or((0, None, None));
+    let total_skills = mgr
+        .list_resources(None, None)
+        .map(|rs| rs.iter().filter(|r| r.kind == crate::core::resource::ResourceKind::Skill).count())
+        .unwrap_or(0);
+    let missing = total_skills.saturating_sub(already_have as usize);
+    if missing > 0 {
+        if let Ok(exe) = std::env::current_exe() {
+            let spawn = std::process::Command::new(exe)
+                .arg("recommend")
+                .arg("enrich")
+                .arg("--missing-only")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+            match spawn {
+                Ok(_) => {
+                    println!(
+                        "\nspawned background enrich for {missing} skills missing AI summary.\n  follow progress at http://127.0.0.1:17888/#/skills"
+                    );
+                }
+                Err(e) => {
+                    eprintln!("(warn) could not spawn background enrich: {e}");
+                    eprintln!("       run manually: runai recommend enrich --missing-only");
+                }
+            }
+        }
+    }
     Ok(())
 }
 
