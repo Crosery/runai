@@ -192,6 +192,10 @@ pub enum RecommendCommands {
         /// Print per-skill progress
         #[arg(long)]
         verbose: bool,
+        /// How many skills to enrich concurrently (default 8). Each worker
+        /// makes one LLM call at a time; 8 keeps DeepSeek API happy.
+        #[arg(long, default_value_t = 8)]
+        concurrency: usize,
     },
 }
 
@@ -1207,6 +1211,7 @@ To install/uninstall automatically (preserves existing hooks and theme):
                 force,
                 missing_only,
                 verbose,
+                concurrency,
             }),
             _,
         ) => {
@@ -1222,11 +1227,17 @@ To install/uninstall automatically (preserves existing hooks and theme):
                 mgr.db().skill_ai_summary_stats().unwrap_or((0, None, None));
             println!(
                 "enriching skill summaries (currently {have} have summaries)\n\
-                 limit={} mode={:?}",
+                 limit={} mode={:?} concurrency={concurrency}",
                 limit.map(|n| n.to_string()).unwrap_or_else(|| "all".into()),
                 mode,
             );
-            let report = crate::core::recommend::enrich_skills(mgr, limit, mode, verbose)?;
+            let report = crate::core::recommend::enrich_skills(
+                mgr,
+                limit,
+                mode,
+                verbose,
+                concurrency,
+            )?;
             println!(
                 "\nenrichment done:\n  generated:           {}\n  refreshed (stale):   {}\n  skipped (up-to-date): {}\n  skipped (no SKILL.md): {}\n  errors:              {}",
                 report.generated,

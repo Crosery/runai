@@ -574,11 +574,18 @@ pub enum EnrichMode {
     Force,
 }
 
+/// Per-skill work item produced by the planner.
+struct EnrichJob {
+    name: String,
+    description: String,
+    skill_md_path: PathBuf,
+    has_summary: bool,
+}
+
 /// Generate AI summaries for skills. Uses the configured router LLM (same
-/// one the hook calls). Each summary is a short bilingual blurb:
-/// "task / triggers / not-for", stored in `resource_ai_summary`. The next
-/// router call splices these into the BM25 doc text so cross-language
-/// queries can bridge against EN-only descriptions.
+/// one the hook calls). Concurrent execution: `concurrency` worker threads
+/// pull from a shared queue, each makes one LLM call at a time. DB writes
+/// happen on each worker's own connection (SQLite handles WAL concurrency).
 ///
 /// `limit = None` means enrich everything that needs it in one pass.
 pub fn enrich_skills(
@@ -586,12 +593,9 @@ pub fn enrich_skills(
     limit: Option<usize>,
     mode: EnrichMode,
     verbose: bool,
+    concurrency: usize,
 ) -> Result<EnrichReport> {
     let cfg = RecommendConfig::load(mgr.paths())?;
-    // Don't enrich on disabled router. Without this, the SessionStart hook
-    // `runai recommend enrich --missing-only` would auto-enrich whenever an
-    // api_key happens to be in config.toml even if the user hasn't completed
-    // setup — defeats the "first-run is fully empty" UX.
     if !cfg.enabled {
         if verbose {
             eprintln!("[enrich] skipped — router not enabled (run `runai recommend setup`)");
@@ -614,12 +618,12 @@ pub fn enrich_skills(
         .filter(|r| r.kind == ResourceKind::Skill)
         .collect();
 
+    // Plan the work first: decide for each skill whether it needs enriching.
     let mut report = EnrichReport::default();
-    let mut processed = 0usize;
+    let mut jobs: Vec<EnrichJob> = Vec::new();
     for r in &skills {
         let skill_md = mgr.paths().skills_dir().join(&r.name).join("SKILL.md");
         let has_summary = existing.contains_key(&r.name);
-        // Stale check: SKILL.md mtime vs stored summary's updated_at.
         let is_stale = if has_summary {
             match fs::metadata(&skill_md).and_then(|m| m.modified()) {
                 Ok(mtime) => {
@@ -644,59 +648,130 @@ pub fn enrich_skills(
             report.skipped_have_summary += 1;
             continue;
         }
-        let body = match fs::read_to_string(&skill_md) {
-            Ok(s) => s,
-            Err(_) => {
-                report.skipped_no_skill_md += 1;
-                continue;
-            }
-        };
-        // Cap SKILL.md slice so we don't blow the LLM context on huge files.
-        let body_slice: String = body.chars().take(4000).collect();
-        let user_msg = build_enrich_prompt(&r.name, &r.description, &body_slice);
-        if verbose {
-            eprintln!("[enrich] {} ({}/{})", r.name, processed + 1, skills.len());
+        if !skill_md.exists() {
+            report.skipped_no_skill_md += 1;
+            continue;
         }
-        match call_summary_llm(&cfg, &api_key, &user_msg) {
-            Ok(raw) => {
-                let trimmed = raw.trim();
-                if trimmed.is_empty() {
-                    report
-                        .errors
-                        .push((r.name.clone(), "empty summary returned".into()));
-                } else {
-                    let (summary_clean, llm_score) = parse_enrich_response(trimmed);
-                    if summary_clean.is_empty() {
-                        report
-                            .errors
-                            .push((r.name.clone(), "no usable summary lines in response".into()));
+        jobs.push(EnrichJob {
+            name: r.name.clone(),
+            description: r.description.clone(),
+            skill_md_path: skill_md,
+            has_summary,
+        });
+    }
+    if let Some(n) = limit {
+        jobs.truncate(n);
+    }
+    if jobs.is_empty() {
+        return Ok(report);
+    }
+
+    let total = jobs.len();
+    let workers = concurrency.max(1).min(total);
+    let queue = std::sync::Arc::new(std::sync::Mutex::new(jobs.into_iter()));
+    let report_mu = std::sync::Arc::new(std::sync::Mutex::new(report));
+    let progress = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let db_path = mgr.paths().db_path();
+
+    std::thread::scope(|s| {
+        for _ in 0..workers {
+            let queue = std::sync::Arc::clone(&queue);
+            let report_mu = std::sync::Arc::clone(&report_mu);
+            let progress = std::sync::Arc::clone(&progress);
+            let cfg = cfg.clone();
+            let api_key = api_key.clone();
+            let db_path = db_path.clone();
+            s.spawn(move || {
+                // Each worker opens its own DB connection. rusqlite Connection
+                // is !Sync so it can't be shared between threads — SQLite's
+                // WAL mode handles concurrent writers fine.
+                let db = match crate::core::db::Database::open(&db_path) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        let mut rp = report_mu.lock().unwrap();
+                        rp.errors.push(("<db-open>".into(), e.to_string()));
+                        return;
+                    }
+                };
+                loop {
+                    let job = {
+                        let mut q = queue.lock().unwrap();
+                        q.next()
+                    };
+                    let job = match job {
+                        Some(j) => j,
+                        None => break,
+                    };
+                    let body = match fs::read_to_string(&job.skill_md_path) {
+                        Ok(s) => s,
+                        Err(_) => {
+                            let mut rp = report_mu.lock().unwrap();
+                            rp.skipped_no_skill_md += 1;
+                            continue;
+                        }
+                    };
+                    let body_slice: String = body.chars().take(4000).collect();
+                    let user_msg = build_enrich_prompt(&job.name, &job.description, &body_slice);
+
+                    let result = call_summary_llm(&cfg, &api_key, &user_msg);
+                    let done = progress.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                    if verbose {
+                        eprintln!("[enrich {done}/{total}] {}", job.name);
                     } else {
-                        let capped: String = summary_clean.chars().take(600).collect();
-                        if let Err(e) = mgr
-                            .db()
-                            .set_skill_ai_summary_scored(&r.name, &capped, llm_score)
-                        {
-                            report.errors.push((r.name.clone(), e.to_string()));
-                        } else if has_summary {
-                            report.refreshed_stale += 1;
-                        } else {
-                            report.generated += 1;
+                        // Lightweight default progress: print every 10 or
+                        // last item so the user sees movement.
+                        if done == 1 || done % 10 == 0 || done == total {
+                            eprintln!("[enrich] {done}/{total}");
+                        }
+                    }
+                    match result {
+                        Ok(raw) => {
+                            let trimmed = raw.trim();
+                            if trimmed.is_empty() {
+                                let mut rp = report_mu.lock().unwrap();
+                                rp.errors
+                                    .push((job.name.clone(), "empty summary returned".into()));
+                                continue;
+                            }
+                            let (summary_clean, llm_score) = parse_enrich_response(trimmed);
+                            if summary_clean.is_empty() {
+                                let mut rp = report_mu.lock().unwrap();
+                                rp.errors.push((
+                                    job.name.clone(),
+                                    "no usable summary lines in response".into(),
+                                ));
+                                continue;
+                            }
+                            let capped: String = summary_clean.chars().take(600).collect();
+                            match db.set_skill_ai_summary_scored(&job.name, &capped, llm_score) {
+                                Ok(()) => {
+                                    let mut rp = report_mu.lock().unwrap();
+                                    if job.has_summary {
+                                        rp.refreshed_stale += 1;
+                                    } else {
+                                        rp.generated += 1;
+                                    }
+                                }
+                                Err(e) => {
+                                    let mut rp = report_mu.lock().unwrap();
+                                    rp.errors.push((job.name.clone(), e.to_string()));
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            let mut rp = report_mu.lock().unwrap();
+                            rp.errors.push((job.name.clone(), e.to_string()));
                         }
                     }
                 }
-            }
-            Err(e) => {
-                report.errors.push((r.name.clone(), e.to_string()));
-            }
+            });
         }
-        processed += 1;
-        if let Some(n) = limit
-            && processed >= n
-        {
-            break;
-        }
-    }
-    Ok(report)
+    });
+
+    let final_report = std::sync::Arc::try_unwrap(report_mu)
+        .map(|m| m.into_inner().unwrap())
+        .unwrap_or_else(|arc| arc.lock().unwrap().clone());
+    Ok(final_report)
 }
 
 /// Build the user-message for the summarisation call. Instruction is bilingual
