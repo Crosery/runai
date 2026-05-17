@@ -886,15 +886,21 @@ fn build_feedback_prompt(
     format!(
         "你是 skill 索引员。现在收到了对一个 skill 的用户反馈，需要据此**更新**它的索引摘要 + 质量分。\n\
         \n\
+        # 这段 summary 的唯一目的（与初次 enrich 相同）\n\
+        Summary 是喂给 BM25 检索器 + 路由 LLM 用的，**不是给用户读的**。目标：\n\
+        - **triggers** 字段最大化覆盖用户可能用来描述这个任务的词形（同义词、动词名词、缩写、中英混合）\n\
+        - **not-for** 字段最大化区分度，明确写出不适用场景关键词\n\
+        - 这一轮反馈是调整索引信号的契机：用户说 skill 在 X 场景不好用 → 把 X 加进 not-for / 从 triggers 移除相关词\n\
+        \n\
         {lang_directive}\n\
         \n\
         Output FORMAT (strict, exactly 6 short lines):\n\
         task: <一句话 — 解决什么任务>\n\
-        triggers: <触发关键词，逗号分隔 — 反馈中提到该 skill 不适用的场景应该从这里移除>\n\
+        triggers: <触发关键词，逗号分隔 — 反馈暴露该 skill 不适用的场景词应从这里移除>\n\
         inputs: <典型输入>\n\
         outputs: <典型输出>\n\
-        not-for: <不适用场景，把反馈中暴露的反例加进来>\n\
-        score: <0-10 integer — 用户反馈正面则维持或提升 (max+1)；负面则降 (-2 到 -3)；中性 ±0>\n\
+        not-for: <不适用场景关键词 — 把反馈中暴露的反例加进来>\n\
+        score: <0-10 integer — 用户反馈正面则维持或 +1；负面则 -2 到 -3；中性 ±0>\n\
         \n\
         Total length cap: 500 characters. No prose.\n\
         \n\
@@ -938,17 +944,29 @@ fn build_enrich_prompt(
     format!(
         "你是 skill 索引员 / skill indexer.\n\
         \n\
-        给定下面这个 skill 的元数据 + SKILL.md 摘要，生成一段简短的索引摘要供 BM25 检索使用，并对 skill 的整体质量打分 0-10。\n\
+        # 这段 summary 的唯一目的\n\
+        这段 summary **不是给用户读的**，是喂给两个下游消费者：\n\
+        1. **BM25 检索器** — 把用户当前 prompt 跟 (name + summary + groups) 做 token 重叠打分，分高的 skill 进 top 30 候选\n\
+        2. **路由 LLM** — 在 top 30 候选里看每条 summary 选最合适的推给用户\n\
+        \n\
+        所以 summary 要最大化两件事：\n\
+        - **覆盖**用户可能用来描述这个任务的所有词形（同义词、行话、动词名词、缩写、中英混合）\n\
+        - **区分度**：列出明确的不适用场景，让 BM25/LLM 在边界 case 上不要误推\n\
+        \n\
+        反例（不要这样写）：\n\
+        - 复述 SKILL.md 标题或描述（已经有 description 字段了）\n\
+        - 散文式说明 / 客套话 / 'this skill helps you...'\n\
+        - 只列 1-2 个触发词（覆盖不够）\n\
         \n\
         {lang_directive}\n\
         \n\
         Output FORMAT (strict, exactly 6 short lines, no extras):\n\
         task: <一句话 — 解决什么任务>\n\
-        triggers: <触发关键词，逗号分隔>\n\
+        triggers: <**重点字段** — 用户可能用来引出这个 skill 的所有词形 / 同义词 / 动词名词变体 / 行话，逗号分隔，至少 8 个，多多益善>\n\
         inputs: <典型输入>\n\
         outputs: <典型输出>\n\
-        not-for: <不适用场景，逗号分隔>\n\
-        score: <0-10 integer reflecting SKILL.md clarity / specificity / usefulness; 5=neutral, 8+=well-defined+useful, <3=vague or trivial>\n\
+        not-for: <**重点字段** — 列明确的不适用场景关键词，让 BM25 看到相似但不对口的 prompt 不要误推，逗号分隔>\n\
+        score: <0-10 integer — 5=neutral, 8+=well-defined+useful, <3=vague or trivial>\n\
         \n\
         Total length cap: 500 characters. No prose, no markdown headings, no quote blocks.\n\
         \n\
@@ -958,7 +976,7 @@ fn build_enrich_prompt(
         --- description (DB) ---\n\
         {description}\n\
         \n\
-        --- SKILL.md (up to 32KB) ---\n\
+        --- SKILL.md (full body) ---\n\
         {skill_md}\n",
     )
 }
@@ -986,6 +1004,17 @@ fn parse_enrich_response(raw: &str) -> (String, i64) {
         kept.push(line);
     }
     let cleaned = kept.join("\n").trim().to_string();
+    // Sanity check: a valid summary must contain a `task:` line (the first
+    // required field in the prompt format). When the LLM gets confused and
+    // emits router-style output like "EXCLUSIVE\nreview", the cleaned text
+    // has none of our expected fields — return empty to make the caller
+    // treat it as an error rather than writing garbage to DB.
+    let has_task_line = cleaned
+        .lines()
+        .any(|l| l.trim_start().to_ascii_lowercase().starts_with("task:"));
+    if !has_task_line {
+        return (String::new(), score.unwrap_or(5));
+    }
     (cleaned, score.unwrap_or(5))
 }
 
