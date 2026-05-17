@@ -309,11 +309,13 @@ pub fn recommend(
     let combined_score = |name: &str| -> Option<i64> {
         let (llm, user) = scores_map.get(name).copied().unwrap_or((5, None));
         match user {
-            Some(score) => {
-                Some(((llm as f64) * 0.4 + (score as f64) * 0.6).round() as i64)
-            }
+            Some(score) => Some(((llm as f64) * 0.4 + (score as f64) * 0.6).round() as i64),
             None => {
-                if scores_map.contains_key(name) { Some(llm) } else { None }
+                if scores_map.contains_key(name) {
+                    Some(llm)
+                } else {
+                    None
+                }
             }
         }
     };
@@ -431,10 +433,7 @@ pub fn recommend(
             });
         }
     }
-    let decision = RouterDecision {
-        mode,
-        skills: out,
-    };
+    let decision = RouterDecision { mode, skills: out };
     let hook_output = if status == "ok" {
         format_for_hook(&decision)
     } else {
@@ -557,8 +556,9 @@ pub fn enrich_skills(
                             .push((r.name.clone(), "no usable summary lines in response".into()));
                     } else {
                         let capped: String = summary_clean.chars().take(600).collect();
-                        if let Err(e) =
-                            mgr.db().set_skill_ai_summary_scored(&r.name, &capped, llm_score)
+                        if let Err(e) = mgr
+                            .db()
+                            .set_skill_ai_summary_scored(&r.name, &capped, llm_score)
                         {
                             report.errors.push((r.name.clone(), e.to_string()));
                         } else {
@@ -572,10 +572,10 @@ pub fn enrich_skills(
             }
         }
         processed += 1;
-        if let Some(n) = limit {
-            if processed >= n {
-                break;
-            }
+        if let Some(n) = limit
+            && processed >= n
+        {
+            break;
         }
     }
     Ok(report)
@@ -844,7 +844,9 @@ fn call_claude_cli(cfg: &RecommendConfig, user_msg: &str) -> Result<(String, Rou
         eprintln!(
             "[recommend debug] claude raw result: {:?}; duration_ms: {} usage: {}",
             content,
-            v.get("duration_ms").map(|x| x.to_string()).unwrap_or_default(),
+            v.get("duration_ms")
+                .map(|x| x.to_string())
+                .unwrap_or_default(),
             v.get("usage").map(|u| u.to_string()).unwrap_or_default()
         );
     }

@@ -119,7 +119,10 @@ pub async fn serve(host: &str, port: u16) -> Result<()> {
         .route("/api/skill/{name}", get(api_skill_detail))
         .route("/api/skill/{name}/files", get(api_skill_files))
         .route("/api/skill/{name}/file", get(api_skill_file))
-        .route("/api/skills/{name}/rating", axum::routing::post(api_set_rating).delete(api_clear_rating))
+        .route(
+            "/api/skills/{name}/rating",
+            axum::routing::post(api_set_rating).delete(api_clear_rating),
+        )
         .with_state(state);
 
     let addr: SocketAddr = format!("{host}:{port}")
@@ -129,9 +132,7 @@ pub async fn serve(host: &str, port: u16) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .with_context(|| format!("bind {addr}"))?;
-    axum::serve(listener, app)
-        .await
-        .context("axum::serve")?;
+    axum::serve(listener, app).await.context("axum::serve")?;
     Ok(())
 }
 
@@ -146,11 +147,7 @@ async fn serve_app_css() -> Response {
 }
 
 fn static_response(body: &'static str, content_type: &'static str) -> Response {
-    (
-        [(header::CONTENT_TYPE, content_type)],
-        body.to_string(),
-    )
-        .into_response()
+    ([(header::CONTENT_TYPE, content_type)], body.to_string()).into_response()
 }
 
 #[derive(Deserialize)]
@@ -262,8 +259,7 @@ struct EventJson {
 
 impl From<RouterEvent> for EventJson {
     fn from(e: RouterEvent) -> Self {
-        let chosen: Vec<String> =
-            serde_json::from_str(&e.chosen_skills_json).unwrap_or_default();
+        let chosen: Vec<String> = serde_json::from_str(&e.chosen_skills_json).unwrap_or_default();
         let injected = e.status == "ok" && !chosen.is_empty();
         EventJson {
             id: e.id,
@@ -384,10 +380,8 @@ async fn api_skills(State(state): State<Arc<AppState>>) -> Result<Json<SkillsRes
     // SkillManager reads from the same DB but also touches other state; for
     // a read-only listing it's fine to open it here on demand.
     let mgr = SkillManager::with_base(state.db_path.parent().unwrap().to_path_buf())
-        .map_err(|e| ApiError::Internal(e))?;
-    let resources = mgr
-        .list_resources(None, None)
-        .map_err(|e| ApiError::Internal(e))?;
+        .map_err(ApiError::Internal)?;
+    let resources = mgr.list_resources(None, None).map_err(ApiError::Internal)?;
     let db = state.db()?;
     let summaries = db.skill_ai_summary_all().unwrap_or_default();
     let scores = db.skill_scores_all().unwrap_or_default();
@@ -435,7 +429,12 @@ async fn api_skills(State(state): State<Arc<AppState>>) -> Result<Json<SkillsRes
             .cmp(&a.combined_score.unwrap_or(-1))
             .then(a.name.cmp(&b.name))
     });
-    Ok(Json(SkillsResponse { total, enriched, rated, skills }))
+    Ok(Json(SkillsResponse {
+        total,
+        enriched,
+        rated,
+        skills,
+    }))
 }
 
 #[derive(Deserialize)]
@@ -452,7 +451,9 @@ async fn api_set_rating(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let db = state.db()?;
     db.set_user_rating(&name, body.score, &body.note)?;
-    Ok(Json(serde_json::json!({"ok": true, "name": name, "score": body.score})))
+    Ok(Json(
+        serde_json::json!({"ok": true, "name": name, "score": body.score}),
+    ))
 }
 
 #[derive(Serialize)]
@@ -644,14 +645,58 @@ fn is_text_path(p: &std::path::Path) -> bool {
         .to_ascii_lowercase();
     matches!(
         ext.as_str(),
-        "md" | "markdown" | "txt" | "json" | "yaml" | "yml" | "toml" | "ini"
-        | "sh" | "bash" | "zsh" | "fish"
-        | "py" | "js" | "ts" | "tsx" | "jsx" | "mjs" | "cjs"
-        | "rs" | "go" | "java" | "c" | "cc" | "cpp" | "h" | "hpp"
-        | "css" | "scss" | "html" | "xml" | "xsd" | "xsl" | "xslt" | "dtd" | "csv" | "tsv" | "log"
-        | "vue" | "svelte" | "rb" | "php" | "lua" | "swift" | "kt" | "kts"
-        | "rst" | "tex" | "sql" | "dockerfile" | "makefile" | "env"
-        | ""
+        "md" | "markdown"
+            | "txt"
+            | "json"
+            | "yaml"
+            | "yml"
+            | "toml"
+            | "ini"
+            | "sh"
+            | "bash"
+            | "zsh"
+            | "fish"
+            | "py"
+            | "js"
+            | "ts"
+            | "tsx"
+            | "jsx"
+            | "mjs"
+            | "cjs"
+            | "rs"
+            | "go"
+            | "java"
+            | "c"
+            | "cc"
+            | "cpp"
+            | "h"
+            | "hpp"
+            | "css"
+            | "scss"
+            | "html"
+            | "xml"
+            | "xsd"
+            | "xsl"
+            | "xslt"
+            | "dtd"
+            | "csv"
+            | "tsv"
+            | "log"
+            | "vue"
+            | "svelte"
+            | "rb"
+            | "php"
+            | "lua"
+            | "swift"
+            | "kt"
+            | "kts"
+            | "rst"
+            | "tex"
+            | "sql"
+            | "dockerfile"
+            | "makefile"
+            | "env"
+            | ""
     )
 }
 
@@ -677,9 +722,7 @@ async fn api_skill_file(
     if !target_real.starts_with(&root_real) {
         return Err(ApiError::NotFound);
     }
-    let md = target_real
-        .metadata()
-        .map_err(|_| ApiError::NotFound)?;
+    let md = target_real.metadata().map_err(|_| ApiError::NotFound)?;
     if md.is_dir() {
         return Err(ApiError::NotFound);
     }
@@ -696,13 +739,15 @@ async fn api_skill_file(
                 }
             }
             // text by extension but not valid UTF-8 → treat as binary
-            Err(_) => return Ok(Json(SkillFileResponse {
-                path: q.path,
-                size,
-                content: String::new(),
-                truncated: false,
-                is_text: false,
-            })),
+            Err(_) => {
+                return Ok(Json(SkillFileResponse {
+                    path: q.path,
+                    size,
+                    content: String::new(),
+                    truncated: false,
+                    is_text: false,
+                }));
+            }
         }
     } else {
         (String::new(), false)

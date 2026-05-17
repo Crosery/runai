@@ -1175,14 +1175,22 @@ To install/uninstall automatically (preserves existing hooks and theme):
             println!("deleted: {s} summaries, {r} user ratings");
             Ok(())
         }
-        (Some(RecommendCommands::Enrich { limit, force, verbose }), _) => {
-            let (have, _oldest, _newest) = mgr.db().skill_ai_summary_stats().unwrap_or((0, None, None));
+        (
+            Some(RecommendCommands::Enrich {
+                limit,
+                force,
+                verbose,
+            }),
+            _,
+        ) => {
+            let (have, _oldest, _newest) =
+                mgr.db().skill_ai_summary_stats().unwrap_or((0, None, None));
             println!(
                 "enriching skill summaries (currently {have} have summaries)\n\
                  limit={} force={force}",
                 limit.map(|n| n.to_string()).unwrap_or_else(|| "all".into())
             );
-            let report = crate::core::recommend::enrich_skills(&mgr, limit, force, verbose)?;
+            let report = crate::core::recommend::enrich_skills(mgr, limit, force, verbose)?;
             println!(
                 "\nenrichment done:\n  generated:           {}\n  skipped (had summary): {}\n  skipped (no SKILL.md): {}\n  errors:              {}",
                 report.generated,

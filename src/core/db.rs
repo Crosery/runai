@@ -530,7 +530,9 @@ impl Database {
     /// the start of a router call so each candidate row only costs an O(1)
     /// HashMap lookup instead of an SQL round-trip.
     pub fn skill_ai_summary_all(&self) -> Result<HashMap<String, String>> {
-        let mut stmt = self.conn.prepare("SELECT name, summary FROM resource_ai_summary")?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT name, summary FROM resource_ai_summary")?;
         let rows = stmt.query_map([], |r| {
             let n: String = r.get(0)?;
             let s: String = r.get(1)?;
@@ -746,7 +748,10 @@ impl Database {
         sql.push_str(" ORDER BY ts DESC LIMIT ?3 OFFSET ?4");
 
         let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map(params![since_ts, model, limit as i64, offset as i64], row_to_router_event)?;
+        let rows = stmt.query_map(
+            params![since_ts, model, limit as i64, offset as i64],
+            row_to_router_event,
+        )?;
         let mut out = Vec::new();
         for row in rows {
             out.push(row?);
@@ -785,11 +790,7 @@ impl Database {
     /// Bucketed timeline of router activity for the dashboard chart.
     /// Returns N buckets of `bucket_secs` width ending at `now`, oldest first.
     /// Each bucket reports the count of total/hit/error events that fell into it.
-    pub fn router_timeline(
-        &self,
-        bucket_secs: i64,
-        buckets: i64,
-    ) -> Result<Vec<TimelineBucket>> {
+    pub fn router_timeline(&self, bucket_secs: i64, buckets: i64) -> Result<Vec<TimelineBucket>> {
         let now = chrono::Utc::now().timestamp();
         let start = now - bucket_secs * buckets;
         let mut stmt = self.conn.prepare(
@@ -821,10 +822,7 @@ impl Database {
         let mut out = Vec::with_capacity(buckets as usize);
         for i in 0..buckets {
             let ts_start = start + i * bucket_secs;
-            let (total, hits, errors, avg_lat) = by_idx
-                .get(&i)
-                .copied()
-                .unwrap_or((0, 0, 0, 0.0));
+            let (total, hits, errors, avg_lat) = by_idx.get(&i).copied().unwrap_or((0, 0, 0, 0.0));
             out.push(TimelineBucket {
                 ts_start,
                 total,
