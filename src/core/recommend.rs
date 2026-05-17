@@ -301,22 +301,18 @@ pub fn recommend(
         );
     }
 
-    // Per-skill combined score: LLM 40% + user 60% on a 0-100 scale. When
-    // the user hasn't rated, we use the LLM score alone (so unrated skills
-    // don't sink to zero). The router LLM sees this score on every
-    // candidate line and uses it as a tiebreaker alongside prompt relevance.
+    // Per-skill combined score on a unified 0-10 scale: LLM 40% + user 60%.
+    // When the user hasn't rated, we use the LLM score alone (so unrated
+    // skills don't sink). The router LLM sees this score on every candidate
+    // line and uses it as a tiebreaker alongside prompt relevance.
     let scores_map = mgr.db().skill_scores_all().unwrap_or_default();
     let combined_score = |name: &str| -> Option<i64> {
-        let (llm, user) = scores_map.get(name).copied().unwrap_or((50, None));
+        let (llm, user) = scores_map.get(name).copied().unwrap_or((5, None));
         match user {
-            Some(stars) => {
-                let user100 = stars * 20; // 1..5 stars → 20..100
-                Some(((llm as f64) * 0.4 + (user100 as f64) * 0.6).round() as i64)
+            Some(score) => {
+                Some(((llm as f64) * 0.4 + (score as f64) * 0.6).round() as i64)
             }
             None => {
-                // No user rating yet — use llm alone (rounded). Only surface
-                // it on the listing when the enrich pass has run; otherwise
-                // a generic 50 isn't useful signal.
                 if scores_map.contains_key(name) { Some(llm) } else { None }
             }
         }
@@ -600,7 +596,7 @@ fn build_enrich_prompt(name: &str, description: &str, skill_md: &str) -> String 
         inputs: <典型输入 / typical inputs>\n\
         outputs: <典型输出 / typical outputs>\n\
         not-for: <不适用场景 / when NOT to use, comma-separated>\n\
-        score: <0-100 — integer reflecting SKILL.md clarity, specificity, usefulness; 50=neutral, 80+=well-defined+useful, <30=vague or trivial>\n\
+        score: <0-10 — integer reflecting SKILL.md clarity, specificity, usefulness; 5=neutral, 8+=well-defined+useful, <3=vague or trivial>\n\
         \n\
         Total length cap: 500 characters total. No prose, no markdown headings, no quote blocks.\n\
         \n\
@@ -631,14 +627,14 @@ fn parse_enrich_response(raw: &str) -> (String, i64) {
                 .take_while(|c| c.is_ascii_digit() || *c == '-')
                 .collect();
             if let Ok(n) = digits.parse::<i64>() {
-                score = Some(n.clamp(0, 100));
+                score = Some(n.clamp(0, 10));
             }
             continue;
         }
         kept.push(line);
     }
     let cleaned = kept.join("\n").trim().to_string();
-    (cleaned, score.unwrap_or(50))
+    (cleaned, score.unwrap_or(5))
 }
 
 /// Dedicated summarisation LLM call. Reuses the configured backend but with

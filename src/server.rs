@@ -116,6 +116,7 @@ pub async fn serve(host: &str, port: u16) -> Result<()> {
         .route("/api/events", get(api_events))
         .route("/api/event/{id}", get(api_event_by_id))
         .route("/api/skills", get(api_skills))
+        .route("/api/skill/{name}", get(api_skill_detail))
         .route("/api/skills/{name}/rating", axum::routing::post(api_set_rating).delete(api_clear_rating))
         .with_state(state);
 
@@ -362,7 +363,7 @@ struct SkillRow {
     usage_count: i64,
     summary: String,
     llm_score: i64,
-    user_stars: Option<i64>,
+    user_score: Option<i64>,
     combined_score: Option<i64>,
 }
 
@@ -397,7 +398,7 @@ async fn api_skills(State(state): State<Arc<AppState>>) -> Result<Json<SkillsRes
             continue;
         }
         let summary = summaries.get(&r.name).cloned().unwrap_or_default();
-        let (llm, user) = scores.get(&r.name).copied().unwrap_or((50, None));
+        let (llm, user) = scores.get(&r.name).copied().unwrap_or((5, None));
         if !summary.is_empty() {
             enriched += 1;
         }
@@ -405,10 +406,7 @@ async fn api_skills(State(state): State<Arc<AppState>>) -> Result<Json<SkillsRes
             rated += 1;
         }
         let combined: Option<i64> = match user {
-            Some(stars) => {
-                let user100 = stars * 20;
-                Some(((llm as f64) * 0.4 + (user100 as f64) * 0.6).round() as i64)
-            }
+            Some(u) => Some(((llm as f64) * 0.4 + (u as f64) * 0.6).round() as i64),
             None => {
                 if scores.contains_key(&r.name) {
                     Some(llm)
@@ -423,7 +421,7 @@ async fn api_skills(State(state): State<Arc<AppState>>) -> Result<Json<SkillsRes
             usage_count: r.usage_count as i64,
             summary,
             llm_score: llm,
-            user_stars: user,
+            user_score: user,
             combined_score: combined,
         });
     }
@@ -440,7 +438,7 @@ async fn api_skills(State(state): State<Arc<AppState>>) -> Result<Json<SkillsRes
 
 #[derive(Deserialize)]
 struct RatingBody {
-    stars: i64,
+    score: i64,
     #[serde(default)]
     note: String,
 }
@@ -451,8 +449,84 @@ async fn api_set_rating(
     Json(body): Json<RatingBody>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let db = state.db()?;
-    db.set_user_rating(&name, body.stars, &body.note)?;
-    Ok(Json(serde_json::json!({"ok": true, "name": name, "stars": body.stars})))
+    db.set_user_rating(&name, body.score, &body.note)?;
+    Ok(Json(serde_json::json!({"ok": true, "name": name, "score": body.score})))
+}
+
+#[derive(Serialize)]
+struct SkillDetailResponse {
+    name: String,
+    description: String,
+    usage_count: i64,
+    summary: String,
+    llm_score: i64,
+    user_score: Option<i64>,
+    user_note: String,
+    rating_updated_at: i64,
+    combined_score: Option<i64>,
+    skill_md_path: String,
+    skill_md_content: String,
+    skill_md_size: usize,
+    skill_md_truncated: bool,
+}
+
+async fn api_skill_detail(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Result<Json<SkillDetailResponse>, ApiError> {
+    use crate::core::manager::SkillManager;
+    use crate::core::resource::ResourceKind;
+
+    let mgr = SkillManager::with_base(state.db_path.parent().unwrap().to_path_buf())
+        .map_err(ApiError::Internal)?;
+    let resources = mgr.list_resources(None, None).map_err(ApiError::Internal)?;
+    let resource = resources
+        .into_iter()
+        .find(|r| r.kind == ResourceKind::Skill && r.name == name)
+        .ok_or(ApiError::NotFound)?;
+    let db = state.db()?;
+    let summary = db.skill_ai_summary(&name).unwrap_or_default();
+    let (llm, user) = db.skill_scores(&name).unwrap_or((5, None));
+    let (note, note_ts) = db.skill_user_note(&name).unwrap_or_default();
+    let combined: Option<i64> = match user {
+        Some(u) => Some(((llm as f64) * 0.4 + (u as f64) * 0.6).round() as i64),
+        None => {
+            if !summary.is_empty() {
+                Some(llm)
+            } else {
+                None
+            }
+        }
+    };
+    let skill_md_path = mgr.paths().skills_dir().join(&name).join("SKILL.md");
+    const MAX_BYTES: usize = 60_000;
+    let (skill_md_content, truncated, total_size) = match std::fs::read_to_string(&skill_md_path) {
+        Ok(body) => {
+            let total = body.len();
+            if total > MAX_BYTES {
+                let trunc: String = body.chars().take(MAX_BYTES).collect();
+                (trunc, true, total)
+            } else {
+                (body, false, total)
+            }
+        }
+        Err(_) => (String::new(), false, 0),
+    };
+    Ok(Json(SkillDetailResponse {
+        name: resource.name.clone(),
+        description: resource.description.clone(),
+        usage_count: resource.usage_count as i64,
+        summary,
+        llm_score: llm,
+        user_score: user,
+        user_note: note,
+        rating_updated_at: note_ts,
+        combined_score: combined,
+        skill_md_path: skill_md_path.display().to_string(),
+        skill_md_content,
+        skill_md_size: total_size,
+        skill_md_truncated: truncated,
+    }))
 }
 
 async fn api_clear_rating(

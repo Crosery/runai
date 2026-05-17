@@ -16,7 +16,11 @@
           <span class="sub">telemetry dashboard</span>
         </div>
       </div>
-      <nav class="filters" aria-label="filters">
+      <nav class="route-tabs" aria-label="primary">
+        <a class="tab" data-route="" href="#/">概览</a>
+        <a class="tab" data-route="skills" href="#/skills">skills</a>
+      </nav>
+      <nav class="filters" id="dashboard-filters" aria-label="filters">
         <span class="live-pulse" id="live-indicator" title="每 5 秒自动刷新">
           <span class="dot"></span>
           <span id="live-text">实时</span>
@@ -39,131 +43,165 @@
       </nav>
     </header>
 
-    <section class="kpis" aria-label="key metrics">
-      <article class="kpi accent-ok" id="kpi-card-total">
-        <div class="label">总调用</div>
-        <div class="value" id="kpi-total">—</div>
-        <div class="delta" id="kpi-total-sub"></div>
-      </article>
-      <article class="kpi accent-ok" id="kpi-card-hit">
-        <div class="label">命中率</div>
-        <div class="value" id="kpi-hit">—<span class="unit">%</span></div>
-        <div class="delta" id="kpi-hit-sub"></div>
-      </article>
-      <article class="kpi">
-        <div class="label">平均延迟</div>
-        <div class="value" id="kpi-latency">—<span class="unit">ms</span></div>
-        <div class="delta" id="kpi-latency-sub"></div>
-      </article>
-      <article class="kpi">
-        <div class="label">平均输入</div>
-        <div class="value" id="kpi-tokens">—<span class="unit">tok</span></div>
-        <div class="delta" id="kpi-tokens-sub"></div>
-      </article>
-      <article class="kpi accent-err">
-        <div class="label">错误数</div>
-        <div class="value" id="kpi-errors">—</div>
-        <div class="delta" id="kpi-errors-sub"></div>
-      </article>
-    </section>
+    <!-- ============ DASHBOARD VIEW ============ -->
+    <main id="view-dashboard" class="view">
+      <section class="kpis" aria-label="key metrics">
+        <article class="kpi accent-ok"><div class="label">总调用</div><div class="value" id="kpi-total">—</div><div class="delta" id="kpi-total-sub"></div></article>
+        <article class="kpi accent-ok"><div class="label">命中率</div><div class="value" id="kpi-hit">—<span class="unit">%</span></div><div class="delta" id="kpi-hit-sub"></div></article>
+        <article class="kpi"><div class="label">平均延迟</div><div class="value" id="kpi-latency">—<span class="unit">ms</span></div></article>
+        <article class="kpi"><div class="label">平均输入</div><div class="value" id="kpi-tokens">—<span class="unit">tok</span></div><div class="delta" id="kpi-tokens-sub"></div></article>
+        <article class="kpi accent-err"><div class="label">错误数</div><div class="value" id="kpi-errors">—</div></article>
+      </section>
 
-    <section class="panel" aria-label="trend">
-      <header>
-        <h2>调用趋势</h2>
-        <div class="legend">
-          <span><span class="swatch sw-total"></span>总调用</span>
-          <span><span class="swatch sw-hit"></span>命中</span>
-          <span><span class="swatch sw-err"></span>错误</span>
+      <section class="panel" aria-label="trend">
+        <header>
+          <h2>调用趋势</h2>
+          <div class="legend">
+            <span><span class="swatch sw-total"></span>总调用</span>
+            <span><span class="swatch sw-hit"></span>命中</span>
+            <span><span class="swatch sw-err"></span>错误</span>
+          </div>
+        </header>
+        <svg class="chart" id="trend-chart" viewBox="0 0 800 200" preserveAspectRatio="none" role="img" aria-label="时间趋势">
+          <defs>
+            <linearGradient id="gradTotal" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="#58a6ff" stop-opacity="0.4"/>
+              <stop offset="100%" stop-color="#58a6ff" stop-opacity="0"/>
+            </linearGradient>
+          </defs>
+          <g class="grid"></g>
+          <g class="axis-x axis"></g>
+          <g class="series"></g>
+        </svg>
+      </section>
+
+      <section class="panel" aria-label="per model">
+        <header>
+          <h2>按模型分组</h2>
+          <div class="meta" id="model-count"></div>
+        </header>
+        <div class="model-strip" id="model-strip"></div>
+      </section>
+
+      <section class="panel" aria-label="events">
+        <header>
+          <h2>最近事件</h2>
+          <div class="meta" id="events-count"></div>
+        </header>
+        <div class="events-wrap">
+          <table class="events">
+            <thead>
+              <tr>
+                <th>时间</th>
+                <th>模型</th>
+                <th>状态</th>
+                <th>模式</th>
+                <th>BM25</th>
+                <th class="num">tokens</th>
+                <th class="num">延迟</th>
+                <th>chosen</th>
+                <th>prompt</th>
+              </tr>
+            </thead>
+            <tbody id="events-body"></tbody>
+          </table>
         </div>
-      </header>
-      <svg class="chart" id="trend-chart" viewBox="0 0 800 200" preserveAspectRatio="none" role="img" aria-label="时间趋势">
-        <defs>
-          <linearGradient id="gradTotal" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stop-color="#7dd3fc" stop-opacity="0.35"/>
-            <stop offset="100%" stop-color="#7dd3fc" stop-opacity="0"/>
-          </linearGradient>
-        </defs>
-        <g class="grid"></g>
-        <g class="axis-x axis"></g>
-        <g class="series"></g>
-      </svg>
-    </section>
+        <div id="empty-state" class="empty" hidden>
+          <div class="icon"></div>
+          <div class="title">这个区间没有事件</div>
+          <div class="hint">切换时间窗口或关闭过滤试试</div>
+        </div>
+        <div class="pager">
+          <button type="button" id="prev">上一页</button>
+          <span id="page-info" class="info"></span>
+          <button type="button" id="next">下一页</button>
+        </div>
+      </section>
+    </main>
 
-    <section class="panel" aria-label="per model">
-      <header>
-        <h2>按模型分组</h2>
-        <div class="meta" id="model-count"></div>
-      </header>
-      <div class="model-strip" id="model-strip"></div>
-    </section>
+    <!-- ============ SKILLS LIST VIEW ============ -->
+    <main id="view-skills" class="view" hidden>
+      <section class="panel">
+        <header>
+          <h2>Skill 列表</h2>
+          <div class="meta" id="skills-progress"></div>
+        </header>
+        <div class="skills-filters">
+          <input type="text" id="skill-filter" class="ctrl ctrl-input" placeholder="筛选 skill 名 / 描述 / summary" />
+          <select id="skill-sort" class="ctrl">
+            <option value="score-desc">综合分高 → 低</option>
+            <option value="score-asc">综合分低 → 高</option>
+            <option value="used-desc">使用次数高 → 低</option>
+            <option value="name">按名字</option>
+            <option value="unrated">未评分优先</option>
+            <option value="unenriched">未富集优先</option>
+          </select>
+        </div>
+        <div class="events-wrap">
+          <table class="events skills-table">
+            <thead>
+              <tr>
+                <th>skill</th>
+                <th class="num">used</th>
+                <th class="num">LLM</th>
+                <th class="num">用户</th>
+                <th class="num">综合</th>
+                <th>描述</th>
+              </tr>
+            </thead>
+            <tbody id="skills-body"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
 
-    <section class="panel" aria-label="skills">
-      <header>
-        <h2>Skill 评分</h2>
-        <div class="meta" id="skills-progress"></div>
-      </header>
-      <div class="skills-filters">
-        <input type="text" id="skill-filter" class="ctrl" placeholder="筛选 skill 名 / 描述 / summary" />
-        <select id="skill-sort" class="ctrl">
-          <option value="score-desc">综合分高 → 低</option>
-          <option value="score-asc">综合分低 → 高</option>
-          <option value="used-desc">使用次数高 → 低</option>
-          <option value="name">按名字</option>
-          <option value="unrated">未评分优先</option>
-          <option value="unenriched">未富集优先</option>
-        </select>
-      </div>
-      <div class="events-wrap">
-        <table class="events skills-table">
-          <thead>
-            <tr>
-              <th>skill</th>
-              <th class="num">used</th>
-              <th class="num">LLM</th>
-              <th>用户评分</th>
-              <th class="num">综合</th>
-              <th>summary</th>
-            </tr>
-          </thead>
-          <tbody id="skills-body"></tbody>
-        </table>
-      </div>
-    </section>
+    <!-- ============ SKILL DETAIL VIEW ============ -->
+    <main id="view-skill-detail" class="view" hidden>
+      <section class="panel skill-detail-panel">
+        <header class="skill-detail-head">
+          <div>
+            <a class="back-link" href="#/skills">← 返回 skill 列表</a>
+            <h2 id="skill-detail-name" class="skill-detail-name">—</h2>
+            <p id="skill-detail-desc" class="skill-detail-desc"></p>
+          </div>
+        </header>
+        <div class="skill-detail-stats">
+          <div class="stat-block">
+            <div class="stat-label">使用次数</div>
+            <div class="stat-value" id="skill-detail-used">—</div>
+          </div>
+          <div class="stat-block">
+            <div class="stat-label">LLM 评分 (40%)</div>
+            <div class="stat-value" id="skill-detail-llm">—</div>
+          </div>
+          <div class="stat-block">
+            <div class="stat-label">用户评分 (60%)</div>
+            <div class="stat-value" id="skill-detail-user">—</div>
+          </div>
+          <div class="stat-block">
+            <div class="stat-label">综合</div>
+            <div class="stat-value" id="skill-detail-combined">—</div>
+          </div>
+        </div>
 
-    <section class="panel" aria-label="events">
-      <header>
-        <h2>最近事件</h2>
-        <div class="meta" id="events-count"></div>
-      </header>
-      <div class="events-wrap">
-        <table class="events">
-          <thead>
-            <tr>
-              <th>时间</th>
-              <th>模型</th>
-              <th>状态</th>
-              <th>模式</th>
-              <th>BM25</th>
-              <th class="num">tokens</th>
-              <th class="num">延迟</th>
-              <th>chosen</th>
-              <th>prompt</th>
-            </tr>
-          </thead>
-          <tbody id="events-body"></tbody>
-        </table>
-      </div>
-      <div id="empty-state" class="empty" hidden>
-        <div class="icon"></div>
-        <div class="title">这个区间没有事件</div>
-        <div class="hint">切换时间窗口或关闭过滤试试</div>
-      </div>
-      <div class="pager">
-        <button type="button" id="prev">上一页</button>
-        <span id="page-info" class="info"></span>
-        <button type="button" id="next">下一页</button>
-      </div>
-    </section>
+        <div class="section-label">你的评分 (1-10)</div>
+        <div class="rating-row" id="skill-detail-rating">
+          <div class="score-buttons" id="score-buttons"></div>
+          <button class="rating-clear" id="rating-clear" type="button" hidden>清除评分</button>
+        </div>
+        <div class="rating-note-row">
+          <input type="text" id="rating-note" class="ctrl ctrl-input" placeholder="备注 (可选 — 写下你为什么这样打分)" />
+          <button class="primary" id="rating-save" type="button">保存评分</button>
+        </div>
+        <div class="rating-note-meta" id="rating-meta"></div>
+
+        <div class="section-label">AI 摘要 (BM25 索引信号)</div>
+        <div class="prompt-block" id="skill-detail-summary"></div>
+
+        <div class="section-label">SKILL.md 全文 <span class="muted" id="skill-detail-md-meta"></span></div>
+        <div class="prompt-block skill-md-block" id="skill-detail-md"></div>
+      </section>
+    </main>
   </div>
 
   <dialog id="detail">

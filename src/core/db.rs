@@ -314,6 +314,39 @@ impl Database {
             )?;
         }
 
+        if version < 11 {
+            // Simplify scoring: both LLM and user score on a unified 0-10
+            // scale (was 0-100 for LLM, 1-5 stars for user). Re-create the
+            // user-rating table to relax the CHECK constraint; rescale
+            // existing data lossily-but-deterministically (1-5 stars *2,
+            // 0-100 llm /10).
+            self.conn.execute_batch(
+                "UPDATE resource_ai_summary SET llm_score = MAX(0, MIN(10, llm_score / 10));
+
+                 CREATE TABLE IF NOT EXISTS resource_user_rating_new (
+                    name TEXT PRIMARY KEY,
+                    score INTEGER NOT NULL CHECK (score >= 1 AND score <= 10),
+                    note TEXT NOT NULL DEFAULT '',
+                    updated_at INTEGER NOT NULL
+                 );
+                 INSERT INTO resource_user_rating_new (name, score, note, updated_at)
+                   SELECT name, MIN(10, MAX(1, stars * 2)), note, updated_at
+                   FROM resource_user_rating;
+                 DROP TABLE resource_user_rating;
+                 ALTER TABLE resource_user_rating_new RENAME TO resource_user_rating;
+
+                 UPDATE resource_ai_summary SET llm_score = 5 WHERE llm_score = 5;
+
+                 DELETE FROM schema_version;
+                 INSERT INTO schema_version VALUES (11);",
+            )?;
+            // Adjust default. SQLite can't easily ALTER COLUMN DEFAULT
+            // without recreate; the default only matters for fresh inserts
+            // which set_skill_ai_summary_scored always supplies explicitly,
+            // so leaving the on-disk default at 50 is harmless — application
+            // code never relies on it.
+        }
+
         Ok(())
     }
 
@@ -331,7 +364,7 @@ impl Database {
         let user: Option<i64> = self
             .conn
             .query_row(
-                "SELECT stars FROM resource_user_rating WHERE name = ?1",
+                "SELECT score FROM resource_user_rating WHERE name = ?1",
                 params![name],
                 |r| r.get(0),
             )
@@ -358,7 +391,7 @@ impl Database {
         }
         let mut stmt = self
             .conn
-            .prepare("SELECT name, stars FROM resource_user_rating")?;
+            .prepare("SELECT name, score FROM resource_user_rating")?;
         let rows = stmt.query_map([], |r| {
             let n: String = r.get(0)?;
             let s: i64 = r.get(1)?;
@@ -372,9 +405,9 @@ impl Database {
         Ok(out)
     }
 
-    /// Set the LLM-generated summary AND quality score (0-100) for a skill
+    /// Set the LLM-generated summary AND quality score (0-10) for a skill
     /// in one atomic insert/upsert. Empty summary is rejected; score is
-    /// clamped to [0,100].
+    /// clamped to [0,10].
     pub fn set_skill_ai_summary_scored(
         &self,
         name: &str,
@@ -384,7 +417,7 @@ impl Database {
         if summary.trim().is_empty() {
             anyhow::bail!("refusing to write empty summary for {name}");
         }
-        let score = llm_score.clamp(0, 100);
+        let score = llm_score.clamp(0, 10);
         self.conn.execute(
             "INSERT INTO resource_ai_summary (name, summary, llm_score, updated_at)
              VALUES (?1, ?2, ?3, ?4)
@@ -397,22 +430,39 @@ impl Database {
         Ok(())
     }
 
-    /// Upsert a user star rating (1-5) and optional note for a skill.
-    /// Stars outside 1..=5 are rejected.
-    pub fn set_user_rating(&self, name: &str, stars: i64, note: &str) -> Result<()> {
-        if !(1..=5).contains(&stars) {
-            anyhow::bail!("stars must be 1..=5, got {stars}");
+    /// Upsert a user score (1-10) and optional note for a skill.
+    /// Scores outside 1..=10 are rejected.
+    pub fn set_user_rating(&self, name: &str, score: i64, note: &str) -> Result<()> {
+        if !(1..=10).contains(&score) {
+            anyhow::bail!("user score must be 1..=10, got {score}");
         }
         self.conn.execute(
-            "INSERT INTO resource_user_rating (name, stars, note, updated_at)
+            "INSERT INTO resource_user_rating (name, score, note, updated_at)
              VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(name) DO UPDATE SET
-                stars = excluded.stars,
+                score = excluded.score,
                 note  = excluded.note,
                 updated_at = excluded.updated_at",
-            params![name, stars, note, chrono::Utc::now().timestamp()],
+            params![name, score, note, chrono::Utc::now().timestamp()],
         )?;
         Ok(())
+    }
+
+    /// Return note + ts for one user rating, or empty defaults if missing.
+    pub fn skill_user_note(&self, name: &str) -> Result<(String, i64)> {
+        let r = self
+            .conn
+            .query_row(
+                "SELECT note, updated_at FROM resource_user_rating WHERE name = ?1",
+                params![name],
+                |row| {
+                    let note: String = row.get(0)?;
+                    let ts: i64 = row.get(1)?;
+                    Ok((note, ts))
+                },
+            )
+            .unwrap_or_default();
+        Ok(r)
     }
 
     pub fn delete_user_rating(&self, name: &str) -> Result<()> {
@@ -1158,7 +1208,7 @@ mod tests {
             .conn
             .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 10);
+        assert_eq!(version, 11);
     }
 
     #[test]
