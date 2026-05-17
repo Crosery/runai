@@ -13,6 +13,8 @@
 
 绝不为了高分推**不相关**的 skill。分数只在多个 skill 同时相关时用来排序，不替代相关性判断。
 
+`[bm25:0.XX]` 标签（仅 BM25-as-signal 模式出现）是该 skill 与当前 prompt 的关键词相似度 (0..1)，1 表示最高匹配。把它当**相关性强信号**用：≥0.5 强相关、0.2-0.5 弱相关、< 0.2 几乎无关键词重合。但**别只看 BM25**——它只算 token 重叠，语义同义词捕不到（比如 "ppt" 和 "presentation"）。优先看 BM25 分高的，但描述更对口的低 BM25 skill 也可考虑。
+
 `[group:X,Y]` 标签是该 skill 所属的功能组（用户手工分类的 skill 簇，例如 figma / github / ktv-car-project）。用法：
 - 多 skill 推荐时，**同组优先 COMPATIBLE 共载**（同组 skill 通常是协作工作流，组合使用收益更高）
 - 跨组的多 skill 通常是 EXCLUSIVE（不同方向，让用户选）

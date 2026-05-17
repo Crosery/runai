@@ -10,11 +10,12 @@ use crate::core::manager::SkillManager;
 use crate::core::paths::AppPaths;
 use crate::core::resource::ResourceKind;
 
-/// Skill prefilter cap: how many candidates the BM25 ranker keeps before the
-/// LLM precision-picks. Anthropic's Contextual Retrieval paper finds 20-50
-/// gives the best signal-to-noise for downstream LLM rerank. 50 leaves room
-/// for the LLM to ignore false positives without losing genuine candidates.
-const BM25_TOP_K: usize = 50;
+/// Skill prefilter cap: how many candidates the hybrid ranker keeps before
+/// the LLM precision-picks. Empirically top 30 (vs 10 / 50 / full) is the
+/// sweet spot — top 10 drops genuine matches like guizang-ppt-skill, top 50
+/// includes too much noise so LLM picks tangential skills. Override with
+/// `RUNAI_BM25_TOP_K=N` env var.
+const BM25_TOP_K: usize = 30;
 /// If the user prompt tokenizes to fewer than this many terms (e.g. "ok"),
 /// skip BM25 and pass the full candidate set — BM25 on a single token would
 /// pick a near-random top-K and exclude unrelated-but-relevant skills.
@@ -232,26 +233,37 @@ pub fn recommend(
     // Short / ambiguous prompts (< 2 query terms) skip the prefilter — BM25
     // on a single token degenerates to "any doc containing that token" and
     // hides legitimate matches whose desc happens to use a synonym.
+    // Override top-K via env. Default 50; users testing aggressive prefilter
+    // can set RUNAI_BM25_TOP_K=10 to give LLM only the strongest matches.
+    let top_k: usize = std::env::var("RUNAI_BM25_TOP_K")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(BM25_TOP_K);
+
     let bm25_disabled = std::env::var("RUNAI_BM25_DISABLED").is_ok();
+    // Default: hybrid scoring (BM25 0.6 + LLM/10 0.25 + user/10 0.15) then
+    // top 30 → LLM. Empirically beats pure BM25 prefilter on prompts where
+    // descriptions are weak / cross-lingual.
+    //
+    // Escape hatches:
+    //   RUNAI_BM25_PURE=1     → pure BM25 score ranking (no LLM/user weight)
+    //   RUNAI_BM25_AS_SIGNAL=1 → full candidate set, BM25 score as a tag
+    //   RUNAI_BM25_DISABLED=1 → skip prefilter entirely (full set, no tag)
+    let bm25_pure = std::env::var("RUNAI_BM25_PURE").is_ok();
+    let bm25_as_signal = std::env::var("RUNAI_BM25_AS_SIGNAL").is_ok();
+    let bm25_hybrid = !bm25_pure && !bm25_as_signal && !bm25_disabled;
     let q_terms = bm25::tokenize(user_prompt);
     let mut bm25_fallback_reason: &'static str = "";
 
-    // Pull AI summaries once; we splice them into the BM25 doc text so a
-    // cross-language query has a chance of bridging EN-only descriptions
-    // (the summary is generated bilingually by `runai recommend enrich`).
-    // Cold start: no summaries yet → BM25 doc == description only → CJK
-    // queries find < 5 hits → fallback to full candidate set (correct but
-    // expensive). As summaries land in DB the fallback rate drops.
     let summaries = mgr.db().skill_ai_summary_all().unwrap_or_default();
-    // Batch-load group memberships once so we can splice group IDs into
-    // both the BM25 doc (so a query like "figma 对齐" can hit through the
-    // figma group name even if the skill's description doesn't mention
-    // figma) and the candidate listing (LLM sees `[group:figma]` and can
-    // use co-membership as a weak co-load signal).
     let groups_by_resource = mgr.db().groups_for_all_resources().unwrap_or_default();
     let groups_of = |resource_id: &str| -> Vec<String> {
         groups_by_resource.get(resource_id).cloned().unwrap_or_default()
     };
+
+    // skill name → normalised BM25 score (0..1) for the [bm25:0.XX] tag.
+    let mut bm25_scores: std::collections::HashMap<String, f64> =
+        std::collections::HashMap::new();
 
     let candidates: Vec<_> = if bm25_disabled {
         bm25_fallback_reason = "disabled-by-env";
@@ -274,29 +286,67 @@ pub fn recommend(
             })
             .collect();
         let ranked = bm25::rank(user_prompt, &docs);
-        let positive: Vec<(usize, f64)> = ranked
-            .into_iter()
-            .filter(|(_, s)| *s > 0.0)
-            .take(BM25_TOP_K)
-            .collect();
-        // Sparse-corpus guard: when very few skills term-overlap the query,
-        // BM25 isn't trustworthy as a hard filter. Most common cause:
-        // cross-language query (CJK ↔ EN) where the corpus hasn't been
-        // enriched yet. Fall back to the full candidate set and let the
-        // LLM rerank semantically; run `runai recommend enrich` to lift
-        // the BM25 path's coverage and cut tokens.
-        if positive.len() < BM25_MIN_POSITIVE_HITS {
-            bm25_fallback_reason = if positive.is_empty() {
-                "no-bm25-hits"
-            } else {
-                "few-bm25-hits"
-            };
+        // Build normalised score map for the [bm25:0.XX] tag.
+        let max_score = ranked.iter().map(|(_, s)| *s).fold(0.0_f64, f64::max);
+        if max_score > 0.0 {
+            for (i, s) in &ranked {
+                if *s > 0.0 {
+                    if let Some(c) = all_candidates.get(*i) {
+                        bm25_scores.insert(c.name.clone(), s / max_score);
+                    }
+                }
+            }
+        }
+
+        if bm25_as_signal {
+            bm25_fallback_reason = "bm25-as-signal";
             all_candidates
-        } else {
-            positive
+        } else if bm25_hybrid {
+            // Hybrid score = BM25 * 0.6 + LLM/10 * 0.25 + user/10 * 0.15
+            // (user falls back to llm when unrated so missing manual signal
+            // doesn't drag the skill down). Sort all candidates by this
+            // score, take top K.
+            let scores_map = mgr.db().skill_scores_all().unwrap_or_default();
+            let mut scored: Vec<(usize, f64)> = all_candidates
+                .iter()
+                .enumerate()
+                .map(|(i, r)| {
+                    let bm = bm25_scores.get(&r.name).copied().unwrap_or(0.0);
+                    let (llm, user_opt) = scores_map.get(&r.name).copied().unwrap_or((5, None));
+                    let user_val = user_opt.unwrap_or(llm) as f64 / 10.0;
+                    let llm_val = (llm as f64) / 10.0;
+                    let hybrid = bm * 0.6 + llm_val * 0.25 + user_val * 0.15;
+                    (i, hybrid)
+                })
+                .collect();
+            scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            // Drop trailing entries with zero BM25 + LLM default — they
+            // contribute no signal at all.
+            bm25_fallback_reason = "bm25-hybrid";
+            scored
                 .into_iter()
+                .take(top_k)
                 .map(|(i, _)| all_candidates[i].clone())
                 .collect()
+        } else {
+            let positive: Vec<(usize, f64)> = ranked
+                .into_iter()
+                .filter(|(_, s)| *s > 0.0)
+                .take(top_k)
+                .collect();
+            if positive.len() < BM25_MIN_POSITIVE_HITS {
+                bm25_fallback_reason = if positive.is_empty() {
+                    "no-bm25-hits"
+                } else {
+                    "few-bm25-hits"
+                };
+                all_candidates
+            } else {
+                positive
+                    .into_iter()
+                    .map(|(i, _)| all_candidates[i].clone())
+                    .collect()
+            }
         }
     };
     if std::env::var("RUNAI_RECOMMEND_DEBUG").is_ok() {
@@ -330,6 +380,9 @@ pub fn recommend(
             }
         }
     };
+    // bm25 tags are only emitted in signal mode; in prefilter mode the
+    // score already determined which 50 skills landed here.
+    let emit_bm25_tag = bm25_as_signal;
     let candidate_listing: String = candidates
         .iter()
         .map(|r| {
@@ -339,6 +392,10 @@ pub fn recommend(
             }
             if let Some(s) = combined_score(&r.name) {
                 tags.push_str(&format!(" [score:{}]", s));
+            }
+            if emit_bm25_tag {
+                let b = bm25_scores.get(&r.name).copied().unwrap_or(0.0);
+                tags.push_str(&format!(" [bm25:{:.2}]", b));
             }
             let gs = groups_of(&r.id);
             if !gs.is_empty() {
