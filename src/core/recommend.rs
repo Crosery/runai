@@ -307,14 +307,15 @@ pub fn recommend(
     let call_result = call_router(&cfg, &api_key, &user_msg);
     let latency_ms = started.elapsed().as_millis() as i64;
 
-    let (mode, chosen_names, stats, status, error_msg) = match call_result {
-        Ok((mode, names, stats)) => (mode, names, stats, "ok".to_string(), None),
+    let (mode, chosen_names, stats, status, error_msg, llm_raw) = match call_result {
+        Ok((mode, names, stats, raw)) => (mode, names, stats, "ok".to_string(), None, raw),
         Err(e) => (
             RouterMode::Exclusive,
             Vec::new(),
             RouterCallStats::default(),
             "error".to_string(),
             Some(e.to_string()),
+            String::new(),
         ),
     };
     // Drop names that the LLM hallucinated against the candidate set (they
@@ -336,6 +337,44 @@ pub fn recommend(
             stats.total_tokens
         );
     }
+
+    // Build the decision NOW (resolve SKILL.md) so we can also capture
+    // format_for_hook output and persist it to telemetry. Telemetry must
+    // include both the LLM raw response (what the model said) and the hook
+    // output (what we actually injected into Claude Code) so the dashboard
+    // can show the full round-trip.
+    let by_name: std::collections::HashMap<String, _> =
+        candidates.iter().map(|r| (r.name.clone(), r)).collect();
+
+    let mut out = Vec::new();
+    for (idx, name) in chosen_names.iter().enumerate() {
+        if let Some(r) = by_name.get(name) {
+            let skill_md = mgr.paths().skills_dir().join(&r.name).join("SKILL.md");
+            let content = if idx == 0 {
+                match fs::read_to_string(&skill_md) {
+                    Ok(c) => c,
+                    Err(_) => continue,
+                }
+            } else {
+                String::new()
+            };
+            out.push(RecommendedSkill {
+                name: r.name.clone(),
+                description: r.description.clone(),
+                path: skill_md,
+                content,
+            });
+        }
+    }
+    let decision = RouterDecision {
+        mode,
+        skills: out,
+    };
+    let hook_output = if status == "ok" {
+        format_for_hook(&decision)
+    } else {
+        String::new()
+    };
 
     // Persist the telemetry row regardless of success/failure so users can
     // audit cost & error rate. Best-effort: DB write failure does not block
@@ -366,6 +405,8 @@ pub fn recommend(
         user_prompt: user_prompt.to_string(),
         cwd: cwd.unwrap_or("").to_string(),
         bm25_kept: candidates.len() as i64,
+        llm_raw_response: llm_raw,
+        hook_output: hook_output.clone(),
     };
     let _ = mgr.db().insert_router_event(&ev);
 
@@ -373,34 +414,6 @@ pub fn recommend(
         bail!(err);
     }
 
-    let by_name: std::collections::HashMap<String, _> =
-        candidates.iter().map(|r| (r.name.clone(), r)).collect();
-
-    let mut out = Vec::new();
-    for (idx, name) in chosen_names.into_iter().enumerate() {
-        if let Some(r) = by_name.get(&name) {
-            let skill_md = mgr.paths().skills_dir().join(&r.name).join("SKILL.md");
-            // Only the primary (first pick) gets the full SKILL.md injected.
-            // Alternates surface just name+description so the main agent can
-            // ask the user which to load — full content for those will come on
-            // a later prompt round.
-            let content = if idx == 0 {
-                match fs::read_to_string(&skill_md) {
-                    Ok(c) => c,
-                    Err(_) => continue,
-                }
-            } else {
-                String::new()
-            };
-            out.push(RecommendedSkill {
-                name: r.name.clone(),
-                description: r.description.clone(),
-                path: skill_md,
-                content,
-            });
-        }
-    }
-    let decision = RouterDecision { mode, skills: out };
     write_last_recommend(mgr.paths(), &decision);
     Ok(decision)
 }
@@ -546,20 +559,20 @@ fn call_router(
     cfg: &RecommendConfig,
     api_key: &str,
     user_msg: &str,
-) -> Result<(RouterMode, Vec<String>, RouterCallStats)> {
-    let (content_lines, stats) = match cfg.provider {
+) -> Result<(RouterMode, Vec<String>, RouterCallStats, String)> {
+    let (raw, stats) = match cfg.provider {
         Provider::OpenaiCompat => call_openai_compat(cfg, api_key, user_msg)?,
         Provider::Anthropic => call_anthropic(cfg, api_key, user_msg)?,
         Provider::ClaudeCli => call_claude_cli(cfg, user_msg)?,
     };
-    let (mode, names) = split_mode_and_names(content_lines);
-    Ok((mode, names, stats))
+    let (mode, names) = split_mode_and_names(parse_lines(&raw));
+    Ok((mode, names, stats, raw))
 }
 
 /// Run the router via `claude -p --model <model>`. Uses the user's Claude
 /// Code session (cookies + Max plan quota), no API key. Slower than direct
 /// API because every spawn boots Claude Code's full system prompt.
-fn call_claude_cli(cfg: &RecommendConfig, user_msg: &str) -> Result<(Vec<String>, RouterCallStats)> {
+fn call_claude_cli(cfg: &RecommendConfig, user_msg: &str) -> Result<(String, RouterCallStats)> {
     use std::io::Write;
     use std::process::{Command, Stdio};
 
@@ -624,7 +637,7 @@ fn call_claude_cli(cfg: &RecommendConfig, user_msg: &str) -> Result<(Vec<String>
         cache_hit_tokens: cache_read,
         cache_miss_tokens: cache_create,
     };
-    Ok((parse_lines(content), stats))
+    Ok((content.to_string(), stats))
 }
 
 /// Pop the first non-empty line as the mode tag; remaining lines are skill
@@ -694,7 +707,7 @@ fn call_openai_compat(
     cfg: &RecommendConfig,
     api_key: &str,
     user_msg: &str,
-) -> Result<(Vec<String>, RouterCallStats)> {
+) -> Result<(String, RouterCallStats)> {
     let url = format!("{}/chat/completions", cfg.base_url.trim_end_matches('/'));
     // Disable thinking on reasoning models so the router answers instantly.
     // DeepSeek V4 honors `thinking.type=disabled` (drops reasoning_tokens to
@@ -749,14 +762,14 @@ fn call_openai_compat(
             v.get("usage").map(|u| u.to_string()).unwrap_or_default()
         );
     }
-    Ok((parse_lines(content), parse_openai_usage(&v)))
+    Ok((content.to_string(), parse_openai_usage(&v)))
 }
 
 fn call_anthropic(
     cfg: &RecommendConfig,
     api_key: &str,
     user_msg: &str,
-) -> Result<(Vec<String>, RouterCallStats)> {
+) -> Result<(String, RouterCallStats)> {
     let url = format!("{}/v1/messages", cfg.base_url.trim_end_matches('/'));
     let body = serde_json::json!({
         "model": cfg.model,
@@ -782,7 +795,7 @@ fn call_anthropic(
     }
     let v: serde_json::Value = resp.json().context("decode router json")?;
     let content = v["content"][0]["text"].as_str().unwrap_or_default();
-    Ok((parse_lines(content), parse_anthropic_usage(&v)))
+    Ok((content.to_string(), parse_anthropic_usage(&v)))
 }
 
 /// Read `<cwd>/CLAUDE.md` and any files it `@`-references, trim each to

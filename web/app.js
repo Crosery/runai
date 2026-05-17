@@ -11,6 +11,13 @@
     total: 0,
   };
 
+  // Live polling: cheap (3 JSON endpoints, ~5KB total). Pause while the
+  // user is interacting with the detail dialog so the row they clicked
+  // doesn't move under them mid-read.
+  const POLL_INTERVAL_MS = 5000;
+  let pollTimer = null;
+  let inFlight = false;
+
   const $ = (sel) => document.querySelector(sel);
 
   // ------------------------------------------------------------------
@@ -256,12 +263,24 @@
     const body = $('#detail-body');
     const chosenInline = e.chosen.length
       ? e.chosen.map((s) => `<span class="chip">${escapeHTML(s)}</span>`).join('')
-      : '<span class="dim">空集</span>';
+      : '<span class="dim">空集（router 觉得没相关 skill）</span>';
     const statusKlass = e.status === 'ok' ? 'status-ok' : 'status-error';
+    const injectedBadge = e.injected
+      ? `<span class="chip" style="background:var(--success-bg);color:var(--success);border-color:rgba(63,185,80,0.4)">已注入</span>`
+      : `<span class="chip-empty">未注入</span>`;
+    const llmRaw = e.llm_raw_response
+      ? escapeHTML(e.llm_raw_response)
+      : '<span class="dim">(legacy row — schema v8 之前没有记录)</span>';
+    const hookOutBlock = e.hook_output
+      ? escapeHTML(e.hook_output)
+      : (e.injected
+        ? '<span class="dim">(legacy row — schema v8 之前没有记录)</span>'
+        : '<span class="dim">(本次没有注入，因为 chosen 为空或调用出错)</span>');
     body.innerHTML = `
       <dl class="detail-grid">
         <dt>时间</dt><dd class="mono">${fmtTsFull(e.ts)}</dd>
         <dt>状态</dt><dd class="${statusKlass}"><span class="status-dot"></span>${escapeHTML(e.status)}${e.error_msg ? ` <span class="muted">— ${escapeHTML(e.error_msg)}</span>` : ''}</dd>
+        <dt>注入</dt><dd>${injectedBadge}</dd>
         <dt>模型</dt><dd><span class="mono">${escapeHTML(e.provider)} · ${escapeHTML(e.model)}</span></dd>
         <dt>模式</dt><dd class="mono">${escapeHTML(e.mode)}</dd>
         <dt>session</dt><dd class="mono muted">${escapeHTML(e.session_id || '(none)')}</dd>
@@ -273,7 +292,11 @@
       <div class="section-label">chosen skills</div>
       <div>${chosenInline}</div>
       <div class="section-label">user prompt</div>
-      <div class="prompt-block">${escapeHTML(e.user_prompt) || '<span class="dim">(legacy row — prompt 在 schema v7 之前没有记录)</span>'}</div>
+      <div class="prompt-block">${escapeHTML(e.user_prompt) || '<span class="dim">(legacy row — schema v7 之前没有记录)</span>'}</div>
+      <div class="section-label">router 模型原始返回</div>
+      <div class="prompt-block">${llmRaw}</div>
+      <div class="section-label">hook 注入给 Claude Code 的内容</div>
+      <div class="prompt-block">${hookOutBlock}</div>
     `;
     $('#detail').showModal();
   }
@@ -292,9 +315,39 @@
   }
 
   async function refresh() {
-    await Promise.all([loadSummary(), loadTimeline(), loadEvents()]);
+    if (inFlight) return;
+    inFlight = true;
+    try {
+      await Promise.all([loadSummary(), loadTimeline(), loadEvents()]);
+      const ind = $('#live-text');
+      if (ind) ind.textContent = '实时';
+    } catch (e) {
+      const ind = $('#live-text');
+      if (ind) ind.textContent = '断开';
+    } finally {
+      inFlight = false;
+    }
   }
+
+  function startPolling() {
+    stopPolling();
+    pollTimer = setInterval(() => {
+      // Skip when the detail dialog is open so the table doesn't shift
+      // under the user's eyes mid-inspection.
+      const dlg = document.getElementById('detail');
+      if (dlg && dlg.open) return;
+      refresh();
+    }, POLL_INTERVAL_MS);
+  }
+  function stopPolling() {
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) stopPolling();
+    else { refresh(); startPolling(); }
+  });
 
   bind();
   refresh();
+  startPolling();
 })();

@@ -245,12 +245,21 @@ struct EventJson {
     user_prompt: String,
     cwd: String,
     error_msg: Option<String>,
+    /// Raw LLM response (mode tag + skill names). Empty for legacy rows.
+    llm_raw_response: String,
+    /// Markdown block runai injected into Claude Code via hook stdout.
+    /// Empty when chosen was empty or for legacy rows.
+    hook_output: String,
+    /// Whether the hook actually delivered a non-empty injection. Equivalent
+    /// to `chosen` non-empty + status ok, exposed as a flat boolean for the UI.
+    injected: bool,
 }
 
 impl From<RouterEvent> for EventJson {
     fn from(e: RouterEvent) -> Self {
         let chosen: Vec<String> =
             serde_json::from_str(&e.chosen_skills_json).unwrap_or_default();
+        let injected = e.status == "ok" && !chosen.is_empty();
         EventJson {
             id: e.id,
             ts: e.ts,
@@ -269,6 +278,9 @@ impl From<RouterEvent> for EventJson {
             user_prompt: e.user_prompt,
             cwd: e.cwd,
             error_msg: e.error_msg,
+            llm_raw_response: e.llm_raw_response,
+            hook_output: e.hook_output,
+            injected,
         }
     }
 }

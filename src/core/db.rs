@@ -35,6 +35,14 @@ pub struct RouterEvent {
     /// How many candidates remained after BM25 prefilter (= candidate_count when
     /// prefilter was bypassed). Lets dashboards see prefilter efficacy.
     pub bm25_kept: i64,
+    /// Raw text the router LLM returned (the first ~2 KB) — the mode tag line
+    /// plus skill names, before any post-processing. Empty for legacy rows.
+    /// Lets users see "what did the model literally say" in the dashboard.
+    pub llm_raw_response: String,
+    /// The hook stdout that runai injected into Claude Code (the markdown block
+    /// the main agent receives). Capped at ~6 KB. Empty for rows where the
+    /// hook didn't inject anything (chosen=[]) or pre-schema-v8.
+    pub hook_output: String,
 }
 
 #[derive(Debug, Clone)]
@@ -96,6 +104,8 @@ fn row_to_router_event(r: &rusqlite::Row<'_>) -> rusqlite::Result<RouterEvent> {
         user_prompt: r.get(17)?,
         cwd: r.get(18)?,
         bm25_kept: r.get(19)?,
+        llm_raw_response: r.get(20)?,
+        hook_output: r.get(21)?,
     })
 }
 
@@ -258,6 +268,18 @@ impl Database {
             )?;
         }
 
+        if version < 8 {
+            // Capture what the router LLM literally returned plus the exact
+            // markdown block we injected into Claude Code's hook stdout, so
+            // the dashboard can show "the model said X, we injected Y".
+            self.conn.execute_batch(
+                "ALTER TABLE router_events ADD COLUMN llm_raw_response TEXT NOT NULL DEFAULT '';
+                 ALTER TABLE router_events ADD COLUMN hook_output TEXT NOT NULL DEFAULT '';
+                 DELETE FROM schema_version;
+                 INSERT INTO schema_version VALUES (8);",
+            )?;
+        }
+
         Ok(())
     }
 
@@ -266,6 +288,8 @@ impl Database {
         // when users paste long context. 2 KB is enough to recognise intent in
         // the dashboard.
         let user_prompt_capped: String = ev.user_prompt.chars().take(2000).collect();
+        let llm_raw_capped: String = ev.llm_raw_response.chars().take(2000).collect();
+        let hook_out_capped: String = ev.hook_output.chars().take(6000).collect();
         self.conn.execute(
             "INSERT INTO router_events (
                 ts, provider, model,
@@ -273,8 +297,9 @@ impl Database {
                 cache_hit_tokens, cache_miss_tokens,
                 latency_ms, chosen_skills_json, candidate_count, status, error_msg,
                 session_id, mode,
-                user_prompt, cwd, bm25_kept
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+                user_prompt, cwd, bm25_kept,
+                llm_raw_response, hook_output
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
             params![
                 ev.ts,
                 ev.provider,
@@ -295,6 +320,8 @@ impl Database {
                 user_prompt_capped,
                 ev.cwd,
                 ev.bm25_kept,
+                llm_raw_capped,
+                hook_out_capped,
             ],
         )?;
         Ok(())
@@ -413,7 +440,8 @@ impl Database {
             "SELECT id, ts, provider, model, prompt_tokens, completion_tokens, reasoning_tokens,
                     total_tokens, cache_hit_tokens, cache_miss_tokens, latency_ms,
                     chosen_skills_json, candidate_count, status, error_msg,
-                    session_id, mode, user_prompt, cwd, bm25_kept
+                    session_id, mode, user_prompt, cwd, bm25_kept,
+                    llm_raw_response, hook_output
              FROM router_events WHERE 1=1",
         );
         if since_ts.is_some() {
@@ -527,7 +555,8 @@ impl Database {
             "SELECT id, ts, provider, model, prompt_tokens, completion_tokens, reasoning_tokens,
                     total_tokens, cache_hit_tokens, cache_miss_tokens, latency_ms,
                     chosen_skills_json, candidate_count, status, error_msg,
-                    session_id, mode, user_prompt, cwd, bm25_kept
+                    session_id, mode, user_prompt, cwd, bm25_kept,
+                    llm_raw_response, hook_output
              FROM router_events WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map(params![id], row_to_router_event)?;
@@ -932,7 +961,7 @@ mod tests {
             .conn
             .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 7);
+        assert_eq!(version, 8);
     }
 
     #[test]
