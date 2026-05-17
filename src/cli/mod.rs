@@ -168,22 +168,8 @@ pub enum RecommendCommands {
         #[arg(long, default_value = "0")]
         recent: usize,
     },
-    /// Mine implicit feedback signals out of router_events: when a user
-    /// next-prompt in the same session contains negative cues ("不对", "换一个",
-    /// "wrong") about a prior chosen skill, lower that skill's auto rating;
-    /// positive cues ("可以", "完美") raise it. Auto ratings never overwrite
-    /// manual ratings entered via the dashboard. Token cost: 0.
-    MineFeedback {
-        /// Look at events from the last N hours (default 168 = 7 days).
-        #[arg(long, default_value_t = 168)]
-        hours: i64,
-    },
-    /// Wipe LLM summaries / scores and/or user ratings. By default clears
-    /// BOTH. Use `--only summaries` or `--only ratings` to narrow scope.
+    /// Wipe all LLM summaries (resource_ai_summary) — next enrich rebuilds.
     ResetScoring {
-        /// "summaries" | "ratings" | "all" (default)
-        #[arg(long, default_value = "all")]
-        only: String,
         /// Skip the "are you sure" prompt (for scripts / hooks)
         #[arg(long)]
         yes: bool,
@@ -1172,33 +1158,10 @@ To install/uninstall automatically (preserves existing hooks and theme):
             }
             Ok(())
         }
-        (Some(RecommendCommands::MineFeedback { hours }), _) => {
-            let report = crate::core::feedback::mine_feedback(mgr, hours)?;
-            println!(
-                "feedback mining done (last {hours}h):\n  signals counted:      {}\n  ratings written:      {}\n  skipped (manual present): {}",
-                report.total_signals, report.ratings_written, report.skipped_manual_present
-            );
-            for (skill, score) in &report.per_skill {
-                println!("    {skill:30}  auto={score}");
-            }
-            Ok(())
-        }
-        (Some(RecommendCommands::ResetScoring { only, yes }), _) => {
-            let only = only.to_ascii_lowercase();
-            let (do_sum, do_rat) = match only.as_str() {
-                "summaries" => (true, false),
-                "ratings" => (false, true),
-                "all" | "both" => (true, true),
-                other => anyhow::bail!("--only must be one of summaries|ratings|all, got {other}"),
-            };
+        (Some(RecommendCommands::ResetScoring { yes }), _) => {
             if !yes {
                 use std::io::{BufRead, Write};
-                print!(
-                    "about to wipe {}{}{}. continue? [y/N] ",
-                    if do_sum { "LLM summaries+scores" } else { "" },
-                    if do_sum && do_rat { " AND " } else { "" },
-                    if do_rat { "user ratings" } else { "" }
-                );
+                print!("about to wipe all LLM summaries. continue? [y/N] ");
                 std::io::stdout().flush().ok();
                 let stdin = std::io::stdin();
                 let line = stdin.lock().lines().next().transpose()?.unwrap_or_default();
@@ -1207,8 +1170,8 @@ To install/uninstall automatically (preserves existing hooks and theme):
                     return Ok(());
                 }
             }
-            let (s, r) = mgr.db().reset_scoring(do_sum, do_rat)?;
-            println!("deleted: {s} summaries, {r} user ratings");
+            let s = mgr.db().reset_summaries()?;
+            println!("deleted: {s} summaries");
             Ok(())
         }
         (

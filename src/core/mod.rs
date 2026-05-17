@@ -7,7 +7,6 @@ pub mod cli_target;
 pub mod config_watcher;
 pub mod db;
 pub mod doctor;
-pub mod feedback;
 pub mod group;
 pub mod installer;
 pub mod linker;

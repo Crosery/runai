@@ -312,13 +312,13 @@ pub fn recommend(
             // pass owns quality scoring end-to-end (incorporating implicit
             // user feedback when re-enriching). Keeps the system one-axis
             // simpler and avoids the noise of sparse manual ratings.
-            let scores_map = mgr.db().skill_scores_all().unwrap_or_default();
+            let scores_map = mgr.db().skill_llm_scores_all().unwrap_or_default();
             let mut scored: Vec<(usize, f64)> = all_candidates
                 .iter()
                 .enumerate()
                 .map(|(i, r)| {
                     let bm = bm25_scores.get(&r.name).copied().unwrap_or(0.0);
-                    let (llm, _user_opt) = scores_map.get(&r.name).copied().unwrap_or((5, None));
+                    let llm = scores_map.get(&r.name).copied().unwrap_or(5);
                     let llm_val = (llm as f64) / 10.0;
                     let hybrid = bm * 0.4 + llm_val * 0.6;
                     (i, hybrid)
@@ -367,19 +367,9 @@ pub fn recommend(
         );
     }
 
-    // Per-skill quality score 0-10. Owned entirely by the LLM enrich pass
-    // (it sets llm_score based on SKILL.md clarity + incorporates user
-    // feedback when re-enriching). User-rating column is preserved in DB
-    // for the dashboard but no longer participates in routing scoring.
-    let scores_map = mgr.db().skill_scores_all().unwrap_or_default();
-    let combined_score = |name: &str| -> Option<i64> {
-        let (llm, _user) = scores_map.get(name).copied().unwrap_or((5, None));
-        if scores_map.contains_key(name) {
-            Some(llm)
-        } else {
-            None
-        }
-    };
+    // Per-skill quality score 0-10. Owned entirely by the LLM enrich pass.
+    let scores_map = mgr.db().skill_llm_scores_all().unwrap_or_default();
+    let combined_score = |name: &str| -> Option<i64> { scores_map.get(name).copied() };
     // bm25 tags are only emitted in signal mode; in prefilter mode the
     // score already determined which 50 skills landed here.
     let emit_bm25_tag = bm25_as_signal;

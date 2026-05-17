@@ -18,7 +18,7 @@
   const skillsState = { filter: '', sort: 'score-desc', cache: [] };
 
   // Skill detail page state
-  const detailState = { name: '', current: null, pendingScore: null };
+  const detailState = { name: '', current: null };
 
   const $ = (sel) => document.querySelector(sel);
 
@@ -318,13 +318,12 @@
     }
     const sort = skillsState.sort;
     rows.sort((a, b) => {
-      const sa = a.combined_score == null ? -1 : a.combined_score;
-      const sb = b.combined_score == null ? -1 : b.combined_score;
+      const sa = a.llm_score == null ? -1 : a.llm_score;
+      const sb = b.llm_score == null ? -1 : b.llm_score;
       switch (sort) {
         case 'score-asc':  return sa - sb || a.name.localeCompare(b.name);
         case 'used-desc':  return (b.usage_count - a.usage_count) || sb - sa;
         case 'name':       return a.name.localeCompare(b.name);
-        case 'unrated':    return (a.user_score == null ? -1 : 1) - (b.user_score == null ? -1 : 1) || sb - sa;
         case 'unenriched': return ((a.summary ? 1 : -1) - (b.summary ? 1 : -1)) || sb - sa;
         case 'score-desc':
         default:           return sb - sa || a.name.localeCompare(b.name);
@@ -338,9 +337,7 @@
       tr.innerHTML = `
         <td class="skill-name" data-name="${escapeHTML(s.name)}">${escapeHTML(s.name)}</td>
         <td class="num">${s.usage_count || 0}</td>
-        <td class="num">${scoreBadge(s.summary ? s.llm_score : null)}</td>
-        <td class="num">${scoreBadge(s.user_score)}</td>
-        <td class="num">${scoreBadge(s.combined_score)}</td>
+        <td class="num">${scoreBadge(s.llm_score)}</td>
         <td class="skill-desc">${escapeHTML((s.description || '').slice(0, 200))}</td>
       `;
       tr.addEventListener('click', () => {
@@ -363,36 +360,8 @@
   // ------------------------------------------------------------------
   //  Skill detail page
   // ------------------------------------------------------------------
-  function renderScoreButtons(current) {
-    const wrap = $('#score-buttons');
-    wrap.innerHTML = '';
-    for (let n = 1; n <= 10; n++) {
-      const el = document.createElement('span');
-      el.className = 'pip' + (current === n ? ' active' : '');
-      el.textContent = n;
-      el.dataset.n = n;
-      el.addEventListener('mouseover', () => {
-        wrap.querySelectorAll('.pip').forEach((p) => {
-          p.classList.toggle('preview', Number(p.dataset.n) <= n && !p.classList.contains('active'));
-        });
-      });
-      el.addEventListener('mouseout', () => {
-        wrap.querySelectorAll('.pip').forEach((p) => p.classList.remove('preview'));
-      });
-      el.addEventListener('click', () => {
-        detailState.pendingScore = n;
-        wrap.querySelectorAll('.pip').forEach((p) => {
-          p.classList.toggle('active', Number(p.dataset.n) === n);
-          p.classList.remove('preview');
-        });
-      });
-      wrap.appendChild(el);
-    }
-  }
-
   async function loadSkillDetail(name) {
     detailState.name = name;
-    detailState.pendingScore = null;
     const res = await fetch(`/api/skill/${encodeURIComponent(name)}`);
     if (!res.ok) {
       $('#skill-detail-name').textContent = '加载失败';
@@ -403,15 +372,7 @@
     $('#skill-detail-name').textContent = d.name;
     $('#skill-detail-desc').textContent = d.description || '(no description)';
     $('#skill-detail-used').textContent = d.usage_count;
-    $('#skill-detail-llm').innerHTML = `${d.summary ? d.llm_score : '—'}<span class="of"> / 10</span>`;
-    $('#skill-detail-user').innerHTML = `${d.user_score ?? '—'}<span class="of"> / 10</span>`;
-    $('#skill-detail-combined').innerHTML = `${d.combined_score ?? '—'}<span class="of"> / 10</span>`;
-    renderScoreButtons(d.user_score);
-    $('#rating-note').value = d.user_note || '';
-    $('#rating-clear').hidden = d.user_score == null;
-    $('#rating-meta').textContent = d.rating_updated_at
-      ? `上次更新：${fmtTsFull(d.rating_updated_at)}`
-      : '';
+    $('#skill-detail-llm').innerHTML = `${d.llm_score ?? '—'}<span class="of"> / 10</span>`;
     $('#skill-detail-summary').textContent = d.summary || '(尚未富集 — 跑 `runai recommend enrich` 生成)';
 
     // Usage history: events where this skill was chosen
@@ -510,32 +471,6 @@
     }
   }
 
-  async function saveRating() {
-    const name = detailState.name;
-    const score = detailState.pendingScore ?? detailState.current?.user_score;
-    if (!score) {
-      alert('先点 1-10 选个分数');
-      return;
-    }
-    const note = $('#rating-note').value.trim();
-    const res = await fetch(`/api/skills/${encodeURIComponent(name)}/rating`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ score, note }),
-    });
-    if (res.ok) {
-      await loadSkillDetail(name);
-    }
-  }
-
-  async function clearRating() {
-    const name = detailState.name;
-    const res = await fetch(`/api/skills/${encodeURIComponent(name)}/rating`, { method: 'DELETE' });
-    if (res.ok) {
-      await loadSkillDetail(name);
-    }
-  }
-
   // ------------------------------------------------------------------
   //  Polling lifecycle
   // ------------------------------------------------------------------
@@ -582,8 +517,6 @@
     $('#detail-close').addEventListener('click', () => $('#detail').close());
     $('#skill-filter').addEventListener('input', (e) => { skillsState.filter = e.target.value; renderSkillsRows(); });
     $('#skill-sort').addEventListener('change', (e) => { skillsState.sort = e.target.value; renderSkillsRows(); });
-    $('#rating-save').addEventListener('click', saveRating);
-    $('#rating-clear').addEventListener('click', clearRating);
   }
 
   bind();

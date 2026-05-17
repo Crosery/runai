@@ -363,9 +363,9 @@ impl Database {
         Ok(())
     }
 
-    /// Look up the (llm_score, user_stars_opt) for one skill. Returns sane
-    /// defaults (llm 50, user None) when entries are missing.
-    pub fn skill_scores(&self, name: &str) -> Result<(i64, Option<i64>)> {
+    /// Look up the LLM quality score (0-10) for one skill. Returns 5 when
+    /// the skill has no summary row yet.
+    pub fn skill_llm_score(&self, name: &str) -> Result<i64> {
         let llm: i64 = self
             .conn
             .query_row(
@@ -373,23 +373,13 @@ impl Database {
                 params![name],
                 |r| r.get(0),
             )
-            .unwrap_or(50);
-        let user: Option<i64> = self
-            .conn
-            .query_row(
-                "SELECT score FROM resource_user_rating WHERE name = ?1",
-                params![name],
-                |r| r.get(0),
-            )
-            .ok();
-        Ok((llm, user))
+            .unwrap_or(5);
+        Ok(llm)
     }
 
-    /// Batch-load `name -> (llm_score, user_stars_opt)` for all skills. Used
-    /// by the router to splice scores into the candidate listing and by the
-    /// dashboard /api/skills endpoint.
-    pub fn skill_scores_all(&self) -> Result<HashMap<String, (i64, Option<i64>)>> {
-        let mut out: HashMap<String, (i64, Option<i64>)> = HashMap::new();
+    /// Batch-load `name -> llm_score` for all skills with a summary row.
+    /// Used by the router for the hybrid prefilter and by the dashboard.
+    pub fn skill_llm_scores_all(&self) -> Result<HashMap<String, i64>> {
         let mut stmt = self
             .conn
             .prepare("SELECT name, llm_score FROM resource_ai_summary")?;
@@ -398,22 +388,10 @@ impl Database {
             let s: i64 = r.get(1)?;
             Ok((n, s))
         })?;
+        let mut out = HashMap::new();
         for row in rows {
             let (n, s) = row?;
-            out.insert(n, (s, None));
-        }
-        let mut stmt = self
-            .conn
-            .prepare("SELECT name, score FROM resource_user_rating")?;
-        let rows = stmt.query_map([], |r| {
-            let n: String = r.get(0)?;
-            let s: i64 = r.get(1)?;
-            Ok((n, s))
-        })?;
-        for row in rows {
-            let (n, stars) = row?;
-            let entry = out.entry(n).or_insert((50, None));
-            entry.1 = Some(stars);
+            out.insert(n, s);
         }
         Ok(out)
     }
@@ -443,111 +421,20 @@ impl Database {
         Ok(())
     }
 
-    /// Upsert a user score (1-10) and optional note for a skill. Default
-    /// `source = "manual"` (network POST from dashboard). Use
-    /// `set_user_rating_auto` for transcript-mined feedback that should
-    /// NOT clobber explicit user input.
-    pub fn set_user_rating(&self, name: &str, score: i64, note: &str) -> Result<()> {
-        self.set_user_rating_with_source(name, score, note, "manual")
-    }
-
-    /// Upsert an auto-mined user rating. Refuses to overwrite an existing
-    /// manual rating (so dashboard input always wins over mining heuristics).
-    /// Returns Ok(true) if the rating was written, Ok(false) if it was
-    /// skipped because a manual rating exists.
-    pub fn set_user_rating_auto(&self, name: &str, score: i64, note: &str) -> Result<bool> {
-        // Check existing source first
-        let existing_source: Option<String> = self
-            .conn
-            .query_row(
-                "SELECT source FROM resource_user_rating WHERE name = ?1",
-                params![name],
-                |r| r.get(0),
-            )
-            .ok();
-        if existing_source.as_deref() == Some("manual") {
-            return Ok(false);
-        }
-        self.set_user_rating_with_source(name, score, note, "auto")?;
-        Ok(true)
-    }
-
-    fn set_user_rating_with_source(
-        &self,
-        name: &str,
-        score: i64,
-        note: &str,
-        source: &str,
-    ) -> Result<()> {
-        if !(1..=10).contains(&score) {
-            anyhow::bail!("user score must be 1..=10, got {score}");
-        }
-        self.conn.execute(
-            "INSERT INTO resource_user_rating (name, score, note, updated_at, source)
-             VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(name) DO UPDATE SET
-                score = excluded.score,
-                note  = excluded.note,
-                updated_at = excluded.updated_at,
-                source = excluded.source",
-            params![name, score, note, chrono::Utc::now().timestamp(), source],
-        )?;
-        Ok(())
-    }
-
-    /// Return note + ts for one user rating, or empty defaults if missing.
-    pub fn skill_user_note(&self, name: &str) -> Result<(String, i64)> {
-        let r = self
-            .conn
-            .query_row(
-                "SELECT note, updated_at FROM resource_user_rating WHERE name = ?1",
-                params![name],
-                |row| {
-                    let note: String = row.get(0)?;
-                    let ts: i64 = row.get(1)?;
-                    Ok((note, ts))
-                },
-            )
-            .unwrap_or_default();
-        Ok(r)
-    }
-
-    pub fn delete_user_rating(&self, name: &str) -> Result<()> {
-        self.conn.execute(
-            "DELETE FROM resource_user_rating WHERE name = ?1",
-            params![name],
-        )?;
-        Ok(())
-    }
-
-    /// Drop AI summary + user rating rows for a skill. Called from
-    /// `trash_resource` so deleted skills don't leak scoring data into the
-    /// dashboard's enrichment-progress count. Safe to call when rows don't
-    /// exist (DELETE matches zero rows).
+    /// Drop AI summary for a skill. Called from `trash_resource` so deleted
+    /// skills don't leak scoring data into the dashboard's enrichment count.
     pub fn delete_skill_scoring(&self, name: &str) -> Result<()> {
         self.conn.execute(
             "DELETE FROM resource_ai_summary WHERE name = ?1",
             params![name],
         )?;
-        self.conn.execute(
-            "DELETE FROM resource_user_rating WHERE name = ?1",
-            params![name],
-        )?;
         Ok(())
     }
 
-    /// Wipe all LLM summaries / scores and/or all user ratings.
-    /// Returns (summaries_deleted, ratings_deleted).
-    pub fn reset_scoring(&self, summaries: bool, ratings: bool) -> Result<(usize, usize)> {
-        let mut s = 0usize;
-        let mut r = 0usize;
-        if summaries {
-            s = self.conn.execute("DELETE FROM resource_ai_summary", [])?;
-        }
-        if ratings {
-            r = self.conn.execute("DELETE FROM resource_user_rating", [])?;
-        }
-        Ok((s, r))
+    /// Wipe all LLM summaries. Next enrich pass rebuilds.
+    pub fn reset_summaries(&self) -> Result<usize> {
+        let s = self.conn.execute("DELETE FROM resource_ai_summary", [])?;
+        Ok(s)
     }
 
     /// Recent router_events that picked this skill (its name is in chosen

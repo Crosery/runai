@@ -133,7 +133,6 @@
             <option value="score-asc">综合分低 → 高</option>
             <option value="used-desc">使用次数高 → 低</option>
             <option value="name">按名字</option>
-            <option value="unrated">未评分优先</option>
             <option value="unenriched">未富集优先</option>
           </select>
         </div>
@@ -144,8 +143,6 @@
                 <th>skill</th>
                 <th class="num">used</th>
                 <th class="num">LLM</th>
-                <th class="num">用户</th>
-                <th class="num">综合</th>
                 <th>描述</th>
               </tr>
             </thead>
@@ -171,29 +168,10 @@
             <div class="stat-value" id="skill-detail-used">—</div>
           </div>
           <div class="stat-block">
-            <div class="stat-label">LLM 评分 (40%)</div>
+            <div class="stat-label">LLM 评分</div>
             <div class="stat-value" id="skill-detail-llm">—</div>
           </div>
-          <div class="stat-block">
-            <div class="stat-label">用户评分 (60%)</div>
-            <div class="stat-value" id="skill-detail-user">—</div>
-          </div>
-          <div class="stat-block">
-            <div class="stat-label">综合</div>
-            <div class="stat-value" id="skill-detail-combined">—</div>
-          </div>
         </div>
-
-        <div class="section-label">你的评分 (1-10)</div>
-        <div class="rating-row" id="skill-detail-rating">
-          <div class="score-buttons" id="score-buttons"></div>
-          <button class="rating-clear" id="rating-clear" type="button" hidden>清除评分</button>
-        </div>
-        <div class="rating-note-row">
-          <input type="text" id="rating-note" class="ctrl ctrl-input" placeholder="备注 (可选 — 写下你为什么这样打分)" />
-          <button class="primary" id="rating-save" type="button">保存评分</button>
-        </div>
-        <div class="rating-note-meta" id="rating-meta"></div>
 
         <div class="section-label">AI 摘要 (BM25 索引信号)</div>
         <div class="prompt-block" id="skill-detail-summary"></div>
