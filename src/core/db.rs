@@ -473,6 +473,22 @@ impl Database {
         Ok(())
     }
 
+    /// Drop AI summary + user rating rows for a skill. Called from
+    /// `trash_resource` so deleted skills don't leak scoring data into the
+    /// dashboard's enrichment-progress count. Safe to call when rows don't
+    /// exist (DELETE matches zero rows).
+    pub fn delete_skill_scoring(&self, name: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM resource_ai_summary WHERE name = ?1",
+            params![name],
+        )?;
+        self.conn.execute(
+            "DELETE FROM resource_user_rating WHERE name = ?1",
+            params![name],
+        )?;
+        Ok(())
+    }
+
     /// Wipe all LLM summaries / scores and/or all user ratings.
     /// Returns (summaries_deleted, ratings_deleted).
     pub fn reset_scoring(&self, summaries: bool, ratings: bool) -> Result<(usize, usize)> {

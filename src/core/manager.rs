@@ -738,6 +738,11 @@ impl SkillManager {
         }
 
         let group_ids = self.db.take_groups_for_resource(resource_id)?;
+        // Drop AI summary + user rating rows so they don't linger in the
+        // dashboard's enrichment-progress count for a skill that's been
+        // trashed. If the user restores the skill, they can re-run
+        // `runai recommend enrich` to regenerate.
+        self.db.delete_skill_scoring(&resource.name)?;
         self.db.delete_resource(resource_id)?;
 
         let entry = TrashEntry {
