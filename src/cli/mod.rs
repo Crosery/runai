@@ -1050,6 +1050,7 @@ fn handle_recommend(
             };
             println!("api_key:        {key_status}");
             println!("top_k:          {}", cfg.top_k);
+            println!("summary_lang:   {}", cfg.summary_lang);
             println!("min_prompt_len: {}", cfg.min_prompt_len);
             println!("config file:    {}", mgr.paths().config_path().display());
             Ok(())
@@ -1352,6 +1353,22 @@ fn recommend_setup(mgr: &SkillManager) -> Result<()> {
     } else {
         cur.api_key = String::new();
     }
+
+    // Ask the user which language to write skill summaries in. Matching the
+    // daily chat language gives the best BM25 recall — the summary is what
+    // the router queries against, so keyword overlap matters.
+    writeln!(stdout)?;
+    writeln!(
+        stdout,
+        "summary_lang: AI summary 用什么语言写? (按你日常对话的主语言选，BM25 检索靠它命中)\n\
+         可选: zh / en / ja / bilingual / 或自定义字符串 (例: '中文 + 英文关键词')"
+    )?;
+    let lang_default = if cur.summary_lang.is_empty() {
+        "zh"
+    } else {
+        cur.summary_lang.as_str()
+    };
+    cur.summary_lang = ask("summary_lang", lang_default, &mut lock)?;
 
     cur.enabled = true;
     cur.save(mgr.paths())?;

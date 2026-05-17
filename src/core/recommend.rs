@@ -70,6 +70,17 @@ pub struct RecommendConfig {
     pub api_key: String,
     pub top_k: usize,
     pub min_prompt_len: usize,
+    /// Language the enrich pass writes the AI summary in. Match the user's
+    /// daily-chat language — BM25 tokenization is keyword-based, so summary
+    /// language directly drives recall. Default "zh" (中文) for CN users.
+    /// Common values: "zh" / "en" / "ja" / "bilingual" / any custom string
+    /// like "中文 + 英文关键词" that the LLM will follow literally.
+    #[serde(default = "default_summary_lang")]
+    pub summary_lang: String,
+}
+
+fn default_summary_lang() -> String {
+    "zh".to_string()
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -94,6 +105,7 @@ impl Default for RecommendConfig {
             api_key: String::new(),
             top_k: 3,
             min_prompt_len: 0,
+            summary_lang: default_summary_lang(),
         }
     }
 }
@@ -711,7 +723,12 @@ pub fn enrich_skills(
                         }
                     };
                     let body_slice: String = body.chars().take(4000).collect();
-                    let user_msg = build_enrich_prompt(&job.name, &job.description, &body_slice);
+                    let user_msg = build_enrich_prompt(
+                        &job.name,
+                        &job.description,
+                        &body_slice,
+                        &cfg.summary_lang,
+                    );
 
                     let result = call_summary_llm(&cfg, &api_key, &user_msg);
                     let done = progress.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
@@ -774,24 +791,39 @@ pub fn enrich_skills(
     Ok(final_report)
 }
 
-/// Build the user-message for the summarisation call. Instruction is bilingual
-/// so summaries also come back bilingual, which is the whole point — that's
-/// what lets BM25 bridge across languages on future queries. Also asks for a
-/// quality score 0-100 that the router will splice into the candidate listing.
-fn build_enrich_prompt(name: &str, description: &str, skill_md: &str) -> String {
+/// Build the user-message for the summarisation call. The output language
+/// is whatever the user picked at setup (`summary_lang` config, default
+/// "zh"). Keep it concise so BM25 tokens are mostly query-domain keywords.
+fn build_enrich_prompt(
+    name: &str,
+    description: &str,
+    skill_md: &str,
+    summary_lang: &str,
+) -> String {
+    let lang = summary_lang.trim();
+    let lang_directive = match lang {
+        "" | "zh" => "请用**中文**写所有字段（除了 score 是数字）。",
+        "en" => "Write all fields in **English** (except `score` which is a number).",
+        "ja" => "**日本語**で全フィールドを書いてください（scoreは数字）。",
+        "bilingual" => "Write each field in BOTH Chinese and English, separated by ' / '.",
+        other => &format!("Write all fields in: {other}"),
+    };
     format!(
         "你是 skill 索引员 / skill indexer.\n\
         \n\
-        给定下面这个 skill 的元数据 + SKILL.md 摘要，生成一段简短的双语索引摘要 (Chinese + English keywords mixed) 供 BM25 检索使用，并对 skill 的整体质量打分 0-100。\n\
-        Output FORMAT (strict, exactly 6 short lines, no extras):\n\
-        task: <一句话/one sentence — 解决什么任务 / what task it solves>\n\
-        triggers: <中英文触发词逗号分隔 / comma-separated EN+CJK trigger keywords>\n\
-        inputs: <典型输入 / typical inputs>\n\
-        outputs: <典型输出 / typical outputs>\n\
-        not-for: <不适用场景 / when NOT to use, comma-separated>\n\
-        score: <0-10 — integer reflecting SKILL.md clarity, specificity, usefulness; 5=neutral, 8+=well-defined+useful, <3=vague or trivial>\n\
+        给定下面这个 skill 的元数据 + SKILL.md 摘要，生成一段简短的索引摘要供 BM25 检索使用，并对 skill 的整体质量打分 0-10。\n\
         \n\
-        Total length cap: 500 characters total. No prose, no markdown headings, no quote blocks.\n\
+        {lang_directive}\n\
+        \n\
+        Output FORMAT (strict, exactly 6 short lines, no extras):\n\
+        task: <一句话 — 解决什么任务>\n\
+        triggers: <触发关键词，逗号分隔>\n\
+        inputs: <典型输入>\n\
+        outputs: <典型输出>\n\
+        not-for: <不适用场景，逗号分隔>\n\
+        score: <0-10 integer reflecting SKILL.md clarity / specificity / usefulness; 5=neutral, 8+=well-defined+useful, <3=vague or trivial>\n\
+        \n\
+        Total length cap: 500 characters. No prose, no markdown headings, no quote blocks.\n\
         \n\
         --- skill name ---\n\
         {name}\n\
