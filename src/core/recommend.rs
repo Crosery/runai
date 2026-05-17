@@ -4,10 +4,21 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use crate::core::bm25;
 use crate::core::db::RouterEvent;
 use crate::core::manager::SkillManager;
 use crate::core::paths::AppPaths;
 use crate::core::resource::ResourceKind;
+
+/// Skill prefilter cap: how many candidates the BM25 ranker keeps before the
+/// LLM precision-picks. Anthropic's Contextual Retrieval paper finds 20-50
+/// gives the best signal-to-noise for downstream LLM rerank. 50 leaves room
+/// for the LLM to ignore false positives without losing genuine candidates.
+const BM25_TOP_K: usize = 50;
+/// If the user prompt tokenizes to fewer than this many terms (e.g. "ok"),
+/// skip BM25 and pass the full candidate set — BM25 on a single token would
+/// pick a near-random top-K and exclude unrelated-but-relevant skills.
+const BM25_MIN_QUERY_TERMS: usize = 2;
 
 // All router prompts and hook output templates live in src/core/prompts/ so
 // they are not scattered through the code. Edit those files to retune wording;
@@ -16,6 +27,8 @@ const SYSTEM_PROMPT_TEMPLATE: &str = include_str!("prompts/recommend_system.md")
 const USER_MSG_TEMPLATE: &str = include_str!("prompts/recommend_user.md");
 const HISTORY_PREFIX_TEMPLATE: &str = include_str!("prompts/recommend_history_prefix.md");
 const ALREADY_ROUTED_TEMPLATE: &str = include_str!("prompts/recommend_already_routed.md");
+const CWD_PREFIX_TEMPLATE: &str = include_str!("prompts/recommend_cwd_prefix.md");
+const PROJECT_CONTEXT_TEMPLATE: &str = include_str!("prompts/recommend_project_context.md");
 const HOOK_INLINE_TEMPLATE: &str = include_str!("prompts/hook_inline.md");
 const HOOK_POINTER_TEMPLATE: &str = include_str!("prompts/hook_pointer.md");
 const HOOK_MULTI_TEMPLATE: &str = include_str!("prompts/hook_multi.md");
@@ -54,6 +67,11 @@ pub struct RecommendConfig {
 pub enum Provider {
     OpenaiCompat,
     Anthropic,
+    /// Spawn `claude -p --model <model>` (uses the user's Claude Code session,
+    /// including Max plan quota — no API key needed). Slower than direct API
+    /// because each call boots Claude Code's full system prompt (~5-10s per
+    /// run even with cache hits), but free for Max subscribers.
+    ClaudeCli,
 }
 
 impl Default for RecommendConfig {
@@ -153,6 +171,7 @@ pub fn recommend(
     user_prompt: &str,
     transcript_path: Option<&Path>,
     session_id: Option<&str>,
+    cwd: Option<&str>,
 ) -> Result<RouterDecision> {
     let cfg = RecommendConfig::load(mgr.paths())?;
     if !cfg.enabled {
@@ -167,9 +186,13 @@ pub fn recommend(
             skills: Vec::new(),
         });
     }
-    let api_key = cfg
-        .effective_api_key()
-        .context("recommend api_key not configured: run `runai recommend setup` or set RUNAI_RECOMMEND_API_KEY")?;
+    // ClaudeCli reuses the user's Claude Code session — no API key needed.
+    let api_key = if cfg.provider == Provider::ClaudeCli {
+        String::new()
+    } else {
+        cfg.effective_api_key()
+            .context("recommend api_key not configured: run `runai recommend setup` or set RUNAI_RECOMMEND_API_KEY")?
+    };
 
     let already_routed = match session_id {
         Some(sid) if !sid.is_empty() => mgr
@@ -180,27 +203,71 @@ pub fn recommend(
     };
 
     let resources = mgr.list_resources(None, None)?;
-    let candidates: Vec<_> = resources
+    let all_candidates: Vec<_> = resources
         .into_iter()
         .filter(|r| r.kind == ResourceKind::Skill)
         .collect();
-    if candidates.is_empty() {
+    if all_candidates.is_empty() {
         return Ok(RouterDecision {
             mode: RouterMode::Exclusive,
             skills: Vec::new(),
         });
     }
 
+    // BM25 prefilter. Without it the LLM sees all ~343 candidates and gets
+    // noise-flooded — empirically this is what tanks chosen-rate to ~46%
+    // even when a relevant skill exists. After prefilter the LLM sees a
+    // focused top-K with strong term-overlap with the user prompt.
+    //
+    // Short / ambiguous prompts (< 2 query terms) skip the prefilter — BM25
+    // on a single token degenerates to "any doc containing that token" and
+    // hides legitimate matches whose desc happens to use a synonym.
+    let bm25_disabled = std::env::var("RUNAI_BM25_DISABLED").is_ok();
+    let q_terms = bm25::tokenize(user_prompt);
+    let candidates: Vec<_> = if bm25_disabled || q_terms.len() < BM25_MIN_QUERY_TERMS {
+        all_candidates
+    } else {
+        let docs: Vec<String> = all_candidates
+            .iter()
+            .map(|r| format!("{} {}", r.name, r.description))
+            .collect();
+        let ranked = bm25::rank(user_prompt, &docs);
+        // Keep only docs with positive score; if none score (totally
+        // unrelated prompt) fall back to passing all candidates so the LLM
+        // can still make a semantic judgement.
+        let positive: Vec<_> = ranked.iter().filter(|(_, s)| *s > 0.0).take(BM25_TOP_K).collect();
+        if positive.is_empty() {
+            all_candidates
+        } else {
+            positive
+                .into_iter()
+                .map(|(i, _)| all_candidates[*i].clone())
+                .collect()
+        }
+    };
+    if std::env::var("RUNAI_RECOMMEND_DEBUG").is_ok() {
+        eprintln!(
+            "[recommend debug] bm25 prefilter: total={}, kept={}",
+            mgr.list_resources(None, None)?
+                .iter()
+                .filter(|r| r.kind == ResourceKind::Skill)
+                .count(),
+            candidates.len()
+        );
+    }
+
     let candidate_listing: String = candidates
         .iter()
         .map(|r| {
-            let desc: String = r.description.chars().take(160).collect();
             let usage_tag = if r.usage_count > 0 {
                 format!(" [used:{}]", r.usage_count)
             } else {
                 String::new()
             };
-            format!("- {}{usage_tag}: {desc}", r.name)
+            // Description is already capped at 200 chars at adoption time
+            // (see scanner / classifier). No further truncation here — the
+            // router needs the full signal.
+            format!("- {}{usage_tag}: {}", r.name, r.description)
         })
         .collect::<Vec<_>>()
         .join("\n");
@@ -220,9 +287,20 @@ pub fn recommend(
         ALREADY_ROUTED_TEMPLATE.replace("{ALREADY_ROUTED}", &already_routed.join(", "))
     };
 
+    let cwd_block = match cwd {
+        Some(c) if !c.is_empty() => CWD_PREFIX_TEMPLATE.replace("{CWD}", c),
+        _ => String::new(),
+    };
+    let project_context_block = match cwd {
+        Some(c) if !c.is_empty() => read_project_context(Path::new(c)),
+        _ => String::new(),
+    };
+
     let user_msg = USER_MSG_TEMPLATE
         .replace("{HISTORY_BLOCK}", &history_block)
         .replace("{ALREADY_ROUTED_BLOCK}", &already_routed_block)
+        .replace("{CWD_BLOCK}", &cwd_block)
+        .replace("{PROJECT_CONTEXT_BLOCK}", &project_context_block)
         .replace("{CANDIDATE_LISTING}", &candidate_listing)
         .replace("{USER_PROMPT}", user_prompt)
         .replace("{TOP_K}", &cfg.top_k.to_string());
@@ -270,6 +348,7 @@ pub fn recommend(
         provider: match cfg.provider {
             Provider::OpenaiCompat => "openai-compat".into(),
             Provider::Anthropic => "anthropic".into(),
+            Provider::ClaudeCli => "claude-cli".into(),
         },
         model: cfg.model.clone(),
         prompt_tokens: stats.prompt_tokens,
@@ -356,7 +435,8 @@ fn format_compatible_set(skills: &[RecommendedSkill]) -> String {
     let mut buf = String::new();
     buf.push_str("# Skill recommendations (runai recommend)\n\n");
     buf.push_str(
-        "**Compatible skill set — these skills can be combined; load them all and use as needed.** Start your reply with one short line listing the activated skills, e.g. `激活 skills: a, b, c`. Then follow the inlined SKILL.md content directly. For any skill below shown as `(too large — Read once)`, Read its path exactly once.\n\n",
+        "**Compatible skill set — these skills can be combined; load them all and use as needed.** Start your reply with one short line listing the activated skills, e.g. `激活 skills: a, b, c`. Then follow the inlined SKILL.md content directly. For any skill below shown as `(too large — Read once)`, Read its path exactly once.\n\n\
+         **These skills are already loaded for this turn via runai's UserPromptSubmit hook.** Do NOT call `sm_enable` / `sm_install` / `runai enable` / `runai install` / any 'activate' or 'install' tool — the SKILL.md content / paths below ARE the activation. Even if `sm_list` shows any of them as 'disabled', that only affects future sessions; for this turn they are usable.\n\n",
     );
     buf.push_str(&format!(
         "激活 skills: {}\n\n",
@@ -468,9 +548,81 @@ fn call_router(
     let (content_lines, stats) = match cfg.provider {
         Provider::OpenaiCompat => call_openai_compat(cfg, api_key, user_msg)?,
         Provider::Anthropic => call_anthropic(cfg, api_key, user_msg)?,
+        Provider::ClaudeCli => call_claude_cli(cfg, user_msg)?,
     };
     let (mode, names) = split_mode_and_names(content_lines);
     Ok((mode, names, stats))
+}
+
+/// Run the router via `claude -p --model <model>`. Uses the user's Claude
+/// Code session (cookies + Max plan quota), no API key. Slower than direct
+/// API because every spawn boots Claude Code's full system prompt.
+fn call_claude_cli(cfg: &RecommendConfig, user_msg: &str) -> Result<(Vec<String>, RouterCallStats)> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let combined = format!("{SYSTEM_PROMPT_TEMPLATE}\n\n{user_msg}");
+    let mut child = Command::new("claude")
+        .arg("-p")
+        .arg("--model")
+        .arg(&cfg.model)
+        .arg("--output-format")
+        .arg("json")
+        .arg("--no-session-persistence")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("spawn `claude` — make sure Claude Code CLI is on PATH")?;
+
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin
+            .write_all(combined.as_bytes())
+            .context("write prompt to claude stdin")?;
+    }
+    let out = child.wait_with_output().context("wait for claude")?;
+    if !out.status.success() {
+        bail!(
+            "claude exited {}: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|e| {
+        anyhow::anyhow!(
+            "decode claude json: {e}; first 200 bytes: {:?}",
+            String::from_utf8_lossy(&out.stdout[..out.stdout.len().min(200)])
+        )
+    })?;
+    let content = v["result"].as_str().unwrap_or_default();
+    if std::env::var("RUNAI_RECOMMEND_DEBUG").is_ok() {
+        eprintln!(
+            "[recommend debug] claude raw result: {:?}; duration_ms: {} usage: {}",
+            content,
+            v.get("duration_ms").map(|x| x.to_string()).unwrap_or_default(),
+            v.get("usage").map(|u| u.to_string()).unwrap_or_default()
+        );
+    }
+    let usage = v.get("usage");
+    let get_i64 = |k: &str| -> i64 {
+        usage
+            .and_then(|u| u.get(k))
+            .and_then(|x| x.as_i64())
+            .unwrap_or(0)
+    };
+    let input = get_i64("input_tokens");
+    let output = get_i64("output_tokens");
+    let cache_read = get_i64("cache_read_input_tokens");
+    let cache_create = get_i64("cache_creation_input_tokens");
+    let stats = RouterCallStats {
+        prompt_tokens: input + cache_read + cache_create,
+        completion_tokens: output,
+        reasoning_tokens: 0,
+        total_tokens: input + cache_read + cache_create + output,
+        cache_hit_tokens: cache_read,
+        cache_miss_tokens: cache_create,
+    };
+    Ok((parse_lines(content), stats))
 }
 
 /// Pop the first non-empty line as the mode tag; remaining lines are skill
@@ -557,7 +709,10 @@ fn call_openai_compat(
         "stream": false,
     });
     let resp = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
+        // 60s timeout accommodates OpenRouter free tier which routes to
+        // third-party providers and can take 5-10s. DeepSeek direct stays at
+        // ~0.6s. Long-tail bound to keep hook from hanging the main agent.
+        .timeout(std::time::Duration::from_secs(60))
         .build()?
         .post(&url)
         .bearer_auth(api_key)
@@ -571,7 +726,17 @@ fn call_openai_compat(
             resp.text().unwrap_or_default()
         );
     }
-    let v: serde_json::Value = resp.json().context("decode router json")?;
+    // OpenRouter sends SSE-style keep-alive blanks before the final JSON, so
+    // `resp.json()` chokes. Read as text and parse the trimmed body — works
+    // for DeepSeek direct (single JSON line) and OpenRouter (blanks + JSON).
+    let raw = resp.text().context("read router body")?;
+    let trimmed = raw.trim();
+    let v: serde_json::Value = serde_json::from_str(trimmed).map_err(|e| {
+        anyhow::anyhow!(
+            "decode router json: {e}; first 200 bytes: {:?}",
+            &trimmed.chars().take(200).collect::<String>()
+        )
+    })?;
     let content = v["choices"][0]["message"]["content"]
         .as_str()
         .unwrap_or_default();
@@ -616,6 +781,122 @@ fn call_anthropic(
     let v: serde_json::Value = resp.json().context("decode router json")?;
     let content = v["content"][0]["text"].as_str().unwrap_or_default();
     Ok((parse_lines(content), parse_anthropic_usage(&v)))
+}
+
+/// Read `<cwd>/CLAUDE.md` and any files it `@`-references, trim each to
+/// `PER_FILE_LIMIT` chars, and wrap in the PROJECT_CONTEXT template.
+/// Returns empty string when CLAUDE.md is absent — AGENTS.md and other docs
+/// are only pulled in if CLAUDE.md explicitly references them via `@<path>`.
+///
+/// Why: the router LLM only sees user prompt + cwd path string — it doesn't
+/// know the project's tool conventions. Injecting CLAUDE.md (and the files
+/// it points at via Claude Code's `@<file>` reference syntax) lets it learn
+/// e.g. "kaiwu has a `kaiwu submit` command", so when the user says "提交
+/// 模型" in that cwd it routes correctly instead of defaulting to `github`.
+///
+/// Scope: CLAUDE.md is the entry point. Its `@<relative-or-absolute-path>`
+/// references are resolved one level deep (no recursion through referenced
+/// files' own `@` references — keeps prompt size bounded and avoids cycles).
+fn read_project_context(cwd: &Path) -> String {
+    const PER_FILE_LIMIT: usize = 2500;
+    const MAX_REFERENCED_FILES: usize = 5;
+
+    let claude_path = cwd.join("CLAUDE.md");
+    let claude_raw = match fs::read_to_string(&claude_path) {
+        Ok(s) => s,
+        Err(_) => return String::new(),
+    };
+    let trimmed = claude_raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let mut blocks: Vec<String> = Vec::new();
+    blocks.push(format_doc_block("CLAUDE.md", trimmed, PER_FILE_LIMIT));
+
+    // Pull in files referenced by @<path>. Only `.md` / `.txt` files are
+    // honored — anything else is probably a code path the LLM doesn't need.
+    let refs = extract_at_references(trimmed);
+    let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    seen.insert(claude_path.clone());
+    for raw_ref in refs.into_iter().take(MAX_REFERENCED_FILES) {
+        let lower = raw_ref.to_ascii_lowercase();
+        if !lower.ends_with(".md") && !lower.ends_with(".txt") {
+            continue;
+        }
+        let target = if Path::new(&raw_ref).is_absolute() {
+            PathBuf::from(&raw_ref)
+        } else {
+            cwd.join(&raw_ref)
+        };
+        let canonical = target.canonicalize().unwrap_or_else(|_| target.clone());
+        if !seen.insert(canonical.clone()) {
+            continue;
+        }
+        if let Ok(content) = fs::read_to_string(&target) {
+            let t = content.trim();
+            if t.is_empty() {
+                continue;
+            }
+            blocks.push(format_doc_block(&raw_ref, t, PER_FILE_LIMIT));
+        }
+    }
+
+    PROJECT_CONTEXT_TEMPLATE.replace("{PROJECT_DOCS}", &blocks.join("\n\n"))
+}
+
+fn format_doc_block(label: &str, body: &str, limit: usize) -> String {
+    let snippet: String = body.chars().take(limit).collect();
+    let truncated_note = if body.chars().count() > limit {
+        "\n[…truncated]"
+    } else {
+        ""
+    };
+    format!("--- {label} ---\n{snippet}{truncated_note}")
+}
+
+/// Extract `@<path>` references from a CLAUDE.md body. Matches the Claude
+/// Code file-reference syntax: an `@` followed by a path token (letters,
+/// digits, `._/-`). The leading `@` must be at start-of-line or preceded by
+/// whitespace so we don't pick up email addresses or `@mentions`. Returns
+/// paths in the order they appear, deduplicated.
+fn extract_at_references(body: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for line in body.lines() {
+        let bytes = line.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'@' && (i == 0 || bytes[i - 1].is_ascii_whitespace()) {
+                let start = i + 1;
+                let mut end = start;
+                while end < bytes.len() {
+                    let c = bytes[end];
+                    let ok = c.is_ascii_alphanumeric()
+                        || c == b'.'
+                        || c == b'_'
+                        || c == b'/'
+                        || c == b'-';
+                    if !ok {
+                        break;
+                    }
+                    end += 1;
+                }
+                if end > start {
+                    let token = &line[start..end];
+                    if (token.contains('.') || token.contains('/'))
+                        && seen.insert(token.to_string())
+                    {
+                        out.push(token.to_string());
+                    }
+                }
+                i = end;
+            } else {
+                i += 1;
+            }
+        }
+    }
+    out
 }
 
 /// Read the most recent `n` user/assistant text messages from a Claude Code
@@ -846,6 +1127,85 @@ mod tests {
     fn parse_empty_input() {
         assert!(parse_lines("").is_empty());
         assert!(parse_lines("   \n\n").is_empty());
+    }
+
+    #[test]
+    fn extract_at_refs_basic() {
+        let body = "# header\n@AGENTS.md\nsome text\n";
+        assert_eq!(extract_at_references(body), vec!["AGENTS.md"]);
+    }
+
+    #[test]
+    fn extract_at_refs_inline_and_relative_paths() {
+        let body = "see @docs/spec.md and @../shared.md\nbut not user@example.com";
+        let refs = extract_at_references(body);
+        assert_eq!(refs, vec!["docs/spec.md", "../shared.md"]);
+    }
+
+    #[test]
+    fn extract_at_refs_dedupes() {
+        let body = "@AGENTS.md\n@AGENTS.md\n@AGENTS.md\n";
+        assert_eq!(extract_at_references(body), vec!["AGENTS.md"]);
+    }
+
+    #[test]
+    fn extract_at_refs_requires_path_like_token() {
+        // Plain `@word` (no dot, no slash) — likely an @mention, skip.
+        let body = "@mention not-a-file\n@./local.md yes\n";
+        assert_eq!(extract_at_references(body), vec!["./local.md"]);
+    }
+
+    #[test]
+    fn project_context_returns_empty_without_claude_md() {
+        let tmp = tempfile::tempdir().unwrap();
+        // AGENTS.md alone is no longer enough — CLAUDE.md is the entry point.
+        fs::write(tmp.path().join("AGENTS.md"), "# agents only").unwrap();
+        assert!(read_project_context(tmp.path()).is_empty());
+    }
+
+    #[test]
+    fn project_context_inlines_claude_md_when_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("CLAUDE.md"), "# project rules\nbe nice").unwrap();
+        let out = read_project_context(tmp.path());
+        assert!(out.contains("--- CLAUDE.md ---"));
+        assert!(out.contains("project rules"));
+        // No @ refs in this file -> AGENTS.md is NOT pulled in even if it exists.
+        fs::write(tmp.path().join("AGENTS.md"), "# secret agents").unwrap();
+        let out2 = read_project_context(tmp.path());
+        assert!(!out2.contains("secret agents"));
+    }
+
+    #[test]
+    fn project_context_follows_at_refs_to_agents_md() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(
+            tmp.path().join("CLAUDE.md"),
+            "# project\n@AGENTS.md\nmore content",
+        )
+        .unwrap();
+        fs::write(tmp.path().join("AGENTS.md"), "# agents body\ndo X").unwrap();
+        let out = read_project_context(tmp.path());
+        assert!(out.contains("--- CLAUDE.md ---"));
+        assert!(out.contains("--- AGENTS.md ---"));
+        assert!(out.contains("agents body"));
+    }
+
+    #[test]
+    fn project_context_ignores_nonmd_at_refs() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(
+            tmp.path().join("CLAUDE.md"),
+            "@code.rs\n@notes.md\n@image.png",
+        )
+        .unwrap();
+        fs::write(tmp.path().join("code.rs"), "fn main() {}").unwrap();
+        fs::write(tmp.path().join("notes.md"), "# notes inlined").unwrap();
+        fs::write(tmp.path().join("image.png"), b"\x89PNG").unwrap();
+        let out = read_project_context(tmp.path());
+        assert!(out.contains("notes inlined"));
+        assert!(!out.contains("fn main"));
+        assert!(!out.contains("PNG"));
     }
 
     fn decision(mode: RouterMode, skills: Vec<RecommendedSkill>) -> RouterDecision {

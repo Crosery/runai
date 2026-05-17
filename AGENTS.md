@@ -146,6 +146,7 @@ File-level LLM docs follow the convention `<name>.LLM.md` as a sibling to the so
 | cli | [src/cli/mod.rs](src/cli/mod.rs) | [src/cli/mod.LLM.md](src/cli/mod.LLM.md) | clap subcommand dispatcher + TUI launcher |
 | core::auto_group | [src/core/auto_group.rs](src/core/auto_group.rs) | [src/core/auto_group.LLM.md](src/core/auto_group.LLM.md) | Heuristic grouping of freshly-installed resources |
 | core::backup | [src/core/backup.rs](src/core/backup.rs) | [src/core/backup.LLM.md](src/core/backup.LLM.md) | Timestamped backup/restore of managed data and CLI configs |
+| core::bm25 | [src/core/bm25.rs](src/core/bm25.rs) | — | Minimal bilingual BM25 ranker used by `recommend` to prefilter the candidate set before LLM rerank |
 | core::channel | [src/core/channel.rs](src/core/channel.rs) | [src/core/channel.LLM.md](src/core/channel.LLM.md) | Release channel (stable / beta) selection |
 | core::classifier | [src/core/classifier.rs](src/core/classifier.rs) | [src/core/classifier.LLM.md](src/core/classifier.LLM.md) | Classifies installable artifacts into Skill vs MCP vs Agent |
 | core::cli_target | [src/core/cli_target.rs](src/core/cli_target.rs) | [src/core/cli_target.LLM.md](src/core/cli_target.LLM.md) | CliTarget enum + per-target dir/config resolvers |
@@ -221,7 +222,7 @@ cargo test -- --test-threads=1   # default in CI; SQLite dislikes parallel I/O h
 cargo test --lib <module>        # scope to a module
 ```
 
-**Test count varies by platform**: unix currently runs 219 lib tests + 20 integration tests (7 safety_e2e + 5 cli_target_symmetry + 7 mcp_canonical_e2e + 1 mcp_stdio) = 239 active, plus 1 ignored (`install_test::test_real_install_minimax`, manual network test). Windows skips `manager::tests`, `safety_e2e`, `cli_target_symmetry`, and `mcp_canonical_e2e` because HOME mocking + symlinks are unix-only — the count is lower there. That's intentional — see Key constraints.
+**Test count varies by platform**: unix currently runs 236 lib tests + 20 integration tests (7 safety_e2e + 5 cli_target_symmetry + 7 mcp_canonical_e2e + 1 mcp_stdio) = 256 active, plus 1 ignored (`install_test::test_real_install_minimax`, manual network test). Windows skips `manager::tests`, `safety_e2e`, `cli_target_symmetry`, and `mcp_canonical_e2e` because HOME mocking + symlinks are unix-only — the count is lower there. That's intentional — see Key constraints.
 
 ---
 

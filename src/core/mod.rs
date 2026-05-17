@@ -1,5 +1,6 @@
 pub mod auto_group;
 pub mod backup;
+pub mod bm25;
 pub mod channel;
 pub mod classifier;
 pub mod cli_target;

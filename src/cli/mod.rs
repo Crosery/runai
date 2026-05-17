@@ -818,8 +818,8 @@ fn handle_recommend(
             // Stdin-JSON mode lets the router see recent conversation history,
             // which is how "use figma-component-mapping" replies get auto-routed
             // to the right skill on the next round.
-            let (user_prompt, transcript_path, session_id) = match prompt_opt {
-                Some(p) => (p, None, None),
+            let (user_prompt, transcript_path, session_id, cwd) = match prompt_opt {
+                Some(p) => (p, None, None, None),
                 None => {
                     use std::io::Read;
                     let mut buf = String::new();
@@ -844,7 +844,8 @@ fn handle_recommend(
                         .get("session_id")
                         .and_then(|x| x.as_str())
                         .map(String::from);
-                    (p, tp, sid)
+                    let cwd_s = v.get("cwd").and_then(|x| x.as_str()).map(String::from);
+                    (p, tp, sid, cwd_s)
                 }
             };
 
@@ -857,6 +858,7 @@ fn handle_recommend(
                 &user_prompt,
                 transcript_path.as_deref(),
                 session_id.as_deref(),
+                cwd.as_deref(),
             ) {
                 Ok(decision) => {
                     let out = format_for_hook(&decision);
@@ -882,6 +884,7 @@ fn handle_recommend(
                 match cfg.provider {
                     Provider::OpenaiCompat => "openai-compat",
                     Provider::Anthropic => "anthropic",
+                    Provider::ClaudeCli => "claude-cli",
                 }
             );
             println!("base_url:       {}", cfg.base_url);
@@ -1043,39 +1046,49 @@ fn recommend_setup(mgr: &SkillManager) -> Result<()> {
     )?;
 
     let provider_str = ask(
-        "provider (openai-compat / anthropic)",
+        "provider (openai-compat / anthropic / claude-cli)",
         match cur.provider {
             Provider::OpenaiCompat => "openai-compat",
             Provider::Anthropic => "anthropic",
+            Provider::ClaudeCli => "claude-cli",
         },
         &mut lock,
     )?;
     cur.provider = match provider_str.as_str() {
         "anthropic" => Provider::Anthropic,
+        "claude-cli" => Provider::ClaudeCli,
         _ => Provider::OpenaiCompat,
     };
 
-    let default_base = match cur.provider {
-        Provider::OpenaiCompat => {
-            if cur.base_url.is_empty() {
-                "https://api.deepseek.com/v1"
-            } else {
-                cur.base_url.as_str()
+    // claude-cli reuses the user's Claude Code session; no base_url / api_key
+    // needed. Skip those prompts.
+    if cur.provider != Provider::ClaudeCli {
+        let default_base = match cur.provider {
+            Provider::OpenaiCompat => {
+                if cur.base_url.is_empty() {
+                    "https://api.deepseek.com/v1"
+                } else {
+                    cur.base_url.as_str()
+                }
             }
-        }
-        Provider::Anthropic => {
-            if cur.base_url.is_empty() || cur.base_url.contains("deepseek") {
-                "https://api.anthropic.com"
-            } else {
-                cur.base_url.as_str()
+            Provider::Anthropic => {
+                if cur.base_url.is_empty() || cur.base_url.contains("deepseek") {
+                    "https://api.anthropic.com"
+                } else {
+                    cur.base_url.as_str()
+                }
             }
-        }
-    };
-    cur.base_url = ask("base_url", default_base, &mut lock)?;
+            Provider::ClaudeCli => unreachable!(),
+        };
+        cur.base_url = ask("base_url", default_base, &mut lock)?;
+    } else {
+        cur.base_url = String::new();
+    }
 
     let default_model = match cur.provider {
         Provider::OpenaiCompat => "deepseek-v4-flash",
         Provider::Anthropic => "claude-haiku-4-5-20251001",
+        Provider::ClaudeCli => "haiku",
     };
     let model_default = if cur.model.is_empty() {
         default_model
@@ -1084,13 +1097,17 @@ fn recommend_setup(mgr: &SkillManager) -> Result<()> {
     };
     cur.model = ask("model", model_default, &mut lock)?;
 
-    print!("api_key (input hidden? no — paste then enter): ");
-    stdout.flush()?;
-    let mut key_line = String::new();
-    lock.read_line(&mut key_line)?;
-    let key_trimmed = key_line.trim().to_string();
-    if !key_trimmed.is_empty() {
-        cur.api_key = key_trimmed;
+    if cur.provider != Provider::ClaudeCli {
+        print!("api_key (input hidden? no — paste then enter): ");
+        stdout.flush()?;
+        let mut key_line = String::new();
+        lock.read_line(&mut key_line)?;
+        let key_trimmed = key_line.trim().to_string();
+        if !key_trimmed.is_empty() {
+            cur.api_key = key_trimmed;
+        }
+    } else {
+        cur.api_key = String::new();
     }
 
     cur.enabled = true;
