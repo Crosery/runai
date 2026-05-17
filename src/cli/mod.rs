@@ -985,7 +985,18 @@ fn handle_recommend(
             };
 
             let cfg = RecommendConfig::load(mgr.paths())?;
+            // First-run guidance: if the user hasn't configured the router
+            // yet, surface a one-time guide via hook stdout so the main
+            // Claude can walk them through `runai recommend setup` instead
+            // of silently doing nothing. We mark a `.bootstrap-seen` flag
+            // file so this only fires once per machine — no nagging.
             if !cfg.enabled {
+                let flag = mgr.paths().data_dir().join(".bootstrap-seen");
+                let already_seen = flag.exists();
+                if !already_seen {
+                    let _ = std::fs::write(&flag, b"1");
+                    print!("{}", crate::core::recommend::bootstrap_guide());
+                }
                 return Ok(());
             }
             match recommend(
@@ -1091,6 +1102,22 @@ To install/uninstall automatically (preserves existing hooks and theme):
                     println!("hook already present in {}, no changes", path.display());
                 }
                 _ => {}
+            }
+            // If the router isn't configured yet, surface a follow-up so the
+            // assistant that just ran install-hook keeps walking the user
+            // through `runai recommend setup` instead of stopping here.
+            let cfg = RecommendConfig::load(mgr.paths()).unwrap_or_default();
+            if !cfg.enabled {
+                println!();
+                println!(
+                    "next step: router is not configured yet — `enabled = false`."
+                );
+                println!(
+                    "  run `runai recommend setup` to pick a provider + paste an API key."
+                );
+                println!(
+                    "  after setup the router auto-enriches all skills and starts routing on the next prompt."
+                );
             }
             Ok(())
         }

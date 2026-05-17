@@ -1311,6 +1311,34 @@ pub fn recent_transcript_messages(transcript_path: &Path, n: usize) -> String {
         .join("\n")
 }
 
+/// First-run guidance shown as hook stdout when the router is not yet
+/// configured. The main Claude Code agent receives this as additional
+/// context and walks the user through one-shot setup.
+pub fn bootstrap_guide() -> String {
+    r#"# runai router not configured yet
+
+The skill router hook is installed but **no API key / provider is configured**, so it's currently a no-op.
+
+**Action required** — tell the user runai needs first-run setup before it can route skills, and offer to walk them through it:
+
+1. Pick a provider (DeepSeek v4 flash is the default — cheap, fast, ~$0.0001/call). Other options: any OpenAI-compatible endpoint, Anthropic API, or `claude-cli` (uses their Max plan, no extra cost but slower).
+2. Run interactive setup in their terminal:
+
+```
+runai recommend setup
+```
+
+3. After setup, runai will automatically:
+   - Generate bilingual AI summaries for all 341 skills (~10 min background)
+   - Auto-launch the http://127.0.0.1:17888 dashboard on every Claude Code session
+   - Start routing skills on every prompt
+
+The router is fully optional — if they don't want it, no action needed; this message won't repeat.
+
+Do NOT proceed with their actual prompt until they decide whether to set up the router. Ask them a short yes/no question.
+"#.to_string()
+}
+
 /// Result of attempting to install the UserPromptSubmit hook.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HookInstallStatus {
