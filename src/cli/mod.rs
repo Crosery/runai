@@ -168,6 +168,18 @@ pub enum RecommendCommands {
         #[arg(long, default_value = "0")]
         recent: usize,
     },
+    /// Record user feedback on a recently-used skill and re-evaluate its
+    /// llm_score + summary in light of it. Designed to be called by the
+    /// main Claude agent at the end of a turn when it notices a skill was
+    /// helpful or unhelpful — keeps the routing signal living, not frozen.
+    Feedback {
+        /// Skill name (must exist and have a current summary)
+        skill: String,
+        /// Short free-form note about how the skill performed
+        /// (e.g. "user said the slides were too plain" or "perfect match for figma sync")
+        #[arg(long)]
+        note: String,
+    },
     /// Wipe all LLM summaries (resource_ai_summary) — next enrich rebuilds.
     ResetScoring {
         /// Skip the "are you sure" prompt (for scripts / hooks)
@@ -1190,6 +1202,14 @@ To install/uninstall automatically (preserves existing hooks and theme):
                 }
                 _ => {}
             }
+            Ok(())
+        }
+        (Some(RecommendCommands::Feedback { skill, note }), _) => {
+            let report = crate::core::recommend::reevaluate_skill(mgr, &skill, &note)?;
+            println!(
+                "feedback applied to {skill}\n  llm_score: {} → {}\n  summary updated: {} chars",
+                report.old_score, report.new_score, report.new_summary_len
+            );
             Ok(())
         }
         (Some(RecommendCommands::ResetScoring { yes }), _) => {

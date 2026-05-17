@@ -722,11 +722,15 @@ pub fn enrich_skills(
                             continue;
                         }
                     };
-                    let body_slice: String = body.chars().take(4000).collect();
+                    // Pass the WHOLE SKILL.md (no cap). Summary quality
+                    // drives router recall directly — seeing all triggers /
+                    // examples / edge cases is worth the token cost.
+                    // DeepSeek v4-flash 128k context handles even 90KB
+                    // files trivially.
                     let user_msg = build_enrich_prompt(
                         &job.name,
                         &job.description,
-                        &body_slice,
+                        &body,
                         &cfg.summary_lang,
                     );
 
@@ -791,6 +795,129 @@ pub fn enrich_skills(
     Ok(final_report)
 }
 
+/// Outcome of `reevaluate_skill`: before/after llm_score + new summary len.
+#[derive(Debug, Clone)]
+pub struct FeedbackReport {
+    pub old_score: i64,
+    pub new_score: i64,
+    pub new_summary_len: usize,
+}
+
+/// Re-run the enrich pass for a single skill with explicit user feedback
+/// mixed into the prompt. Lets the main Claude agent close the loop:
+/// "skill X turned out unhelpful for prompt Y" → router LLM rewrites
+/// summary + adjusts llm_score (lowering it so future routing avoids X
+/// for prompts of that shape).
+pub fn reevaluate_skill(
+    mgr: &SkillManager,
+    skill_name: &str,
+    feedback_note: &str,
+) -> Result<FeedbackReport> {
+    let cfg = RecommendConfig::load(mgr.paths())?;
+    if !cfg.enabled {
+        bail!("runai recommend not configured — run `runai recommend setup` first");
+    }
+    let api_key = if cfg.provider == Provider::ClaudeCli {
+        String::new()
+    } else {
+        cfg.effective_api_key()
+            .context("feedback: api_key not configured")?
+    };
+    if feedback_note.trim().is_empty() {
+        bail!("--note is empty; pass concrete feedback text");
+    }
+
+    let resources = mgr.list_resources(None, None)?;
+    let resource = resources
+        .into_iter()
+        .find(|r| r.kind == ResourceKind::Skill && r.name == skill_name)
+        .ok_or_else(|| anyhow::anyhow!("skill not found: {skill_name}"))?;
+    let skill_md_path = mgr.paths().skills_dir().join(&resource.name).join("SKILL.md");
+    let skill_md_body = fs::read_to_string(&skill_md_path)
+        .with_context(|| format!("read {}", skill_md_path.display()))?;
+
+    let old_summary = mgr.db().skill_ai_summary(&resource.name).unwrap_or_default();
+    let old_score = mgr.db().skill_llm_score(&resource.name).unwrap_or(5);
+
+    let user_msg = build_feedback_prompt(
+        &resource.name,
+        &resource.description,
+        &skill_md_body,
+        &old_summary,
+        old_score,
+        feedback_note,
+        &cfg.summary_lang,
+    );
+    let raw = call_summary_llm(&cfg, &api_key, &user_msg)?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        bail!("LLM returned empty response");
+    }
+    let (summary_clean, new_score) = parse_enrich_response(trimmed);
+    if summary_clean.is_empty() {
+        bail!("no usable summary in response: {trimmed:?}");
+    }
+    let capped: String = summary_clean.chars().take(600).collect();
+    mgr.db()
+        .set_skill_ai_summary_scored(&resource.name, &capped, new_score)?;
+    Ok(FeedbackReport {
+        old_score,
+        new_score,
+        new_summary_len: capped.chars().count(),
+    })
+}
+
+fn build_feedback_prompt(
+    name: &str,
+    description: &str,
+    skill_md: &str,
+    old_summary: &str,
+    old_score: i64,
+    feedback: &str,
+    summary_lang: &str,
+) -> String {
+    let lang_directive = match summary_lang.trim() {
+        "" | "zh" => "请用**中文**写所有字段（score 是数字）。",
+        "en" => "Write all fields in **English** (score is a number).",
+        "ja" => "**日本語**で全フィールドを書いてください（scoreは数字）。",
+        "bilingual" => "Write each field in BOTH Chinese and English, separated by ' / '.",
+        other => &format!("Write all fields in: {other}"),
+    };
+    format!(
+        "你是 skill 索引员。现在收到了对一个 skill 的用户反馈，需要据此**更新**它的索引摘要 + 质量分。\n\
+        \n\
+        {lang_directive}\n\
+        \n\
+        Output FORMAT (strict, exactly 6 short lines):\n\
+        task: <一句话 — 解决什么任务>\n\
+        triggers: <触发关键词，逗号分隔 — 反馈中提到该 skill 不适用的场景应该从这里移除>\n\
+        inputs: <典型输入>\n\
+        outputs: <典型输出>\n\
+        not-for: <不适用场景，把反馈中暴露的反例加进来>\n\
+        score: <0-10 integer — 用户反馈正面则维持或提升 (max+1)；负面则降 (-2 到 -3)；中性 ±0>\n\
+        \n\
+        Total length cap: 500 characters. No prose.\n\
+        \n\
+        --- skill name ---\n\
+        {name}\n\
+        \n\
+        --- description (DB) ---\n\
+        {description}\n\
+        \n\
+        --- previous summary ---\n\
+        {old_summary}\n\
+        \n\
+        --- previous score ---\n\
+        {old_score}\n\
+        \n\
+        --- user feedback ---\n\
+        {feedback}\n\
+        \n\
+        --- SKILL.md ---\n\
+        {skill_md}\n",
+    )
+}
+
 /// Build the user-message for the summarisation call. The output language
 /// is whatever the user picked at setup (`summary_lang` config, default
 /// "zh"). Keep it concise so BM25 tokens are mostly query-domain keywords.
@@ -831,7 +958,7 @@ fn build_enrich_prompt(
         --- description (DB) ---\n\
         {description}\n\
         \n\
-        --- SKILL.md (first 4KB) ---\n\
+        --- SKILL.md (up to 32KB) ---\n\
         {skill_md}\n",
     )
 }
@@ -960,24 +1087,11 @@ pub fn format_for_hook(decision: &RouterDecision) -> String {
         return String::new();
     }
 
-    // Multi-skill + COMPATIBLE → inline all primaries' SKILL.md if they fit
-    // under the 10 KB hook cap. Each compatible skill becomes its own inline
-    // block. Falls back to pointer mode for the over-budget ones.
-    if skills.len() > 1 && decision.mode == RouterMode::Compatible {
-        return format_compatible_set(skills);
-    }
-
-    if skills.len() == 1 {
-        // Single match. Claude Code caps UserPromptSubmit hook stdout (and
-        // JSON additionalContext) at 10,000 chars — anything larger gets
-        // persisted to a temp file with a 2 KB preview, forcing the main
-        // agent to Read that temp file. So:
-        //   - small SKILL.md (~≤ 8 KB after instruction overhead) → inline the
-        //     full content, zero Read needed.
-        //   - large SKILL.md → point at the path, main agent Reads it once.
+    let body = if skills.len() > 1 && decision.mode == RouterMode::Compatible {
+        format_compatible_set(skills)
+    } else if skills.len() == 1 {
         const INLINE_BUDGET: usize = 8000;
         let primary = &skills[0];
-
         if !primary.content.is_empty() && primary.content.len() <= INLINE_BUDGET {
             HOOK_INLINE_TEMPLATE
                 .replace("{NAME}", &primary.name)
@@ -997,7 +1111,25 @@ pub fn format_for_hook(decision: &RouterDecision) -> String {
             .collect::<Vec<_>>()
             .join("\n");
         HOOK_MULTI_TEMPLATE.replace("{CANDIDATES}", &candidates)
-    }
+    };
+
+    // Append the feedback protocol — only fires when the user explicitly
+    // praises or rejects the recommendation, not on every turn.
+    let names = skills
+        .iter()
+        .map(|s| s.name.as_str())
+        .collect::<Vec<_>>()
+        .join(" | ");
+    let footer = format!(
+        "\n\n---\n\
+        **反馈协议（被动触发）**: 只有当用户**明确**评价这次推荐时才执行下面的命令，**不要主动每轮都调用**。\n\
+        - 用户表达负面（\"不对\"/\"换一个\"/\"不好用\"/\"再试别的\"）→ 在你回复末尾跑：\n\
+          `runai recommend feedback <skill-name> --note \"<复述用户原话或场景描述>\"`\n\
+        - 用户表达正面（\"完美\"/\"就这个\"/\"好用\"）→ 同样跑上面命令，note 写正面反馈\n\
+        - 用户没评价 → 不要调用\n\
+        当前推的 skill: {names}\n",
+    );
+    body + &footer
 }
 
 #[derive(Debug, Default, Clone)]
