@@ -192,9 +192,11 @@ pub enum RecommendCommands {
         /// Print per-skill progress
         #[arg(long)]
         verbose: bool,
-        /// How many skills to enrich concurrently (default 8). Each worker
-        /// makes one LLM call at a time; 8 keeps DeepSeek API happy.
-        #[arg(long, default_value_t = 8)]
+        /// How many skills to enrich concurrently (default 32). Each worker
+        /// makes one LLM call at a time. DeepSeek v4-flash实测 500 并发都没
+        /// rate limit；32 在速度和系统资源之间取平衡（337 个 skill ~29s）。
+        /// 想更快可设 --concurrency 128 (10s) 或 337 (5s)。
+        #[arg(long, default_value_t = 32)]
         concurrency: usize,
     },
 }
