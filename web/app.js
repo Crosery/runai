@@ -67,6 +67,12 @@
 
   function applyRoute() {
     const r = parseRoute();
+    // Close the event-detail dialog whenever we navigate to a new route.
+    // Without this, clicking a chosen-skill chip inside the dialog opens
+    // the skill detail page but leaves the dialog floating on top — the
+    // user sees the skill page through the backdrop.
+    const dlg = document.getElementById('detail');
+    if (dlg && dlg.open) dlg.close();
     document.querySelectorAll('.view').forEach((el) => (el.hidden = true));
     document.querySelectorAll('.route-tabs .tab').forEach((tab) => {
       const r2 = tab.dataset.route;
@@ -293,9 +299,11 @@
       </dl>
       <div class="section-label">chosen skills (点击进详情)</div>
       <div>${chosenInline}</div>
-      <div class="section-label">user prompt</div>
+      <div class="section-label">user prompt (hook 收到的原文)</div>
       <div class="prompt-block">${escapeHTML(e.user_prompt) || '<span class="dim">(legacy row)</span>'}</div>
-      <div class="section-label">router 模型原始返回</div>
+      <div class="section-label">router LLM 实际收到的完整输入</div>
+      <div class="prompt-block">${e.llm_input ? escapeHTML(e.llm_input) : '<span class="dim">(legacy row — 升级到 schema v13 之后的新事件才有)</span>'}</div>
+      <div class="section-label">router LLM 原始返回</div>
       <div class="prompt-block">${e.llm_raw_response ? escapeHTML(e.llm_raw_response) : '<span class="dim">(legacy row)</span>'}</div>
       <div class="section-label">hook 注入给 Claude Code 的内容</div>
       <div class="prompt-block">${e.hook_output ? escapeHTML(e.hook_output) : '<span class="dim">(本次没有注入)</span>'}</div>
@@ -505,6 +513,84 @@
   });
 
   // ------------------------------------------------------------------
+  //  Custom dropdown — replaces native <select> popup so the option
+  //  panel can be styled to match the dark glass theme. Keeps the
+  //  underlying <select> in the DOM as data source so existing
+  //  change-event wiring stays untouched.
+  // ------------------------------------------------------------------
+  function initCustomDropdown(select) {
+    if (select.dataset.cddInit === '1') return;
+    select.dataset.cddInit = '1';
+    const wrap = document.createElement('div');
+    wrap.className = 'cdd';
+    select.parentNode.insertBefore(wrap, select);
+    wrap.appendChild(select);
+    select.classList.add('cdd-native');
+
+    const trigger = document.createElement('button');
+    trigger.type = 'button';
+    trigger.className = 'cdd-trigger';
+    trigger.innerHTML = '<span class="cdd-label"></span><span class="cdd-caret">&#9662;</span>';
+    wrap.appendChild(trigger);
+
+    const panel = document.createElement('div');
+    panel.className = 'cdd-panel';
+    panel.hidden = true;
+    wrap.appendChild(panel);
+
+    function render() {
+      const cur = select.value;
+      const opts = [...select.options];
+      const sel = opts.find((o) => o.value === cur) || opts[0];
+      trigger.querySelector('.cdd-label').textContent = sel ? sel.textContent : '';
+      panel.innerHTML = '';
+      for (const o of opts) {
+        const item = document.createElement('div');
+        item.className = 'cdd-item' + (o.value === cur ? ' active' : '');
+        item.textContent = o.textContent;
+        item.dataset.value = o.value;
+        item.addEventListener('click', () => {
+          if (select.value === o.value) { close(); return; }
+          select.value = o.value;
+          select.dispatchEvent(new Event('change', { bubbles: true }));
+          render();
+          close();
+        });
+        panel.appendChild(item);
+      }
+    }
+    function open() {
+      // close any other open dropdown first
+      document.querySelectorAll('.cdd.cdd-open').forEach((o) => {
+        if (o !== wrap) {
+          o.querySelector('.cdd-panel').hidden = true;
+          o.classList.remove('cdd-open');
+        }
+      });
+      panel.hidden = false;
+      wrap.classList.add('cdd-open');
+    }
+    function close() {
+      panel.hidden = true;
+      wrap.classList.remove('cdd-open');
+    }
+    trigger.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (panel.hidden) open(); else close();
+    });
+    document.addEventListener('click', (e) => {
+      if (!wrap.contains(e.target)) close();
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !panel.hidden) close();
+    });
+    // Watch for option list mutations (e.g. /api/overview rebuilds the
+    // #model <select>'s children when a new model shows up).
+    new MutationObserver(render).observe(select, { childList: true });
+    render();
+  }
+
+  // ------------------------------------------------------------------
   //  Wiring
   // ------------------------------------------------------------------
   function bind() {
@@ -517,6 +603,10 @@
     $('#detail-close').addEventListener('click', () => $('#detail').close());
     $('#skill-filter').addEventListener('input', (e) => { skillsState.filter = e.target.value; renderSkillsRows(); });
     $('#skill-sort').addEventListener('change', (e) => { skillsState.sort = e.target.value; renderSkillsRows(); });
+    // Wrap every <select> in the filters bar AND the skills page with
+    // the custom dropdown so the popup uses our dark glass theme
+    // instead of the OS-native popup.
+    document.querySelectorAll('.filters select, .skills-filters select').forEach(initCustomDropdown);
   }
 
   bind();
