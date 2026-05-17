@@ -353,7 +353,7 @@
     const data = await res.json();
     skillsState.cache = data.skills;
     $('#skills-progress').textContent =
-      `${data.total} 个 skill · ${data.enriched} 已富集 · ${data.rated} 已评分`;
+      `${data.total} 个 skill · ${data.enriched} 已富集`;
     renderSkillsRows();
   }
 

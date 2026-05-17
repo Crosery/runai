@@ -588,6 +588,16 @@ pub fn enrich_skills(
     verbose: bool,
 ) -> Result<EnrichReport> {
     let cfg = RecommendConfig::load(mgr.paths())?;
+    // Don't enrich on disabled router. Without this, the SessionStart hook
+    // `runai recommend enrich --missing-only` would auto-enrich whenever an
+    // api_key happens to be in config.toml even if the user hasn't completed
+    // setup — defeats the "first-run is fully empty" UX.
+    if !cfg.enabled {
+        if verbose {
+            eprintln!("[enrich] skipped — router not enabled (run `runai recommend setup`)");
+        }
+        return Ok(EnrichReport::default());
+    }
     let api_key = if cfg.provider == Provider::ClaudeCli {
         String::new()
     } else {
