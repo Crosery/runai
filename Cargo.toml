@@ -48,6 +48,10 @@ nucleo-matcher = "0.3"
 # Web dashboard for router telemetry (runai server)
 axum = "0.8"
 tower-http = { version = "0.6", features = ["fs"] }
+# Crypto-secure random for identity generation
+rand = "0.8"
+# Base32 encoding for user-friendly key/user_id format
+base32 = "0.5"
 
 [profile.release]
 strip = true
