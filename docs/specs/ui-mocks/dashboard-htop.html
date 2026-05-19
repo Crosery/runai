@@ -1,0 +1,779 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>runai · htop variant</title>
+<style>
+  :root{
+    --bg:#0d0d0d;
+    --bg-alt:#121212;
+    --bg-panel:#161616;
+    --fg:#c8c8c8;
+    --fg-dim:#7a7a7a;
+    --fg-bright:#e8e8e8;
+    --border:#2a2a2a;
+    --border-bright:#3a3a3a;
+    --green:#50fa7b;
+    --amber:#ffb86c;
+    --red:#ff5555;
+    --cyan:#8be9fd;
+    --purple:#bd93f9;
+    --pink:#ff79c6;
+    --selected-bg:#1d2731;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{
+    background:var(--bg);
+    color:var(--fg);
+    font-family:ui-monospace,"JetBrains Mono","SF Mono","Cascadia Code","Roboto Mono",Consolas,monospace;
+    font-size:13px;
+    line-height:1.4;
+    min-height:100vh;
+  }
+  ::selection{background:var(--cyan);color:#000}
+  a{color:var(--cyan);text-decoration:none}
+  a:hover{color:var(--green);text-decoration:underline}
+
+  .shell{display:grid;grid-template-rows:auto 1fr auto;min-height:100vh}
+
+  /* top bar */
+  .topbar{
+    display:flex;align-items:center;justify-content:space-between;
+    padding:6px 12px;
+    background:var(--bg-alt);
+    border-bottom:1px solid var(--border);
+  }
+  .topbar .brand{display:flex;align-items:center;gap:14px}
+  .topbar .brand b{color:var(--green);font-weight:600}
+  .topbar .brand .sub{color:var(--fg-dim)}
+  .topbar .right{display:flex;align-items:center;gap:14px;color:var(--fg-dim)}
+  .topbar .user-id{color:var(--cyan)}
+  .topbar .role{color:var(--amber)}
+  .topbar button{
+    background:transparent;border:1px solid var(--border-bright);
+    color:var(--fg);font-family:inherit;font-size:12px;
+    padding:2px 8px;cursor:pointer;
+  }
+  .topbar button:hover{background:var(--border)}
+
+  /* layout */
+  .body-wrap{display:grid;grid-template-columns:200px 1fr;min-height:0}
+
+  /* sidebar */
+  .sidebar{
+    border-right:1px solid var(--border);
+    background:var(--bg-alt);
+    padding:8px 0;
+  }
+  .nav-item{
+    padding:5px 14px;
+    color:var(--fg);
+    cursor:pointer;
+    display:flex;justify-content:space-between;align-items:center;
+  }
+  .nav-item:hover{background:var(--bg-panel)}
+  .nav-item.active{
+    background:var(--selected-bg);
+    color:var(--cyan);
+    border-left:2px solid var(--cyan);
+    padding-left:12px;
+  }
+  .nav-item .hot{color:var(--fg-dim);font-size:11px}
+  .nav-item.admin .label::after{
+    content:" [ADMIN]";color:var(--amber);font-size:11px;
+  }
+  .sidebar .sep{
+    color:var(--fg-dim);font-size:11px;padding:10px 14px 4px;
+    border-top:1px dashed var(--border);margin-top:10px;
+  }
+  .sidebar .stat-line{padding:2px 14px;color:var(--fg-dim);font-size:12px}
+  .sidebar .stat-line b{color:var(--green)}
+
+  /* main area */
+  .main{padding:10px 14px 30px;overflow-x:auto}
+  .tab{display:none}
+  .tab.active{display:block}
+
+  /* status bar */
+  .statusbar{
+    padding:4px 12px;
+    background:var(--bg-alt);
+    border-top:1px solid var(--border);
+    display:flex;justify-content:space-between;
+    color:var(--fg-dim);font-size:12px;
+  }
+  .statusbar .k{color:var(--green)}
+  .statusbar .left,.statusbar .right{display:flex;gap:12px}
+
+  /* panels with ASCII borders */
+  .panel{
+    border:1px solid var(--border-bright);
+    margin:0 0 10px 0;
+  }
+  .panel > .head{
+    background:var(--bg-alt);
+    padding:3px 10px;
+    color:var(--cyan);
+    border-bottom:1px solid var(--border-bright);
+    display:flex;justify-content:space-between;align-items:center;
+  }
+  .panel > .head .meta{color:var(--fg-dim);font-size:12px}
+  .panel > .body{padding:8px 10px}
+
+  /* metric strip */
+  .metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:0 0 10px 0}
+  .metric{
+    border:1px solid var(--border-bright);
+    padding:6px 10px;
+  }
+  .metric .label{color:var(--fg-dim);font-size:11px}
+  .metric .value{color:var(--fg-bright);font-size:22px;font-weight:600;letter-spacing:-0.5px}
+  .metric .delta{color:var(--green);font-size:11px}
+  .metric.warn .value{color:var(--amber)}
+  .metric.err .value{color:var(--red)}
+  .metric .bar{
+    height:4px;background:var(--bg-alt);margin-top:4px;position:relative;
+    border:1px solid var(--border);
+  }
+  .metric .bar > i{
+    display:block;height:100%;background:var(--green);
+  }
+  .metric.warn .bar > i{background:var(--amber)}
+  .metric.err .bar > i{background:var(--red)}
+
+  /* tables */
+  table.tbl{
+    width:100%;border-collapse:collapse;font-size:12px;
+  }
+  table.tbl th{
+    text-align:left;padding:3px 8px;
+    color:var(--fg-dim);font-weight:normal;
+    border-bottom:1px solid var(--border);
+    background:var(--bg-alt);
+    text-transform:uppercase;letter-spacing:1px;font-size:11px;
+  }
+  table.tbl th.num,table.tbl td.num{text-align:right;font-variant-numeric:tabular-nums}
+  table.tbl td{padding:3px 8px;border-bottom:1px dashed var(--border)}
+  table.tbl tbody tr:hover{background:var(--bg-panel)}
+  .ok{color:var(--green)}
+  .warn{color:var(--amber)}
+  .err{color:var(--red)}
+  .info{color:var(--cyan)}
+  .dim{color:var(--fg-dim)}
+
+  /* chart */
+  .chart{width:100%;height:120px;background:var(--bg-alt);border:1px solid var(--border)}
+  .chart .grid line{stroke:var(--border);stroke-dasharray:2 4}
+  .chart .area{fill:var(--green);fill-opacity:0.15;stroke:var(--green);stroke-width:1.4}
+  .chart .axis text{fill:var(--fg-dim);font-size:10px;font-family:inherit}
+
+  /* skill row */
+  .skill-row{
+    display:grid;
+    grid-template-columns:22px 1fr 100px 90px 70px 60px;
+    align-items:center;
+    padding:4px 8px;
+    border-bottom:1px dashed var(--border);
+    cursor:pointer;
+  }
+  .skill-row:hover{background:var(--bg-panel)}
+  .skill-row .nm{color:var(--cyan);font-weight:500}
+  .skill-row .desc{color:var(--fg-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .skill-row .used{color:var(--fg);text-align:right;font-variant-numeric:tabular-nums}
+  .skill-row .last{color:var(--fg-dim);font-size:11px;text-align:right}
+  .skill-row .badge-exec{
+    color:var(--amber);font-size:11px;
+    border:1px solid var(--amber);padding:0 4px;display:inline-block;
+  }
+  .skill-row .cb{font-family:inherit;color:var(--green);text-align:right;font-weight:600}
+  .skill-row.off .cb{color:var(--fg-dim)}
+  .skill-row.off .nm{color:var(--fg-dim)}
+
+  /* filter bar */
+  .filters{display:flex;gap:8px;margin-bottom:8px;align-items:center}
+  .filters input,.filters select{
+    background:var(--bg-alt);color:var(--fg);
+    border:1px solid var(--border-bright);
+    font-family:inherit;font-size:12px;
+    padding:3px 6px;
+  }
+  .filters input{flex:1;min-width:140px}
+  .filters input:focus,.filters select:focus{outline:none;border-color:var(--cyan)}
+  .filters label{color:var(--fg-dim);font-size:11px;letter-spacing:1px;text-transform:uppercase}
+
+  /* settings */
+  .section-title{
+    color:var(--cyan);font-size:12px;letter-spacing:1px;text-transform:uppercase;
+    margin:14px 0 6px;padding-bottom:2px;
+    border-bottom:1px solid var(--border);
+  }
+  .section-title:first-child{margin-top:0}
+  .setting-row{
+    display:grid;
+    grid-template-columns:24px 1fr 120px;
+    align-items:center;
+    padding:4px 0;gap:8px;
+    border-bottom:1px dashed var(--border);
+  }
+  .setting-row .cb{color:var(--green);font-weight:600}
+  .setting-row.off .cb{color:var(--fg-dim)}
+  .setting-row .lbl{color:var(--fg-bright)}
+  .setting-row .hint{color:var(--fg-dim);font-size:11px}
+  .setting-row select{
+    background:var(--bg-alt);color:var(--fg);
+    border:1px solid var(--border-bright);
+    font-family:inherit;font-size:12px;
+    padding:2px 4px;
+  }
+  .setting-row input[type=range]{width:120px}
+
+  /* progress (terminal) */
+  .progress{
+    display:grid;
+    grid-template-columns:120px 1fr 100px;
+    align-items:center;gap:10px;
+    padding:5px 0;
+    border-bottom:1px dashed var(--border);
+  }
+  .progress .lbl{color:var(--fg-bright)}
+  .progress .bar{
+    font-family:inherit;
+    color:var(--green);
+    font-size:14px;
+    letter-spacing:0;
+  }
+  .progress.warn .bar{color:var(--amber)}
+  .progress.err .bar{color:var(--red)}
+  .progress .num{text-align:right;color:var(--fg-dim);font-size:12px}
+
+  /* identity card */
+  .identity-row{
+    display:grid;grid-template-columns:160px 1fr;
+    padding:3px 0;border-bottom:1px dashed var(--border);
+  }
+  .identity-row .k{color:var(--fg-dim);text-transform:uppercase;font-size:11px;letter-spacing:1px}
+  .identity-row .v{color:var(--cyan)}
+  .btn{
+    background:transparent;
+    border:1px solid var(--border-bright);
+    color:var(--fg);
+    font-family:inherit;font-size:12px;
+    padding:3px 10px;cursor:pointer;
+    margin:0 6px 6px 0;
+  }
+  .btn:hover{background:var(--border)}
+  .btn.danger{border-color:var(--red);color:var(--red)}
+  .btn.danger:hover{background:rgba(255,85,85,0.15)}
+  .btn.primary{border-color:var(--green);color:var(--green)}
+  .btn.primary:hover{background:rgba(80,250,123,0.12)}
+
+  /* events table */
+  .events-mini td{font-size:12px}
+  .pill{
+    border:1px solid currentColor;
+    padding:0 4px;font-size:11px;
+    display:inline-block;
+  }
+  .pill.compat{color:var(--cyan)}
+  .pill.exclusive{color:var(--purple)}
+  .pill.ok{color:var(--green)}
+  .pill.skip{color:var(--fg-dim)}
+  .pill.err{color:var(--red)}
+
+  /* admin */
+  .admin-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px}
+  .admin-grid .metric .label{color:var(--cyan)}
+
+  /* utility */
+  .row{display:flex;gap:8px}
+  .grow{flex:1}
+  .ascii{
+    color:var(--fg-dim);white-space:pre;
+    font-family:inherit;line-height:1.1;
+  }
+  .blink{animation:blink 1.4s steps(1) infinite}
+  @keyframes blink{50%{opacity:0}}
+  .seg{display:inline-block;margin-right:10px}
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <!-- ============ TOP BAR ============ -->
+  <header class="topbar">
+    <div class="brand">
+      <b>runai</b>
+      <span class="sub">router/v0.12.0-dev · htop variant</span>
+    </div>
+    <div class="right">
+      <span class="seg">user: <span class="user-id">u_a3f9b2c1d4</span> <span class="role">[admin]</span></span>
+      <span class="seg">host: server.local <span class="dim">:17888</span></span>
+      <button id="btn-logout">logout</button>
+    </div>
+  </header>
+
+  <!-- ============ BODY ============ -->
+  <div class="body-wrap">
+
+    <!-- sidebar -->
+    <aside class="sidebar">
+      <div class="nav-item active" data-tab="overview"><span class="label">[1] overview</span><span class="hot">F1</span></div>
+      <div class="nav-item" data-tab="skills"><span class="label">[2] skills</span><span class="hot">F2</span></div>
+      <div class="nav-item" data-tab="activity"><span class="label">[3] activity</span><span class="hot">F3</span></div>
+      <div class="nav-item" data-tab="settings"><span class="label">[4] settings</span><span class="hot">F4</span></div>
+      <div class="nav-item admin" data-tab="admin"><span class="label">[5] admin</span><span class="hot">F5</span></div>
+
+      <div class="sep">runtime</div>
+      <div class="stat-line">cpu:  <b>3.2%</b></div>
+      <div class="stat-line">mem:  <b>84M</b> <span class="dim">/ 512M</span></div>
+      <div class="stat-line">db:   <b>green</b></div>
+      <div class="stat-line">pod:  <b>ok</b> <span class="dim">v5.6.0</span></div>
+      <div class="stat-line">uptm: <b>03:42:18</b></div>
+
+      <div class="sep">live</div>
+      <div class="stat-line">exec/min: <b>18</b><span class="blink">_</span></div>
+      <div class="stat-line">active:   <b>1</b></div>
+      <div class="stat-line">queue:    <b>0</b></div>
+    </aside>
+
+    <!-- main -->
+    <main class="main">
+
+      <!-- =========== OVERVIEW =========== -->
+      <section class="tab active" data-pane="overview">
+
+        <div class="metrics">
+          <div class="metric"><div class="label">今日 EXEC</div><div class="value">247</div><div class="delta">+12% vs 昨日</div><div class="bar"><i style="width:62%"></i></div></div>
+          <div class="metric"><div class="label">启用 SKILL</div><div class="value">18 <span class="dim" style="font-size:14px">/ 24</span></div><div class="delta">3 隐藏 · 3 全局禁</div><div class="bar"><i style="width:75%"></i></div></div>
+          <div class="metric warn"><div class="label">配额用量</div><div class="value">34<span class="dim" style="font-size:14px">%</span></div><div class="delta dim">下一次重置 38s 后</div><div class="bar"><i style="width:34%"></i></div></div>
+          <div class="metric"><div class="label">上次活动</div><div class="value" style="font-size:16px">3 分钟前</div><div class="delta dim">skill: deep-dive · 412ms</div></div>
+        </div>
+
+        <div class="panel">
+          <div class="head">24h activity <span class="meta">每 5 分钟一格 · 实时</span></div>
+          <div class="body">
+            <svg class="chart" viewBox="0 0 600 120" preserveAspectRatio="none" aria-label="24h activity">
+              <defs></defs>
+              <g class="grid">
+                <line x1="0" y1="30"  x2="600" y2="30" />
+                <line x1="0" y1="60"  x2="600" y2="60" />
+                <line x1="0" y1="90"  x2="600" y2="90" />
+              </g>
+              <path class="area" d="M0,100 L25,92 L50,88 L75,95 L100,80 L125,72 L150,75 L175,65 L200,50 L225,45 L250,55 L275,40 L300,38 L325,28 L350,42 L375,35 L400,30 L425,25 L450,38 L475,20 L500,32 L525,28 L550,30 L575,25 L600,18 L600,120 L0,120 Z"/>
+              <g class="axis">
+                <text x="2"   y="115">-24h</text>
+                <text x="300" y="115" text-anchor="middle">-12h</text>
+                <text x="598" y="115" text-anchor="end">now</text>
+              </g>
+            </svg>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="head">最近 exec <span class="meta">8 条 / 共 247</span></div>
+          <div class="body" style="padding:0">
+            <table class="tbl events-mini">
+              <thead><tr><th>TIME</th><th>SKILL</th><th>MODE</th><th>STATUS</th><th class="num">DURATION</th><th class="num">OUTPUTS</th></tr></thead>
+              <tbody>
+                <tr><td class="dim">02:14:32</td><td class="info">deep-dive</td><td><span class="pill compat">compat</span></td><td><span class="pill ok">ok</span></td><td class="num">412ms</td><td class="num">0</td></tr>
+                <tr><td class="dim">02:13:08</td><td class="info">html-anything</td><td><span class="pill exclusive">exclusive</span></td><td><span class="pill ok">ok</span></td><td class="num">2.8s</td><td class="num">1</td></tr>
+                <tr><td class="dim">02:11:42</td><td class="info">verify</td><td><span class="pill compat">compat</span></td><td><span class="pill ok">ok</span></td><td class="num">218ms</td><td class="num">0</td></tr>
+                <tr><td class="dim">02:10:11</td><td class="info">claude-api</td><td><span class="pill compat">compat</span></td><td><span class="pill skip">skip</span></td><td class="num">12ms</td><td class="num">—</td></tr>
+                <tr><td class="dim">02:08:30</td><td class="info">safety-guard</td><td><span class="pill exclusive">exclusive</span></td><td><span class="pill ok">ok</span></td><td class="num">186ms</td><td class="num">0</td></tr>
+                <tr><td class="dim">02:06:55</td><td class="info">brainstorming</td><td><span class="pill compat">compat</span></td><td><span class="pill ok">ok</span></td><td class="num">624ms</td><td class="num">0</td></tr>
+                <tr><td class="dim">02:05:21</td><td class="info">find-skills</td><td><span class="pill compat">compat</span></td><td><span class="pill ok">ok</span></td><td class="num">301ms</td><td class="num">0</td></tr>
+                <tr><td class="dim">02:03:48</td><td class="info">lark-doc</td><td><span class="pill exclusive">exclusive</span></td><td><span class="pill err">timeout</span></td><td class="num">30.0s</td><td class="num">0</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- =========== SKILLS =========== -->
+      <section class="tab" data-pane="skills">
+
+        <div class="panel">
+          <div class="head">skills <span class="meta">显示 18 / 总 24 · 6 隐藏</span></div>
+          <div class="body">
+            <div class="filters">
+              <label>filter</label>
+              <input type="text" placeholder="名字 / 描述 / summary（模糊匹配）"/>
+              <label>sort</label>
+              <select>
+                <option>综合分降序</option>
+                <option>使用次数降序</option>
+                <option>名字</option>
+                <option>未启用优先</option>
+              </select>
+              <label>show</label>
+              <select>
+                <option>全部</option>
+                <option>只看启用</option>
+                <option>只看 exec</option>
+              </select>
+            </div>
+
+            <div class="skill-list">
+              <div class="skill-row">
+                <div class="cb">[x]</div>
+                <div><div class="nm">find-skills <span class="badge-exec">exec</span></div><div class="desc">搜索和推荐可安装的 agent 技能包</div></div>
+                <div class="used">used 124</div>
+                <div class="last">3m ago</div>
+                <div class="dim">LLM 9.1</div>
+                <div></div>
+              </div>
+              <div class="skill-row">
+                <div class="cb">[x]</div>
+                <div><div class="nm">deep-dive <span class="badge-exec">exec</span></div><div class="desc">因果溯源调查+需求提炼的二级流水线</div></div>
+                <div class="used">used 87</div>
+                <div class="last">8m ago</div>
+                <div class="dim">LLM 8.7</div>
+                <div></div>
+              </div>
+              <div class="skill-row">
+                <div class="cb">[x]</div>
+                <div><div class="nm">safety-guard</div><div class="desc">防止破坏性命令执行、保护项目安全</div></div>
+                <div class="used">used 76</div>
+                <div class="last">22m ago</div>
+                <div class="dim">LLM 8.2</div>
+                <div></div>
+              </div>
+              <div class="skill-row off">
+                <div class="cb">[ ]</div>
+                <div><div class="nm">verify</div><div class="desc">验证变更是否真正生效</div></div>
+                <div class="used">used 62</div>
+                <div class="last">1h ago</div>
+                <div class="dim">LLM 7.9</div>
+                <div></div>
+              </div>
+              <div class="skill-row">
+                <div class="cb">[x]</div>
+                <div><div class="nm">brainstorming</div><div class="desc">编码前通过对话引导澄清需求、形成设计文档</div></div>
+                <div class="used">used 58</div>
+                <div class="last">2h ago</div>
+                <div class="dim">LLM 8.4</div>
+                <div></div>
+              </div>
+              <div class="skill-row">
+                <div class="cb">[x]</div>
+                <div><div class="nm">lark-doc <span class="badge-exec">exec</span></div><div class="desc">飞书云文档 / Docx / 知识库 Wiki 文档</div></div>
+                <div class="used">used 54</div>
+                <div class="last">3h ago</div>
+                <div class="dim">LLM 8.0</div>
+                <div></div>
+              </div>
+              <div class="skill-row">
+                <div class="cb">[x]</div>
+                <div><div class="nm">html-anything <span class="badge-exec">exec</span></div><div class="desc">将任意答案/文件/URL 转成单文件 HTML</div></div>
+                <div class="used">used 49</div>
+                <div class="last">4h ago</div>
+                <div class="dim">LLM 9.0</div>
+                <div></div>
+              </div>
+              <div class="skill-row">
+                <div class="cb">[x]</div>
+                <div><div class="nm">claude-api</div><div class="desc">构建/调试/优化 Claude API · Anthropic SDK 应用</div></div>
+                <div class="used">used 43</div>
+                <div class="last">6h ago</div>
+                <div class="dim">LLM 8.6</div>
+                <div></div>
+              </div>
+              <div class="skill-row">
+                <div class="cb">[x]</div>
+                <div><div class="nm">security-review</div><div class="desc">完成对当前分支待提交变更的安全审查</div></div>
+                <div class="used">used 38</div>
+                <div class="last">8h ago</div>
+                <div class="dim">LLM 8.3</div>
+                <div></div>
+              </div>
+              <div class="skill-row off">
+                <div class="cb">[ ]</div>
+                <div><div class="nm">simplify</div><div class="desc">复审改动 · 复用 · 质量 · 效率，并修复发现的问题</div></div>
+                <div class="used">used 19</div>
+                <div class="last">2d ago</div>
+                <div class="dim">LLM 7.4</div>
+                <div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- =========== ACTIVITY =========== -->
+      <section class="tab" data-pane="activity">
+        <div class="panel">
+          <div class="head">activity <span class="meta">最近 100 条 · 实时</span></div>
+          <div class="body">
+            <div class="filters">
+              <label>skill</label>
+              <input type="text" placeholder="过滤 skill 名"/>
+              <label>window</label>
+              <select><option>last 1h</option><option selected>last 24h</option><option>last 7d</option><option>last 30d</option></select>
+              <label>status</label>
+              <select><option>all</option><option>hit</option><option>skip</option><option>error</option></select>
+            </div>
+
+            <table class="tbl events-mini">
+              <thead><tr><th>TIME</th><th>SKILL</th><th>MODE</th><th>STATUS</th><th class="num">LAT</th><th>TOKENS</th><th>PROMPT</th></tr></thead>
+              <tbody>
+                <tr><td class="dim">02:14:32</td><td class="info">deep-dive</td><td><span class="pill compat">compat</span></td><td><span class="pill ok">ok</span></td><td class="num">412ms</td><td class="dim">1.2k → 156</td><td class="dim">runai这个项目目前有个痛点...</td></tr>
+                <tr><td class="dim">02:13:08</td><td class="info">html-anything</td><td><span class="pill exclusive">exclusive</span></td><td><span class="pill ok">ok</span></td><td class="num">2.8s</td><td class="dim">3.4k → 1.2k</td><td class="dim">把这个会议纪要转成 web...</td></tr>
+                <tr><td class="dim">02:11:42</td><td class="info">verify</td><td><span class="pill compat">compat</span></td><td><span class="pill ok">ok</span></td><td class="num">218ms</td><td class="dim">820 → 142</td><td class="dim">这个 PR 跑测试看下结果</td></tr>
+                <tr><td class="dim">02:10:11</td><td class="info">claude-api</td><td><span class="pill compat">compat</span></td><td><span class="pill skip">skip</span></td><td class="num">12ms</td><td class="dim">540 → 0</td><td class="dim">什么是 prompt caching</td></tr>
+                <tr><td class="dim">02:08:30</td><td class="info">safety-guard</td><td><span class="pill exclusive">exclusive</span></td><td><span class="pill ok">ok</span></td><td class="num">186ms</td><td class="dim">980 → 89</td><td class="dim">帮我清理一下 logs 目录</td></tr>
+                <tr><td class="dim">02:06:55</td><td class="info">brainstorming</td><td><span class="pill compat">compat</span></td><td><span class="pill ok">ok</span></td><td class="num">624ms</td><td class="dim">1.8k → 482</td><td class="dim">想做个用户偏好系统</td></tr>
+                <tr><td class="dim">02:05:21</td><td class="info">find-skills</td><td><span class="pill compat">compat</span></td><td><span class="pill ok">ok</span></td><td class="num">301ms</td><td class="dim">650 → 234</td><td class="dim">有没有处理 csv 的 skill</td></tr>
+                <tr><td class="dim">02:03:48</td><td class="info">lark-doc</td><td><span class="pill exclusive">exclusive</span></td><td><span class="pill err">timeout</span></td><td class="num">30.0s</td><td class="dim">4.1k → ?</td><td class="dim">把这个 doc 转成 markdown</td></tr>
+                <tr><td class="dim">02:02:14</td><td class="info">deep-dive</td><td><span class="pill compat">compat</span></td><td><span class="pill ok">ok</span></td><td class="num">498ms</td><td class="dim">1.4k → 312</td><td class="dim">为什么 ci 又挂了</td></tr>
+                <tr><td class="dim">02:00:55</td><td class="info">security-review</td><td><span class="pill exclusive">exclusive</span></td><td><span class="pill ok">ok</span></td><td class="num">1.4s</td><td class="dim">2.8k → 720</td><td class="dim">提交前过一遍安全审查</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- =========== SETTINGS =========== -->
+      <section class="tab" data-pane="settings">
+
+        <div class="panel">
+          <div class="head">settings <span class="meta">所有改动 auto-save</span></div>
+          <div class="body">
+
+            <div class="section-title">hook 行为</div>
+            <div class="setting-row" data-toggle>
+              <div class="cb">[x]</div>
+              <div>
+                <div class="lbl">在回复开头要求 claude 交代取舍</div>
+                <div class="hint">关闭后 claude 不再交代为什么用 / 跳过某个 skill</div>
+              </div>
+              <div></div>
+            </div>
+            <div class="setting-row" data-toggle>
+              <div class="cb">[x]</div>
+              <div><div class="lbl">注入历史 skill 参考池</div><div class="hint">本 session 看过的 skill 列出来供 follow-up 复用</div></div>
+              <div></div>
+            </div>
+            <div class="setting-row" data-toggle>
+              <div class="cb">[x]</div>
+              <div><div class="lbl">注入反馈协议提示</div><div class="hint">用户正向/负向评价时上报 server</div></div>
+              <div></div>
+            </div>
+            <div class="setting-row">
+              <div></div>
+              <div><div class="lbl">推荐模式</div><div class="hint">off 时整个 hook 静默</div></div>
+              <div><select><option selected>compatible</option><option>exclusive</option><option>off</option></select></div>
+            </div>
+            <div class="setting-row">
+              <div></div>
+              <div><div class="lbl">候选数上限</div><div class="hint">每条 prompt 最多推几个 skill</div></div>
+              <div><input type="range" min="1" max="5" value="3"/> <span class="info">3</span></div>
+            </div>
+
+            <div class="section-title">skill 库 (对你可见)</div>
+            <div class="setting-row" data-toggle>
+              <div class="cb">[x]</div>
+              <div><div class="lbl">find-skills</div></div>
+              <div></div>
+            </div>
+            <div class="setting-row" data-toggle>
+              <div class="cb">[x]</div>
+              <div><div class="lbl">deep-dive</div></div>
+              <div></div>
+            </div>
+            <div class="setting-row" data-toggle>
+              <div class="cb">[x]</div>
+              <div><div class="lbl">safety-guard</div></div>
+              <div></div>
+            </div>
+            <div class="setting-row off" data-toggle>
+              <div class="cb">[ ]</div>
+              <div><div class="lbl">verify</div></div>
+              <div></div>
+            </div>
+            <div class="setting-row" data-toggle>
+              <div class="cb">[x]</div>
+              <div><div class="lbl">brainstorming</div></div>
+              <div></div>
+            </div>
+            <div style="margin-top:6px"><a href="#skills">查看全部 24 个 →</a></div>
+
+            <div class="section-title">配额 / 用量</div>
+            <div class="progress">
+              <div class="lbl">exec / 分钟</div>
+              <div class="bar">[████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░] </div>
+              <div class="num">18 / 60</div>
+            </div>
+            <div class="progress warn">
+              <div class="lbl">/data 存储</div>
+              <div class="bar">[████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] </div>
+              <div class="num">240 / 1024 MB</div>
+            </div>
+            <div class="progress">
+              <div class="lbl">/output 总量</div>
+              <div class="bar">[██░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] </div>
+              <div class="num">87 / 500 MB</div>
+            </div>
+            <div class="progress">
+              <div class="lbl">并发 exec</div>
+              <div class="bar">[████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] </div>
+              <div class="num">1 / 4</div>
+            </div>
+            <div class="dim" style="margin-top:5px;font-size:11px">重置策略: exec/min 每分钟重置 · 其他实时累计</div>
+
+            <div class="section-title">身份</div>
+            <div class="identity-row"><div class="k">user_id</div><div class="v">u_a3f9b2c1d4 <a href="#">copy</a></div></div>
+            <div class="identity-row"><div class="k">api_key</div><div class="v dim">●●●●●●●●●●●●●● <a href="#">view</a></div></div>
+            <div class="identity-row"><div class="k">server_url</div><div class="v">http://server.local:17888</div></div>
+            <div class="identity-row"><div class="k">created_at</div><div class="v">2026-04-29 18:11:24</div></div>
+            <div class="identity-row"><div class="k">recent_ip</div><div class="v">192.168.1.42 · 10.0.3.18 · 100.66.124.7</div></div>
+            <div style="margin-top:8px">
+              <button class="btn primary">导出 identity</button>
+              <button class="btn">rotate api key</button>
+              <button class="btn danger">注销并清除本机 identity</button>
+            </div>
+
+          </div>
+        </div>
+      </section>
+
+      <!-- =========== ADMIN =========== -->
+      <section class="tab" data-pane="admin">
+
+        <div class="admin-grid">
+          <div class="metric"><div class="label">总用户</div><div class="value">27</div><div class="delta">+3 本周</div></div>
+          <div class="metric"><div class="label">今日 exec</div><div class="value">1.2k</div><div class="delta">+18% vs 昨</div></div>
+          <div class="metric warn"><div class="label">沙箱失败</div><div class="value">3</div><div class="delta">2 timeout · 1 oom</div></div>
+          <div class="metric"><div class="label">平均延迟</div><div class="value">412<span class="dim" style="font-size:14px">ms</span></div><div class="delta">p95 1.2s</div></div>
+        </div>
+
+        <div class="panel">
+          <div class="head">users <span class="meta">27 总 · 24 active · 3 disabled</span></div>
+          <div class="body" style="padding:0">
+            <table class="tbl">
+              <thead><tr><th>USER_ID</th><th>CREATED</th><th>STATUS</th><th class="num">EXEC/MIN</th><th class="num">DATA</th><th class="num">USED 24H</th><th>ACTIONS</th></tr></thead>
+              <tbody>
+                <tr><td class="info">u_a3f9b2c1d4</td><td class="dim">2026-04-29</td><td><span class="pill ok">admin</span></td><td class="num">60</td><td class="num">240M</td><td class="num">247</td><td><a href="#">edit</a></td></tr>
+                <tr><td class="info">u_b7e2c8d9f1</td><td class="dim">2026-05-02</td><td><span class="pill ok">active</span></td><td class="num">60</td><td class="num">512M</td><td class="num">198</td><td><a href="#">edit</a> · <a href="#" class="warn">disable</a></td></tr>
+                <tr><td class="info">u_c4d8e1a6b3</td><td class="dim">2026-05-04</td><td><span class="pill ok">active</span></td><td class="num">60</td><td class="num">88M</td><td class="num">142</td><td><a href="#">edit</a> · <a href="#" class="warn">disable</a></td></tr>
+                <tr><td class="info">u_d9a1f3c7e2</td><td class="dim">2026-05-09</td><td><span class="pill ok">active</span></td><td class="num">120</td><td class="num">740M</td><td class="num">98</td><td><a href="#">edit</a> · <a href="#" class="warn">disable</a></td></tr>
+                <tr><td class="info">u_e2b4d6f8a1</td><td class="dim">2026-05-12</td><td><span class="pill ok">active</span></td><td class="num">60</td><td class="num">12M</td><td class="num">64</td><td><a href="#">edit</a> · <a href="#" class="warn">disable</a></td></tr>
+                <tr><td class="info dim">u_f5a8c2d1b9</td><td class="dim">2026-05-15</td><td><span class="pill err">disabled</span></td><td class="num">60</td><td class="num">0M</td><td class="num">0</td><td><a href="#">edit</a> · <a href="#" class="ok">enable</a></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="head">invite tokens <span class="meta">3 active</span></div>
+          <div class="body">
+            <button class="btn primary">生成新 invite</button>
+            <table class="tbl" style="margin-top:6px">
+              <thead><tr><th>TOKEN</th><th>CREATED</th><th>EXPIRES</th><th>STATUS</th><th>USED BY</th></tr></thead>
+              <tbody>
+                <tr><td class="info">inv_8c2d4e6f1a</td><td class="dim">2026-05-18</td><td class="dim">2026-05-25</td><td><span class="pill ok">unused</span></td><td class="dim">—</td></tr>
+                <tr><td class="info">inv_3b7a9d2f4c</td><td class="dim">2026-05-15</td><td class="dim">2026-05-22</td><td><span class="pill skip">used</span></td><td class="info">u_e2b4d6f8a1</td></tr>
+                <tr><td class="info">inv_1f4e6c8b3d</td><td class="dim">2026-05-10</td><td class="dim">2026-05-17</td><td><span class="pill err">expired</span></td><td class="dim">—</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="head">global audit <span class="meta">最近 100 条 sandbox exec</span></div>
+          <div class="body" style="padding:0">
+            <table class="tbl events-mini">
+              <thead><tr><th>TIME</th><th>USER</th><th>SKILL</th><th>EXIT</th><th class="num">DUR</th><th class="num">CPU</th><th class="num">MEM</th><th class="num">OUTPUTS</th></tr></thead>
+              <tbody>
+                <tr><td class="dim">02:14:32</td><td class="info">u_a3f9b2c1d4</td><td>deep-dive</td><td class="ok">0</td><td class="num">412ms</td><td class="num">12%</td><td class="num">84M</td><td class="num">0</td></tr>
+                <tr><td class="dim">02:13:08</td><td class="info">u_b7e2c8d9f1</td><td>html-anything</td><td class="ok">0</td><td class="num">2.8s</td><td class="num">48%</td><td class="num">142M</td><td class="num">1</td></tr>
+                <tr><td class="dim">02:11:42</td><td class="info">u_c4d8e1a6b3</td><td>verify</td><td class="ok">0</td><td class="num">218ms</td><td class="num">6%</td><td class="num">22M</td><td class="num">0</td></tr>
+                <tr><td class="dim">02:10:11</td><td class="info">u_a3f9b2c1d4</td><td>claude-api</td><td class="dim">skip</td><td class="num">12ms</td><td class="num">—</td><td class="num">—</td><td class="num">—</td></tr>
+                <tr><td class="dim">02:08:30</td><td class="info">u_d9a1f3c7e2</td><td>safety-guard</td><td class="ok">0</td><td class="num">186ms</td><td class="num">4%</td><td class="num">18M</td><td class="num">0</td></tr>
+                <tr><td class="dim">02:06:55</td><td class="info">u_b7e2c8d9f1</td><td>brainstorming</td><td class="ok">0</td><td class="num">624ms</td><td class="num">22%</td><td class="num">96M</td><td class="num">0</td></tr>
+                <tr><td class="dim">02:05:21</td><td class="info">u_a3f9b2c1d4</td><td>find-skills</td><td class="ok">0</td><td class="num">301ms</td><td class="num">8%</td><td class="num">38M</td><td class="num">0</td></tr>
+                <tr><td class="dim">02:03:48</td><td class="info">u_e2b4d6f8a1</td><td>lark-doc</td><td class="err">timeout</td><td class="num">30.0s</td><td class="num">94%</td><td class="num">456M</td><td class="num">0</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <!-- ============ STATUS BAR ============ -->
+  <footer class="statusbar">
+    <div class="left">
+      <span><span class="k">F1</span> overview</span>
+      <span><span class="k">F2</span> skills</span>
+      <span><span class="k">F3</span> activity</span>
+      <span><span class="k">F4</span> settings</span>
+      <span><span class="k">F5</span> admin</span>
+      <span><span class="k">F10</span> logout</span>
+    </div>
+    <div class="right">
+      <span>conn: <span class="ok">online</span></span>
+      <span>refresh: <span class="info">5s</span></span>
+      <span>mode: <span class="info">live</span></span>
+    </div>
+  </footer>
+
+</div>
+
+<script>
+  // tab switching
+  document.querySelectorAll('.nav-item').forEach(function(el){
+    el.addEventListener('click', function(){
+      var tab = el.getAttribute('data-tab');
+      if(!tab) return;
+      document.querySelectorAll('.nav-item').forEach(function(x){x.classList.remove('active')});
+      document.querySelectorAll('.tab').forEach(function(x){x.classList.remove('active')});
+      el.classList.add('active');
+      var pane = document.querySelector('.tab[data-pane="'+tab+'"]');
+      if(pane) pane.classList.add('active');
+    });
+  });
+
+  // checkbox toggles
+  document.querySelectorAll('[data-toggle]').forEach(function(row){
+    row.addEventListener('click', function(){
+      row.classList.toggle('off');
+      var cb = row.querySelector('.cb');
+      if(cb) cb.textContent = row.classList.contains('off') ? '[ ]' : '[x]';
+    });
+  });
+  document.querySelectorAll('[data-switch]').forEach(function(sw){
+    sw.addEventListener('click', function(e){
+      e.stopPropagation();
+      sw.classList.toggle('on');
+    });
+  });
+
+  // skill row enable/disable
+  document.querySelectorAll('.skill-row').forEach(function(row){
+    row.addEventListener('click', function(){
+      row.classList.toggle('off');
+      var cb = row.querySelector('.cb');
+      if(cb) cb.textContent = row.classList.contains('off') ? '[ ]' : '[x]';
+    });
+  });
+
+  // keyboard shortcut F1-F5
+  document.addEventListener('keydown', function(e){
+    var map = {F1:'overview',F2:'skills',F3:'activity',F4:'settings',F5:'admin'};
+    if(map[e.key]){
+      e.preventDefault();
+      var nav = document.querySelector('.nav-item[data-tab="'+map[e.key]+'"]');
+      if(nav) nav.click();
+    }
+  });
+
+  // range slider live value
+  document.querySelectorAll('input[type=range]').forEach(function(r){
+    var out = r.parentElement.querySelector('.info');
+    r.addEventListener('input', function(){ if(out) out.textContent = r.value; });
+  });
+</script>
+</body>
+</html>
