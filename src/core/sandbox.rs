@@ -119,8 +119,15 @@ impl SandboxSpec {
         if self.timeout_secs == 0 {
             bail!("timeout_secs must be > 0");
         }
-        if !self.workdir.is_absolute() {
-            bail!("workdir must be absolute, got {:?}", self.workdir);
+        // workdir is a path INSIDE the podman (Linux) container, so it must be
+        // unix-absolute — start with '/'. `Path::is_absolute()` uses HOST
+        // semantics, so on a Windows host it wrongly rejects "/workspace"
+        // (caught only once CI ran the windows matrix, 2026-06-03).
+        if !self.workdir.to_string_lossy().starts_with('/') {
+            bail!(
+                "workdir must be an absolute container path (start with '/'), got {:?}",
+                self.workdir
+            );
         }
         Ok(())
     }
