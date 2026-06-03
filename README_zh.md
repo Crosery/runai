@@ -97,15 +97,29 @@
 
 ### 安装
 
+一键（macOS / Linux）—— 自动检测平台、下载并校验 checksum、装进 PATH，再按你选的版本配置：
+
 ```bash
-cargo install --git https://github.com/Crosery/runai
-# 或者下载预编译二进制
-curl -fsSL https://github.com/Crosery/runai/releases/latest/download/runai-darwin-arm64.tar.gz \
-  | tar xz && mv runai ~/.cargo/bin/
+curl -fsSL https://raw.githubusercontent.com/Crosery/runai/main/install.sh | sh
+# 非交互（agent / CI）：
+curl -fsSL https://raw.githubusercontent.com/Crosery/runai/main/install.sh | sh -s -- --edition personal --yes
 ```
 
-预编译的 `{linux,darwin,windows} × {amd64,arm64}` 在 [releases 页](https://github.com/Crosery/runai/releases)。
-Windows 上 symlink 需要开发者模式或管理员权限。
+Windows（PowerShell）：
+
+```powershell
+irm https://raw.githubusercontent.com/Crosery/runai/main/install.ps1 | iex
+```
+
+从源码（需要 Rust）：
+
+```bash
+cargo install --git https://github.com/Crosery/runai
+```
+
+**版本**（同一个 binary，安装时选）：`personal` = 本地 skill router + Claude Code hook，无账号无 server。`team` = 跑多用户 dashboard server，其它机器用 `curl -fsSL http://<host>:17888/install | bash` 接入。
+
+安装器参数：`--edition personal|team`、`--version <tag>`、`--bin-dir <path>`、`--yes`、`--no-hook`、`--no-setup`、`--dry-run`、`--uninstall`。预编译的 `{linux,darwin,windows} × {amd64,arm64}` 在 [releases 页](https://github.com/Crosery/runai/releases)。Windows 上 symlink 需要开发者模式或管理员权限。
 
 ### 首次配置
 

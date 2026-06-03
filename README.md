@@ -94,15 +94,29 @@ On top of that core, an opt-in LLM skill **router** auto-picks the right skill f
 
 ### Install
 
+One-liner (macOS / Linux) — detects your platform, downloads + checksum-verifies the release binary, puts it on PATH, then sets up the edition you pick:
+
 ```bash
-cargo install --git https://github.com/Crosery/runai
-# or download a prebuilt binary
-curl -fsSL https://github.com/Crosery/runai/releases/latest/download/runai-darwin-arm64.tar.gz \
-  | tar xz && mv runai ~/.cargo/bin/
+curl -fsSL https://raw.githubusercontent.com/Crosery/runai/main/install.sh | sh
+# non-interactive (agents / CI):
+curl -fsSL https://raw.githubusercontent.com/Crosery/runai/main/install.sh | sh -s -- --edition personal --yes
 ```
 
-Prebuilt artifacts for `{linux,darwin,windows} × {amd64,arm64}` on the [releases page](https://github.com/Crosery/runai/releases).
-Windows needs Developer Mode or Administrator for symlinks.
+Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/Crosery/runai/main/install.ps1 | iex
+```
+
+From source (needs Rust):
+
+```bash
+cargo install --git https://github.com/Crosery/runai
+```
+
+**Editions** (one binary, picked at install time): `personal` = local skill router + Claude Code hook, no account, no server. `team` = run the multi-user dashboard server; other machines connect with `curl -fsSL http://<host>:17888/install | bash`.
+
+Installer flags: `--edition personal|team`, `--version <tag>`, `--bin-dir <path>`, `--yes`, `--no-hook`, `--no-setup`, `--dry-run`, `--uninstall`. Prebuilt artifacts for `{linux,darwin,windows} × {amd64,arm64}` on the [releases page](https://github.com/Crosery/runai/releases). Windows needs Developer Mode or Administrator for symlinks.
 
 ### First-run setup
 
