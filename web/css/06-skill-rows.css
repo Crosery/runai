@@ -1,0 +1,115 @@
+/* ============ SKILL ROWS ============ */
+/* Library 列表表头和数据行使用完全相同的 grid 几何 */
+.skill-rows-head,
+.skill-rows .row{
+  display:grid;
+  grid-template-columns:32px 1fr 90px 90px 70px 60px;
+  gap:16px;
+  padding:0 8px;
+}
+
+.skill-rows-head{
+  align-items:baseline;
+  padding:10px 8px 8px;
+  border-bottom:1px solid var(--line);
+  font-family:var(--mono);font-size:10px;
+  letter-spacing:0.14em;text-transform:uppercase;
+  color:var(--ink-3);
+}
+.skill-rows-head .sh-idx{text-align:left}
+.skill-rows-head .sh-name{text-align:left}
+.skill-rows-head .sh-used,
+.skill-rows-head .sh-last,
+.skill-rows-head .sh-llm{text-align:right}
+.skill-rows-head .sh-tog{text-align:center}
+
+.skill-rows{
+  max-height:calc(100vh - 300px);
+  min-height:320px;
+  overflow-y:auto;
+  scrollbar-width:thin;
+  scrollbar-color:var(--line) transparent;
+}
+.skill-rows::-webkit-scrollbar{width:6px}
+.skill-rows::-webkit-scrollbar-track{background:transparent}
+.skill-rows::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
+.skill-rows::-webkit-scrollbar-thumb:hover{background:var(--ink-3)}
+
+.skill-rows .row{
+  align-items:center;
+  padding:10px 8px;
+  border-bottom:1px solid var(--line-soft);
+  cursor:pointer;
+}
+.skill-rows .row .idx{
+  font-family:var(--mono);font-size:10px;color:var(--ink-3);
+  letter-spacing:0.04em;
+}
+.skill-rows .row .nm{
+  font-family:var(--serif);font-style:italic;font-weight:500;
+  font-size:15px;color:var(--ink);letter-spacing:-0.005em;
+}
+.skill-rows .row .nm small{
+  display:inline;
+  font-family:var(--sans);font-style:normal;font-weight:400;
+  font-size:12px;color:var(--ink-3);
+  margin-left:8px;letter-spacing:0;
+}
+.skill-rows .row .used{
+  font-family:var(--serif);font-size:16px;font-weight:300;letter-spacing:-0.005em;
+  color:var(--ink-2);text-align:right;
+  font-variant-numeric:lining-nums tabular-nums;
+}
+.skill-rows .row .last{font-family:var(--mono);font-size:11px;color:var(--ink-3);text-align:right;letter-spacing:0.04em}
+.skill-rows .row .llm{font-family:var(--mono);font-size:12px;color:var(--ink-2);text-align:right}
+.skill-rows .row .llm.unknown{color:var(--ink-3)}
+.skill-rows .row .toggle{
+  width:38px;height:22px;border-radius:11px;
+  background:var(--ink);position:relative;cursor:pointer;
+  justify-self:center;
+  transition:background 0.18s;
+}
+.skill-rows .row .toggle::after{
+  content:"";position:absolute;top:2px;right:2px;
+  width:18px;height:18px;border-radius:50%;background:var(--bg);
+  transition:transform 0.18s cubic-bezier(.2,.7,.3,1);
+}
+.skill-rows .row.off .toggle{background:var(--bg-3)}
+.skill-rows .row.off .toggle::after{transform:translateX(-16px)}
+.skill-rows .row.off .nm,.skill-rows .row.off .used{color:var(--ink-3)}
+
+.skills-empty{
+  padding:36px 0;text-align:center;
+  font-family:var(--mono);font-size:12px;letter-spacing:0.06em;
+  color:var(--ink-3);
+}
+
+/* Library sub-nav (Installed / Detail) */
+.library-sub{
+  display:flex;gap:32px;align-items:baseline;
+  border-bottom:1px solid var(--line);
+  margin-bottom:32px;padding-bottom:0;
+}
+.lib-sub{
+  font-family:var(--mono);font-size:12px;
+  letter-spacing:0.14em;text-transform:uppercase;
+  color:var(--ink-3);
+  padding:14px 0 16px;
+  border-bottom:2px solid transparent;
+  margin-bottom:-1px;
+  transition:color 0.18s,border-bottom-color 0.18s;
+}
+.lib-sub em{
+  font-style:normal;
+  font-size:10px;color:var(--ink-3);
+  margin-left:8px;letter-spacing:0.06em;
+}
+.lib-sub:hover{color:var(--ink)}
+.lib-sub.active{
+  color:var(--ink);
+  border-bottom-color:var(--accent);
+}
+.lib-sub.active em{color:var(--accent)}
+.lib-pane{display:none}
+.lib-pane.active{display:block}
+

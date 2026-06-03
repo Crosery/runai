@@ -1,0 +1,128 @@
+/* ============ EVENT DIALOG ============ */
+.event-dialog{
+  border:none;outline:none;
+  padding:0;
+  background:color-mix(in srgb, var(--bg) 72%, transparent);
+  -webkit-backdrop-filter:blur(22px) saturate(160%);
+  backdrop-filter:blur(22px) saturate(160%);
+  max-width:980px;width:90vw;
+  max-height:88vh;
+  margin:auto;inset:0;
+  overflow:hidden;
+  border:1px solid var(--line);
+  box-shadow:0 24px 60px -20px rgba(15,17,21,0.18),
+             0 12px 30px -12px rgba(15,17,21,0.10);
+}
+.event-dialog:not([open]){display:none}
+.event-dialog[open]{display:flex;flex-direction:column}
+.event-dialog::backdrop{
+  background:rgba(15,17,21,0.22);
+  backdrop-filter:blur(6px);
+}
+.event-dialog > .head,
+.event-dialog > #detail-body{background:transparent}
+
+/* dialog 内的 close 按钮关掉默认 focus 框，沿用 .btn 的 hover 视觉 */
+.event-dialog .head .btn:focus,
+.event-dialog .head .btn:focus-visible{
+  outline:none;
+  color:var(--ink);
+  border-bottom-color:var(--ink);
+}
+
+/* Dialog 开启时 custom cursor 让位给原生 (dialog top-layer 凌驾于 z-index 之上，
+   custom 指针挡在 dialog 后面会显得"被覆盖") */
+body.dialog-open .cursor-arrow,
+body.dialog-open .cursor-ring,
+body.dialog-open .cursor-label,
+body.dialog-open .cursor-glow{opacity:0 !important;pointer-events:none}
+body.dialog-open,
+body.dialog-open *,
+body.dialog-open *::before,
+body.dialog-open *::after{cursor:auto !important}
+body.dialog-open a,
+body.dialog-open button,
+body.dialog-open .nav-item,
+body.dialog-open [data-tab],
+body.dialog-open .dropdown-trigger,
+body.dialog-open .dd-opt,
+body.dialog-open .toggle-sw,
+body.dialog-open .swatch{cursor:pointer !important}
+body.dialog-open input[type=text],
+body.dialog-open input:not([type]),
+body.dialog-open textarea{cursor:text !important}
+.event-dialog .head{
+  display:flex;justify-content:space-between;align-items:baseline;
+  padding:18px 24px;
+  border-bottom:1px solid var(--line);
+  flex-shrink:0;
+}
+.event-dialog .head h2{
+  font-family:var(--serif);font-size:28px;font-weight:300;font-style:italic;
+  letter-spacing:-0.02em;color:var(--ink);
+}
+.event-dialog .id-tag{
+  font-family:var(--mono);font-size:11px;
+  letter-spacing:0.14em;text-transform:uppercase;color:var(--ink-3);
+  margin-left:14px;
+}
+.event-dialog #detail-body{
+  padding:18px 24px 24px;
+  overflow-y:auto;overflow-x:hidden;
+  flex:1 1 auto;min-height:0;
+  overscroll-behavior:contain;
+}
+
+.detail-grid{
+  display:grid;grid-template-columns:120px 1fr;gap:8px 24px;
+  margin-bottom:24px;
+}
+.detail-grid dt{
+  font-family:var(--mono);font-size:10px;letter-spacing:0.14em;
+  text-transform:uppercase;color:var(--ink-3);padding-top:6px;
+}
+.detail-grid dd{
+  font-size:14px;color:var(--ink);
+  border-bottom:1px solid var(--line-soft);padding:4px 0 10px;
+}
+.detail-grid .mono{font-family:var(--mono);font-size:12.5px}
+.detail-grid .muted{color:var(--ink-3)}
+.detail-grid .status-dot{
+  display:inline-block;width:7px;height:7px;border-radius:50%;
+  margin-right:6px;vertical-align:middle;background:var(--accent-2);
+}
+.detail-grid .status-error .status-dot{background:var(--err)}
+
+.section-label{
+  font-family:var(--mono);font-size:10px;
+  letter-spacing:0.16em;text-transform:uppercase;color:var(--ink-3);
+  margin:24px 0 10px;
+}
+
+.prompt-block{
+  font-family:var(--mono);font-size:12.5px;
+  line-height:1.65;color:var(--ink);
+  background:transparent;
+  border-left:2px solid var(--accent);
+  padding:14px 20px;
+  overflow-x:auto;
+  white-space:pre-wrap;word-break:break-word;
+  max-height:280px;overflow-y:auto;
+}
+
+.chip{
+  display:inline-flex;align-items:center;gap:5px;
+  font-family:var(--mono);font-size:11px;color:var(--accent);
+  background:transparent;
+  border:1px solid var(--accent);
+  padding:3px 10px;
+  margin:0 6px 6px 0;letter-spacing:0.02em;
+  transition:background 0.12s,color 0.12s;
+}
+a.chip:hover{background:color-mix(in srgb, var(--accent) 12%, transparent);color:var(--ink)}
+.chip-empty{
+  font-family:var(--mono);font-size:11px;color:var(--ink-3);letter-spacing:0.04em;
+}
+.dim{color:var(--ink-3)}
+.muted{color:var(--ink-3)}
+

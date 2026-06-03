@@ -1,0 +1,104 @@
+/* ============================================================
+   runai · router dashboard
+   Editorial / Linear-style light themes.
+   Ported from docs/specs/ui-mocks/dashboard-linear.html.
+   ============================================================ */
+
+:root{
+  --serif:ui-serif,"New York","Iowan Old Style","Apple Garamond",Georgia,serif;
+  --sans:-apple-system,BlinkMacSystemFont,system-ui,"SF Pro Text","Helvetica Neue",sans-serif;
+  --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,monospace;
+}
+
+/* ============ THEMES ============
+   5 light variants, mainstream GitHub / dev-IDE flavours.
+   Default is github-light; body class switches palette. */
+body, body.theme-github{
+  --bg:#ffffff;
+  --bg-2:#f6f8fa;
+  --bg-3:#eaeef2;
+  --ink:#1f2328;
+  --ink-2:#656d76;
+  --ink-3:#8b949e;
+  --line:#d0d7de;
+  --line-soft:#eaeef2;
+  --accent:#0969da;
+  --accent-2:#1a7f37;
+  --warn:#9a6700;
+  --err:#cf222e;
+}
+body.theme-dimmed{
+  --bg:#f6f5f1;
+  --bg-2:#eeece5;
+  --bg-3:#e3e0d5;
+  --ink:#22252a;
+  --ink-2:#5b5f64;
+  --ink-3:#8a8e93;
+  --line:#d8d4c8;
+  --line-soft:#eae6da;
+  --accent:#bc4c00;
+  --accent-2:#1a7f37;
+  --warn:#9a6700;
+  --err:#cf222e;
+}
+body.theme-solarized{
+  --bg:#fdf6e3;
+  --bg-2:#eee8d5;
+  --bg-3:#e3dcbf;
+  --ink:#002b36;
+  --ink-2:#586e75;
+  --ink-3:#93a1a1;
+  --line:#d8d2bc;
+  --line-soft:#ede5c8;
+  --accent:#cb4b16;
+  --accent-2:#859900;
+  --warn:#b58900;
+  --err:#dc322f;
+}
+body.theme-ayu{
+  --bg:#fafafa;
+  --bg-2:#f3f3f3;
+  --bg-3:#e6e6e6;
+  --ink:#5c6166;
+  --ink-2:#828c99;
+  --ink-3:#abafb2;
+  --line:#dad8d6;
+  --line-soft:#ececec;
+  --accent:#ff8f40;
+  --accent-2:#399ee6;
+  --warn:#fa8d3e;
+  --err:#e65050;
+}
+body.theme-catppuccin{
+  --bg:#eff1f5;
+  --bg-2:#e6e9ef;
+  --bg-3:#dce0e8;
+  --ink:#4c4f69;
+  --ink-2:#6c6f85;
+  --ink-3:#9ca0b0;
+  --line:#bcc0cc;
+  --line-soft:#ccd0da;
+  --accent:#8839ef;
+  --accent-2:#40a02b;
+  --warn:#df8e1d;
+  --err:#d20f39;
+}
+
+*{margin:0;padding:0;box-sizing:border-box}
+::selection{background:var(--accent);color:#fff}
+html,body{
+  font-family:var(--sans);
+  font-size:14px;line-height:1.5;
+  background:var(--bg);color:var(--ink);
+  -webkit-font-smoothing:antialiased;
+  text-rendering:optimizeLegibility;
+  font-feature-settings:"ss01","ss02","cv11";
+  position:relative;
+  margin:0;padding:0;
+  min-height:100%;
+}
+/* mesh blob 漂移到屏外不致引起横向滚动 */
+html{overflow-x:clip}
+a{color:inherit;text-decoration:none}
+button{font:inherit;cursor:pointer}
+

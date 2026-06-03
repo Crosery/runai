@@ -30,8 +30,42 @@ mod telemetry;
 pub use app::{EnsureStatus, ensure_running, serve};
 
 const INDEX_HTML: &str = include_str!("../../web/index.html");
-const APP_JS: &str = include_str!("../../web/app.js");
-const APP_CSS: &str = include_str!("../../web/app.css");
+// app.js / app.css are split into safe-boundary parts under web/{js,css}/.
+// concat! over include_str! in sorted order rebuilds the exact byte stream the
+// dashboard used to serve — the served /app.js and /app.css routes stay
+// byte-identical to the pre-split single files. See web/README.md for the
+// invariant: cut only at safe boundaries, never reorder, concat! here.
+const APP_JS: &str = concat!(
+    include_str!("../../web/js/01-iife-state-formatters.js"),
+    include_str!("../../web/js/02-router.js"),
+    include_str!("../../web/js/03-api-overview.js"),
+    include_str!("../../web/js/04-activity-detail.js"),
+    include_str!("../../web/js/05-library-skills.js"),
+    include_str!("../../web/js/06-library-detail.js"),
+    include_str!("../../web/js/07-polling-models.js"),
+    include_str!("../../web/js/08-dropdown-swatches-cursor.js"),
+    include_str!("../../web/js/09-wiring.js"),
+    include_str!("../../web/js/10-settings.js"),
+    include_str!("../../web/js/11-account-library.js"),
+    include_str!("../../web/js/12-admin-scope-skills.js"),
+    include_str!("../../web/js/13-auth-bulk-prefs.js"),
+    include_str!("../../web/js/14-market-list.js"),
+    include_str!("../../web/js/15-market-detail-github.js"),
+    include_str!("../../web/js/16-boot.js"),
+);
+const APP_CSS: &str = concat!(
+    include_str!("../../web/css/01-base-themes.css"),
+    include_str!("../../web/css/02-mesh-cursor.css"),
+    include_str!("../../web/css/03-layout-topbar-sidebar.css"),
+    include_str!("../../web/css/04-overview-tab.css"),
+    include_str!("../../web/css/05-library-dropdown.css"),
+    include_str!("../../web/css/06-skill-rows.css"),
+    include_str!("../../web/css/07-skill-detail.css"),
+    include_str!("../../web/css/08-event-dialog.css"),
+    include_str!("../../web/css/09-settings-tab.css"),
+    include_str!("../../web/css/10-v15-account-auth-library.css"),
+    include_str!("../../web/css/11-v15-market-github.css"),
+);
 /// Client-side install / uninstall scripts. The server serves these from
 /// GET /install and GET /uninstall after replacing the `{SERVER_URL}`
 /// placeholder with the URL the teammate just curl'd from, so the

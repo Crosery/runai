@@ -1,0 +1,263 @@
+/* v15 market tab ====================================================== */
+/* skills.sh-inspired Market layout — hero + try-it + leaderboard.
+   Drops the old cards grid (`.market-grid` rules below are legacy and
+   no longer rendered into). Theme variables keep this consistent with
+   light / dark switches in the topbar. */
+
+.market-hero{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);
+  gap:32px;align-items:start;padding:24px 0 18px;border-bottom:1px solid var(--line-soft);margin-bottom:18px;background:transparent}
+@media (max-width:900px){.market-hero{grid-template-columns:1fr}}
+
+.market-hero .mh-eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:1.5px;
+  color:var(--muted);margin-bottom:8px;text-transform:uppercase}
+.market-hero .mh-title{font-family:var(--serif,Georgia,serif);font-size:48px;font-weight:600;
+  margin:0;color:var(--fg);line-height:1}
+.market-hero .mh-title .mh-count{font-family:var(--mono);font-size:18px;color:var(--accent);
+  font-weight:500;margin-left:18px;vertical-align:middle}
+.market-hero .mh-sub{font-size:13px;color:var(--muted);margin:14px 0 0;line-height:1.55}
+
+.market-hero-tryit{display:flex;flex-direction:column;gap:8px;
+  padding:14px 16px;background:transparent;border:1px solid var(--line-soft);border-radius:8px}
+.mh-tryit-label{font-family:var(--mono);font-size:11px;letter-spacing:1.5px;color:var(--muted);text-transform:uppercase}
+.mh-tryit-cmd{display:flex;align-items:center;gap:8px;padding:10px 12px;
+  background:transparent;border:1px solid var(--line);border-radius:6px;font-family:var(--mono);font-size:13px}
+.mh-tryit-cmd .mh-tryit-prompt{color:var(--muted)}
+.mh-tryit-cmd code{flex:1;color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mh-tryit-copy{font-family:var(--mono);font-size:11px;padding:4px 10px;
+  border:1px solid var(--line);border-radius:4px;background:transparent;color:var(--muted);cursor:pointer;text-transform:uppercase;letter-spacing:0.5px}
+.mh-tryit-copy:hover{background:var(--bg-soft);color:var(--fg)}
+.mh-tryit-help{font-size:11px;color:var(--muted);line-height:1.5}
+
+.market-toolbar{display:flex;align-items:center;gap:14px;margin:0 0 14px;flex-wrap:wrap}
+.market-search-wrap{flex:1 1 280px;display:flex;align-items:center;gap:8px;
+  padding:8px 12px;border:1px solid var(--line);border-radius:6px;background:transparent}
+.market-search-wrap:focus-within{border-color:var(--accent)}
+.market-search-icon{font-family:var(--mono);font-size:10px;color:var(--muted);
+  letter-spacing:1px}
+.market-search-wrap .market-search{flex:1;border:0;background:transparent;outline:none;
+  padding:0;font-size:13px;color:var(--fg);min-width:120px}
+.market-search-kbd{font-family:var(--mono);font-size:11px;color:var(--muted);
+  border:1px solid var(--line);padding:1px 6px;border-radius:3px}
+.market-tabs{display:flex;gap:0;align-items:center}
+.market-tab-btn{font-family:var(--mono);font-size:12px;padding:8px 14px;
+  border:1px solid var(--line);background:transparent;color:var(--muted);cursor:pointer;
+  border-radius:0}
+.market-tab-btn:first-child{border-radius:6px 0 0 6px}
+.market-tab-btn:last-child{border-radius:0 6px 6px 0}
+.market-tab-btn + .market-tab-btn{border-left:0}
+.market-tab-btn.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.market-tab-btn em{font-style:normal;margin-left:6px;font-size:11px;opacity:0.85}
+.market-toolbar-actions{display:flex;gap:8px}
+
+/* Source chip row — clickable filter. */
+.market-sources{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 14px;font-size:11px}
+.src-chip{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;
+  border:1px solid var(--line);border-radius:14px;background:transparent;color:var(--muted);
+  cursor:pointer;font-family:var(--mono);font-size:11px;line-height:1.2}
+.src-chip:hover{border-color:var(--accent);color:var(--fg)}
+.src-chip.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.src-chip.active .src-n{color:#fff}
+.src-chip.empty{opacity:0.45}
+.src-chip .src-n{font-weight:600;color:var(--fg);font-size:11px}
+.src-chip.refreshing{color:var(--accent);font-weight:600;animation:pulse 1.2s infinite;cursor:default}
+
+.market-tabs-row{margin:0 0 14px;border-bottom:1px solid var(--line-soft);padding-bottom:0;display:flex;gap:0;align-items:flex-end;flex-wrap:wrap}
+.market-tabs-row .market-tab-btn{border:0;border-bottom:2px solid transparent;border-radius:0;
+  padding:10px 16px;background:transparent;color:var(--muted);font-family:var(--mono);font-size:12px;cursor:pointer}
+.market-tabs-row .market-tab-btn:hover{color:var(--fg)}
+.market-tabs-row .market-tab-btn.active{color:var(--fg);border-bottom-color:var(--accent);background:transparent}
+.market-tabs-row .market-tab-btn em{font-style:normal;margin-left:6px;font-size:11px;opacity:0.7}
+.market-tabs-row .market-tab-sep{flex:1;min-width:18px;border-bottom:0}
+
+/* Leaderboard — matches Activity's transparent + internal-scroll feel.
+   `.ml-head` stays put above the scroll context as a static sibling;
+   `.ml-rows-wrap` is the scroll viewport; `.ml-rows` lives inside.
+   Columns: # / SKILL (name+repo) / 8W TREND / INSTALLS / ACTION. */
+.market-leaderboard{background:transparent;border:0;border-radius:0}
+.market-leaderboard .ml-head{display:grid;
+  grid-template-columns:60px minmax(0,2.2fr) 130px 110px minmax(0,1fr);
+  padding:10px 0;border-bottom:1px solid var(--line-soft);
+  font-family:var(--mono);font-size:10px;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;
+  background:transparent}
+.market-leaderboard .ml-rows-wrap{
+  max-height:calc(100vh - 380px);min-height:320px;overflow-y:auto;
+  scrollbar-width:thin;scrollbar-color:var(--line) transparent}
+.market-leaderboard .ml-rows-wrap::-webkit-scrollbar{width:6px}
+.market-leaderboard .ml-rows-wrap::-webkit-scrollbar-track{background:transparent}
+.market-leaderboard .ml-rows-wrap::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
+.market-leaderboard .ml-rows-wrap::-webkit-scrollbar-thumb:hover{background:var(--ink-3)}
+.market-leaderboard .ml-rows{display:flex;flex-direction:column}
+.ml-row{display:grid;grid-template-columns:60px minmax(0,2.2fr) 130px 110px minmax(0,1fr);
+  padding:12px 0;border-bottom:1px solid var(--line-soft);background:transparent;
+  align-items:center;cursor:pointer;transition:background 0.08s}
+.ml-row:hover{background:color-mix(in srgb,var(--accent) 4%,transparent)}
+.ml-row:last-child{border-bottom:0}
+.ml-row .ml-rank{font-family:var(--mono);font-size:12px;color:var(--muted)}
+.ml-row .ml-skill-name{font-weight:600;font-size:13px;color:var(--fg);line-height:1.3}
+.ml-row .ml-skill-repo{font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:2px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ml-source-chip{display:inline-block;font-family:var(--mono);font-size:10px;color:var(--muted);
+  padding:2px 8px;border:1px solid var(--line);border-radius:3px;text-transform:uppercase;letter-spacing:0.5px}
+.ml-action{display:flex;align-items:center;justify-content:flex-end;gap:8px}
+.ml-action .ml-badge{font-family:var(--mono);font-size:10px;color:var(--accent);
+  font-weight:600;letter-spacing:0.5px;text-transform:uppercase}
+.ml-action .ml-badge.installed{color:var(--muted)}
+.ml-action .ml-install-btn{font-size:12px;padding:5px 10px;border:1px solid var(--line);
+  border-radius:4px;background:transparent;color:var(--fg);cursor:pointer}
+.ml-action .ml-install-btn:not(:disabled):hover{background:var(--accent);color:#fff;border-color:var(--accent)}
+.ml-action .ml-install-btn:disabled{opacity:0.5;cursor:default}
+.ml-row.in-library{background:color-mix(in srgb,var(--accent) 6%,transparent)}
+.ml-render-note{padding:12px 16px;text-align:center;font-size:11px;border-top:1px solid var(--line-soft)}
+
+/* Sparkline + installs column. */
+.ml-trend{display:flex;align-items:center;justify-content:flex-start;color:var(--muted)}
+.ml-trend-svg{height:24px;width:96px}
+.ml-trend-empty{font-family:var(--mono);font-size:11px;color:var(--muted)}
+.ml-installs{font-family:var(--mono);font-size:12px;font-weight:600;color:var(--fg);text-align:right;padding-right:14px}
+
+.ml-official-badge{display:inline-block;font-family:var(--mono);font-size:9px;letter-spacing:0.5px;
+  padding:1px 5px;border-radius:2px;background:var(--accent);color:#fff;margin-left:6px;vertical-align:middle}
+
+/* Pager. Sits outside the scroll container so navigation stays put. */
+.ml-pager{display:flex;align-items:center;justify-content:center;gap:14px;padding:14px;
+  border-top:1px solid var(--line-soft);font-family:var(--mono);font-size:12px;color:var(--muted);background:transparent}
+.ml-pager-btn{padding:6px 14px;border:1px solid var(--line);border-radius:4px;background:transparent;
+  color:var(--fg);cursor:pointer;font-family:var(--mono);font-size:12px}
+.ml-pager-btn:not(:disabled):hover{background:var(--accent);color:#fff;border-color:var(--accent)}
+.ml-pager-btn:disabled{opacity:0.4;cursor:default}
+.ml-pager-info{white-space:nowrap}
+
+/* Legacy cards-grid rules below; kept until references are pruned. */
+.market-actions{display:flex;gap:10px;align-items:center;margin:12px 0 18px;flex-wrap:wrap}
+.market-search{flex:1 1 240px;min-width:200px;padding:9px 12px;border:1px solid var(--line);border-radius:6px;
+  background:var(--bg-soft);color:var(--fg);font-size:13px;font-family:inherit}
+.market-search:focus{outline:none;border-color:var(--accent)}
+/* Global .mbtn — modal / picker / market action button shared by every
+   admin & user dialog. Defined globally (not scoped) so any container
+   gets the same look without redeclaring rules per scope. */
+.mbtn{
+  display:inline-flex;align-items:center;justify-content:center;
+  padding:8px 16px;border:1px solid var(--line);border-radius:6px;
+  background:transparent;color:var(--fg);font-size:12px;
+  font-family:inherit;font-weight:500;letter-spacing:normal;text-transform:none;
+  white-space:nowrap;cursor:pointer;margin:0;line-height:1.2;
+  transition:background 0.12s,border-color 0.12s,filter 0.12s
+}
+.mbtn:hover:not(:disabled){background:var(--bg-soft)}
+.mbtn:disabled{opacity:0.5;cursor:not-allowed}
+.mbtn.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+.mbtn.primary:hover:not(:disabled){filter:brightness(1.08)}
+.mbtn.primary:disabled{background:var(--accent);opacity:0.5}
+.market-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}
+.market-card{position:relative;background:var(--bg-soft);border:1px solid var(--line-soft);
+  border-radius:8px;padding:14px 16px;display:flex;flex-direction:column;gap:8px;min-height:120px}
+.market-card.in-library{border-color:var(--accent)}
+.market-card .mc-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
+.market-card .mc-name{font-weight:600;font-size:13px;color:var(--fg)}
+.market-card .mc-tag{font-family:var(--mono);font-size:10px;color:var(--muted);text-transform:uppercase}
+.market-card .mc-src{font-family:var(--mono);font-size:11px;color:var(--muted);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.market-card .mc-actions{margin-top:auto;display:flex;justify-content:flex-end;align-items:center;gap:6px}
+.market-card .mc-status{font-size:11px;color:var(--accent);font-weight:600}
+.market-empty{padding:24px;text-align:center;border:1px dashed var(--line-soft);border-radius:8px;margin-top:12px}
+.auth-busy{margin-top:12px;padding:8px 12px;background:rgba(88,166,255,0.08);
+  color:var(--accent);border-radius:6px;font-size:12px}
+.auth-sub code{font-family:var(--mono);font-size:11px;background:var(--bg-soft);
+  padding:1px 5px;border-radius:3px}
+
+/* v15 market: source status badges + detail modal ===================== */
+.market-status{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 14px;font-size:11px}
+.market-status .src-badge{display:inline-flex;align-items:center;gap:4px;padding:3px 8px;
+  border:1px solid var(--line-soft);border-radius:4px;background:var(--bg-soft);
+  font-family:var(--mono);color:var(--muted)}
+.market-status .src-badge.empty{opacity:0.5}
+.market-status .src-badge .src-n{font-weight:600;color:var(--fg)}
+.market-status .refreshing{color:var(--accent);font-weight:600;animation:pulse 1.2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
+
+.market-card{cursor:pointer;transition:border-color 0.12s,background 0.12s}
+.market-card:hover{border-color:var(--accent)}
+.market-card .mc-actions .btn-small{padding:5px 10px;font-size:11px}
+
+.market-detail-card{width:min(640px,90vw);max-height:80vh;display:flex;flex-direction:column;
+  padding-top:36px}
+.market-detail-card h2{margin:0 0 8px 0;font-size:18px;font-weight:700}
+.market-detail-meta{display:flex;gap:10px;font-size:11px;margin-bottom:6px;
+  font-family:var(--mono);color:var(--muted)}
+.md-status{color:var(--accent);font-weight:600}
+.md-repo{display:inline-block;font-size:11px;color:var(--accent);margin-bottom:12px;
+  text-decoration:none}
+.md-repo:hover{text-decoration:underline}
+.market-detail-md{flex:1;overflow:auto;max-height:34vh;background:var(--bg-soft);
+  border:1px solid var(--line-soft);border-radius:6px;padding:12px;font-family:var(--mono);
+  font-size:11px;line-height:1.5;color:var(--fg);white-space:pre-wrap;word-break:break-word;
+  margin:0 0 16px 0}
+
+/* File list inside the market detail modal — small table showing
+   sibling files (scripts/, references/, etc.) that ship with the skill.
+   Lets users see "this skill has 12 files" before installing. */
+.md-files-label{font-family:var(--mono);font-size:10px;letter-spacing:1.2px;
+  color:var(--muted);text-transform:uppercase;margin:6px 0 4px}
+.md-files{max-height:140px;overflow-y:auto;border:1px solid var(--line-soft);border-radius:6px;
+  padding:6px 10px;font-family:var(--mono);font-size:11px;background:transparent;margin-bottom:12px;
+  scrollbar-width:thin;scrollbar-color:var(--line) transparent}
+.md-files::-webkit-scrollbar{width:5px}
+.md-files::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
+.md-file-row{display:grid;grid-template-columns:42px 1fr 80px;gap:8px;padding:2px 0;align-items:center}
+.md-file-dir,.md-file-file{font-size:9px;letter-spacing:0.5px;padding:1px 5px;border-radius:2px;
+  font-weight:600;text-align:center}
+.md-file-dir{background:var(--accent);color:#fff}
+.md-file-file{background:transparent;color:var(--muted);border:1px solid var(--line)}
+.md-file-name{color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.md-file-size{color:var(--muted);text-align:right;font-size:10px}
+/* Detail-modal actions: two buttons right-aligned. Button styling itself
+   is provided by the global .mbtn rule. */
+.market-detail-card .auth-actions{justify-content:flex-end;gap:8px;margin-top:0}
+
+/* v15 GitHub parse + pick modal ===================================== */
+.github-picker-card{width:min(580px,92vw);max-height:80vh;display:flex;flex-direction:column}
+.github-picker-card h2{margin:0 0 4px 0;font-size:18px}
+.github-result{margin-top:14px;display:flex;flex-direction:column;min-height:0;flex:1}
+.github-result-head{display:flex;justify-content:space-between;align-items:center;
+  font-size:11px;color:var(--muted);margin-bottom:8px;font-family:var(--mono)}
+.github-result-tools{display:flex;gap:6px}
+.github-skill-list{flex:1;overflow:auto;max-height:42vh;border:1px solid var(--line-soft);
+  border-radius:6px;background:var(--bg-soft);margin-bottom:14px;padding:4px 0}
+.github-skill-row{display:flex;align-items:center;gap:10px;padding:8px 12px;
+  font-size:12px;border-bottom:1px solid var(--line-soft);transition:background 0.1s}
+.github-skill-row:last-child{border-bottom:none}
+.github-skill-row:hover{background:var(--bg)}
+.github-skill-row.disabled{opacity:0.55;cursor:not-allowed}
+.github-skill-row.disabled .gsr-name{color:var(--muted)}
+.github-skill-row input[type="checkbox"]{width:14px;height:14px;cursor:pointer}
+.github-skill-row.disabled input[type="checkbox"]{cursor:not-allowed}
+.gsr-name{font-weight:600;color:var(--fg);flex:1;font-family:var(--mono)}
+.gsr-path{font-family:var(--mono);font-size:10px;color:var(--muted);max-width:200px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.gsr-status{font-size:10px;font-weight:600;padding:2px 6px;border-radius:3px;
+  text-transform:uppercase;letter-spacing:0.3px;font-family:var(--mono)}
+.gsr-status.in-lib{background:var(--accent);color:#fff}
+.gsr-status.installed{background:transparent;border:1px solid var(--line);color:var(--muted)}
+.gsr-status.new{background:transparent;border:1px solid var(--accent);color:var(--accent)}
+#github-install-count{font-style:normal;font-weight:700;margin-left:2px}
+
+/* v15 GitHub picker — finer polish */
+.github-picker-card .auth-form{margin-top:8px}
+.github-picker-card .auth-form label{margin-bottom:8px}
+.github-picker-card .auth-form .auth-actions{margin-top:6px}
+.github-result-head .btn-small{padding:3px 8px;font-size:10px}
+/* Make the result list scrollbar match the rest of the dashboard chrome */
+.github-skill-list::-webkit-scrollbar{width:8px}
+.github-skill-list::-webkit-scrollbar-thumb{background:var(--line);border-radius:4px}
+.github-skill-list::-webkit-scrollbar-track{background:transparent}
+
+/* v15 info modal — long list block inside the confirm card */
+.confirm-items{list-style:none;padding:0;margin:10px 0 0;max-height:240px;
+  overflow:auto;border:1px solid var(--line-soft);border-radius:6px;
+  background:var(--bg-soft);font-family:var(--mono);font-size:12px}
+.confirm-items li{padding:5px 12px;border-bottom:1px solid var(--line-soft);
+  color:var(--fg)}
+.confirm-items li:last-child{border-bottom:none}
+.confirm-items::-webkit-scrollbar{width:8px}
+.confirm-items::-webkit-scrollbar-thumb{background:var(--line);border-radius:4px}
+.confirm-items::-webkit-scrollbar-track{background:transparent}

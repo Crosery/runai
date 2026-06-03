@@ -1,0 +1,123 @@
+/* ============ TAB: LIBRARY ============ */
+.tab-head{
+  display:flex;justify-content:space-between;align-items:baseline;
+  margin-bottom:24px;
+  padding-top:4px;
+}
+.tab-head h1{
+  font-family:var(--serif);
+  font-size:40px;font-weight:300;font-style:italic;
+  letter-spacing:-0.03em;line-height:1;color:var(--ink);
+}
+.tab-head h1 em{
+  font-style:normal;font-weight:700;font-size:0.34em;
+  color:var(--accent);
+  letter-spacing:0.1em;
+  vertical-align:0.5em;
+  margin-left:16px;
+  font-family:var(--mono);
+}
+.tab-head .meta-line{
+  font-family:var(--mono);font-size:11px;
+  letter-spacing:0.14em;text-transform:uppercase;color:var(--ink-3);
+  text-align:right;
+}
+.tab-head .meta-line b{color:var(--ink)}
+
+.filterbar{
+  display:flex;gap:18px;margin-bottom:16px;
+  padding:12px 0;
+  border-top:1px solid var(--line);border-bottom:1px solid var(--line);
+  align-items:center;
+}
+/* filterbar 内的 input / dropdown 不再带自己的 dotted 下边线，
+   靠 filterbar 上下两条 line 统一框，多一条会跟 filterbar 的下边线
+   叠出"三条横线"的奇怪视觉 */
+.filterbar input{
+  background:transparent;border:none;
+  font-family:var(--sans);font-size:13px;
+  color:var(--ink);padding:2px 0;
+  flex:1;min-width:0;letter-spacing:-0.005em;
+}
+.filterbar input::placeholder{color:var(--ink-3)}
+.filterbar input:focus{outline:none}
+.filterbar input:focus::placeholder{color:transparent}
+.filterbar label{font-family:var(--mono);font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:var(--ink-3);flex-shrink:0}
+.filterbar .dropdown-trigger{
+  border-bottom:none;
+  padding:2px 0;
+}
+.filterbar .dropdown-trigger:hover .dd-chev,
+.filterbar .dropdown.open .dropdown-trigger .dd-chev{border-color:var(--ink)}
+
+/* ============ CUSTOM DROPDOWN ============ */
+.dropdown{position:relative;display:inline-block}
+.dropdown.fluid{flex:0 0 200px}
+.dropdown-trigger{
+  background:transparent;border:none;
+  border-bottom:1px dotted var(--line);
+  padding:4px 0;width:100%;
+  font-family:var(--mono);font-size:12px;
+  letter-spacing:0.04em;color:var(--ink);
+  cursor:pointer;
+  display:flex;justify-content:space-between;align-items:center;gap:14px;
+  transition:border-bottom-color 0.15s;
+}
+.dropdown-trigger .dd-chev{
+  width:9px;height:9px;display:inline-block;
+  border-right:1px solid var(--ink-3);
+  border-bottom:1px solid var(--ink-3);
+  transform:rotate(45deg);margin-top:-3px;
+  transition:transform 0.18s cubic-bezier(.2,.7,.3,1),border-color 0.18s;
+}
+.dropdown.open .dropdown-trigger{
+  border-bottom:1px solid var(--ink);
+  border-bottom-style:solid;
+}
+.dropdown.open .dropdown-trigger .dd-chev{
+  transform:rotate(-135deg);margin-top:3px;
+  border-color:var(--ink);
+}
+.dropdown-menu{
+  position:absolute;top:100%;left:0;
+  width:100%;min-width:100%;
+  background:color-mix(in srgb, var(--bg) 72%, transparent);
+  -webkit-backdrop-filter:blur(18px) saturate(160%);
+  backdrop-filter:blur(18px) saturate(160%);
+  z-index:100;
+  padding:0;
+  opacity:0;transform:translateY(-4px);
+  pointer-events:none;
+  transition:opacity 0.18s cubic-bezier(.2,.7,.3,1),
+             transform 0.18s cubic-bezier(.2,.7,.3,1);
+  box-shadow:0 10px 22px -4px rgba(0,0,0,0.06);
+}
+.dropdown.open .dropdown-menu{
+  opacity:1;transform:translateY(0);
+  pointer-events:auto;
+}
+.dropdown-menu .dd-opt{
+  display:flex;align-items:baseline;gap:10px;
+  width:100%;text-align:left;
+  background:transparent;border:none;
+  padding:9px 16px;
+  font-family:var(--mono);font-size:12px;
+  color:var(--ink-2);letter-spacing:0.04em;
+  cursor:pointer;
+  border-bottom:1px solid var(--line-soft);
+  transition:background 0.12s,color 0.12s,padding-left 0.18s;
+}
+.dropdown-menu .dd-opt:last-child{border-bottom:none}
+.dropdown-menu .dd-opt:hover{
+  background:var(--bg-2);color:var(--ink);
+  padding-left:22px;
+}
+.dropdown-menu .dd-opt.active{color:var(--accent)}
+.dropdown-menu .dd-opt.active::before{
+  content:"→";color:var(--accent);
+  font-family:var(--mono);margin-right:2px;
+}
+.dropdown-menu .dd-opt:not(.active)::before{
+  content:"";width:14px;display:inline-block;
+}
+
