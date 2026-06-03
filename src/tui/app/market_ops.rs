@@ -55,7 +55,10 @@ impl App {
 
         // Download only the SKILL.md for this one skill
         let rt = tokio::runtime::Runtime::new().unwrap();
-        match rt.block_on(Market::install_single(&skill, &self.mgr.paths().skills_dir())) {
+        match rt.block_on(Market::install_single(
+            &skill,
+            &self.mgr.paths().skills_dir(),
+        )) {
             Ok(_) => {
                 let _ = self.mgr.register_local_skill(&skill.name);
                 self.message = Some(format!("Installed '{}'", skill.name));

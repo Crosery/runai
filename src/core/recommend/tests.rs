@@ -136,7 +136,8 @@ fn en_config_accepts_english_rejects_chinese() {
                    inputs: a project directory\n\
                    outputs: a live preview URL\n\
                    not-for: long-term hosting";
-    let chinese = "task: 部署应用到 Vercel 预览环境\ninputs: 项目目录\noutputs: 预览链接\nnot-for: 长期托管";
+    let chinese =
+        "task: 部署应用到 Vercel 预览环境\ninputs: 项目目录\noutputs: 预览链接\nnot-for: 长期托管";
     assert!(summary_matches_lang(english, "en"));
     assert!(!summary_matches_lang(chinese, "en"));
 }

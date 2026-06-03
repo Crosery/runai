@@ -192,8 +192,14 @@ pub(super) async fn api_events(
     let hit_only = q.hit_only.unwrap_or(false);
     let db = state.db()?;
     let view = resolve_view_user(&headers, &db, q.user.as_deref())?;
-    let events = db
-        .router_events_paged_filtered(since, limit, offset, model_ref, hit_only, view.as_deref())?;
+    let events = db.router_events_paged_filtered(
+        since,
+        limit,
+        offset,
+        model_ref,
+        hit_only,
+        view.as_deref(),
+    )?;
     let total = db.router_events_count_filtered(since, model_ref, hit_only, view.as_deref())?;
     Ok(Json(EventsResponse {
         total,

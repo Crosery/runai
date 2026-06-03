@@ -75,8 +75,7 @@ impl SkillManager {
 
         // Narrow to user-selected skills if a filter was supplied.
         if let Some(allowed) = only {
-            let set: std::collections::HashSet<&str> =
-                allowed.iter().map(|s| s.as_str()).collect();
+            let set: std::collections::HashSet<&str> = allowed.iter().map(|s| s.as_str()).collect();
             extract.skills.retain(|s| set.contains(s.name.as_str()));
             if extract.skills.is_empty() {
                 // Single-skill-in-root fallback. Repos like anysearch-ai/
@@ -87,11 +86,7 @@ impl SkillManager {
                 // (which `extract_skills` named `anysearch-skill`).
                 // When `only` has exactly one name and the repo's root
                 // SKILL.md is present, treat that as the requested skill.
-                let has_root_skill_md = extract
-                    .tree
-                    .tree
-                    .iter()
-                    .any(|n| n.path == "SKILL.md");
+                let has_root_skill_md = extract.tree.tree.iter().any(|n| n.path == "SKILL.md");
                 if allowed.len() == 1 && has_root_skill_md {
                     // `.` marks a root-skill install — collect_download_tasks
                     // treats this as "pull every non-VCS file from the

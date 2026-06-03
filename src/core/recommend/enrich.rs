@@ -279,9 +279,7 @@ pub fn enrich_skills(
                         match call_summary_llm(&cfg, &api_key, &retry_msg) {
                             Ok(raw2) => {
                                 let (s2, sc2) = parse_enrich_response(raw2.trim());
-                                if !s2.is_empty()
-                                    && summary_matches_lang(&s2, &cfg.summary_lang)
-                                {
+                                if !s2.is_empty() && summary_matches_lang(&s2, &cfg.summary_lang) {
                                     summary_clean = s2;
                                     llm_score = sc2;
                                 } else {
@@ -298,8 +296,10 @@ pub fn enrich_skills(
                             }
                             Err(e) => {
                                 let mut rp = report_mu.lock().unwrap();
-                                rp.errors
-                                    .push((job.name.clone(), format!("lang-retry call failed: {e}")));
+                                rp.errors.push((
+                                    job.name.clone(),
+                                    format!("lang-retry call failed: {e}"),
+                                ));
                                 continue;
                             }
                         }

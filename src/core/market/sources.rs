@@ -170,7 +170,10 @@ mod tests {
             .find(|s| s.is_skillshub())
             .expect("skills.sh aggregator must be in builtin_sources");
         assert_eq!(entry.label, "skills.sh");
-        assert!(entry.enabled, "must default to enabled for first-run Market tab");
+        assert!(
+            entry.enabled,
+            "must default to enabled for first-run Market tab"
+        );
         assert_eq!(entry.owner, SKILLSHUB_SENTINEL);
     }
 

@@ -215,10 +215,12 @@ pub(super) async fn api_upsert_provider(
         }
         let kind = match provider_kind_from_str(&patch.kind) {
             Some(k) => k,
-            None => return Err(ApiError::BadRequest(format!(
-                "unknown provider kind: {}",
-                patch.kind
-            ))),
+            None => {
+                return Err(ApiError::BadRequest(format!(
+                    "unknown provider kind: {}",
+                    patch.kind
+                )));
+            }
         };
         let paths = AppPaths::default_path();
         let mut cfg = recommend::RecommendConfig::load(&paths).unwrap_or_default();

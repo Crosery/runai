@@ -42,9 +42,7 @@ impl Database {
                     is_admin, disabled, prefs_json, created_at
              FROM users WHERE username = ?1",
         )?;
-        let user = stmt
-            .query_row(params![username], row_to_user)
-            .ok();
+        let user = stmt.query_row(params![username], row_to_user).ok();
         Ok(user)
     }
 
@@ -54,9 +52,7 @@ impl Database {
                     is_admin, disabled, prefs_json, created_at
              FROM users WHERE api_key_hash = ?1",
         )?;
-        let user = stmt
-            .query_row(params![api_key_hash], row_to_user)
-            .ok();
+        let user = stmt.query_row(params![api_key_hash], row_to_user).ok();
         Ok(user)
     }
 
@@ -66,9 +62,7 @@ impl Database {
                     is_admin, disabled, prefs_json, created_at
              FROM users WHERE user_id = ?1",
         )?;
-        let user = stmt
-            .query_row(params![user_id], row_to_user)
-            .ok();
+        let user = stmt.query_row(params![user_id], row_to_user).ok();
         Ok(user)
     }
 

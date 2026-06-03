@@ -64,7 +64,11 @@ pub(super) async fn api_market_preview(
         }
         let owner = parts[0];
         let repo = parts[1];
-        let branch = if q.branch.is_empty() { "main" } else { &q.branch };
+        let branch = if q.branch.is_empty() {
+            "main"
+        } else {
+            &q.branch
+        };
         // Trim trailing slash; SKILL.md is appended.
         let path = q.repo_path.trim_end_matches('/');
 
@@ -74,7 +78,10 @@ pub(super) async fn api_market_preview(
         // honor TTL; we keep failures only 5 min so a fluke network
         // blip doesn't poison the entry for an hour.
         let paths_cache = AppPaths::default_path();
-        let cache_dir = paths_cache.data_dir().join("market-cache").join("preview-md");
+        let cache_dir = paths_cache
+            .data_dir()
+            .join("market-cache")
+            .join("preview-md");
         let _ = std::fs::create_dir_all(&cache_dir);
         let cache_key = format!(
             "{}__{}__{}__{}__{}.json",
@@ -82,10 +89,13 @@ pub(super) async fn api_market_preview(
             repo,
             branch,
             path.replace('/', "_")
-                .chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
                 .collect::<String>(),
-            q.skill_name.replace('/', "_")
-                .chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+            q.skill_name
+                .replace('/', "_")
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
                 .collect::<String>(),
         );
         let cache_path = cache_dir.join(cache_key);
@@ -128,13 +138,21 @@ pub(super) async fn api_market_preview(
         };
         let mut candidates: Vec<String> = Vec::new();
         for p in &raw_paths {
-            candidates.push(format!("https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{p}"));
-            candidates.push(format!("https://ghfast.top/https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{p}"));
-            candidates.push(format!("https://cdn.jsdelivr.net/gh/{owner}/{repo}@{branch}/{p}"));
-            candidates.push(format!("https://cdn.jsdmirror.com/gh/{owner}/{repo}@{branch}/{p}"));
+            candidates.push(format!(
+                "https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{p}"
+            ));
+            candidates.push(format!(
+                "https://ghfast.top/https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{p}"
+            ));
+            candidates.push(format!(
+                "https://cdn.jsdelivr.net/gh/{owner}/{repo}@{branch}/{p}"
+            ));
+            candidates.push(format!(
+                "https://cdn.jsdmirror.com/gh/{owner}/{repo}@{branch}/{p}"
+            ));
         }
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?;
+        let rt =
+            tokio::runtime::Runtime::new().map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?;
         let result: anyhow::Result<String> = rt.block_on(async {
             let client = reqwest::Client::builder()
                 .user_agent("runai/0.11 (+https://github.com/Crosery/runai)")
@@ -243,11 +261,17 @@ pub(super) async fn api_market_preview_files(
         require_user(&headers, &db)?;
         let parts: Vec<&str> = q.source_repo.splitn(2, '/').collect();
         if parts.len() != 2 {
-            return Err(ApiError::BadRequest("source_repo must be 'owner/repo'".into()));
+            return Err(ApiError::BadRequest(
+                "source_repo must be 'owner/repo'".into(),
+            ));
         }
         let owner = parts[0];
         let repo = parts[1];
-        let branch = if q.branch.is_empty() { "main" } else { &q.branch };
+        let branch = if q.branch.is_empty() {
+            "main"
+        } else {
+            &q.branch
+        };
         let candidates: Vec<String> = if !q.repo_path.is_empty() {
             vec![q.repo_path.trim_matches('/').to_string()]
         } else if !q.skill_name.is_empty() {
@@ -275,8 +299,10 @@ pub(super) async fn api_market_preview_files(
             owner,
             repo,
             branch,
-            q.repo_path.replace('/', "_")
-                .chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+            q.repo_path
+                .replace('/', "_")
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
                 .collect::<String>()
         );
         let cache_path = cache_dir.join(cache_key);
@@ -294,8 +320,8 @@ pub(super) async fn api_market_preview_files(
             }
         }
 
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?;
+        let rt =
+            tokio::runtime::Runtime::new().map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?;
         let result: anyhow::Result<(String, Vec<MarketPreviewFile>)> = rt.block_on(async {
             let client = reqwest::Client::builder()
                 .user_agent("runai/0.11 (+https://github.com/Crosery/runai)")
@@ -336,7 +362,10 @@ pub(super) async fn api_market_preview_files(
                             let name = n.get("name").and_then(|v| v.as_str()).unwrap_or("");
                             if name == want[0] {
                                 if want.len() == 1 {
-                                    return n.get("files").and_then(|v| v.as_array()).map(|a| a.as_slice());
+                                    return n
+                                        .get("files")
+                                        .and_then(|v| v.as_array())
+                                        .map(|a| a.as_slice());
                                 }
                                 if let Some(child) = n.get("files").and_then(|v| v.as_array())
                                     && let Some(hit) = find_dir(child, &want[1..])
@@ -358,7 +387,9 @@ pub(super) async fn api_market_preview_files(
                                 n.get("type").and_then(|v| v.as_str()) == Some("file")
                                     && n.get("name").and_then(|v| v.as_str()) == Some("SKILL.md")
                             });
-                            if !root_has_skill_md { continue; }
+                            if !root_has_skill_md {
+                                continue;
+                            }
                             &root_files
                         } else {
                             match find_dir(&root_files, &segs) {
@@ -370,7 +401,8 @@ pub(super) async fn api_market_preview_files(
                             .iter()
                             .filter_map(|n| {
                                 let name = n.get("name").and_then(|v| v.as_str())?.to_string();
-                                let is_dir = n.get("type").and_then(|v| v.as_str()) == Some("directory");
+                                let is_dir =
+                                    n.get("type").and_then(|v| v.as_str()) == Some("directory");
                                 let size = n.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
                                 // For root listings, hide the housekeeping noise.
                                 if segs.is_empty()
@@ -378,7 +410,11 @@ pub(super) async fn api_market_preview_files(
                                 {
                                     return None;
                                 }
-                                Some(MarketPreviewFile { path: name, size, is_dir })
+                                Some(MarketPreviewFile {
+                                    path: name,
+                                    size,
+                                    is_dir,
+                                })
                             })
                             .collect();
                         entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.path.cmp(&b.path)));
@@ -398,9 +434,13 @@ pub(super) async fn api_market_preview_files(
                 let url = if path.is_empty() {
                     format!("https://api.github.com/repos/{owner}/{repo}/contents?ref={branch}")
                 } else {
-                    format!("https://api.github.com/repos/{owner}/{repo}/contents/{path}?ref={branch}")
+                    format!(
+                        "https://api.github.com/repos/{owner}/{repo}/contents/{path}?ref={branch}"
+                    )
                 };
-                let mut req = client.get(&url).header("accept", "application/vnd.github+json");
+                let mut req = client
+                    .get(&url)
+                    .header("accept", "application/vnd.github+json");
                 if let Some(t) = &token {
                     req = req.header("authorization", format!("Bearer {t}"));
                 }
@@ -412,9 +452,12 @@ pub(super) async fn api_market_preview_files(
                         if let Some(items) = arr.as_array() {
                             for item in items {
                                 let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                                let kind = item.get("type").and_then(|v| v.as_str()).unwrap_or("file");
+                                let kind =
+                                    item.get("type").and_then(|v| v.as_str()).unwrap_or("file");
                                 let size = item.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
-                                if name.is_empty() { continue; }
+                                if name.is_empty() {
+                                    continue;
+                                }
                                 entries.push(MarketPreviewFile {
                                     path: name.to_string(),
                                     size,
@@ -429,10 +472,15 @@ pub(super) async fn api_market_preview_files(
                         anyhow::bail!("{} GitHub 403 (rate-limited)", last_err.unwrap_or_default());
                     }
                     Ok(r) if r.status().as_u16() == 404 => {
-                        last_err = Some(format!("{} 404 at {path:?}", last_err.unwrap_or_default()));
+                        last_err =
+                            Some(format!("{} 404 at {path:?}", last_err.unwrap_or_default()));
                     }
                     Ok(r) => {
-                        last_err = Some(format!("{} HTTP {} at {path:?}", last_err.unwrap_or_default(), r.status()));
+                        last_err = Some(format!(
+                            "{} HTTP {} at {path:?}",
+                            last_err.unwrap_or_default(),
+                            r.status()
+                        ));
                     }
                     Err(e) => {
                         last_err = Some(format!("{} {e}", last_err.unwrap_or_default()));
@@ -445,7 +493,11 @@ pub(super) async fn api_market_preview_files(
             Ok((p, e)) => (p, e, None),
             Err(e) => (String::new(), Vec::new(), Some(e.to_string())),
         };
-        let resp_out = MarketPreviewFilesResp { matched_path, entries, error };
+        let resp_out = MarketPreviewFilesResp {
+            matched_path,
+            entries,
+            error,
+        };
         // Cache successful results (and short-lived 404s) to keep the
         // 60-req/h GitHub API budget from getting blown.
         let _ = std::fs::write(

@@ -82,8 +82,8 @@ pub(super) async fn api_parse_github(
 
         let source = mkt::SourceEntry::from_input(&format!("{}/{}@{}", owner, repo, branch))
             .map_err(ApiError::Internal)?;
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?;
+        let rt =
+            tokio::runtime::Runtime::new().map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?;
         let extract = rt
             .block_on(mkt::Market::fetch(&source))
             .map_err(|e| ApiError::BadRequest(format!("无法解析仓库: {e}")))?;

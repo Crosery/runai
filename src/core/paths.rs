@@ -532,7 +532,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let paths = AppPaths::with_base(tmp.path().to_path_buf());
         let uid = "usr_abc123";
-        assert_eq!(paths.user_root(uid).unwrap(), tmp.path().join("users").join(uid));
+        assert_eq!(
+            paths.user_root(uid).unwrap(),
+            tmp.path().join("users").join(uid)
+        );
         assert_eq!(
             paths.user_skills_dir(uid).unwrap(),
             tmp.path().join("users").join(uid).join("skills")
@@ -552,14 +555,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let paths = AppPaths::with_base(tmp.path().to_path_buf());
         let bad = [
-            "", "..", ".", "../etc", "a/b", "a\\b", "a b", "中文", "a:b",
-            "a;b", "a\0b", "\n",
+            "", "..", ".", "../etc", "a/b", "a\\b", "a b", "中文", "a:b", "a;b", "a\0b", "\n",
         ];
         for id in bad {
-            assert!(
-                paths.user_root(id).is_err(),
-                "user_root must reject {id:?}"
-            );
+            assert!(paths.user_root(id).is_err(), "user_root must reject {id:?}");
             assert!(paths.user_skills_dir(id).is_err());
             assert!(paths.user_mcps_dir(id).is_err());
             assert!(paths.user_trash_dir(id).is_err());

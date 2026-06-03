@@ -83,10 +83,7 @@ impl Market {
 
     /// Install a single skill (backwards-compatible, uses Contents API fallback).
     /// `install_root` is the parent directory under which `<skill.name>/` is created.
-    pub async fn install_single(
-        skill: &MarketSkill,
-        install_root: &std::path::Path,
-    ) -> Result<()> {
+    pub async fn install_single(skill: &MarketSkill, install_root: &std::path::Path) -> Result<()> {
         Self::install_single_with_tree(skill, install_root, None).await
     }
 

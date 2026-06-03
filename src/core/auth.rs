@@ -89,8 +89,8 @@ pub const SESSION_COOKIE_NAME: &str = "runai_session";
 pub fn new_user_id() -> String {
     let mut bytes = [0u8; 10];
     rand::rngs::OsRng.fill_bytes(&mut bytes);
-    let suffix = base32::encode(base32::Alphabet::Rfc4648 { padding: false }, &bytes)
-        .to_ascii_lowercase();
+    let suffix =
+        base32::encode(base32::Alphabet::Rfc4648 { padding: false }, &bytes).to_ascii_lowercase();
     format!("usr_{suffix}")
 }
 
@@ -100,8 +100,8 @@ pub fn new_user_id() -> String {
 pub fn new_api_key() -> String {
     let mut bytes = [0u8; 20];
     rand::rngs::OsRng.fill_bytes(&mut bytes);
-    let suffix = base32::encode(base32::Alphabet::Rfc4648 { padding: false }, &bytes)
-        .to_ascii_lowercase();
+    let suffix =
+        base32::encode(base32::Alphabet::Rfc4648 { padding: false }, &bytes).to_ascii_lowercase();
     format!("rnai_live_{suffix}")
 }
 
@@ -123,9 +123,7 @@ pub fn verify_password(password: &str, stored_hash: &str) -> Result<bool> {
         .map_err(|e| anyhow::anyhow!("password hash parse failed: {e}"))
         .with_context(|| "password_hash invalid")?;
     let argon = Argon2::default();
-    Ok(argon
-        .verify_password(password.as_bytes(), &parsed)
-        .is_ok())
+    Ok(argon.verify_password(password.as_bytes(), &parsed).is_ok())
 }
 
 /// Extract the session token from a Cookie header value. Looks for the

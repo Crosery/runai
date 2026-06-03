@@ -342,7 +342,11 @@ fn user_crud_roundtrip() {
     // Rotate api key
     db.rotate_api_key("u1", "akhash1_new").unwrap();
     assert!(db.find_user_by_api_key_hash("akhash1").unwrap().is_none());
-    assert!(db.find_user_by_api_key_hash("akhash1_new").unwrap().is_some());
+    assert!(
+        db.find_user_by_api_key_hash("akhash1_new")
+            .unwrap()
+            .is_some()
+    );
 
     // List
     db.create_user("u2", "bob", "phash2", "akhash2", false)
@@ -421,9 +425,14 @@ fn insert_resource_persists_owner_user_id() {
     let tmp = tempfile::tempdir().unwrap();
     let db = Database::open(&tmp.path().join("test.db")).unwrap();
 
-    db.insert_resource(&mk_skill("local:pub", "pub", None)).unwrap();
-    db.insert_resource(&mk_skill("u:usr_alice:local:priv", "priv", Some("usr_alice")))
+    db.insert_resource(&mk_skill("local:pub", "pub", None))
         .unwrap();
+    db.insert_resource(&mk_skill(
+        "u:usr_alice:local:priv",
+        "priv",
+        Some("usr_alice"),
+    ))
+    .unwrap();
 
     let pub_row = db.get_resource("local:pub").unwrap().unwrap();
     let priv_row = db.get_resource("u:usr_alice:local:priv").unwrap().unwrap();
@@ -440,24 +449,23 @@ fn list_resources_for_user_filters_by_owner() {
     let tmp = tempfile::tempdir().unwrap();
     let db = Database::open(&tmp.path().join("test.db")).unwrap();
 
-    db.insert_resource(&mk_skill("local:pubA", "pubA", None)).unwrap();
-    db.insert_resource(&mk_skill("local:pubB", "pubB", None)).unwrap();
+    db.insert_resource(&mk_skill("local:pubA", "pubA", None))
+        .unwrap();
+    db.insert_resource(&mk_skill("local:pubB", "pubB", None))
+        .unwrap();
     db.insert_resource(&mk_skill(
         "u:usr_alice:local:apriv",
         "apriv",
         Some("usr_alice"),
     ))
     .unwrap();
-    db.insert_resource(&mk_skill(
-        "u:usr_bob:local:bpriv",
-        "bpriv",
-        Some("usr_bob"),
-    ))
-    .unwrap();
+    db.insert_resource(&mk_skill("u:usr_bob:local:bpriv", "bpriv", Some("usr_bob")))
+        .unwrap();
 
     // owner = None: public only.
-    let public_only =
-        db.list_resources_for_user(Some(ResourceKind::Skill), None).unwrap();
+    let public_only = db
+        .list_resources_for_user(Some(ResourceKind::Skill), None)
+        .unwrap();
     let names: Vec<_> = public_only.iter().map(|r| r.name.as_str()).collect();
     assert_eq!(names, vec!["pubA", "pubB"]);
 
@@ -542,13 +550,10 @@ fn find_by_name_for_user_private_wins_over_public() {
     let db = Database::open(&tmp.path().join("test.db")).unwrap();
 
     // Public foo, and alice's private foo. Alice sees the private one.
-    db.insert_resource(&mk_skill("local:foo", "foo", None)).unwrap();
-    db.insert_resource(&mk_skill(
-        "u:usr_alice:local:foo",
-        "foo",
-        Some("usr_alice"),
-    ))
-    .unwrap();
+    db.insert_resource(&mk_skill("local:foo", "foo", None))
+        .unwrap();
+    db.insert_resource(&mk_skill("u:usr_alice:local:foo", "foo", Some("usr_alice")))
+        .unwrap();
 
     // Anonymous lookup → public.
     let pub_hit = db

@@ -94,8 +94,8 @@ pub(in crate::cli) fn handle_recommend(
                     // 127.0.0.1 when offline. No X-Runai-User header in
                     // local mode (single user).
                     let local_server_url = crate::core::recommend::default_local_server_url();
-                    let cfg_local =
-                        crate::core::recommend::RecommendConfig::load(mgr.paths()).unwrap_or_default();
+                    let cfg_local = crate::core::recommend::RecommendConfig::load(mgr.paths())
+                        .unwrap_or_default();
                     let skip_reminder = if cfg_local.skip_reminder_enabled {
                         cfg_local.skip_reminder_template.as_str()
                     } else {

@@ -24,7 +24,9 @@ pub(crate) fn parse_leaderboard(body: &str) -> Vec<LeaderboardRow> {
         let start = search_from + rel + needle.len();
         search_from = start;
         // Capture source until the closing `\"`.
-        let Some(end_source) = body[start..].find("\\\"") else { break };
+        let Some(end_source) = body[start..].find("\\\"") else {
+            break;
+        };
         let source_repo = body[start..start + end_source].to_string();
         if source_repo.is_empty() || !source_repo.contains('/') {
             continue;
@@ -34,11 +36,16 @@ pub(crate) fn parse_leaderboard(body: &str) -> Vec<LeaderboardRow> {
         let window_end = (after_source + 800).min(body.len());
         let window = &body[after_source..window_end];
 
-        let Some(skill_id) = extract_quoted_field(window, "skillId") else { continue };
-        let Some(installs_str) = extract_field(window, "installs") else { continue };
-        let Ok(installs) = installs_str.parse::<u64>() else { continue };
-        let weekly_installs = extract_array_field(window, "weeklyInstalls")
-            .unwrap_or_default();
+        let Some(skill_id) = extract_quoted_field(window, "skillId") else {
+            continue;
+        };
+        let Some(installs_str) = extract_field(window, "installs") else {
+            continue;
+        };
+        let Ok(installs) = installs_str.parse::<u64>() else {
+            continue;
+        };
+        let weekly_installs = extract_array_field(window, "weeklyInstalls").unwrap_or_default();
         let is_official = window.contains("\\\"isOfficial\\\":true");
 
         out.push(LeaderboardRow {

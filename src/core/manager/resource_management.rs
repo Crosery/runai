@@ -16,11 +16,7 @@ impl SkillManager {
     /// Owner-aware variant. `owner_user_id`:
     /// - `None` → adopt `<data>/skills/<name>/` into the public pool
     /// - `Some(uid)` → adopt `<data>/users/<uid>/skills/<name>/` into uid's private pool
-    pub fn register_local_skill_for(
-        &self,
-        name: &str,
-        owner_user_id: Option<&str>,
-    ) -> Result<()> {
+    pub fn register_local_skill_for(&self, name: &str, owner_user_id: Option<&str>) -> Result<()> {
         let root = match owner_user_id {
             None => self.paths.skills_dir(),
             Some(uid) => self.paths.user_skills_dir(uid)?,

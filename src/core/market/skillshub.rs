@@ -23,34 +23,55 @@ impl Market {
             .build()?;
 
         let (all_html, trending_html, hot_html) = tokio::try_join!(
-            async { client.get("https://www.skills.sh/").send().await?.error_for_status()?.text().await },
-            async { client.get("https://www.skills.sh/trending").send().await?.error_for_status()?.text().await },
-            async { client.get("https://www.skills.sh/hot").send().await?.error_for_status()?.text().await },
+            async {
+                client
+                    .get("https://www.skills.sh/")
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .text()
+                    .await
+            },
+            async {
+                client
+                    .get("https://www.skills.sh/trending")
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .text()
+                    .await
+            },
+            async {
+                client
+                    .get("https://www.skills.sh/hot")
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .text()
+                    .await
+            },
         )?;
 
         let mut by_key: std::collections::HashMap<String, MarketSkill> =
             std::collections::HashMap::new();
-        let make_key =
-            |source_repo: &str, name: &str| format!("{source_repo}//{name}");
+        let make_key = |source_repo: &str, name: &str| format!("{source_repo}//{name}");
 
         // /  → installs (All Time) + weeklyInstalls + isOfficial.
         for r in parse_leaderboard(&all_html) {
             let k = make_key(&r.source_repo, &r.skill_id);
-            by_key
-                .entry(k.clone())
-                .or_insert_with(|| MarketSkill {
-                    name: r.skill_id.clone(),
-                    repo_path: String::new(),
-                    source_label: "skills.sh".to_string(),
-                    source_repo: r.source_repo.clone(),
-                    branch: "main".to_string(),
-                    installs: 0,
-                    trending_installs: 0,
-                    hot_score: 0,
-                    weekly_installs: Vec::new(),
-                    is_official: false,
-                    installed: false,
-                });
+            by_key.entry(k.clone()).or_insert_with(|| MarketSkill {
+                name: r.skill_id.clone(),
+                repo_path: String::new(),
+                source_label: "skills.sh".to_string(),
+                source_repo: r.source_repo.clone(),
+                branch: "main".to_string(),
+                installs: 0,
+                trending_installs: 0,
+                hot_score: 0,
+                weekly_installs: Vec::new(),
+                is_official: false,
+                installed: false,
+            });
             if let Some(s) = by_key.get_mut(&k) {
                 s.installs = r.installs;
                 s.weekly_installs = r.weekly_installs;
@@ -60,21 +81,19 @@ impl Market {
         // /trending → trending_installs (24h delta).
         for r in parse_leaderboard(&trending_html) {
             let k = make_key(&r.source_repo, &r.skill_id);
-            by_key
-                .entry(k.clone())
-                .or_insert_with(|| MarketSkill {
-                    name: r.skill_id.clone(),
-                    repo_path: String::new(),
-                    source_label: "skills.sh".to_string(),
-                    source_repo: r.source_repo.clone(),
-                    branch: "main".to_string(),
-                    installs: 0,
-                    trending_installs: 0,
-                    hot_score: 0,
-                    weekly_installs: Vec::new(),
-                    is_official: r.is_official,
-                    installed: false,
-                });
+            by_key.entry(k.clone()).or_insert_with(|| MarketSkill {
+                name: r.skill_id.clone(),
+                repo_path: String::new(),
+                source_label: "skills.sh".to_string(),
+                source_repo: r.source_repo.clone(),
+                branch: "main".to_string(),
+                installs: 0,
+                trending_installs: 0,
+                hot_score: 0,
+                weekly_installs: Vec::new(),
+                is_official: r.is_official,
+                installed: false,
+            });
             if let Some(s) = by_key.get_mut(&k) {
                 s.trending_installs = r.installs;
             }
@@ -82,21 +101,19 @@ impl Market {
         // /hot → hot_score.
         for r in parse_leaderboard(&hot_html) {
             let k = make_key(&r.source_repo, &r.skill_id);
-            by_key
-                .entry(k.clone())
-                .or_insert_with(|| MarketSkill {
-                    name: r.skill_id.clone(),
-                    repo_path: String::new(),
-                    source_label: "skills.sh".to_string(),
-                    source_repo: r.source_repo.clone(),
-                    branch: "main".to_string(),
-                    installs: 0,
-                    trending_installs: 0,
-                    hot_score: 0,
-                    weekly_installs: Vec::new(),
-                    is_official: r.is_official,
-                    installed: false,
-                });
+            by_key.entry(k.clone()).or_insert_with(|| MarketSkill {
+                name: r.skill_id.clone(),
+                repo_path: String::new(),
+                source_label: "skills.sh".to_string(),
+                source_repo: r.source_repo.clone(),
+                branch: "main".to_string(),
+                installs: 0,
+                trending_installs: 0,
+                hot_score: 0,
+                weekly_installs: Vec::new(),
+                is_official: r.is_official,
+                installed: false,
+            });
             if let Some(s) = by_key.get_mut(&k) {
                 s.hot_score = r.installs;
             }
@@ -109,7 +126,13 @@ impl Market {
             "https://www.skills.sh/sitemap-skills-2.xml",
         ];
         for shard in SHARDS {
-            let body = client.get(*shard).send().await?.error_for_status()?.text().await?;
+            let body = client
+                .get(*shard)
+                .send()
+                .await?
+                .error_for_status()?
+                .text()
+                .await?;
             for url in extract_sitemap_locs(&body) {
                 let rest = match url
                     .strip_prefix("https://www.skills.sh/")

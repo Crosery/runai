@@ -63,8 +63,8 @@ pub(super) async fn api_market_refresh(
         let paths = AppPaths::default_path();
         let data_dir = paths.data_dir().to_path_buf();
         let sources = mkt::load_sources(&data_dir);
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?;
+        let rt =
+            tokio::runtime::Runtime::new().map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?;
         rt.block_on(refresh_all_sources(&sources, &data_dir));
         // Re-tally what we got back from the freshly-written caches.
         let total: usize = sources
@@ -221,8 +221,7 @@ pub(super) async fn api_market_list(
                 if q.is_empty() {
                     return true;
                 }
-                s.name.to_lowercase().contains(&q)
-                    || s.source_repo.to_lowercase().contains(&q)
+                s.name.to_lowercase().contains(&q) || s.source_repo.to_lowercase().contains(&q)
             })
             .collect();
 
@@ -315,8 +314,11 @@ pub(super) async fn api_market_install(
         let mgr = SkillManager::new().map_err(ApiError::Internal)?;
         let data_dir = mgr.paths().data_dir().to_path_buf();
         let sources = mkt::load_sources(&data_dir);
-        let skill = mkt::find_skill_in_sources(&data_dir, &sources, &req.name, req.source.as_deref())
-            .ok_or_else(|| ApiError::BadRequest(format!("skill '{}' not found in market", req.name)))?;
+        let skill =
+            mkt::find_skill_in_sources(&data_dir, &sources, &req.name, req.source.as_deref())
+                .ok_or_else(|| {
+                    ApiError::BadRequest(format!("skill '{}' not found in market", req.name))
+                })?;
         let skill_name = skill.name.clone();
         // Phase D: market install through the dashboard lands in the
         // user's private pool (`<data>/users/<uid>/skills/<name>/`), not
@@ -336,10 +338,12 @@ pub(super) async fn api_market_install(
         if skill.source_label == "skills.sh" {
             let (owner_part, repo_part) = match skill.source_repo.split_once('/') {
                 Some((o, r)) => (o.to_string(), r.to_string()),
-                None => return Err(ApiError::Internal(anyhow::anyhow!(
-                    "malformed source_repo {:?} for skills.sh entry",
-                    skill.source_repo
-                ))),
+                None => {
+                    return Err(ApiError::Internal(anyhow::anyhow!(
+                        "malformed source_repo {:?} for skills.sh entry",
+                        skill.source_repo
+                    )));
+                }
             };
             let filter = vec![skill_name.clone()];
             let _ = mgr
@@ -365,7 +369,8 @@ pub(super) async fn api_market_install(
             .paths()
             .user_skills_dir(&user.user_id)
             .map_err(ApiError::Internal)?;
-        let rt = tokio::runtime::Runtime::new().map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?;
+        let rt =
+            tokio::runtime::Runtime::new().map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?;
         rt.block_on(mkt::Market::install_single(&skill, &install_root))
             .map_err(ApiError::Internal)?;
         let _ = mgr.register_local_skill_for(&skill_name, Some(&user.user_id));

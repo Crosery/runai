@@ -53,7 +53,9 @@ pub(super) fn extract_sitemap_locs(body: &str) -> Vec<String> {
     let mut rest = body;
     while let Some(start) = rest.find("<loc>") {
         let after = &rest[start + 5..];
-        let Some(end) = after.find("</loc>") else { break };
+        let Some(end) = after.find("</loc>") else {
+            break;
+        };
         let raw = after[..end].trim();
         if raw.starts_with("http") {
             out.push(raw.to_string());
@@ -79,7 +81,10 @@ mod tests {
         let urls = extract_sitemap_locs(xml);
         assert_eq!(urls.len(), 3);
         assert_eq!(urls[0], "https://www.skills.sh/anthropics/skills/foo");
-        assert_eq!(urls[1], "https://www.skills.sh/vercel-labs/agent-skills/bar");
+        assert_eq!(
+            urls[1],
+            "https://www.skills.sh/vercel-labs/agent-skills/bar"
+        );
         assert_eq!(urls[2], "https://www.skills.sh/microsoft/azure-skills/baz");
     }
 

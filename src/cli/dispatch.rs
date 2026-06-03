@@ -445,7 +445,9 @@ pub fn run(cli: Cli) -> Result<()> {
                         "autostart removed from {} — server will no longer start at login",
                         path.display()
                     ),
-                    AutostartStatus::NotInstalled => println!("autostart was not installed; nothing to do"),
+                    AutostartStatus::NotInstalled => {
+                        println!("autostart was not installed; nothing to do")
+                    }
                     other => println!("autostart: {other:?}"),
                 }
                 return Ok(());

@@ -33,15 +33,21 @@ pub(super) fn prose_fields(summary: &str) -> Vec<(String, String)> {
 }
 
 fn count_cjk(s: &str) -> usize {
-    s.chars().filter(|c| ('\u{4e00}'..='\u{9fff}').contains(c)).count()
+    s.chars()
+        .filter(|c| ('\u{4e00}'..='\u{9fff}').contains(c))
+        .count()
 }
 
 fn count_kana(s: &str) -> usize {
-    s.chars().filter(|c| ('\u{3040}'..='\u{30ff}').contains(c)).count()
+    s.chars()
+        .filter(|c| ('\u{3040}'..='\u{30ff}').contains(c))
+        .count()
 }
 
 fn count_hangul(s: &str) -> usize {
-    s.chars().filter(|c| ('\u{ac00}'..='\u{d7a3}').contains(c)).count()
+    s.chars()
+        .filter(|c| ('\u{ac00}'..='\u{d7a3}').contains(c))
+        .count()
 }
 
 /// English function words. Their presence as whole words marks a Latin-only
@@ -51,10 +57,9 @@ fn count_hangul(s: &str) -> usize {
 /// discriminator that stops the validator from re-flagging a perfectly good
 /// Chinese summary just because one field lists tool names.
 const EN_STOPWORDS: &[&str] = &[
-    "the", "a", "an", "and", "or", "with", "for", "to", "of", "in", "on", "that",
-    "this", "your", "you", "via", "from", "into", "using", "when", "as", "by", "are",
-    "is", "be", "it", "create", "edit", "generate", "build", "run", "use", "deploy",
-    "write", "make", "get",
+    "the", "a", "an", "and", "or", "with", "for", "to", "of", "in", "on", "that", "this", "your",
+    "you", "via", "from", "into", "using", "when", "as", "by", "are", "is", "be", "it", "create",
+    "edit", "generate", "build", "run", "use", "deploy", "write", "make", "get",
 ];
 
 fn has_en_stopword(s: &str) -> bool {

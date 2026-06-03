@@ -36,7 +36,10 @@ pub(super) async fn api_library_list(
         let names = db.library_list(&u.user_id).map_err(ApiError::Internal)?;
         Ok(LibraryListResp {
             total: names.len(),
-            items: names.into_iter().map(|name| LibraryEntry { name }).collect(),
+            items: names
+                .into_iter()
+                .map(|name| LibraryEntry { name })
+                .collect(),
             user_id: u.user_id,
         })
     })
@@ -97,9 +100,7 @@ pub(super) async fn api_library_mutate(
             }
             _ => return Err(ApiError::BadRequest(format!("unknown action: {action}"))),
         }
-        let size = db
-            .library_count(&u.user_id)
-            .map_err(ApiError::Internal)?;
+        let size = db.library_count(&u.user_id).map_err(ApiError::Internal)?;
         Ok(LibraryMutateResp {
             action,
             affected,
@@ -160,9 +161,7 @@ pub(super) async fn api_library_fill(
                 affected += 1;
             }
         }
-        let size = db
-            .library_count(&u.user_id)
-            .map_err(ApiError::Internal)?;
+        let size = db.library_count(&u.user_id).map_err(ApiError::Internal)?;
         Ok(LibraryMutateResp {
             action: "fill".into(),
             affected,
@@ -219,9 +218,7 @@ pub(super) async fn api_library_import_from_usage(
                 affected += 1;
             }
         }
-        let size = db
-            .library_count(&u.user_id)
-            .map_err(ApiError::Internal)?;
+        let size = db.library_count(&u.user_id).map_err(ApiError::Internal)?;
         Ok(LibraryMutateResp {
             action: "import-from-usage".into(),
             affected,

@@ -302,13 +302,7 @@ impl Database {
 
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(
-            params![
-                since_ts,
-                model,
-                limit as i64,
-                offset as i64,
-                user_id_filter
-            ],
+            params![since_ts, model, limit as i64, offset as i64, user_id_filter],
             row_to_router_event,
         )?;
         let mut out = Vec::new();
@@ -355,11 +349,9 @@ impl Database {
         } else {
             sql.push_str(" AND (?3 IS NULL OR 1=1)");
         }
-        let n: i64 = self.conn.query_row(
-            &sql,
-            params![since_ts, model, user_id_filter],
-            |r| r.get(0),
-        )?;
+        let n: i64 = self
+            .conn
+            .query_row(&sql, params![since_ts, model, user_id_filter], |r| r.get(0))?;
         Ok(n)
     }
 

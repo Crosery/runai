@@ -139,7 +139,10 @@ pub async fn serve(host: &str, port: u16) -> Result<()> {
         // Settings tab. All endpoints return / accept JSON; api_key bytes
         // are never sent back to the browser (only `has_api_key: bool`).
         // v15: admin-gated (compat: open when no users exist yet).
-        .route("/api/settings", get(api_get_settings).post(api_post_settings))
+        .route(
+            "/api/settings",
+            get(api_get_settings).post(api_post_settings),
+        )
         .route("/api/providers", post(api_upsert_provider))
         .route("/api/providers/{id}", delete(api_delete_provider))
         .route("/api/providers/{id}/activate", post(api_activate_provider))

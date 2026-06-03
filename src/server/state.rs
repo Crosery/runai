@@ -95,9 +95,11 @@ pub(super) fn resolve_skill_dir(
     name: &str,
 ) -> Result<(std::path::PathBuf, Option<String>)> {
     let owner = current_owner_id(headers, db);
-    if let Some(row) = db
-        .find_resource_by_name_for_user(crate::core::resource::ResourceKind::Skill, name, owner.as_deref())?
-    {
+    if let Some(row) = db.find_resource_by_name_for_user(
+        crate::core::resource::ResourceKind::Skill,
+        name,
+        owner.as_deref(),
+    )? {
         return Ok((row.directory.clone(), row.owner_user_id.clone()));
     }
     // Compat: a public skill might exist on disk without a DB row (e.g.

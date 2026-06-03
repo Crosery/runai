@@ -48,14 +48,18 @@ impl Database {
                 ))
             },
         )?;
-        let avg_latency_ms: Option<f64> = self.conn.query_row(
-            "SELECT AVG(latency_ms) FROM router_events
+        let avg_latency_ms: Option<f64> = self
+            .conn
+            .query_row(
+                "SELECT AVG(latency_ms) FROM router_events
              WHERE (?1 IS NULL OR ts >= ?1)
                AND (?2 IS NULL OR user_id = ?2)
                AND status = 'ok'",
-            params![since_ts, user_id_filter],
-            |r| r.get(0),
-        ).ok().flatten();
+                params![since_ts, user_id_filter],
+                |r| r.get(0),
+            )
+            .ok()
+            .flatten();
         let mut per_model = Vec::new();
         let mut stmt = self.conn.prepare(
             "SELECT model, COUNT(*), COALESCE(SUM(total_tokens), 0)

@@ -211,8 +211,8 @@ pub(super) async fn api_skill_files(
     let mgr = SkillManager::with_base(state.db_path.parent().unwrap().to_path_buf())
         .map_err(ApiError::Internal)?;
     let db = state.db()?;
-    let (skill_dir, _owner) = resolve_skill_dir(&headers, &db, mgr.paths(), &name)
-        .map_err(|_| ApiError::NotFound)?;
+    let (skill_dir, _owner) =
+        resolve_skill_dir(&headers, &db, mgr.paths(), &name).map_err(|_| ApiError::NotFound)?;
     if !skill_dir.is_dir() {
         return Err(ApiError::NotFound);
     }
@@ -333,8 +333,8 @@ pub(super) async fn api_skill_file(
     let mgr = SkillManager::with_base(state.db_path.parent().unwrap().to_path_buf())
         .map_err(ApiError::Internal)?;
     let db = state.db()?;
-    let (skill_dir, _owner) = resolve_skill_dir(&headers, &db, mgr.paths(), &name)
-        .map_err(|_| ApiError::NotFound)?;
+    let (skill_dir, _owner) =
+        resolve_skill_dir(&headers, &db, mgr.paths(), &name).map_err(|_| ApiError::NotFound)?;
     let target = skill_dir.join(&q.path);
     // SECURITY: canonicalise both, verify target still under skill_dir.
     // Prevents `?path=../../etc/passwd` style traversal.
@@ -546,15 +546,11 @@ fn walk_skill_dir_plain(
 /// SECURITY: walks the resolved `skill_dir` only; never follows symlinks
 /// out of the tree. The tar layout uses the skill name as the top-level
 /// directory so a client `tar -xzf` lands at `<cache>/<name>/...`.
-pub(super) async fn handle_skill_bundle(
-    headers: HeaderMap,
-    Path(name): Path<String>,
-) -> Response {
+pub(super) async fn handle_skill_bundle(headers: HeaderMap, Path(name): Path<String>) -> Response {
     let name_for_header = name.clone();
     let join = tokio::task::spawn_blocking(move || -> Result<Vec<u8>> {
         let mgr = SkillManager::new()?;
-        let (skill_dir, _owner_uid) =
-            resolve_skill_dir(&headers, mgr.db(), mgr.paths(), &name)?;
+        let (skill_dir, _owner_uid) = resolve_skill_dir(&headers, mgr.db(), mgr.paths(), &name)?;
         if !skill_dir.is_dir() {
             bail!("not a directory: {}", skill_dir.display());
         }
@@ -614,8 +610,7 @@ pub(super) async fn handle_skill_file(
 ) -> Response {
     let join = tokio::task::spawn_blocking(move || -> Result<(Vec<u8>, &'static str)> {
         let mgr = SkillManager::new()?;
-        let (skill_dir, _owner_uid) =
-            resolve_skill_dir(&headers, mgr.db(), mgr.paths(), &name)?;
+        let (skill_dir, _owner_uid) = resolve_skill_dir(&headers, mgr.db(), mgr.paths(), &name)?;
         let target = skill_dir.join(&sub_path);
         let root_real = skill_dir
             .canonicalize()

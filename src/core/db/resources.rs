@@ -242,7 +242,8 @@ impl Database {
                      WHERE kind = ?1 AND name = ?2 AND owner_user_id IS NULL
                      ORDER BY installed_at DESC LIMIT 1",
                 )?;
-                let mut resources = self.collect_resources(&mut stmt, params![kind.as_str(), name])?;
+                let mut resources =
+                    self.collect_resources(&mut stmt, params![kind.as_str(), name])?;
                 Ok(resources.pop())
             }
             Some("*") => {
@@ -255,7 +256,8 @@ impl Database {
                      WHERE kind = ?1 AND name = ?2
                      ORDER BY CASE WHEN owner_user_id IS NULL THEN 1 ELSE 0 END, installed_at DESC LIMIT 1",
                 )?;
-                let mut resources = self.collect_resources(&mut stmt, params![kind.as_str(), name])?;
+                let mut resources =
+                    self.collect_resources(&mut stmt, params![kind.as_str(), name])?;
                 Ok(resources.pop())
             }
             Some(uid) => {
@@ -265,7 +267,8 @@ impl Database {
                      WHERE kind = ?1 AND name = ?2 AND (owner_user_id IS NULL OR owner_user_id = ?3)
                      ORDER BY CASE WHEN owner_user_id IS NULL THEN 1 ELSE 0 END, installed_at DESC LIMIT 1",
                 )?;
-                let mut resources = self.collect_resources(&mut stmt, params![kind.as_str(), name, uid])?;
+                let mut resources =
+                    self.collect_resources(&mut stmt, params![kind.as_str(), name, uid])?;
                 Ok(resources.pop())
             }
         }

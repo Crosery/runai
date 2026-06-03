@@ -109,7 +109,11 @@ fn private_skill_shadows_public_for_owner_only() {
     // alice's private foo
     let alice = "usr_alice000";
     paths.ensure_user_dirs(alice).unwrap();
-    write_skill(&paths.user_skills_dir(alice).unwrap(), "foo", "# alice priv");
+    write_skill(
+        &paths.user_skills_dir(alice).unwrap(),
+        "foo",
+        "# alice priv",
+    );
     mgr.register_local_skill_for("foo", Some(alice)).unwrap();
 
     let alice_hit = mgr
@@ -156,9 +160,7 @@ fn list_for_user_returns_correct_union() {
     write_skill(&paths.user_skills_dir(bob).unwrap(), "priv-bob", "");
     mgr.register_local_skill_for("priv-bob", Some(bob)).unwrap();
 
-    let names = |list: Vec<Resource>| -> Vec<String> {
-        list.into_iter().map(|r| r.name).collect()
-    };
+    let names = |list: Vec<Resource>| -> Vec<String> { list.into_iter().map(|r| r.name).collect() };
 
     let anon = mgr
         .db()
@@ -316,7 +318,11 @@ fn trash_private_skill_payload_lands_in_user_trash() {
 
     // Source dir is now gone.
     assert!(
-        !paths.user_skills_dir(alice).unwrap().join("private-foo").exists(),
+        !paths
+            .user_skills_dir(alice)
+            .unwrap()
+            .join("private-foo")
+            .exists(),
         "source private skill dir must be moved into trash"
     );
 

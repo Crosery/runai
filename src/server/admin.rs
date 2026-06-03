@@ -100,14 +100,10 @@ pub(super) async fn api_admin_users_update(
         // dashboard out of admin completely).
         if target.user_id == admin.user_id {
             if patch.is_admin == Some(false) {
-                return Err(ApiError::BadRequest(
-                    "cannot demote yourself".into(),
-                ));
+                return Err(ApiError::BadRequest("cannot demote yourself".into()));
             }
             if patch.disabled == Some(true) {
-                return Err(ApiError::BadRequest(
-                    "cannot disable yourself".into(),
-                ));
+                return Err(ApiError::BadRequest("cannot disable yourself".into()));
             }
         }
 

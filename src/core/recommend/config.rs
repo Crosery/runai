@@ -201,11 +201,7 @@ impl RecommendConfig {
     /// are refreshed.
     pub fn upsert_provider(&mut self, entry: ProviderEntry) {
         let id_match = entry.id.clone();
-        if let Some(slot) = self
-            .saved_providers
-            .iter_mut()
-            .find(|p| p.id == id_match)
-        {
+        if let Some(slot) = self.saved_providers.iter_mut().find(|p| p.id == id_match) {
             *slot = entry.clone();
         } else {
             self.saved_providers.push(entry.clone());

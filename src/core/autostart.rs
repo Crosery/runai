@@ -71,7 +71,9 @@ pub fn uninstall() -> Result<AutostartStatus> {
     }
     #[cfg(target_os = "windows")]
     {
-        bail!("Windows auto-start is not managed by runai; remove the scheduled task manually via `taskschd.msc`")
+        bail!(
+            "Windows auto-start is not managed by runai; remove the scheduled task manually via `taskschd.msc`"
+        )
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
@@ -98,8 +100,7 @@ fn install_macos(exe: &std::path::Path, host: &str, port: u16) -> Result<Autosta
     let plist_path = macos_plist_path()?;
     let already = plist_path.exists();
     if let Some(parent) = plist_path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("mkdir {}", parent.display()))?;
+        std::fs::create_dir_all(parent).with_context(|| format!("mkdir {}", parent.display()))?;
     }
 
     // Best-effort unload of any older copy so the new ProgramArguments
@@ -214,12 +215,10 @@ fn install_linux(exe: &std::path::Path, host: &str, port: u16) -> Result<Autosta
     let unit_path = linux_unit_path()?;
     let already = unit_path.exists();
     if let Some(parent) = unit_path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("mkdir {}", parent.display()))?;
+        std::fs::create_dir_all(parent).with_context(|| format!("mkdir {}", parent.display()))?;
     }
     let unit = build_linux_unit(exe, host, port);
-    std::fs::write(&unit_path, unit)
-        .with_context(|| format!("write {}", unit_path.display()))?;
+    std::fs::write(&unit_path, unit).with_context(|| format!("write {}", unit_path.display()))?;
 
     let reload = Command::new("systemctl")
         .args(["--user", "daemon-reload"])
@@ -260,8 +259,7 @@ fn uninstall_linux() -> Result<AutostartStatus> {
     let _ = Command::new("systemctl")
         .args(["--user", "disable", "--now", LINUX_UNIT])
         .output();
-    std::fs::remove_file(&unit_path)
-        .with_context(|| format!("remove {}", unit_path.display()))?;
+    std::fs::remove_file(&unit_path).with_context(|| format!("remove {}", unit_path.display()))?;
     let _ = Command::new("systemctl")
         .args(["--user", "daemon-reload"])
         .output();
@@ -330,9 +328,9 @@ mod tests {
     fn linux_unit_contains_exec_start_and_restart() {
         let exe = std::path::PathBuf::from("/usr/local/bin/runai");
         let unit = super::build_linux_unit(&exe, "127.0.0.1", 17888);
-        assert!(unit.contains(
-            "ExecStart=/usr/local/bin/runai server --port 17888 --host 127.0.0.1"
-        ));
+        assert!(
+            unit.contains("ExecStart=/usr/local/bin/runai server --port 17888 --host 127.0.0.1")
+        );
         assert!(unit.contains("Restart=on-failure"));
         assert!(unit.contains("Environment=RUNAI_NO_AUTOSPAWN=1"));
         assert!(unit.contains("[Install]"));
