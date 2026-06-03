@@ -11,6 +11,7 @@
 
 # {SERVER_URL} is substituted by the server at request time.
 $ServerUrl = "{SERVER_URL}"
+$IdentityPath = "$env:USERPROFILE\.runai-identity"
 $HookPath = "$env:USERPROFILE\.runai-hook.ps1"
 $SettingsPath = "$env:USERPROFILE\.claude\settings.json"
 
@@ -19,10 +20,92 @@ if ($ServerUrl -eq ("{" + "SERVER_URL" + "}") -or [string]::IsNullOrEmpty($Serve
     exit 1
 }
 
-Write-Host "runai client install (Windows)"
-Write-Host "  server: $ServerUrl"
-Write-Host "  hook:   $HookPath"
-Write-Host "  config: $SettingsPath"
+# Pretty headers (Windows 10+ console / Terminal both understand ANSI).
+function Write-Hr     { Write-Host ("`e[38;5;81m" + ("=" * 60) + "`e[0m") }
+function Write-Brand  { Write-Host ("`e[38;5;81m| `e[1mrunai`e[0m `e[2mskill router`e[0m    `e[2mclient install (Windows)`e[0m") }
+function Write-Step   { param([string]$num, [string]$desc); Write-Host ("`e[38;5;81m|`e[0m `e[1m[$num]`e[0m $desc") }
+function Write-Ok     { param([string]$msg);  Write-Host ("  `e[38;5;114m[OK]`e[0m $msg") }
+function Write-Warn2  { param([string]$msg);  Write-Host ("  `e[38;5;221m[..]`e[0m $msg") }
+function Write-Fail2  { param([string]$msg);  Write-Host ("  `e[38;5;203m[!!]`e[0m $msg") }
+function Write-Dim    { param([string]$msg);  Write-Host ("`e[2m$msg`e[0m") }
+
+Write-Host ""
+Write-Hr
+Write-Brand
+Write-Hr
+Write-Dim ("  server   $ServerUrl")
+Write-Dim ("  identity $IdentityPath")
+Write-Dim ("  hook     $HookPath")
+Write-Dim ("  config   $SettingsPath")
+Write-Hr
+Write-Host ""
+
+# 0) Account setup. Prompt for username + password unless a valid
+# ~/.runai-identity already exists. Tries login first, falls back to
+# register on 401. Persists the returned api_key at mode-restricted
+# %USERPROFILE%\.runai-identity (NTFS permissions handled by default
+# user profile ACL; we don't try to tighten further since the same
+# file is written by every per-user install).
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+$haveIdentity = $false
+if (Test-Path $IdentityPath) {
+    try {
+        $existing = Get-Content $IdentityPath -Raw | ConvertFrom-Json
+        if ($existing.api_key) { $haveIdentity = $true }
+    } catch { }
+}
+
+Write-Step "1/4" "account setup"
+if ($haveIdentity) {
+    Write-Ok "found existing identity, reusing stored api_key"
+    Write-Dim ("  (remove $IdentityPath to switch user)")
+    Write-Host ""
+} else {
+    Write-Dim ("  new device - register or sign in to $ServerUrl")
+    $RunaiUsername = Read-Host "  username"
+    if ([string]::IsNullOrWhiteSpace($RunaiUsername)) {
+        Write-Fail2 "username cannot be empty"
+        exit 1
+    }
+    $RunaiPasswordSecure = Read-Host "  password" -AsSecureString
+    $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($RunaiPasswordSecure)
+    $RunaiPassword = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
+    [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) | Out-Null
+    if ([string]::IsNullOrEmpty($RunaiPassword)) {
+        Write-Fail2 "password cannot be empty"
+        exit 1
+    }
+
+    $authBody = @{ username = $RunaiUsername; password = $RunaiPassword } | ConvertTo-Json -Compress
+    $resp = $null
+    Write-Warn2 "trying sign-in as $RunaiUsername"
+    try {
+        $resp = Invoke-RestMethod -Method Post -Uri "$ServerUrl/auth/login" `
+            -ContentType "application/json; charset=utf-8" -Body $authBody
+        Write-Ok "signed in as $RunaiUsername"
+    } catch {
+        Write-Warn2 "user does not exist, registering"
+        try {
+            $resp = Invoke-RestMethod -Method Post -Uri "$ServerUrl/users/register" `
+                -ContentType "application/json; charset=utf-8" -Body $authBody
+            Write-Ok "registered $RunaiUsername"
+        } catch {
+            Write-Fail2 "auth failed: $($_.Exception.Message)"
+            exit 1
+        }
+    }
+
+    $identity = [PSCustomObject]@{
+        version  = 1
+        server   = $ServerUrl
+        user_id  = $resp.user_id
+        username = $resp.username
+        api_key  = $resp.api_key
+        is_admin = [bool]$resp.is_admin
+    }
+    [System.IO.File]::WriteAllText($IdentityPath, ($identity | ConvertTo-Json), $utf8NoBom)
+    Write-Ok ("wrote " + $IdentityPath)
+}
 Write-Host ""
 
 # 1) Write the hook wrapper. Reads Claude Code's hook JSON from stdin,
@@ -43,7 +126,20 @@ $hookBody = @"
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(`$false)
 `$OutputEncoding = [System.Text.UTF8Encoding]::new(`$false)
 
-`$RunaiServer = "$ServerUrl"
+``$RunaiServer = "$ServerUrl"
+`$RunaiIdentity = "`$env:USERPROFILE\.runai-identity"
+
+# Best-effort: pull api_key from ~/.runai-identity so the hook sends
+# Authorization: Bearer <key>. Missing file or parse error → fall back
+# to legacy X-Runai-User-only mode so existing setups keep working.
+`$RunaiApiKey = ""
+if (Test-Path `$RunaiIdentity) {
+    try {
+        `$identity = Get-Content `$RunaiIdentity -Raw | ConvertFrom-Json
+        if (`$identity.api_key) { `$RunaiApiKey = `$identity.api_key }
+    } catch { `$RunaiApiKey = "" }
+}
+
 try {
     # Read stdin as raw UTF-8 bytes (don't trust [Console]::In default
     # codepage even after setting InputEncoding above — re-open the
@@ -56,11 +152,14 @@ try {
     # is exactly the bytes Claude Code wrote, not a re-encoded version.
     `$bodyBytes = [System.Text.Encoding]::UTF8.GetBytes(`$payload)
 
+    `$headers = @{ 'X-Runai-User' = "`$env:USERNAME@`$env:COMPUTERNAME" }
+    if (`$RunaiApiKey) { `$headers['Authorization'] = "Bearer `$RunaiApiKey" }
+
     `$resp = Invoke-RestMethod ``
         -Method Post ``
         -Uri "`$RunaiServer/recommend" ``
         -ContentType "application/json; charset=utf-8" ``
-        -Headers @{ 'X-Runai-User' = "`$env:USERNAME@`$env:COMPUTERNAME" } ``
+        -Headers `$headers ``
         -Body `$bodyBytes ``
         -TimeoutSec 30
     # Emit response as UTF-8 bytes via stdout (bypass PS string encoding).
@@ -75,17 +174,19 @@ try {
 # can confuse some shells; PS Core's `utf8NoBOM` isn't available on 5.1.
 # Use raw .NET writer for portability across PS 5.1 and 7+.
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+Write-Step "2/4" "install hook wrapper"
 [System.IO.File]::WriteAllText($HookPath, $hookBody, $utf8NoBom)
-Write-Host "wrote $HookPath"
+Write-Ok ("wrote " + $HookPath)
+Write-Host ""
 
-# 2) Patch settings.json.
+Write-Step "3/4" "patch Claude Code settings"
 $claudeDir = Split-Path $SettingsPath
 if (-not (Test-Path $claudeDir)) {
     New-Item -ItemType Directory -Path $claudeDir -Force | Out-Null
 }
 if (Test-Path $SettingsPath) {
     Copy-Item $SettingsPath "$SettingsPath.runai-bak" -Force
-    Write-Host "backed up existing settings.json -> $SettingsPath.runai-bak"
+    Write-Ok ("backed up to " + $SettingsPath + ".runai-bak")
     $raw = Get-Content $SettingsPath -Raw
     if ([string]::IsNullOrWhiteSpace($raw)) { $raw = "{}" }
     try {
@@ -144,18 +245,22 @@ foreach ($g in $data.hooks.UserPromptSubmit) {
 if (-not $already) {
     $newGroup = @{ hooks = @(@{ type = "command"; command = $hookCmd }) }
     $data.hooks.UserPromptSubmit = @($data.hooks.UserPromptSubmit + $newGroup)
-    Write-Host "patched UserPromptSubmit hook"
+    Write-Ok "patched UserPromptSubmit hook"
 } else {
-    Write-Host "hook already present (no-op)"
+    Write-Ok "hook already present (no-op)"
 }
 
 # settings.json also UTF-8 no BOM — Claude Code parses it with UTF-8 by
 # default and a BOM trips some JSON readers.
 [System.IO.File]::WriteAllText($SettingsPath, ($data | ConvertTo-Json -Depth 20), $utf8NoBom)
+Write-Host ""
 
+Write-Step "4/4" "done"
+Write-Hr
+Write-Host ("  `e[38;5;114m`e[1mall set.`e[0m  open a `e[1mnew`e[0m Claude Code session and your prompts")
+Write-Host ("  will route through `e[38;5;81m$ServerUrl`e[0m")
+Write-Hr
+Write-Dim ("  dashboard   $ServerUrl")
+Write-Dim ("  uninstall   irm $ServerUrl/uninstall.ps1 | iex")
+Write-Dim ("  switch user del `"$IdentityPath`" && re-run installer")
 Write-Host ""
-Write-Host "done. Open a new Claude Code session and your prompts will route through:"
-Write-Host "  $ServerUrl"
-Write-Host ""
-Write-Host "to uninstall:"
-Write-Host "  irm $ServerUrl/uninstall.ps1 | iex"
