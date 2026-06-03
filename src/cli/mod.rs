@@ -141,6 +141,16 @@ pub enum Commands {
         /// Remove the SessionStart hook installed by `--install-hook`.
         #[arg(long)]
         uninstall_hook: bool,
+        /// Register the server as an OS-level login auto-start so it
+        /// runs in the background from boot. macOS = LaunchAgent plist
+        /// loaded with `launchctl load -w`; Linux = systemd user unit
+        /// enabled with `systemctl --user enable --now`; Windows = not
+        /// implemented (use Task Scheduler manually). Idempotent.
+        #[arg(long, conflicts_with_all = ["uninstall_autostart", "install_hook", "uninstall_hook", "ensure"])]
+        install_autostart: bool,
+        /// Remove the OS-level login auto-start created by `--install-autostart`.
+        #[arg(long, conflicts_with_all = ["install_autostart", "install_hook", "uninstall_hook", "ensure"])]
+        uninstall_autostart: bool,
     },
     /// Register runai as MCP server in all CLI configs
     Register,
@@ -235,6 +245,11 @@ pub enum RecommendCommands {
         /// refresh (cheapest mode, for "first launch / new install" use)
         #[arg(long, conflicts_with = "force")]
         missing_only: bool,
+        /// Targeted repair: re-enrich ONLY skills whose existing summary is in
+        /// the wrong language (prose fields not in `summary_lang`). Cheapest
+        /// way to fix a leaked index without a full `--force` pass.
+        #[arg(long, conflicts_with_all = ["force", "missing_only"])]
+        fix_lang: bool,
         /// Print per-skill progress
         #[arg(long)]
         verbose: bool,
@@ -313,6 +328,15 @@ pub fn run(cli: Cli) -> Result<()> {
 
     match cli.command {
         None => {
+            // Auto-spawn the dashboard server (idempotent: no-op when the
+            // port is already bound). Lets `runai` alone bring up TUI +
+            // dashboard together so the dashboard URL on the live-strip is
+            // immediately clickable. Failures are non-fatal — the TUI is
+            // the primary interface and runs fine without the dashboard.
+            // Set `RUNAI_NO_AUTOSPAWN=1` to skip.
+            if std::env::var_os("RUNAI_NO_AUTOSPAWN").is_none() {
+                let _ = crate::server::ensure_running("127.0.0.1", 17888);
+            }
             crate::tui::run_tui(mgr)?;
             Ok(())
         }
@@ -485,7 +509,7 @@ pub fn run(cli: Cli) -> Result<()> {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(crate::core::market::Market::install_single(
                 &skill,
-                mgr.paths(),
+                &mgr.paths().skills_dir(),
             ))?;
             let _ = mgr.register_local_skill(&skill.name);
             if let Some(id) = mgr.find_resource_id(&skill.name) {
@@ -708,7 +732,36 @@ pub fn run(cli: Cli) -> Result<()> {
             ensure,
             install_hook,
             uninstall_hook,
+            install_autostart,
+            uninstall_autostart,
         }) => {
+            if install_autostart {
+                use crate::core::autostart::{self, AutostartStatus};
+                match autostart::install(&host, port)? {
+                    AutostartStatus::Installed { path } => println!(
+                        "autostart installed at {} — server will start at every login",
+                        path.display()
+                    ),
+                    AutostartStatus::Reinstalled { path } => println!(
+                        "autostart reinstalled at {} — refreshed binary path / port",
+                        path.display()
+                    ),
+                    other => println!("autostart: {other:?}"),
+                }
+                return Ok(());
+            }
+            if uninstall_autostart {
+                use crate::core::autostart::{self, AutostartStatus};
+                match autostart::uninstall()? {
+                    AutostartStatus::Uninstalled { path } => println!(
+                        "autostart removed from {} — server will no longer start at login",
+                        path.display()
+                    ),
+                    AutostartStatus::NotInstalled => println!("autostart was not installed; nothing to do"),
+                    other => println!("autostart: {other:?}"),
+                }
+                return Ok(());
+            }
             if install_hook {
                 let home = dirs::home_dir().context("locate home dir")?;
                 let cmd = format!("runai server --ensure --port {port}");
@@ -1107,12 +1160,20 @@ fn handle_recommend(
                     // 127.0.0.1 when offline. No X-Runai-User header in
                     // local mode (single user).
                     let local_server_url = crate::core::recommend::default_local_server_url();
+                    let cfg_local =
+                        crate::core::recommend::RecommendConfig::load(mgr.paths()).unwrap_or_default();
+                    let skip_reminder = if cfg_local.skip_reminder_enabled {
+                        cfg_local.skip_reminder_template.as_str()
+                    } else {
+                        ""
+                    };
                     let out = crate::core::recommend::format_for_hook_full(
                         &decision,
                         sid,
                         &history,
                         &local_server_url,
                         "",
+                        skip_reminder,
                     );
                     if !out.is_empty() {
                         print!("{out}");
@@ -1340,6 +1401,7 @@ To install/uninstall automatically (preserves existing hooks and theme):
                 limit,
                 force,
                 missing_only,
+                fix_lang,
                 verbose,
                 concurrency,
                 names,
@@ -1353,6 +1415,25 @@ To install/uninstall automatically (preserves existing hooks and theme):
                 EnrichMode::MissingOnly
             } else {
                 EnrichMode::Stale
+            };
+            // `--fix-lang` overrides the name set with exactly the skills whose
+            // stored summary leaked the wrong language. only_names forces a
+            // re-enrich of that subset (and nothing else). If nothing is
+            // mismatched, stop here — falling through with an empty set would
+            // mean "no name filter" and re-enrich everything stale.
+            let names = if fix_lang {
+                let mismatched = crate::core::recommend::find_language_mismatched_skills(mgr)?;
+                if mismatched.is_empty() {
+                    println!("--fix-lang: no language-mismatched summaries found, nothing to do");
+                    return Ok(());
+                }
+                println!(
+                    "--fix-lang: {} skill(s) have wrong-language summaries, re-enriching them",
+                    mismatched.len()
+                );
+                mismatched
+            } else {
+                names
             };
             let (have, _oldest, _newest) =
                 mgr.db().skill_ai_summary_stats().unwrap_or((0, None, None));
@@ -1508,6 +1589,10 @@ fn recommend_setup(mgr: &SkillManager) -> Result<()> {
         cur.summary_lang.as_str()
     };
     cur.summary_lang = ask("summary_lang", lang_default, &mut lock)?;
+    // The user just deliberately chose a summary language — release the
+    // enrich gate. Without this flag, `enrich` refuses to generate any
+    // summary (prevents the mixed-language index from a defaulted language).
+    cur.summary_lang_confirmed = true;
 
     cur.enabled = true;
     cur.save(mgr.paths())?;
