@@ -46,6 +46,30 @@ pub struct UserPrefs {
     pub recommend_mode: RecommendMode,
     #[serde(default = "default_candidate_limit")]
     pub candidate_limit: u8,
+    /// When false (default), `/recommend` only considers skills in the user's
+    /// own library (user_skill_library + private skills they own). When true,
+    /// public-pool skills (resources.owner_user_id IS NULL) also enter the
+    /// candidate set. Off by default per design — users opt in.
+    #[serde(default)]
+    pub allow_public_recommend: bool,
+    /// Per-user kill switch on the UserPromptSubmit hook. When false the
+    /// server returns an empty hook output for this user — no LLM is
+    /// queried, no tokens spent. Defaults to true so newly-registered
+    /// accounts get recommendations out of the box.
+    #[serde(default = "default_true")]
+    pub recommend_enabled: bool,
+    /// Per-user toggle for injecting the project's CLAUDE.md context into
+    /// the router LLM call.
+    #[serde(default = "default_true")]
+    pub read_claude_md: bool,
+    /// Per-user toggle for the "skip reminder" trailer block appended to
+    /// hook output.
+    #[serde(default)]
+    pub skip_reminder_enabled: bool,
+    /// Per-user override of the trailer text. Empty = fall back to the
+    /// server's `skip_reminder_template` config.
+    #[serde(default)]
+    pub skip_reminder_template: String,
 }
 
 fn default_true() -> bool {
@@ -72,6 +96,11 @@ impl Default for UserPrefs {
             show_feedback_protocol: default_true(),
             recommend_mode: default_recommend_mode(),
             candidate_limit: default_candidate_limit(),
+            allow_public_recommend: false,
+            recommend_enabled: default_true(),
+            read_claude_md: default_true(),
+            skip_reminder_enabled: false,
+            skip_reminder_template: String::new(),
         }
     }
 }
@@ -153,6 +182,11 @@ mod tests {
             show_feedback_protocol: false,
             recommend_mode: RecommendMode::Exclusive,
             candidate_limit: 4,
+            allow_public_recommend: true,
+            recommend_enabled: true,
+            read_claude_md: false,
+            skip_reminder_enabled: true,
+            skip_reminder_template: "use sparingly".into(),
         };
         let json = p.to_json_str();
         let back = UserPrefs::from_json_str(&json);
