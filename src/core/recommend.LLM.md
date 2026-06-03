@@ -1,6 +1,6 @@
 ---
 module: core::recommend
-file: src/core/recommend.rs
+file: src/core/recommend/
 role: feature
 ---
 
@@ -10,6 +10,31 @@ role: feature
 Opt-in skill auto-routing. A small LLM (default `deepseek-v4-flash` via OpenAI-compatible API) looks at the user prompt + the list of installed skills (name + AI summary + tags) and returns the top-K most relevant skills plus a one-sentence `reasoning:` line. The `UserPromptSubmit` hook injects this as candidate list + activation command into the main Claude Code prompt; the main agent then runs `runai recommend get <name>` to fetch the SKILL.md atomically. `recommend get` is the **single source of truth** for "skill adopted" — no PostToolUse hook, no transcript scanning, no self-report.
 
 Disabled by default. User must run `runai recommend setup` (interactive) or write `~/.runai/config.toml` manually before any LLM call happens.
+
+## Submodule map
+Sibling to `src/core/recommend/`. Thin `mod.rs` re-exports the entire public surface below so external code keeps using `crate::core::recommend::X` unchanged.
+
+| File | Responsibility | Key items |
+|---|---|---|
+| `mod.rs` | re-exports only, no logic | `pub use config::*` / `router::*` / … |
+| `config.rs` | `RecommendConfig` + provider library + toml load/save | `RecommendConfig`, `ProviderEntry`, `Provider`, `SessionMode` |
+| `router.rs` | top-level routing: BM25 prefilter → LLM call → telemetry persist + domain types | `recommend`, `recommend_for_user`, `RouterMode`, `RouterDecision`, `RecommendedSkill`, `RouterTurn`, `call_router`, `split_mode_and_names`, `parse_lines` |
+| `enrich.rs` | AI-summary enrichment worker pool + single-skill feedback re-enrich | `enrich_skills`, `reevaluate_skill`, `EnrichMode`, `EnrichReport`, `FeedbackReport`, `parse_enrich_response`, `rewrite_query_for_bm25` |
+| `lang_validation.rs` | deterministic per-field language enforcement (load-bearing) | `summary_matches_lang`, `find_language_mismatched_skills`, `prose_fields`, `field_matches_lang`, `has_en_stopword`, `count_cjk/kana/hangul`, `EN_STOPWORDS` |
+| `prompts.rs` | enrich/feedback prompt builders + router system-prompt template | `SYSTEM_PROMPT_TEMPLATE`, `build_enrich_prompt`, `build_feedback_prompt`, `lang_directive_for`, `lang_reminder_for` |
+| `llm_call.rs` | OpenAI-compat / Anthropic / Claude CLI transports + token accounting | `call_summary_llm`, `call_openai_compat`, `call_anthropic`, `call_claude_cli`, `RouterCallStats` |
+| `hook_output.rs` | hook stdout renderers + bootstrap guide | `format_for_hook`, `format_for_hook_with_session`, `format_for_hook_full`, `render_hook_output`, `bootstrap_guide` |
+| `project_context.rs` | CLAUDE.md `@`-reference parsing + injection | `read_project_context`, `extract_at_references`, `format_doc_block` |
+| `transcript.rs` | session transcript reading for history / BM25 | `recent_transcript_messages`, `recent_transcript_pairs`, `recent_user_prompts_for_bm25` |
+| `settings_hooks.rs` | Claude settings.json hook install/uninstall | `install_claude_hook`, `uninstall_claude_hook`, `install_session_start_hook`, `uninstall_session_start_hook`, `HookInstallStatus` |
+| `server_helpers.rs` | local IPv4 / default local server URL | `local_ipv4`, `default_local_server_url` |
+| `tests.rs` | module-level unit tests (`use super::*` + qualified `super::<mod>::*`) | 49 tests: config roundtrip, lang validation, parse/split, hook render, settings.json install/uninstall, project-context, transcript |
+
+### Submodule invariants (load-bearing — do not break silently)
+- **`enrich.rs` worker pool** uses `std::thread::scope` with per-worker `Arc::clone` (queue / report_mu / progress / cfg / api_key / db_path) and each worker opens its **own** `rusqlite` `Database::open(&db_path)` — the `Connection` is `!Sync`, so the per-worker open is mandatory, not incidental. Never consolidate to one shared connection.
+- **`lang_validation.rs` is moved verbatim.** The script-aware CJK/kana/hangul counters + the `task`-anchor rule (`field_matches_lang(.., is_anchor=true)`) are what make a whole-English summary structurally impossible to pass a `zh` index. Aggregate ratios are wrong on both ends — do not "simplify".
+- **`include_str!` prompt templates live in `src/core/prompts/`** and are referenced as `../prompts/*.md` from the submodules (one dir level up from `recommend/`). `SYSTEM_PROMPT_TEMPLATE` → `prompts.rs`; `recommend_user/history/already_routed/cwd` → `router.rs`; `recommend_project_context` → `project_context.rs`; `hook_output.md` → `hook_output.rs`.
+- **`RouterMode::as_str()` is `pub(super)`** (consumed by `router.rs` + `hook_output.rs`). `RouterCallStats` is `pub(super)` in `llm_call.rs` (consumed by `router.rs`). These plus `prose_fields` / `parse_lines` / `split_mode_and_names` / `extract_at_references` / `read_project_context` are `pub(super)` so `tests.rs` reaches them by qualified path without widening the public API.
 
 ## Public API
 - `struct RecommendConfig` — fields: `enabled`, `provider`, `base_url`, `model`, `api_key`, `top_k` (default 8 — soft ceiling on candidates surfaced per turn), `min_prompt_len`, `summary_lang`, `summary_lang_confirmed: bool`, `session_mode`, `session_history_limit`, `saved_providers: Vec<ProviderEntry>`, `active_provider_id: String`, `read_claude_md: bool` (default true), `skip_reminder_enabled: bool` (default false), `skip_reminder_template: String`. Defaults: disabled, openai-compat, DeepSeek endpoint, `deepseek-v4-flash`, top_k=8, session_mode=Oneshot, history_limit=20, summary_lang=`zh`, summary_lang_confirmed=`false`.
