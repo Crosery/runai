@@ -7,3 +7,6 @@ docs/superpowers/
 .beads-credential-key
 .design-gateway/
 .claude/
+
+# codegraph local index (MCP code-intelligence cache)
+.codegraph/

@@ -78,7 +78,7 @@
 
 - **Hook 集成** —— Claude Code 的 `UserPromptSubmit` hook → `runai recommend` → router 决策 → 输出作为额外 context 注入主 agent 的 prompt。
 - **BM25 prefilter + LLM rerank** —— 双语（latin + CJK）BM25 在 AI 生成的 summary 上跑，top 30 candidate 喂给 router LLM（默认 DeepSeek v4-flash；也支持任意 OpenAI 兼容 / Anthropic / `claude-cli` 后端）。混合分 = `BM25 × 0.4 + LLM 质量 × 0.6`。
-- **AI summary 富集** —— 每个 skill 都由同一个 LLM 生成结构化双语 summary（`task / triggers / inputs / outputs / not-for / score`），既当 BM25 索引文本也当 router 候选上下文。SKILL.md 编辑后自动 refresh，`runai install` / `scan` 也会针对改动的 skill 单点 re-enrich。
+- **AI summary 富集** —— 每个 skill 都由同一个 LLM 用你选定的 `summary_lang` 生成结构化 summary（`task / triggers / inputs / outputs / not-for / score`），既当 BM25 索引文本也当 router 候选上下文。富集以显式选定语言为前提，且输出语言被强制校验（不符先重试、再不符就丢弃不写），索引保持单一语言；`triggers` 字段保留跨语言关键词以提升检索。SKILL.md 编辑后自动 refresh，`runai install` / `scan` 也会针对改动的 skill 单点 re-enrich。
 - **两种模式** —— `EXCLUSIVE` 让主 agent 在候选里挑；`COMPATIBLE` 一次加载多个互补 skill 适合工作流型 prompt（"整套调试链路" / "完整发版流程"）。同 session 去重，已采用的 skill 不再被重推。
 - **真采用计数** —— 主 agent 真的 `Read` 了 `<skills_dir>/<X>/SKILL.md` 时，`PostToolUse` hook 自动 bump `usage_count` 并写 session adoption 行。Self-report (`runai recommend used`) 是兜底。**信号来源是 Claude Code 自己的工具调用日志，不是 agent 自己说**。
 - **`runai recommend get <skill>`** —— 原子激活：stdout = SKILL.md 全文，副作用 = usage_count +1 + session adoption。hook 输出给这条命令而不是原始路径，调用即采用。
@@ -137,6 +137,7 @@ runai list --target claude            # 单 CLI 视图
 runai backup                          # 带时间戳备份 skill + 配置
 runai trash                           # 浏览已删，restore 或 purge
 runai recommend enrich                # 重生 AI summary（mtime 检测增量）
+runai recommend enrich --fix-lang     # 只重生语言不符的 summary
 runai recommend stats                 # router LLM 用量 / 成本 / 延迟统计
 runai doctor                          # 健康检查；`--fix` 清理 dangling symlink
 ```
@@ -155,11 +156,49 @@ runai doctor                          # 健康检查；`--fix` 清理 dangling s
 ├── trash/<trash-id>/                 ~/.gemini/settings.json ← MCP 条目 (Gemini)
 ├── backups/<timestamp>/              ~/.config/opencode/opencode.json ← MCP 条目 (OpenCode)
 ├── market-cache/
+├── users/<user_id>/skills/<name>/   ← v0.11.0-beta.5：私有 skill 物理隔离
 ├── config.toml                        ← runai recommend 配置 (provider, model, api_key)
 └── runai.db                           ← SQLite: skill 元数据 / 使用统计 / router_events / AI summary
 ```
 
 首次启动自动从 `~/.skill-manager/` 迁移过来（v0.5.0 转换）。Env 覆盖支持：`RUNE_DATA_DIR` 和 `SKILL_MANAGER_DATA_DIR`。
+
+## skills.sh 聚合器（v0.11.0-beta.5）
+
+Dashboard 的 Market tab 是 [skills.sh](https://www.skills.sh) 的 leaderboard 镜像（20K+ skill，2.6K GitHub 仓库），无需 API key。
+
+- 三个排序 tab：**All Time / Trending (24h) / Hot** 对齐 skills.sh，全部 server-side 排序
+- 8W TREND 列：每行迷你 sparkline（来自 skills.sh `weeklyInstalls` 8 周数据）
+- INSTALLS 列：1.8M / 478.6K 格式化
+- 服务端分页：默认 50/页 + prev / next 按钮，避免一页渲染 20K skill 卡顿
+- 搜索框过滤后端实时查询（debounce 250ms）
+- 点 install：runai 自动 fetch 该 skill 真实 GitHub 仓库的 tree，把整个 skill 目录装到 `~/.runai/users/<user_id>/skills/<name>/`
+- 登录持久化：api_key 存 localStorage，cookie 失效后下次开浏览器仍登录态
+- 原有 builtin GitHub 仓库 source 已全部撤掉；用户自己加 GitHub 仓库通过右上 `+ GitHub` 走 user-added source
+
+## 开机自启（v0.11.0-beta.5）
+
+```bash
+runai server --install-autostart       # 装上登录自启动
+runai server --uninstall-autostart     # 卸载
+```
+
+- macOS：写 `~/Library/LaunchAgents/cn.crosery.runai.plist` 并 `launchctl load -w`，登录自动起 + 崩了自动拉
+- Linux：写 `~/.config/systemd/user/runai.service` 并 `systemctl --user enable --now`，用户 session 启动自动起
+- Windows：未实现，命令会打印 Task Scheduler 手动配置步骤
+
+跑 `runai`（默认 TUI）也会自动 `ensure_running` 拉起 server，设 `RUNAI_NO_AUTOSPAWN=1` 可关。
+
+## 多用户私有 skill（v0.11.0-beta.5）
+
+`runai server` 现在支持登录注册的用户，每个用户装的 skill 物理隔离到自己的 `~/.runai/users/<user_id>/skills/<name>/` 下，DB 字段 `owner_user_id` 区分公共与私有。
+
+- 公共 skill（`owner_user_id IS NULL`）所有用户都看得到，物理在 `~/.runai/skills/<name>/`
+- 私有 skill 只 owner 自己看得到；admin 用 `*` scope 看全部
+- 同名 skill 可以公共一份 + 多用户各自一份共存，DB id 用 `u:<uid>:` 前缀避免冲突
+- 客户端通过 install 脚本注册账号后，dashboard 的 install 走私有；CLI / TUI 装的还是公共
+
+详见 [AGENTS.md](AGENTS.md) 的 "Per-user physical skill isolation" 段。
 
 ---
 

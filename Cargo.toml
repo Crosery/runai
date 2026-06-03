@@ -1,6 +1,6 @@
 [package]
 name = "runai"
-version = "0.11.0-beta.4"
+version = "0.11.0-beta.6"
 edition = "2024"
 description = "AI CLI resource manager for skills and MCP servers"
 authors = ["Crosery"]
@@ -52,6 +52,7 @@ tower-http = { version = "0.6", features = ["fs"] }
 rand = "0.8"
 # Base32 encoding for user-friendly key/user_id format
 base32 = "0.5"
+argon2 = "0.5.3"
 
 [profile.release]
 strip = true
