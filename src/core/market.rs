@@ -15,7 +15,20 @@ pub struct SourceEntry {
     pub enabled: bool,
 }
 
+/// Sentinel `owner` value used to flag a `SourceEntry` as the
+/// skills.sh aggregator rather than a real GitHub repo. `Market::fetch`
+/// branches on this and walks the public sitemap to harvest every
+/// `owner/repo/skill` triple skills.sh indexes.
+pub const SKILLSHUB_SENTINEL: &str = "*skills-hub*";
+
 impl SourceEntry {
+    /// True when this entry is the skills.sh aggregator (sitemap-driven,
+    /// no underlying GitHub tree — every `MarketSkill` it yields carries
+    /// the real repo in `source_repo` for install).
+    pub fn is_skillshub(&self) -> bool {
+        self.owner == SKILLSHUB_SENTINEL
+    }
+
     fn builtin(
         owner: &str,
         repo: &str,
@@ -70,82 +83,54 @@ impl SourceEntry {
     }
 }
 
-/// Default built-in sources. First two enabled by default.
+/// Default built-in sources. The runai Market is now a thin layer over
+/// the skills.sh ecosystem — the old per-repo `SourceEntry` list was
+/// retired so the Market tab shows one canonical aggregated catalog.
+/// User-added GitHub repos (via `+ GitHub`) still work — they're stored
+/// as non-builtin entries in `market-sources.json`.
 fn builtin_sources() -> Vec<SourceEntry> {
-    vec![
-        SourceEntry::builtin(
-            "anthropics",
-            "claude-plugins-official",
-            "main",
-            "",
-            "Anthropic Official",
-            "Official Claude plugins & skills (23)",
-            true,
-        ),
-        SourceEntry::builtin(
-            "affaan-m",
-            "everything-claude-code",
-            "main",
-            "skills/",
-            "Everything Claude Code",
-            "Community skills collection (120+)",
-            true,
-        ),
-        SourceEntry::builtin(
-            "TerminalSkills",
-            "skills",
-            "main",
-            "skills/",
-            "Terminal Skills",
-            "Open-source skill library (900+)",
-            false,
-        ),
-        SourceEntry::builtin(
-            "sickn33",
-            "antigravity-awesome-skills",
-            "main",
-            "skills/",
-            "Antigravity Skills",
-            "Agentic skills collection (1300+)",
-            false,
-        ),
-        SourceEntry::builtin(
-            "mxyhi",
-            "ok-skills",
-            "main",
-            "",
-            "OK Skills",
-            "Curated agent skills & playbooks (55)",
-            false,
-        ),
-        SourceEntry::builtin(
-            "vercel-labs",
-            "agent-skills",
-            "main",
-            "",
-            "Vercel Agent Skills",
-            "React, Next.js, web design skills (100K+ installs)",
-            false,
-        ),
-        SourceEntry::builtin(
-            "anthropics",
-            "skills",
-            "main",
-            "",
-            "Anthropic Skills",
-            "Frontend design, document processing skills (100K+ installs)",
-            false,
-        ),
-        SourceEntry::builtin(
-            "ComposioHQ",
-            "awesome-claude-skills",
-            "main",
-            "",
-            "Composio Skills",
-            "Community curated Claude skills collection",
-            false,
-        ),
-    ]
+    vec![SourceEntry::builtin(
+        SKILLSHUB_SENTINEL,
+        SKILLSHUB_SENTINEL,
+        "main",
+        "",
+        "skills.sh",
+        "Open Agent Skills ecosystem — 20K+ skills aggregated from 2.6K GitHub repos",
+        true,
+    )]
+}
+
+/// Base URL for raw GitHub mirror. jsdelivr CDN by default (measured
+/// ~1s/file in mainland China vs raw.githubusercontent.com's 7s+).
+/// Override with `RUNAI_GH_MIRROR` env to point at a different host —
+/// must serve `/gh/<owner>/<repo>@<branch>/<path>` like jsdelivr does.
+/// Set `RUNAI_GH_MIRROR=raw` to fall back to raw.githubusercontent.com
+/// (useful when behind GFW-free networks where jsdelivr's fastly route
+/// is actually slower).
+fn mirror_base() -> String {
+    let v = std::env::var("RUNAI_GH_MIRROR").unwrap_or_default();
+    let v = v.trim().trim_end_matches('/');
+    if v.is_empty() || v == "default" {
+        return "https://cdn.jsdelivr.net".into();
+    }
+    if v == "raw" || v == "github" {
+        // Sentinel for "go direct to raw.githubusercontent.com" — handled
+        // by callers via the special prefix check.
+        return "https://raw.githubusercontent.com".into();
+    }
+    v.to_string()
+}
+
+/// Build a raw-file URL for `owner/repo@branch/path` honoring the
+/// configured mirror. Encapsulates the path-shape difference between
+/// jsdelivr ("/gh/o/r@b/p") and raw.github ("/o/r/b/p").
+pub(crate) fn raw_url_for(owner: &str, repo: &str, branch: &str, path: &str) -> String {
+    let base = mirror_base();
+    if base == "https://raw.githubusercontent.com" {
+        format!("{base}/{owner}/{repo}/{branch}/{path}")
+    } else {
+        format!("{base}/gh/{owner}/{repo}@{branch}/{path}")
+    }
 }
 
 const SOURCES_FILE: &str = "market-sources.json";
@@ -200,6 +185,26 @@ pub struct MarketSkill {
     pub source_label: String,
     pub source_repo: String, // "owner/repo"
     pub branch: String,
+    /// All-time install count harvested from skills.sh leaderboard SSR.
+    /// `0` for entries known only through the sitemap (no popularity
+    /// signal). Used to power the "All Time" ordering and INSTALLS column.
+    #[serde(default)]
+    pub installs: u64,
+    /// 24-hour install delta (Trending tab). `0` when unknown.
+    #[serde(default)]
+    pub trending_installs: u64,
+    /// Hot score from skills.sh `/hot` ranking. `0` when unknown.
+    /// Concretely populated as "installs from /hot SSR" — skills.sh's
+    /// internal score isn't exposed but the ordered list is.
+    #[serde(default)]
+    pub hot_score: u64,
+    /// 8-week install trend from skills.sh `weeklyInstalls`. Empty when
+    /// unknown. Used by the SPARKLINE column in the leaderboard UI.
+    #[serde(default)]
+    pub weekly_installs: Vec<u64>,
+    /// Marked official by skills.sh.
+    #[serde(default)]
+    pub is_official: bool,
     #[serde(skip)]
     pub installed: bool,
 }
@@ -277,6 +282,165 @@ fn cache_key(source: &SourceEntry) -> String {
     format!("{}_{}", source.owner, source.repo)
 }
 
+/// One row from a skills.sh leaderboard SSR HTML page. The same shape
+/// shows up on `/`, `/trending`, `/hot`; the meaning of `installs`
+/// depends on which page it came from (all-time, 24h delta, hot score).
+#[derive(Debug, Clone)]
+pub(crate) struct LeaderboardRow {
+    pub source_repo: String,
+    pub skill_id: String,
+    pub installs: u64,
+    pub weekly_installs: Vec<u64>,
+    pub is_official: bool,
+}
+
+/// Parse the streamed Next.js SSR payload embedded in a skills.sh page.
+/// The payload is escaped JSON inside `self.__next_f.push(...)` calls;
+/// each leaderboard row reads literally as
+/// `\"source\":\"<owner/repo>\",\"skillId\":\"<slug>\",\"name\":\"...\",\"installs\":<n>[,\"weeklyInstalls\":[...]][,\"isOfficial\":true]`.
+/// Stdlib-only — works on `/`, `/trending`, `/hot` identically.
+pub(crate) fn parse_leaderboard(body: &str) -> Vec<LeaderboardRow> {
+    let mut out = Vec::new();
+    // Find each `\"source\":\"` anchor (literal backslash + quote in source).
+    let needle = "\\\"source\\\":\\\"";
+    let mut search_from = 0;
+    while let Some(rel) = body[search_from..].find(needle) {
+        let start = search_from + rel + needle.len();
+        search_from = start;
+        // Capture source until the closing `\"`.
+        let Some(end_source) = body[start..].find("\\\"") else { break };
+        let source_repo = body[start..start + end_source].to_string();
+        if source_repo.is_empty() || !source_repo.contains('/') {
+            continue;
+        }
+        let after_source = start + end_source + needle.len() - "source\\\":\\\"".len();
+        // Look ahead within a bounded window for skillId + installs (+ optional fields).
+        let window_end = (after_source + 800).min(body.len());
+        let window = &body[after_source..window_end];
+
+        let Some(skill_id) = extract_quoted_field(window, "skillId") else { continue };
+        let Some(installs_str) = extract_field(window, "installs") else { continue };
+        let Ok(installs) = installs_str.parse::<u64>() else { continue };
+        let weekly_installs = extract_array_field(window, "weeklyInstalls")
+            .unwrap_or_default();
+        let is_official = window.contains("\\\"isOfficial\\\":true");
+
+        out.push(LeaderboardRow {
+            source_repo,
+            skill_id,
+            installs,
+            weekly_installs,
+            is_official,
+        });
+    }
+    out
+}
+
+fn extract_quoted_field(window: &str, name: &str) -> Option<String> {
+    let needle = format!("\\\"{name}\\\":\\\"");
+    let start = window.find(&needle)? + needle.len();
+    let end = window[start..].find("\\\"")?;
+    Some(window[start..start + end].to_string())
+}
+
+fn extract_field(window: &str, name: &str) -> Option<String> {
+    let needle = format!("\\\"{name}\\\":");
+    let start = window.find(&needle)? + needle.len();
+    let mut end = start;
+    let bytes = window.as_bytes();
+    while end < bytes.len() {
+        let c = bytes[end];
+        if !c.is_ascii_digit() && c != b'-' {
+            break;
+        }
+        end += 1;
+    }
+    if end == start {
+        return None;
+    }
+    Some(window[start..end].to_string())
+}
+
+fn extract_array_field(window: &str, name: &str) -> Option<Vec<u64>> {
+    let needle = format!("\\\"{name}\\\":[");
+    let start = window.find(&needle)? + needle.len();
+    let end = window[start..].find(']')?;
+    let inner = &window[start..start + end];
+    let nums: Vec<u64> = inner
+        .split(',')
+        .filter_map(|n| n.trim().parse::<u64>().ok())
+        .collect();
+    if nums.is_empty() {
+        return None;
+    }
+    Some(nums)
+}
+
+/// Whitelist filter for "root-skill" repos where the entire repository
+/// IS the skill (e.g. `anysearch-ai/anysearch-skill`). Drops VCS / CI
+/// metadata and top-level license / readme noise that shouldn't end up
+/// under `<install_root>/<skill>/`. Anything else (SKILL.md, scripts/,
+/// references/, .env.example, runtime.conf.example, …) passes.
+pub(crate) fn is_root_skill_payload(path: &str) -> bool {
+    if path.is_empty() {
+        return false;
+    }
+    let lower = path.to_ascii_lowercase();
+    // VCS / CI infra — never part of the skill payload.
+    if lower.starts_with(".git/")
+        || lower == ".gitignore"
+        || lower == ".gitattributes"
+        || lower.starts_with(".github/")
+        || lower.starts_with(".husky/")
+        || lower.starts_with(".devcontainer/")
+        || lower.starts_with(".vscode/")
+        || lower.starts_with(".idea/")
+    {
+        return false;
+    }
+    // Top-level repo docs that the skill itself doesn't need (SKILL.md
+    // is its own canonical doc). Subdirectory README.md (e.g.
+    // scripts/README.md) IS kept because it may be skill-internal docs.
+    let is_top_level = !path.contains('/');
+    if is_top_level
+        && matches!(
+            lower.as_str(),
+            "readme.md"
+                | "license"
+                | "license.md"
+                | "license.txt"
+                | "license-mit"
+                | "license-apache"
+                | "code_of_conduct.md"
+                | "contributing.md"
+                | "changelog.md"
+                | "security.md"
+        )
+    {
+        return false;
+    }
+    true
+}
+
+/// Extract every `<loc>https://…</loc>` URL from a sitemap XML document.
+/// Stdlib-only — sitemap shape is fixed enough that a regex / xml crate
+/// would be overkill. Tolerates whitespace and weird wrapping; ignores
+/// `<loc>` payloads that don't start with `http`.
+fn extract_sitemap_locs(body: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = body;
+    while let Some(start) = rest.find("<loc>") {
+        let after = &rest[start + 5..];
+        let Some(end) = after.find("</loc>") else { break };
+        let raw = after[..end].trim();
+        if raw.starts_with("http") {
+            out.push(raw.to_string());
+        }
+        rest = &after[end + 6..];
+    }
+    out
+}
+
 pub(crate) struct ExtractResult {
     pub skills: Vec<MarketSkill>,
     pub plugin_detected: bool,
@@ -317,6 +481,11 @@ impl Market {
                     source_label: label.clone(),
                     source_repo: repo_id.clone(),
                     branch: source.branch.clone(),
+                    installs: 0,
+                    trending_installs: 0,
+                    hot_score: 0,
+                    weekly_installs: Vec::new(),
+                    is_official: false,
                     installed: false,
                 });
                 continue;
@@ -342,6 +511,11 @@ impl Market {
                 source_label: label.clone(),
                 source_repo: repo_id.clone(),
                 branch: source.branch.clone(),
+                installs: 0,
+                trending_installs: 0,
+                hot_score: 0,
+                weekly_installs: Vec::new(),
+                is_official: false,
                 installed: false,
             });
         }
@@ -355,8 +529,19 @@ impl Market {
         }
     }
 
-    /// Fetch skill list from GitHub API.
+    /// Fetch skill list from GitHub API, or from the skills.sh sitemap
+    /// when the source carries the [`SKILLSHUB_SENTINEL`] owner.
     pub(crate) async fn fetch(source: &SourceEntry) -> Result<ExtractResult> {
+        if source.is_skillshub() {
+            let skills = Self::fetch_skillshub().await?;
+            // The aggregator has no underlying git tree; subsequent
+            // install paths re-fetch the real repo's tree on demand.
+            return Ok(ExtractResult {
+                skills,
+                plugin_detected: false,
+                tree: GitTree { tree: Vec::new() },
+            });
+        }
         let url = format!(
             "https://api.github.com/repos/{}/{}/git/trees/{}?recursive=1",
             source.owner, source.repo, source.branch,
@@ -378,6 +563,157 @@ impl Market {
         Ok(Self::extract_skills(body, source))
     }
 
+    /// Build the unified skills.sh catalog.
+    ///
+    /// Pipeline:
+    /// 1. Hit `/`, `/trending`, `/hot` — each SSRs ~600 leaderboard rows
+    ///    with `source / skillId / installs / weeklyInstalls / isOfficial`.
+    ///    Parse those into the popularity signals (`installs`,
+    ///    `trending_installs`, `hot_score`, `weekly_installs`).
+    /// 2. Hit `sitemap-skills-{1,2}.xml` — flatten 20K+ `owner/repo/skill`
+    ///    URLs for skills the leaderboard didn't cover.
+    /// 3. Merge by `(source_repo, name)` key. Leaderboard rows win
+    ///    (they're enriched); sitemap entries fill the long tail with
+    ///    zero popularity.
+    pub(crate) async fn fetch_skillshub() -> Result<Vec<MarketSkill>> {
+        let client = reqwest::Client::builder()
+            .user_agent("runai/0.11")
+            .build()?;
+
+        let (all_html, trending_html, hot_html) = tokio::try_join!(
+            async { client.get("https://www.skills.sh/").send().await?.error_for_status()?.text().await },
+            async { client.get("https://www.skills.sh/trending").send().await?.error_for_status()?.text().await },
+            async { client.get("https://www.skills.sh/hot").send().await?.error_for_status()?.text().await },
+        )?;
+
+        let mut by_key: std::collections::HashMap<String, MarketSkill> =
+            std::collections::HashMap::new();
+        let make_key =
+            |source_repo: &str, name: &str| format!("{source_repo}//{name}");
+
+        // /  → installs (All Time) + weeklyInstalls + isOfficial.
+        for r in parse_leaderboard(&all_html) {
+            let k = make_key(&r.source_repo, &r.skill_id);
+            by_key
+                .entry(k.clone())
+                .or_insert_with(|| MarketSkill {
+                    name: r.skill_id.clone(),
+                    repo_path: String::new(),
+                    source_label: "skills.sh".to_string(),
+                    source_repo: r.source_repo.clone(),
+                    branch: "main".to_string(),
+                    installs: 0,
+                    trending_installs: 0,
+                    hot_score: 0,
+                    weekly_installs: Vec::new(),
+                    is_official: false,
+                    installed: false,
+                });
+            if let Some(s) = by_key.get_mut(&k) {
+                s.installs = r.installs;
+                s.weekly_installs = r.weekly_installs;
+                s.is_official = r.is_official;
+            }
+        }
+        // /trending → trending_installs (24h delta).
+        for r in parse_leaderboard(&trending_html) {
+            let k = make_key(&r.source_repo, &r.skill_id);
+            by_key
+                .entry(k.clone())
+                .or_insert_with(|| MarketSkill {
+                    name: r.skill_id.clone(),
+                    repo_path: String::new(),
+                    source_label: "skills.sh".to_string(),
+                    source_repo: r.source_repo.clone(),
+                    branch: "main".to_string(),
+                    installs: 0,
+                    trending_installs: 0,
+                    hot_score: 0,
+                    weekly_installs: Vec::new(),
+                    is_official: r.is_official,
+                    installed: false,
+                });
+            if let Some(s) = by_key.get_mut(&k) {
+                s.trending_installs = r.installs;
+            }
+        }
+        // /hot → hot_score.
+        for r in parse_leaderboard(&hot_html) {
+            let k = make_key(&r.source_repo, &r.skill_id);
+            by_key
+                .entry(k.clone())
+                .or_insert_with(|| MarketSkill {
+                    name: r.skill_id.clone(),
+                    repo_path: String::new(),
+                    source_label: "skills.sh".to_string(),
+                    source_repo: r.source_repo.clone(),
+                    branch: "main".to_string(),
+                    installs: 0,
+                    trending_installs: 0,
+                    hot_score: 0,
+                    weekly_installs: Vec::new(),
+                    is_official: r.is_official,
+                    installed: false,
+                });
+            if let Some(s) = by_key.get_mut(&k) {
+                s.hot_score = r.installs;
+            }
+        }
+
+        // Sitemap fills the long tail. Skips entries the leaderboard
+        // already covered to avoid double-counting (HashMap key check).
+        const SHARDS: &[&str] = &[
+            "https://www.skills.sh/sitemap-skills-1.xml",
+            "https://www.skills.sh/sitemap-skills-2.xml",
+        ];
+        for shard in SHARDS {
+            let body = client.get(*shard).send().await?.error_for_status()?.text().await?;
+            for url in extract_sitemap_locs(&body) {
+                let rest = match url
+                    .strip_prefix("https://www.skills.sh/")
+                    .or_else(|| url.strip_prefix("https://skills.sh/"))
+                {
+                    Some(r) => r,
+                    None => continue,
+                };
+                let parts: Vec<&str> = rest.splitn(3, '/').collect();
+                if parts.len() != 3 {
+                    continue;
+                }
+                let (owner, repo, skill_name) = (parts[0], parts[1], parts[2]);
+                if owner.is_empty() || repo.is_empty() || skill_name.is_empty() {
+                    continue;
+                }
+                let source_repo = format!("{owner}/{repo}");
+                let k = make_key(&source_repo, skill_name);
+                by_key.entry(k).or_insert_with(|| MarketSkill {
+                    name: skill_name.to_string(),
+                    repo_path: String::new(),
+                    source_label: "skills.sh".to_string(),
+                    source_repo,
+                    branch: "main".to_string(),
+                    installs: 0,
+                    trending_installs: 0,
+                    hot_score: 0,
+                    weekly_installs: Vec::new(),
+                    is_official: false,
+                    installed: false,
+                });
+            }
+        }
+
+        let mut skills: Vec<MarketSkill> = by_key.into_values().collect();
+        // Default order: by all-time installs desc, then name asc. The
+        // server-side `?sort=` query re-sorts the cached list per request.
+        skills.sort_by(|a, b| {
+            b.installs
+                .cmp(&a.installs)
+                .then(a.source_repo.cmp(&b.source_repo))
+                .then(a.name.cmp(&b.name))
+        });
+        Ok(skills)
+    }
+
     /// Get all file paths belonging to a skill from the git tree.
     pub(crate) fn get_skill_files(tree: &GitTree, repo_path: &str) -> Vec<String> {
         let prefix = format!("{repo_path}/");
@@ -390,9 +726,13 @@ impl Market {
 
     /// Collect all file download tasks for all skills in an ExtractResult.
     /// No network — just builds the list of (url, dest_path) pairs.
+    /// Build download tasks that drop every skill's files under `install_root`.
+    /// For public installs `install_root = paths.skills_dir()`; for private
+    /// installs it's `paths.user_skills_dir(uid)?`. The function itself does
+    /// not consult `AppPaths` — the caller decides where the bytes land.
     pub(crate) fn collect_download_tasks(
         extract: &ExtractResult,
-        paths: &crate::core::paths::AppPaths,
+        install_root: &std::path::Path,
     ) -> Vec<DownloadTask> {
         let mut tasks = Vec::new();
         for skill in &extract.skills {
@@ -401,6 +741,28 @@ impl Market {
                 continue;
             }
             let (owner, repo) = (parts[0], parts[1]);
+            let skill_dir = install_root.join(&skill.name);
+
+            // Root-skill install (`repo_path == "."`): the repo *is*
+            // the skill. Take everything except VCS / CI / license /
+            // top-level README junk. Tree paths land verbatim under
+            // `skill_dir/`.
+            if skill.repo_path == "." {
+                for node in &extract.tree.tree {
+                    if !is_root_skill_payload(&node.path) {
+                        continue;
+                    }
+                    let url = raw_url_for(owner, repo, &skill.branch, &node.path);
+                    let dest_path = skill_dir.join(&node.path);
+                    tasks.push(DownloadTask {
+                        skill_name: skill.name.clone(),
+                        url,
+                        dest_path,
+                    });
+                }
+                continue;
+            }
+
             let repo_path = if skill.repo_path.is_empty() {
                 &skill.name
             } else {
@@ -408,13 +770,12 @@ impl Market {
             };
             let files = Self::get_skill_files(&extract.tree, repo_path);
             let prefix = format!("{repo_path}/");
-            let skill_dir = paths.skills_dir().join(&skill.name);
 
             for file_path in files {
-                let url = format!(
-                    "https://raw.githubusercontent.com/{owner}/{repo}/{}/{}",
-                    skill.branch, file_path
-                );
+                // Route raw downloads through the configured GitHub mirror
+                // (jsdelivr CDN by default — measured ~1s vs raw.github's
+                // 7s+ from mainland China networks).
+                let url = raw_url_for(owner, repo, &skill.branch, &file_path);
                 let rel = file_path
                     .strip_prefix(&prefix)
                     .unwrap_or(&file_path)
@@ -470,9 +831,12 @@ impl Market {
 
     /// Install a single skill using git tree (fast: raw downloads, no Contents API).
     /// If tree is provided, uses it to find files; otherwise falls back to Contents API.
+    /// `install_root` is where `<skill.name>/` is created. Owner-aware
+    /// callers pass `&paths.user_skills_dir(uid)?` for private installs and
+    /// `&paths.skills_dir()` for the public pool.
     pub(crate) async fn install_single_with_tree(
         skill: &MarketSkill,
-        paths: &crate::core::paths::AppPaths,
+        install_root: &std::path::Path,
         tree: Option<&GitTree>,
     ) -> Result<()> {
         let parts: Vec<&str> = skill.source_repo.splitn(2, '/').collect();
@@ -481,7 +845,7 @@ impl Market {
         }
         let (owner, repo) = (parts[0], parts[1]);
         let client = reqwest::Client::builder().user_agent("runai/0.5").build()?;
-        let skill_dir = paths.skills_dir().join(&skill.name);
+        let skill_dir = install_root.join(&skill.name);
         std::fs::create_dir_all(&skill_dir)?;
 
         let repo_path = if skill.repo_path.is_empty() {
@@ -498,10 +862,7 @@ impl Market {
             // Launch all downloads concurrently using tokio JoinSet
             let mut set = tokio::task::JoinSet::new();
             for file_path in files {
-                let raw_url = format!(
-                    "https://raw.githubusercontent.com/{owner}/{repo}/{}/{}",
-                    skill.branch, file_path
-                );
+                let raw_url = raw_url_for(owner, repo, &skill.branch, &file_path);
                 let client = client.clone();
                 set.spawn(async move {
                     let resp = client
@@ -544,11 +905,12 @@ impl Market {
     }
 
     /// Install a single skill (backwards-compatible, uses Contents API fallback).
+    /// `install_root` is the parent directory under which `<skill.name>/` is created.
     pub async fn install_single(
         skill: &MarketSkill,
-        paths: &crate::core::paths::AppPaths,
+        install_root: &std::path::Path,
     ) -> Result<()> {
-        Self::install_single_with_tree(skill, paths, None).await
+        Self::install_single_with_tree(skill, install_root, None).await
     }
 
     /// Recursively download all files in a GitHub directory.
@@ -580,10 +942,7 @@ impl Market {
         for item in &items {
             match item.item_type.as_str() {
                 "file" => {
-                    let raw_url = format!(
-                        "https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{}",
-                        item.path,
-                    );
+                    let raw_url = raw_url_for(owner, repo, branch, &item.path);
                     let file_resp = client.get(&raw_url).send().await?;
                     if !file_resp.status().is_success() {
                         bail!(
@@ -738,6 +1097,11 @@ mod tests {
             source_label: "OK Skills".into(),
             source_repo: "mxyhi/ok-skills".into(),
             branch: "main".into(),
+            installs: 0,
+            trending_installs: 0,
+            hot_score: 0,
+            weekly_installs: Vec::new(),
+            is_official: false,
             installed: false,
         }];
         save_cache(data_dir, &source, &skills).unwrap();
@@ -809,7 +1173,7 @@ mod tests {
         let paths = crate::core::paths::AppPaths::with_base(tmp.path().to_path_buf());
         paths.ensure_dirs().unwrap();
 
-        let tasks = Market::collect_download_tasks(&extract, &paths);
+        let tasks = Market::collect_download_tasks(&extract, &paths.skills_dir());
 
         // Should have 4 file tasks total (2 for skill-a, 2 for skill-b)
         assert_eq!(tasks.len(), 4, "should collect all files across all skills");
@@ -828,37 +1192,159 @@ mod tests {
                 .any(|t| t.dest_path.ends_with("helper.md"))
         );
 
-        // Verify URL format
+        // Verify URL format — v15 routes all raw downloads through the
+        // configured mirror (jsdelivr by default, switchable via
+        // RUNAI_GH_MIRROR). The test asserts the new shape.
+        let expected_prefix = if std::env::var("RUNAI_GH_MIRROR").unwrap_or_default() == "raw" {
+            "https://raw.githubusercontent.com/test/repo/main/".to_string()
+        } else {
+            "https://cdn.jsdelivr.net/gh/test/repo@main/".to_string()
+        };
         assert!(
-            tasks[0]
-                .url
-                .starts_with("https://raw.githubusercontent.com/test/repo/main/")
+            tasks[0].url.starts_with(&expected_prefix),
+            "url = {}, expected prefix = {}",
+            tasks[0].url,
+            expected_prefix
         );
     }
 
     #[test]
-    fn builtin_sources_include_skills_sh_ecosystem() {
+    fn builtin_sources_only_contain_skillshub_aggregator() {
+        // Per the user's 2025 spec the Market is now a thin skills.sh
+        // layer — the old per-repo `SourceEntry` list was retired. Any
+        // GitHub repo a user wants tracked goes through `+ GitHub`
+        // (non-builtin user source) instead.
         let sources = builtin_sources();
-        let repo_ids: Vec<String> = sources.iter().map(|s| s.repo_id()).collect();
+        assert_eq!(sources.len(), 1, "exactly one builtin source");
+        let only = &sources[0];
+        assert!(only.is_skillshub());
+        assert_eq!(only.label, "skills.sh");
+        assert!(only.enabled, "skills.sh aggregator default-on");
+    }
 
-        // skills.sh 生态源
-        assert!(
-            repo_ids.contains(&"vercel-labs/agent-skills".to_string()),
-            "missing vercel-labs/agent-skills"
-        );
-        assert!(
-            repo_ids.contains(&"anthropics/skills".to_string()),
-            "missing anthropics/skills"
-        );
-        assert!(
-            repo_ids.contains(&"ComposioHQ/awesome-claude-skills".to_string()),
-            "missing ComposioHQ/awesome-claude-skills"
-        );
+    // ───────────────────────── skills.sh aggregator ─────────────────────────
 
-        // 原有源仍在
-        assert!(
-            repo_ids.contains(&"anthropics/claude-plugins-official".to_string()),
-            "missing anthropics/claude-plugins-official"
-        );
+    #[test]
+    fn extract_sitemap_locs_parses_multiple_urls() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<urlset>
+  <url><loc>https://www.skills.sh/anthropics/skills/foo</loc></url>
+  <url><loc>https://www.skills.sh/vercel-labs/agent-skills/bar</loc></url>
+  <url><loc>not-a-url</loc></url>
+  <url><loc>  https://www.skills.sh/microsoft/azure-skills/baz  </loc></url>
+</urlset>"#;
+        let urls = extract_sitemap_locs(xml);
+        assert_eq!(urls.len(), 3);
+        assert_eq!(urls[0], "https://www.skills.sh/anthropics/skills/foo");
+        assert_eq!(urls[1], "https://www.skills.sh/vercel-labs/agent-skills/bar");
+        assert_eq!(urls[2], "https://www.skills.sh/microsoft/azure-skills/baz");
+    }
+
+    #[test]
+    fn extract_sitemap_locs_handles_empty_and_malformed() {
+        assert!(extract_sitemap_locs("").is_empty());
+        assert!(extract_sitemap_locs("<loc>no-closing").is_empty());
+        assert!(extract_sitemap_locs("<urlset></urlset>").is_empty());
+    }
+
+    #[test]
+    fn skillshub_sentinel_present_in_builtin_sources() {
+        let entry = builtin_sources()
+            .into_iter()
+            .find(|s| s.is_skillshub())
+            .expect("skills.sh aggregator must be in builtin_sources");
+        assert_eq!(entry.label, "skills.sh");
+        assert!(entry.enabled, "must default to enabled for first-run Market tab");
+        assert_eq!(entry.owner, SKILLSHUB_SENTINEL);
+    }
+
+    #[test]
+    fn parse_leaderboard_extracts_installs_and_weekly() {
+        // Skills.sh SSR embeds rows as escaped JSON inside `__next_f.push`.
+        // The pattern is stable across `/`, `/trending`, `/hot`.
+        let snippet = r#"
+            ...random stuff...
+            \"source\":\"vercel-labs/skills\",\"skillId\":\"find-skills\",\"name\":\"find-skills\",\"installs\":1765053,\"weeklyInstalls\":[100113,116613,115950,102724,94569,101582,116305,37369],\"isOfficial\":true},
+            \"source\":\"anthropics/skills\",\"skillId\":\"frontend-design\",\"name\":\"frontend-design\",\"installs\":478598,\"weeklyInstalls\":[33429,31868,29995,26231,19072,26733,30547,9776]},
+            \"source\":\"random/repo\",\"skillId\":\"no-weekly\",\"name\":\"no-weekly\",\"installs\":42},
+        "#;
+        let rows = parse_leaderboard(snippet);
+        assert_eq!(rows.len(), 3, "must extract all three rows");
+
+        assert_eq!(rows[0].skill_id, "find-skills");
+        assert_eq!(rows[0].source_repo, "vercel-labs/skills");
+        assert_eq!(rows[0].installs, 1_765_053);
+        assert_eq!(rows[0].weekly_installs.len(), 8);
+        assert_eq!(rows[0].weekly_installs[0], 100_113);
+        assert!(rows[0].is_official);
+
+        assert_eq!(rows[1].skill_id, "frontend-design");
+        assert_eq!(rows[1].installs, 478_598);
+        assert!(!rows[1].is_official);
+
+        // No weeklyInstalls / isOfficial in the third row — defaults must apply.
+        assert_eq!(rows[2].skill_id, "no-weekly");
+        assert_eq!(rows[2].installs, 42);
+        assert!(rows[2].weekly_installs.is_empty());
+        assert!(!rows[2].is_official);
+    }
+
+    #[test]
+    fn root_skill_payload_filter_keeps_skill_md_skips_metadata() {
+        // Real-world repo: anysearch-ai/anysearch-skill ships SKILL.md
+        // at root + scripts/ + runtime.conf.example. Must keep skill
+        // payload, drop housekeeping.
+        let keep = [
+            "SKILL.md",
+            ".env.example",
+            "runtime.conf.example",
+            "scripts/anysearch_cli.sh",
+            "scripts/shared/constants.json",
+            "scripts/README.md", // sub-dir README is skill-internal, keep
+        ];
+        for p in keep {
+            assert!(is_root_skill_payload(p), "expected {p} kept");
+        }
+        let drop = [
+            ".gitignore",
+            ".gitattributes",
+            ".github/workflows/ci.yml",
+            ".husky/pre-commit",
+            ".vscode/settings.json",
+            "README.md",
+            "LICENSE",
+            "LICENSE.md",
+            "CHANGELOG.md",
+            "CONTRIBUTING.md",
+            "",
+        ];
+        for p in drop {
+            assert!(!is_root_skill_payload(p), "expected {p} dropped");
+        }
+    }
+
+    #[test]
+    fn parse_leaderboard_handles_empty_and_garbage() {
+        assert!(parse_leaderboard("").is_empty());
+        assert!(parse_leaderboard("no JSON at all").is_empty());
+        // Source without slash is rejected.
+        let bad = r#"\"source\":\"justname\",\"skillId\":\"x\",\"installs\":1"#;
+        assert!(parse_leaderboard(bad).is_empty());
+    }
+
+    #[test]
+    fn skillshub_load_sources_preserves_user_enabled_toggle() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut sources = load_sources(tmp.path());
+        let entry = sources
+            .iter_mut()
+            .find(|s| s.is_skillshub())
+            .expect("aggregator entry present");
+        entry.enabled = true;
+        save_sources(tmp.path(), &sources).unwrap();
+
+        let reloaded = load_sources(tmp.path());
+        let entry = reloaded.iter().find(|s| s.is_skillshub()).unwrap();
+        assert!(entry.enabled, "user toggle must persist across reload");
     }
 }
