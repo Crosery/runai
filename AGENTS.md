@@ -154,28 +154,28 @@ File-level LLM docs follow the convention `<name>.LLM.md` as a sibling to the so
 | core::classifier | [src/core/classifier.rs](src/core/classifier.rs) | [src/core/classifier.LLM.md](src/core/classifier.LLM.md) | Classifies installable artifacts into Skill vs MCP vs Agent |
 | core::cli_target | [src/core/cli_target.rs](src/core/cli_target.rs) | [src/core/cli_target.LLM.md](src/core/cli_target.LLM.md) | CliTarget enum + per-target dir/config resolvers |
 | core::config_watcher | [src/core/config_watcher.rs](src/core/config_watcher.rs) | [src/core/config_watcher.LLM.md](src/core/config_watcher.LLM.md) | notify-based watcher for 4 CLI MCP configs + skills dirs + mcps backup; drives TUI live reload |
-| core::db | [src/core/db.rs](src/core/db.rs) | [src/core/db.LLM.md](src/core/db.LLM.md) | SQLite schema + migrations + query layer |
+| core::db | [src/core/db/mod.rs](src/core/db/mod.rs) | [src/core/db.LLM.md](src/core/db.LLM.md) | SQLite schema + migrations + query layer (split by domain: schema / resources / ai_summary / groups / users / library / events) |
 | core::doctor | [src/core/doctor.rs](src/core/doctor.rs) | [src/core/doctor.LLM.md](src/core/doctor.LLM.md) | `runai doctor` health checks |
 | core::group | [src/core/group.rs](src/core/group.rs) | [src/core/group.LLM.md](src/core/group.LLM.md) | Group definition (TOML on disk) + member type |
 | core::installer | [src/core/installer.rs](src/core/installer.rs) | [src/core/installer.LLM.md](src/core/installer.LLM.md) | GitHub / market install pipeline |
 | core::linker | [src/core/linker.rs](src/core/linker.rs) | [src/core/linker.LLM.md](src/core/linker.LLM.md) | Cross-platform symlink create/remove/detect |
-| core::manager | [src/core/manager.rs](src/core/manager.rs) | [src/core/manager.LLM.md](src/core/manager.LLM.md) | `SkillManager` — orchestrates everything |
-| core::market | [src/core/market.rs](src/core/market.rs) | [src/core/market.LLM.md](src/core/market.LLM.md) | Market source list + skill index cache (1h TTL) + skills.sh sitemap aggregator |
+| core::manager | [src/core/manager/mod.rs](src/core/manager/mod.rs) | [src/core/manager.LLM.md](src/core/manager.LLM.md) | `SkillManager` — orchestrates everything (impl split across construction / install / mcp / trash / groups / query files) |
+| core::market | [src/core/market/mod.rs](src/core/market/mod.rs) | [src/core/market.LLM.md](src/core/market.LLM.md) | Market source list + skill index cache (1h TTL) + skills.sh sitemap aggregator |
 | core::mcp_canonical | [src/core/mcp_canonical.rs](src/core/mcp_canonical.rs) | [src/core/mcp_canonical.LLM.md](src/core/mcp_canonical.LLM.md) | Canonical MCP entry shape + per-CLI ↔ canonical converters |
 | core::mcp_discovery | [src/core/mcp_discovery.rs](src/core/mcp_discovery.rs) | [src/core/mcp_discovery.LLM.md](src/core/mcp_discovery.LLM.md) | Discover MCP entries from existing CLI configs |
 | core::mcp_register | [src/core/mcp_register.rs](src/core/mcp_register.rs) | [src/core/mcp_register.LLM.md](src/core/mcp_register.LLM.md) | Self-register runai as an MCP across all four CLIs |
 | core::paths | [src/core/paths.rs](src/core/paths.rs) | [src/core/paths.LLM.md](src/core/paths.LLM.md) | `AppPaths` resolver + legacy-dir migration |
 | core::prefs | [src/core/prefs.rs](src/core/prefs.rs) | — | `UserPrefs` (per-user dashboard / recommend prefs, stored as JSON in `users.prefs_json`) |
-| core::recommend | [src/core/recommend.rs](src/core/recommend.rs) | [src/core/recommend.LLM.md](src/core/recommend.LLM.md) | Opt-in LLM skill router for `UserPromptSubmit` hook (DeepSeek / Anthropic / any OpenAI-compat backend) |
+| core::recommend | [src/core/recommend/mod.rs](src/core/recommend/mod.rs) | [src/core/recommend.LLM.md](src/core/recommend.LLM.md) | Opt-in LLM skill router for `UserPromptSubmit` hook; split into config / router / enrich / lang_validation / prompts / llm_call / hook_output |
 | core::resource | [src/core/resource.rs](src/core/resource.rs) | [src/core/resource.LLM.md](src/core/resource.LLM.md) | `Resource` / `ResourceKind` domain types |
-| core::scanner | [src/core/scanner.rs](src/core/scanner.rs) | [src/core/scanner.LLM.md](src/core/scanner.LLM.md) | Filesystem discovery + adoption of unmanaged skills |
+| core::scanner | [src/core/scanner/mod.rs](src/core/scanner/mod.rs) | [src/core/scanner.LLM.md](src/core/scanner.LLM.md) | Filesystem discovery + adoption of unmanaged skills |
 | core::search | [src/core/search.rs](src/core/search.rs) | [src/core/search.LLM.md](src/core/search.LLM.md) | nucleo (fzf v2) fuzzy matcher shared by sm_search / sm_market / CLI search & market |
 | core::transcript_stats | [src/core/transcript_stats.rs](src/core/transcript_stats.rs) | [src/core/transcript_stats.LLM.md](src/core/transcript_stats.LLM.md) | Usage counts mined from Claude Code transcripts, with incremental on-disk cache |
 | core::updater | [src/core/updater.rs](src/core/updater.rs) | [src/core/updater.LLM.md](src/core/updater.LLM.md) | Self-update: check, download, verify, replace binary |
-| mcp::tools | [src/mcp/tools.rs](src/mcp/tools.rs) | [src/mcp/tools.LLM.md](src/mcp/tools.LLM.md) | 21 `sm_*` tools exposed to MCP clients |
+| mcp::tools | [src/mcp/tools/mod.rs](src/mcp/tools/mod.rs) | [src/mcp/tools.LLM.md](src/mcp/tools.LLM.md) | 21 `sm_*` tools exposed to MCP clients (the `#[tool_router]` impl stays whole in `server.rs`; helpers/types extracted) |
 | server | [src/server/mod.rs](src/server/mod.rs) | [src/server.LLM.md](src/server.LLM.md) | axum HTTP dashboard for router telemetry (`runai server`); single-binary, no CDN — bundles `web/{index.html,app.js,app.css}`. Split into one file per route family. |
-| tui::app | [src/tui/app.rs](src/tui/app.rs) | [src/tui/app.LLM.md](src/tui/app.LLM.md) | TUI state machine and event loop |
-| tui::ui | [src/tui/ui.rs](src/tui/ui.rs) | [src/tui/ui.LLM.md](src/tui/ui.LLM.md) | Rendering for all TUI tabs/panels |
+| tui::app | [src/tui/app/mod.rs](src/tui/app/mod.rs) | [src/tui/app.LLM.md](src/tui/app.LLM.md) | TUI state machine and event loop |
+| tui::ui | [src/tui/ui/mod.rs](src/tui/ui/mod.rs) | [src/tui/ui.LLM.md](src/tui/ui.LLM.md) | Rendering for all TUI tabs/panels |
 | tui::theme | [src/tui/theme.rs](src/tui/theme.rs) | [src/tui/theme.LLM.md](src/tui/theme.LLM.md) | Dark/light color themes |
 | tui::i18n | [src/tui/i18n.rs](src/tui/i18n.rs) | [src/tui/i18n.LLM.md](src/tui/i18n.LLM.md) | English/Chinese UI strings |
 
