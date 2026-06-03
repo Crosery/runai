@@ -122,7 +122,7 @@ runai 在用户 home 里直接读写：
 - **Language/runtime**: Rust 2024 edition, single static binary, no runtime dependencies.
 - **Top-level crates/modules** under `src/`:
   - `cli/` — clap subcommand dispatch. Every user-facing subcommand lives here.
-  - `core/` — business logic. 20 files, see Module index. `manager.rs` is the orchestration hub.
+  - `core/` — business logic; see Module index. Large modules are folders with a thin re-exporting `mod.rs` (e.g. `manager/` is the orchestration hub, `db/` / `recommend/` / `market/` / `scanner/`), small ones stay single files.
   - `mcp/` — rmcp-based MCP server exposing tool calls to host CLIs (stdio transport).
   - `tui/` — ratatui + crossterm full-screen UI. `app.rs` is the state machine; `ui.rs` renders.
 - **Data layout**: `~/.runai/` holds `skills/`, `mcps/`, `groups/`, `trash/`, `backups/`, `market-cache/`, `runai.db` (SQLite via rusqlite bundled). On Windows: `%APPDATA%\runai\` (via `dirs::data_dir`).
