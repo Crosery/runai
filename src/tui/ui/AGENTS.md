@@ -6,7 +6,7 @@ role: tui-render
 
 # tui::ui
 
-> Sibling to `src/tui/ui/`. One-liner: pure rendering of every TUI tab, dialog, and chrome from `&App`.
+> This folder (`src/tui/ui/`). One-liner: pure rendering of every TUI tab, dialog, and chrome from `&App`.
 
 ## Purpose
 Pure rendering. Takes `&App` + `&mut Frame`, draws the current tab, modal dialogs, footer, search bar. No state mutation, no I/O.

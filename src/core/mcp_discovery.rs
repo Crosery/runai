@@ -1,3 +1,30 @@
+//! MCP discovery — read each CLI's config and extract its registered MCP
+//! servers. MCP state is never cached in the DB, so this runs whenever runai
+//! needs to answer "what MCPs exist" (`SkillManager::list_resources`/`status`,
+//! `sm_list`, `doctor`).
+//!
+//! Public API:
+//! - `struct McpEntry { name, command, args, description, source_file, mcp_type,
+//!   disabled, source_cli }` — one entry per (CLI, name); merging across CLIs is
+//!   `manager::list_resources`'s job, not this module's.
+//! - `enum McpType { Stdio, Http { url } }`.
+//! - `McpDiscovery::discover_all(home) -> Vec<McpEntry>` — reads `~/.claude.json`,
+//!   `~/.claude/mcp-configs/*.json`, Codex `~/.codex/config.toml` (TOML),
+//!   OpenCode `~/.config/opencode/opencode.json`, and Gemini
+//!   `~/.gemini/settings.json`; dedupes by name (first reader wins, so
+//!   `.claude.json` takes priority over `mcp-configs/`).
+//!
+//! Invariants / gotchas:
+//! - **Read-only.** Discovery must NEVER modify configs — mutation belongs to
+//!   `mcp_register`.
+//! - `disabled` polarity: an absent `disabled` (or `enabled:true`) means enabled.
+//!   For OpenCode `disabled = !enabled`. Do not flip this.
+//! - Missing config files are fine — they yield an empty list, never an error.
+//! - Keys starting with `_` (e.g. `_comments`) are skipped as meta keys.
+//! - Codex is TOML (`[mcp_servers.<name>]`) — a separate parser path from the
+//!   three JSON CLIs. OpenCode's `command` is an array (`command[0]` =
+//!   executable, rest = args). Entries with empty command are dropped.
+
 use anyhow::Result;
 use serde::Deserialize;
 use std::collections::HashMap;

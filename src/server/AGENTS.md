@@ -1,6 +1,6 @@
 # server — LLM module guide
 
-> Sibling to `src/server/`. One-liner: axum HTTP dashboard + remote-hook + multi-user API, one file per route family.
+> This folder (`src/server/`). One-liner: axum HTTP dashboard + remote-hook + multi-user API, one file per route family.
 
 ## Public surface (stable — external code depends on these paths)
 The entire crate-visible surface is exactly three items, re-exported from `mod.rs`. Everything else is `pub(super)` (module-internal) — there is no other public API.

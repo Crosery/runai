@@ -1,11 +1,43 @@
-//! Canonical MCP entry format and per-CLI conversion.
+//! Canonical MCP entry format and per-CLI conversion — the single source of
+//! truth for MCP entry *shape* across the four CLI configs. Pure value
+//! transformation over `serde_json::Value` / `toml::Value`; NO I/O. `manager.rs`
+//! owns the filesystem side (reading/writing CLI configs and the
+//! `~/.runai/mcps/<name>.json` backups); if you're opening a file here, you're
+//! in the wrong module.
 //!
-//! Canonical = the standard mcpServers JSON shape used by Claude / Gemini.
-//! OpenCode and Codex deviate; this module is the only place that knows how
-//! they deviate, so manager can stash a single canonical entry in
-//! `~/.runai/mcps/<name>.json` and re-emit per target on enable.
+//! Canonical = the standard `mcpServers` JSON shape used by Claude / Gemini:
+//! `{ command:string, args:array, type?:"stdio"|"http", url?(http), env?,
+//! headers?(http), timeout?, description?, disabled?(omitted when enabled),
+//! tools?(Codex-only) }`. Everything in `~/.runai/mcps/*.json` MUST conform;
+//! `SkillManager::migrate_mcp_backups` rewrites legacy OpenCode-shaped backups
+//! at startup. Created after the 2026-04-28 incident where an OpenCode-format
+//! entry (`command:["bin",..args]` + `enabled` + `type:"local"`) was written
+//! verbatim into `~/.claude.json`, breaking Claude's MCP parser.
 //!
-//! See `mcp_canonical.LLM.md` for the full schema.
+//! Per-CLI shape map (container key / stdio command / args / disabled / identity):
+//! - Claude  : `mcpServers`   / `command:string` / `args:array` / `disabled:bool` / (canonical)
+//! - Gemini  : `mcpServers`   / `command:string` / `args:array` / `disabled:bool` / (canonical)
+//! - Codex   : `mcp_servers`(TOML) / `command:string` / `args:array` / (key removed) / `type:"stdio"`
+//! - OpenCode: `mcp`          / `command:array[0]` / `command:array[1..]` / `enabled:bool`(inverted) / `type:"local"`
+//!
+//! Public API:
+//! - `is_opencode_shape` — detect OpenCode native shape (command is an array).
+//! - `is_corrupt` — unusable entry (empty command AND no http url). Gate at both
+//!   the write layer (`manager::write_mcp_entry_to_target` refuses corrupt) and
+//!   migration startup. HTTP entries (no command, has non-empty url) are NOT corrupt.
+//! - `to_canonical` — normalize any shape → canonical. OpenCode splits + flag-flips;
+//!   standard passes through. Identity on canonical input (round-trip safe).
+//! - `from_canonical_for_json_target` — emit canonical → target's JSON shape
+//!   (identity for Claude/Gemini, `canonical_to_opencode` for OpenCode; caller
+//!   handles Codex TOML separately).
+//! - `canonical_to_opencode` — merge command+args into array, flip
+//!   `disabled`→`enabled`, add `type:"local"`.
+//! - `codex_toml_to_canonical` / `canonical_to_codex_toml` — recursive TOML↔JSON,
+//!   preserving `tools.*` / `env.*` subtables. The latter adds `type:"stdio"`
+//!   only when missing AND no `url` (so it never clobbers http entries).
+//!
+//! Invariants: `to_canonical` and `canonical_to_opencode` never panic on
+//! malformed input; Codex `tools.*` / `env.*` survive disable/enable round-trips.
 
 use crate::core::cli_target::CliTarget;
 use serde_json::{Map, Value};

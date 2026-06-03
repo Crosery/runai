@@ -12,7 +12,7 @@ Opt-in skill auto-routing. A small LLM (default `deepseek-v4-flash` via OpenAI-c
 Disabled by default. User must run `runai recommend setup` (interactive) or write `~/.runai/config.toml` manually before any LLM call happens.
 
 ## Submodule map
-Sibling to `src/core/recommend/`. Thin `mod.rs` re-exports the entire public surface below so external code keeps using `crate::core::recommend::X` unchanged.
+This folder (`src/core/recommend/`). Thin `mod.rs` re-exports the entire public surface below so external code keeps using `crate::core::recommend::X` unchanged.
 
 | File | Responsibility | Key items |
 |---|---|---|

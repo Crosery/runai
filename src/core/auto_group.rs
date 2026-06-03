@@ -1,3 +1,26 @@
+//! Heuristic auto-grouping of resources by name + description.
+//!
+//! Inspects all existing resources and creates/applies groups using
+//! `classifier` heuristics. Used as a one-shot operation (e.g. first-launch
+//! adoption or `runai group auto`); this module is orchestration only — all
+//! the matching logic lives in `classifier`.
+//!
+//! ## Public surface
+//! - `AutoGroup::auto_group_all(mgr) -> AutoGroupResult` — scans every resource,
+//!   creates missing groups + adds members, writing to DB and group TOML.
+//!   `AutoGroupResult` carries `groups_created` / `resources_assigned` / `ungrouped`.
+//! - `AutoGroup::preview(resources) -> HashMap<group_name, Vec<resource_name>>` —
+//!   dry-run view, no writes.
+//!
+//! ## Invariants / gotchas
+//! - Idempotent: re-running is a no-op for already-grouped resources. If a group
+//!   id already exists it is reused (members added), never recreated with a
+//!   conflicting description.
+//! - `group_id` is derived from the group name: lowercased, non-alnum collapsed
+//!   to single dashes, leading/trailing dashes trimmed.
+//! - Member-add failures are swallowed (`let _ =`); only group creation feeds the
+//!   `groups_created` count. A resource may match multiple groups.
+
 use anyhow::Result;
 use std::collections::HashMap;
 

@@ -1,3 +1,26 @@
+//! Timestamped backup + restore of managed data and CLI configs.
+//!
+//! Snapshots `~/.runai/{skills,mcps}/`, every CLI's `skills/` symlink farm, and
+//! each CLI's config file into `<data_dir>/backups/<YYYYMMDD_HHMMSS>/`.
+//!
+//! ## Public surface
+//! - `create_backup(paths) -> PathBuf` — write a snapshot, return its dir.
+//! - `list_backups(paths) -> Vec<String>` — timestamps, newest first.
+//! - `restore_backup(paths, timestamp) -> usize` — overlay a backup back onto the
+//!   live dirs, return count of items restored.
+//! - `has_backup(paths) -> bool`.
+//!
+//! ## Invariants / gotchas
+//! - **Symlinks are preserved as symlinks** (`copy_dir_preserving_symlinks` reads
+//!   `read_link` and re-creates the link via platform `cfg` branches — never
+//!   dereferences). Keep the unix/windows branches in sync.
+//! - Restore **overlays** — it does not delete files present in the live dirs but
+//!   absent from the backup. For a clean restore, delete the target dir first.
+//!   (Managed `skills/` and `mcps/` ARE removed-then-recopied; CLI configs are
+//!   plain `fs::copy` overwrites.)
+//! - `create_backup_impl` / `restore_backup_impl` take an explicit `home: &Path`
+//!   so tests can sandbox I/O; the public wrappers pass `dirs::home_dir()`.
+
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 

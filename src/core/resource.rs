@@ -1,3 +1,40 @@
+//! Domain types for "something runai can enable/disable": `Resource`,
+//! `ResourceKind` (Skill / Mcp), `Source` (provenance), `TrashEntry`, `UsageStat`.
+//! Constructed by `Database` / `SkillManager` / `scanner` / `mcp_discovery`;
+//! consumed by `sm_list` / `sm_trash` output and CLI/TUI rendering.
+//!
+//! Public API:
+//! - `enum ResourceKind { Skill, Mcp }` with `as_str()` + `FromStr`.
+//! - `enum Source { Local{path}, GitHub{owner,repo,branch}, Adopted{original_cli} }`
+//!   with `source_type()` + `to_meta_json` / `from_meta_json` for DB round-trip.
+//! - `struct Resource { id, name, kind, description, directory, source,
+//!   installed_at, enabled: HashMap<CliTarget,bool>, usage_count, last_used_at,
+//!   owner_user_id }`.
+//!   - `owner_user_id`: `None` = public-pool (at `<data>/skills/<name>/`),
+//!     `Some(uid)` = private (at `<data>/users/<uid>/skills/<name>/`). v15+;
+//!     pre-v15 rows default to `None`.
+//!   - `Resource::generate_id(source, name, owner_user_id) -> String` —
+//!     deterministic. Public ids keep the pre-v15 shape exactly (`local:foo`,
+//!     `github:o/r:foo`, `adopted:foo`); private ids gain a `u:<uid>:` prefix so
+//!     the same `(source, name)` can coexist across users without PK collision.
+//!     Must stay stable across versions — DB rows and group membership depend on it.
+//!   - `is_enabled_for(target) -> bool`.
+//! - `struct TrashEntry { ... resource_id, payload_path, enabled_targets,
+//!   group_ids, mcp_configs, disabled_backup, owner_user_id }` — serialized into
+//!   the DB for global trash / restore / purge. `resource_id` must keep the
+//!   ORIGINAL id so restore can reattach groups + re-enable targets without fuzzy
+//!   lookup; `owner_user_id` lets restore recreate the row under the right owner
+//!   (`serde(default)` keeps pre-v15 payloads decodable, restoring as public).
+//! - `struct UsageStat { id, name, count, last_used_at }`.
+//! - `fn format_time_ago(ts: Option<i64>) -> String` — `"3h ago"` / `"never"`
+//!   (on `None` — do NOT pass `0` to mean never).
+//!
+//! Gotcha: `Resource::enabled` is runtime-derived/cosmetic — the source of truth
+//! for enable state is the filesystem (symlink / config entry), NOT this field;
+//! only populate it before presenting. When adding a `Source` variant, update
+//! `source_type()`, both `to_meta_json` / `from_meta_json`, DB migrations, and the
+//! group-suggestion classifier.
+
 use crate::core::cli_target::CliTarget;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

@@ -1,3 +1,24 @@
+//! Dark / light theme palettes for the TUI. Exposes named color tokens
+//! (`brand`, `tab_active`, `status_*`, accent / muted / warn / error / selected,
+//! …) grouped by semantic role, plus a toggle.
+//!
+//! ## Public API
+//! - `enum ThemeMode { Dark, Light }` (+ `toggle`, `label`).
+//! - `struct Theme` — flat struct of `Color` fields keyed by role.
+//! - `Theme::dark()` / `Theme::light()` constructors.
+//! - Hot-key `t` in `tui::app` flips the mode and reselects the palette;
+//!   downstream consumers feed these `Color`s into `ratatui::style::Style`.
+//!
+//! ## Invariants / gotchas
+//! - Colors are tuned for **both** light and dark terminals — don't add one
+//!   that only reads well on one side. Avoid `Color::Yellow` as a "dark" token
+//!   (poor on light backgrounds); use the theme's accent tokens.
+//! - No `Color::Rgb` hardcodes in `ui.rs` — go through `Theme` so a mode switch
+//!   changes everything. Adding a field means setting it in **both** `dark()`
+//!   and `light()`, or that role silently mismatches.
+//! - Theme mode is per-session only (not persisted). If persistence is added,
+//!   put it under `AppPaths::config_path()`.
+
 use ratatui::prelude::Color;
 
 #[derive(Clone, Copy, Debug, PartialEq)]

@@ -6,7 +6,7 @@ role: tui-state-machine
 
 # tui::app
 
-> Sibling to `src/tui/app/`. One-liner: the TUI single-threaded state machine — owns `SkillManager`, dispatches keys, drives reloads.
+> This folder (`src/tui/app/`). One-liner: the TUI single-threaded state machine — owns `SkillManager`, dispatches keys, drives reloads.
 
 ## Purpose
 The TUI state machine. Owns the `SkillManager`, the currently-selected tab / row / filter, pending modal dialogs, the event-loop dispatch, and the hooks that call into `manager` when the user presses a key. Paired with `tui::ui` (pure rendering) through a shared `App` struct.

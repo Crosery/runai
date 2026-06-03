@@ -1,3 +1,35 @@
+//! GitHub-based skill installer.
+//!
+//! Parses `owner/repo[@branch]` inputs, downloads the branch tarball, extracts
+//! it, recursively finds every dir containing `SKILL.md`, and copies each into
+//! `~/.runai/skills/<name>/`. The MCP-aware install pipeline in
+//! `manager::install_github_repo` delegates here.
+//!
+//! ## Public surface
+//! - `struct InstallResult { resource_id, name, suggested_groups }` — one per
+//!   installed skill (`resource_id` = `github:{owner}/{repo}:{name}`,
+//!   `suggested_groups` from `Classifier::suggest_groups_with_source`).
+//! - `Installer::parse_github_source(input) -> Result<(owner, repo, branch)>` —
+//!   accepts `owner/repo`, `owner/repo@branch`, and full
+//!   `https://github.com/owner/repo/` URLs (strips the host prefix and a
+//!   trailing `/`); branch defaults to `"main"`. Note: it does NOT strip a
+//!   `.git` suffix.
+//! - `Installer::install_from_github(owner, repo, branch, &AppPaths)` (async) —
+//!   downloads `.../archive/refs/heads/<branch>.tar.gz`, returns one
+//!   `InstallResult` per discovered skill.
+//!
+//! ## Invariants / gotchas
+//! - `tar::Archive::unpack` strips nothing by name, but `find_skills` recurses
+//!   into the extracted tree and keys off the `SKILL.md`-bearing leaf dir's own
+//!   `file_name()`, so skills land at `skills/<skill-name>/` regardless of the
+//!   `<repo>-<sha>/` wrapper.
+//! - Conflict resolution is OVERWRITE, not skip: if `skills/<name>/` already
+//!   exists it is `remove_dir_all`-ed then re-copied. (Higher layers — TUI /
+//!   `runai uninstall` — provide the trash-first safety; this raw entrypoint
+//!   does not.)
+//! - Errors bubble up via `Result` (HTTP non-success → `bail!`); there is no
+//!   per-skill error-accumulation list on `InstallResult`.
+
 use crate::core::classifier::Classifier;
 use crate::core::linker::Linker;
 use crate::core::paths::AppPaths;

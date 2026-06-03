@@ -1,3 +1,46 @@
+//! Path resolution — owns every runai-managed path. Houses the standalone
+//! `data_dir()` helpers and the `AppPaths` struct everything else passes around.
+//! Also runs the one-shot legacy migration from `~/.skill-manager/` → `~/.runai/`.
+//! Everyone is upstream: `SkillManager` / CLI / TUI / MCP / backup all receive
+//! an `AppPaths`.
+//!
+//! Public API:
+//! - `data_dir() -> PathBuf` — standalone. Precedence: `RUNE_DATA_DIR` >
+//!   `SKILL_MANAGER_DATA_DIR` > platform default (`~/.runai` unix, `%APPDATA%\runai`
+//!   on Windows via `dirs::data_dir`).
+//! - `default_data_dir_no_env() -> PathBuf` — same default but IGNORES env vars.
+//!   Use this (not `data_dir()`) in guards that must compare "where the user IS"
+//!   against "where the user would be without override" — `data_dir()` returns
+//!   the override, so it self-compares to true and the guard never fires. This
+//!   was the 2026-04-27 incident's root cause.
+//! - `AppPaths::default_path()` (runs migration on first call) / `with_base(base)`.
+//! - Public-pool subdirs off `base`: `data_dir`, `skills_dir`, `mcps_dir`,
+//!   `groups_dir`, `trash_dir`, `db_path`, `config_path`; `ensure_dirs()` mkdir-p's
+//!   them. `trash_dir()` is the global payload location — keep it sibling to
+//!   `skills/`/`mcps/`, never under per-target dirs.
+//! - Per-user (private) subdirs under `<data>/users/<user_id>/`:
+//!   `user_root`, `user_skills_dir`, `user_mcps_dir`, `user_trash_dir` (all
+//!   `Result`, `bail!` when `user_id` fails `is_safe_user_id`); `ensure_user_dirs`
+//!   mkdir-p's the three, idempotent.
+//!
+//! Invariants / gotchas:
+//! - **Owner pool layout** (hard invariant): `<data>/skills/<name>/` is the
+//!   public pool; `<data>/users/<uid>/skills/<name>/` is uid's private pool. The
+//!   two never overlap — `is_safe_user_id` (ascii alnum + `_`/`-`, len ≤ 64,
+//!   rejects empty/`..`/`/`/control/non-ascii) plus join-time construction
+//!   guarantee a private dir can't escape `<data>/users/`. Defense-in-depth even
+//!   for trusted db ids.
+//! - **Legacy migration** runs once (gated on absence of `~/.runai/`): renames the
+//!   whole dir, renames `skill-manager.db` → `runai.db`, re-points CLI symlinks
+//!   under `~/.{claude,codex,gemini,opencode}/skills/` (keep this list in sync
+//!   with `CliTarget::skills_dir()`), and `REPLACE`s old→new path prefixes inside
+//!   the DB's `resources.directory` / `source_meta`.
+//! - `db_path()` prefers `runai.db`, falls back to `skill-manager.db` for legacy.
+//! - `dirs::home_dir()` on Windows uses Win32 `SHGetKnownFolderPath` — env-var
+//!   home-mocking does NOT work there, so `with_home`-style tests are gated under
+//!   `#[cfg(not(target_os = "windows"))]`. On Windows `data_dir()` resolves to
+//!   `%APPDATA%\Roaming\runai` (via `dirs::data_dir()`), NOT `~/.runai/`.
+
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 

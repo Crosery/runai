@@ -1,3 +1,26 @@
+//! English / Chinese string table for the TUI. Every user-facing string flows
+//! through here; language is per-session, toggled with the `l` hotkey (no
+//! locale auto-detection today — `tui::app::App::new` picks the initial lang).
+//!
+//! ## Public API
+//! - `enum Lang { Zh, En }` (+ `toggle`, `label`).
+//! - `struct T { lang: Lang }` — one lookup method per string key or formatted
+//!   sentence: `t.tab_skills()`, `t.help_normal_trash()`,
+//!   `t.trash_groups_suffix(count)`, etc.
+//!
+//! ## Invariants / gotchas
+//! - Every rendered string comes from here — hardcoded literals in `ui.rs` are
+//!   bugs (including new trash columns / help hints). Adding a key: add to
+//!   **both** languages in the same commit.
+//! - Key names describe intent, not content (`confirm_delete`, not
+//!   `are_you_sure_delete`) so copy changes don't force renames.
+//! - Don't concatenate translated fragments to build sentences — en/zh grammar
+//!   differs. Build full sentences with a format arg (`items_count_fmt(n)`).
+//! - Destructive-action confirmation copy lives here for both languages; keep it
+//!   explicit about what is deleted vs only unlinked / removed from a group.
+//! - Downstream: pure string lookup/formatting, no other deps. Upstream:
+//!   `tui::app` owns the `T`, `tui::ui` reads strings in draw functions.
+
 #[derive(Clone, Copy, PartialEq)]
 pub enum Lang {
     Zh,

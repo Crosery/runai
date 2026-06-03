@@ -6,7 +6,7 @@ role: runtime
 
 # core::scanner — LLM module guide
 
-> Sibling to `src/core/scanner/`. One-liner: discover SKILL.md files + adopt unmanaged CLI-dir skills into `~/.runai/skills/`.
+> This folder (`src/core/scanner/`). One-liner: discover SKILL.md files + adopt unmanaged CLI-dir skills into `~/.runai/skills/`.
 
 ## Purpose
 Two jobs. (1) **Discover** — recursively walk a directory finding `SKILL.md`, classify each hit. (2) **Scan & adopt** — given a CLI's skills dir, take ownership of unmanaged entries by moving them under `~/.runai/skills/` and replacing with a symlink.

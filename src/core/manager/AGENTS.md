@@ -1,6 +1,6 @@
 ---
 module: core::manager
-file: src/core/manager.rs
+file: src/core/manager/
 role: runtime
 ---
 

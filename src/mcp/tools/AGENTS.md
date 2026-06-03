@@ -6,7 +6,7 @@ role: mcp-server
 
 # mcp::tools
 
-> Sibling to `src/mcp/tools/`. One-liner: rmcp-exposed `sm_*` tool surface delegating to `SkillManager`.
+> This folder (`src/mcp/tools/`). One-liner: rmcp-exposed `sm_*` tool surface delegating to `SkillManager`.
 
 ## Purpose
 The rmcp-exposed tool surface. 21 `sm_*` tools that MCP clients (Claude Code / Codex / Gemini / OpenCode as consumers) can call. Each tool is thin — it delegates to `SkillManager` or other core modules and serializes the result.

@@ -1,3 +1,31 @@
+//! `runai doctor` — environment health checks and the `--fix` repair pass.
+//!
+//! Runs a battery of checks over `~/.runai/` layout, MCP registration in each
+//! CLI config, DB reachability, and symlink health, returning results in
+//! display order.
+//!
+//! ## Public surface
+//! - `struct CheckResult { name, status, detail }`,
+//!   `enum CheckStatus { Ok, Warn, Fail }`, `CheckResult::icon() -> &str`
+//!   (`✓` / `△` / `✘`).
+//! - `run_doctor() -> Vec<CheckResult>` — read-only; safe to run anytime.
+//! - `run_doctor_fix() -> FixReport { broken_symlinks_removed, dedupe_rows_removed }`
+//!   — the `--fix` repair pass: walks the CLI skills dirs
+//!   (`~/.{claude,codex,gemini,opencode}/skills/` plus both `.opencode/skills`
+//!   and `.config/opencode/skills`), removes symlinks whose target no longer
+//!   exists (`path.exists() == false` — a stale "was enabled" marker), then
+//!   re-runs `Database::dedupe_skills_by_name()` for the count.
+//!
+//! ## Invariants
+//! - `run_doctor` is read-only. `run_doctor_fix` is the ONLY mutating surface
+//!   here — call it solely from the `--fix` handler. Its dedupe is idempotent;
+//!   the symlink prune is bounded to the CLI skills dirs (no walk into home root).
+//! - Dedupe also runs silently in `SkillManager::new()/with_base()`, so `--fix`
+//!   typically reports 0 rows — it's the explicit recovery surface for mid-session drift.
+//! - Every `Fail` must carry a `detail` suggesting a concrete fix
+//!   (e.g. `"Run 'runai register' to fix"`). Use `Warn` for optional features,
+//!   `Fail` for things that block basic operation. Order checks user-fixable-first.
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;

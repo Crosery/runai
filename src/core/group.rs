@@ -1,3 +1,27 @@
+//! Group definition — a named bundle of skill/MCP members.
+//!
+//! Each group is a TOML file at `~/.runai/groups/<id>.toml` with a display name,
+//! description, kind, an `auto_enable` flag, and a list of members (each a Skill
+//! or an MCP, referenced by name).
+//!
+//! ## Public surface
+//! - `enum GroupKind { Default, Ecosystem, Custom }` (serde lowercase),
+//!   `enum MemberType { Skill, Mcp }`, `struct GroupMember { name, member_type }`.
+//! - `struct Group { name, description, kind, auto_enable, members }` with
+//!   `to_toml` / `from_toml` round-trip and `save_to_file` / `load_from_file`.
+//!   On disk the TOML is wrapped under a `[group]` table.
+//!
+//! ## Invariants
+//! - Members are referenced by `name`, not resource id — name is what MCP tools
+//!   surface; ids change if a source moves.
+//! - `auto_enable` only fires at adoption time (scanner/installer); editing it
+//!   later does NOT retroactively enable already-scanned resources. Default
+//!   groups set it true.
+//! - The `Group.toml` is the source of truth; the DB indexes membership by
+//!   resource-id for fast lookup — always write both (`manager::create_group`).
+//! - Never store enable state on a group: enable is per-resource-per-target, and
+//!   `enable_group(target)` just iterates members.
+
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::Path;

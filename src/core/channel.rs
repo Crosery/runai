@@ -1,3 +1,22 @@
+//! User-curated market-source / release-channel list, persisted as JSON.
+//!
+//! A named, ordered list of sources (`Channel { name, url, description }`) the
+//! user can add/remove. Distinct from `market::SourceEntry` (the runtime per-repo
+//! index/cache) — this is the user-facing curated list.
+//!
+//! ## Public surface
+//! - `Channel`, `ChannelEntry`, `ChannelConfig` types.
+//! - `ChannelConfig::default_config()` — bundled well-known sources.
+//! - `ChannelConfig::load(path)` / `save(&self, path)` — JSON round-trip; `load`
+//!   returns the default config when the file is missing.
+//! - `add_channel(name, url, description)` (dedupes by `url`) / `remove_channel(idx)`.
+//!
+//! ## Invariants / gotchas
+//! - The list is ordered — UI shows them in order; `remove_channel(idx)` shifts
+//!   following entries.
+//! - Despite "TOML" naming elsewhere, persistence is JSON (`serde_json`).
+//! - `add_channel` is a no-op if a channel with the same `url` already exists.
+
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::Path;

@@ -1,12 +1,12 @@
 ---
 module: cli
-file: src/cli/mod.rs
+file: src/cli/
 role: entry
 ---
 
 # cli — subcommand dispatcher (directory module)
 
-> Sibling to `src/cli/`. One-liner: clap subcommand surface + dispatch + per-area command handlers.
+> This folder (`src/cli/`). One-liner: clap subcommand surface + dispatch + per-area command handlers.
 
 ## Purpose
 clap-based CLI entry point. Parses subcommands, constructs a `SkillManager`, dispatches. When no subcommand given, hands off to `tui::run_tui(mgr)`.

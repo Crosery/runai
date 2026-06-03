@@ -1,3 +1,32 @@
+//! Fuzzy matcher — thin wrapper around `nucleo-matcher` (fzf v2 algorithm).
+//!
+//! Centralizes fuzzy search for all four call sites — `mcp::tools::sm_search`,
+//! `mcp::tools::sm_market`, `cli::Commands::Search`, `cli::Commands::Market` —
+//! so the MCP tools and CLI subcommands behave identically. They must all go
+//! through here, never raw `&str::contains`.
+//!
+//! ## Public API
+//! - `new_matcher() -> Matcher` — default `Matcher` with `Config::DEFAULT`.
+//! - `fuzzy_score(matcher, haystack, needle) -> Option<u32>` — score one
+//!   haystack; `None` = no match, higher score = better.
+//! - `fuzzy_score_any(matcher, needle, fields) -> Option<u32>` — max score
+//!   across fields; `None` only when no field matched.
+//! - `rank(needle, items, fields_of) -> Vec<(item, u32)>` — score-and-sort via
+//!   `Pattern::parse`, supporting fzf operators (`^prefix`, `suffix$`,
+//!   `'exact`); returns `(item, score)` sorted descending.
+//!
+//! ## Invariants / gotchas
+//! - Case handling is `CaseMatching::Smart`: all-lowercase needle is
+//!   case-insensitive, any uppercase makes it case-sensitive (fzf standard).
+//!   Normalization is `Normalization::Smart`. Switch in this one place and all
+//!   call sites pick it up.
+//! - Score is `u32`, higher is better; sort `b.cmp(&a)` (descending). Reuse one
+//!   `Matcher` across many comparisons — it caches scratch buffers.
+//! - `fuzzy_score` returns `u32` (nucleo's native type) — don't wrap with
+//!   `u32::from`, clippy flags it.
+//! - `Pattern::parse` is heavier than `Matcher::fuzzy_match`; use `rank` only
+//!   when you want fzf operators, otherwise `fuzzy_score` / `fuzzy_score_any`.
+
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 

@@ -1,12 +1,42 @@
 //! Filesystem-event watcher for CLI MCP configs and skill directories.
 //!
-//! Replaces TUI's old `poll_config_changes` mtime polling. Whenever any of the
-//! watched paths fires a filesystem event (modify / create / remove), the
-//! watcher debounces for 200 ms then emits a single `()` on its `mpsc::Sender`.
-//! TUI's main loop drains the receiver before each redraw and triggers
-//! `App::reload()` on any pending signal.
+//! Fires reload signals to the TUI whenever any watched path changes. Replaces
+//! the v0.10.0 mtime-polling `tui/app.rs::poll_config_changes`, which had 4
+//! hardcoded paths — two of them wrong (`.codex/settings.json`,
+//! `.opencode/settings.json`), so Codex / OpenCode edits never refreshed.
 //!
-//! Dropping the returned `ConfigWatcher` stops the watcher cleanly.
+//! ## Watched paths (via `watch_targets`)
+//! 4 CLI MCP config files (`~/.claude.json`, `~/.codex/config.toml`,
+//! `~/.gemini/settings.json`, `~/.config/opencode/opencode.json`), 4 skill dirs
+//! (`~/.{claude,codex,gemini,opencode}/skills/`), and the runai backup dir
+//! `~/.runai/mcps/` (catches cross-shell disable/enable). All paths come from
+//! `CliTarget::mcp_config_path()` / `skills_dir()` — single source of truth, no
+//! hand-coded duplicates. Missing paths are silently skipped (an uninstalled
+//! CLI doesn't break the watcher).
+//!
+//! ## Mechanism
+//! `notify-debouncer-mini` over `RecommendedWatcher` (FSEvents/inotify/
+//! ReadDirectoryChangesW). A 200 ms debounce collapses editor save bursts; on
+//! any event the callback sends `()` on the caller's `mpsc::Sender`. TUI's main
+//! loop drains the receiver before each redraw and triggers one `App::reload()`
+//! per batch.
+//!
+//! ## Public surface
+//! - `ConfigWatcher::start(Sender<()>) -> Result<Self>` — caller MUST hold the
+//!   returned value; dropping it tears down the watcher.
+//! - `ConfigWatcher::watched: Vec<PathBuf>` — paths actually registered (missing
+//!   excluded), for diagnostics.
+//! - `watch_targets() -> Vec<PathBuf>` — full intent list regardless of existence.
+//! - `is_watched(&Path) -> bool` — test helper.
+//!
+//! ## Invariants
+//! - Read-only: the only side effect is `Sender::send`; it never mutates the FS.
+//! - All paths use `NonRecursive` mode (a new `<name>/SKILL.md` still fires an
+//!   event on its parent dir's listing).
+//! - Receiver-side coalescing is the caller's job: drain the channel before
+//!   reloading so N rapid changes collapse to 1 reload, not N.
+//! - Does NOT watch `~/.runai/runai.db` or skill content files — that would
+//!   re-render the TUI on every keystroke during scan / edit.
 
 use crate::core::cli_target::CliTarget;
 use anyhow::Result;

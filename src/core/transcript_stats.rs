@@ -7,7 +7,39 @@
 //! - Skill invocations: `{"name":"Skill","input":{"skill":"<name>"}}`
 //! - MCP invocations:  `{"name":"mcp__<server>__<tool>"}` — aggregated per server
 //!
-//! On-demand scan; no hook or DB write path required.
+//! On-demand scan; no hook or DB write path required. Filesystem only — no
+//! network, no DB. Feeds `tui::app::App::reload` (Skills/MCPs tabs) and
+//! `manager::usage_stats` (CLI `runai usage`).
+//!
+//! ## Public API
+//! - `scan_default() -> Result<TranscriptStats>` — primary entry; reads/writes
+//!   the on-disk cache at `<data>/transcript-scan-cache.json`, so repeated calls
+//!   in a TUI session are effectively free for unchanged files.
+//! - `scan(root)` — no cache, always a full re-parse (tests / explicit no-persist).
+//! - `scan_with_cache(root, cache_path)` — underlying fn for a custom cache path.
+//! - `TranscriptStats::lookup(kind, name) -> (count, last_used_unix_ts)`.
+//! - `default_transcript_root()` / `default_cache_path()` — path resolvers;
+//!   honor `RUNAI_TRANSCRIPTS_DIR` (used by tests — keep it working, CI depends
+//!   on it).
+//!
+//! ## Invariants / gotchas
+//! - **Cache fingerprint is `(mtime_secs, size)`** per jsonl. Either changes →
+//!   re-parse just that file; same → reuse cached counts; deleted files pruned
+//!   next scan. Per-file counts are stored (not just the aggregate) so one
+//!   file's recount replaces its old contribution rather than adding to it.
+//! - **Bump `CACHE_VERSION`** when `FileCacheEntry` / `CachedCount` shape
+//!   changes — old caches are discarded rather than mis-parsed.
+//! - **Atomic cache write**: temp file + rename, so a mid-write crash can't
+//!   poison the next startup with half-valid JSON.
+//! - **MCP granularity is server-level**, not tool-level (50× `sm_list` + 20×
+//!   `sm_status` shows as `runai: 70`). Intentional — "which server is valuable".
+//! - Only `type=="assistant"` lines with `message.role=="assistant"` contribute,
+//!   guarding against user prompts that literally contain "tool_use".
+//! - First scan after install / `CACHE_VERSION` bump is a full re-parse
+//!   (~165ms for 231MB / 400 files on release); subsequent scans only re-read
+//!   changed files. APFS mtime granularity is 1s, but jsonl only grows so the
+//!   size check covers within-1s appends. Partially-written files count only
+//!   committed lines; the next scan picks up the rest.
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};

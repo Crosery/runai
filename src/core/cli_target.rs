@@ -1,3 +1,28 @@
+//! The four supported CLI targets and their per-CLI path / config-format quirks.
+//!
+//! ## Public surface
+//! - `enum CliTarget { Claude, Codex, Gemini, OpenCode }` + `CliTarget::ALL`.
+//! - `name() -> &'static str` (`"claude"`/`"codex"`/`"gemini"`/`"opencode"`),
+//!   `Display`, and `FromStr` (accepts those same four strings).
+//! - Path resolvers: `skills_dir()` (where SM creates/removes symlinks),
+//!   `agents_skills_dir()` (plugin `.agents/skills/`, read-only for SM),
+//!   `settings_path()`, `mcp_config_path()` (Claude `~/.claude.json`,
+//!   Codex `~/.codex/config.toml`, Gemini `~/.gemini/settings.json`,
+//!   OpenCode `~/.config/opencode/opencode.json`).
+//! - Format predicates: `uses_toml()` (Codex only),
+//!   `uses_opencode_format()` (OpenCode's `command:[..]` array form).
+//!
+//! ## Invariants / gotchas
+//! - `ALL` order is Claude → Codex → Gemini → OpenCode. TUI tab numbering and
+//!   serialization depend on it — do not reshuffle.
+//! - All resolvers call `dirs::home_dir()` internally. On Windows that's the Win32
+//!   API and **ignores HOME/USERPROFILE env vars**, so tests can't mock home via
+//!   env — sandbox through `AppPaths::with_base` or an explicit `home: &Path`
+//!   instead. On Windows, skills/agents/settings dirs root at `dirs::data_dir()`;
+//!   the `mcp_config_path` set is home-rooted on every OS.
+//! - Adding a 5th target means touching `ALL`, `name()`/`FromStr`, all four path
+//!   resolvers, both format predicates, and every per-CLI writer in `mcp_register`.
+
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::str::FromStr;

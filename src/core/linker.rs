@@ -1,3 +1,37 @@
+//! Cross-platform symlink wrapper — the ONLY place that creates / removes /
+//! introspects the links that encode "skill enabled".
+//!
+//! runai's truth for an enabled skill is "a symlink exists pointing into
+//! `~/.runai/skills/<name>`". All such links flow through this module.
+//!
+//! ## Public surface
+//! - `create_link(target, link)` — symlinks a directory (unix `symlink`,
+//!   windows `symlink_dir`); creates the link's parent first.
+//! - `create_link_force(target, link)` — removes a pre-existing symlink at
+//!   `link` then `create_link`, so a stale link is clobbered instead of EEXIST.
+//! - `remove_link(link)` — removes only if `link` is a symlink (unix
+//!   `remove_file`, windows `remove_dir`); no-op otherwise.
+//! - `is_symlink(path)` — via `symlink_metadata`, does NOT follow links.
+//! - `is_our_symlink(path, our_base)` — reads the target (joining relative
+//!   targets against the link's parent) and checks `starts_with(our_base)`.
+//! - `detect_entry_type(path, our_base) -> EntryType`
+//!   (`OurSymlink` / `ForeignSymlink` / `RealDir` / `NotExists`).
+//! - `adopt_to_managed(src, managed_dir, link_path)` — move src → managed_dir
+//!   (clobbering an existing managed_dir), then relink. Scanner adoption.
+//! - `move_dir` / `copy_dir_recursive` — rename with cross-filesystem fallback.
+//!
+//! ## Invariants / gotchas
+//! - Symlink target is always the managed DIR, never a file — `symlink_dir`
+//!   (Windows) is required; `symlink_file` fails silently on dir targets.
+//! - A dangling symlink reports as `OurSymlink` / `ForeignSymlink`, never
+//!   `NotExists` (truth = link exists, dangling included).
+//! - `adopt_to_managed` always removes a pre-existing link first, even if it
+//!   already points correctly — simpler and cheap.
+//! - Windows `symlink_dir` needs Developer Mode or Administrator, else
+//!   `ERROR_PRIVILEGE_NOT_HELD`.
+//! - `move_dir` falls back to recursive-copy-then-delete when `std::fs::rename`
+//!   fails across filesystems — do NOT remove the fallback.
+
 use anyhow::{Context, Result};
 use std::path::Path;
 

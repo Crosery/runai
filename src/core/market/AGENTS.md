@@ -6,7 +6,7 @@ role: runtime
 
 # market
 
-> Sibling to `src/core/market/`. One-liner: market source list + skill index cache + skills.sh SSR/sitemap aggregator + install.
+> This folder (`src/core/market/`). One-liner: market source list + skill index cache + skills.sh SSR/sitemap aggregator + install.
 
 ## Purpose
 Marketplace skill browsing + installation. Manages a list of `SourceEntry` (one per repo/index), caches the per-source skill index on disk with 1h TTL, provides search/filter, and installs single skills. The runai Market is a thin layer over the skills.sh ecosystem.

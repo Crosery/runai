@@ -6,7 +6,7 @@ role: storage
 
 # db
 
-> Sibling to `src/core/db/`. One-liner: SQLite schema + migrations + the typed query layer for all managed metadata.
+> This folder (`src/core/db/`). One-liner: SQLite schema + migrations + the typed query layer for all managed metadata.
 
 ## Purpose
 SQLite wrapper (via rusqlite bundled). Stores resource metadata, trash metadata, group membership, AI summaries / scores, router telemetry, users, and the per-user skill library. **Not** runtime enabled state — that lives on the filesystem.

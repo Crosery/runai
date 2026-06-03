@@ -1,3 +1,34 @@
+//! MCP self-registration — make runai show up as an MCP server inside every
+//! supported CLI's config (first-launch detection, `runai register` /
+//! `unregister`, `SkillManager` migrations). Writes format-specific entries
+//! idempotently. Inverse of `mcp_discovery` (which is read-only); this module
+//! is the only one allowed to mutate the CLI configs to add/remove runai itself.
+//!
+//! Public API:
+//! - `McpRegister::register_all(home) -> RegisterResult { registered, skipped,
+//!   errors }` — registers in all four targets.
+//! - `is_registered(home, rel_path) -> bool` — quick check without writing.
+//! - `migrate_all(home) -> usize` — renames legacy `skill-manager` entries to
+//!   `runai` across all CLIs (preserves all fields; if `runai` already exists,
+//!   only removes the old entry rather than overwriting; counts cleanup as a
+//!   migration). Returns the number of CLIs migrated.
+//! - `unregister_all(home) -> Result<()>` — removes every `runai` entry.
+//!
+//! Invariants / gotchas:
+//! - **Idempotent**: re-running no-ops when the entry already points at the
+//!   current binary; updates the path if it moved. Binary path is
+//!   `std::env::current_exe()`, fallback literal `"runai"`.
+//! - Each CLI has a distinct schema — do NOT share code paths:
+//!   Claude `mcpServers` at root of `.claude.json` (`{command:string, args:[..]}`);
+//!   Gemini same shape in `.gemini/settings.json`; Codex `[mcp_servers.<name>]`
+//!   table in `.codex/config.toml` (TOML); OpenCode `mcp` (NOT `mcpServers`) in
+//!   `.config/opencode/opencode.json` with `command` an **array of strings**.
+//! - OpenCode's array command is load-bearing: emit `["runai","mcp-serve"]`,
+//!   never `"runai mcp-serve"` — a string breaks OpenCode silently.
+//! - Always accept `home: &Path` (tests pass `tmp.path()` directly); never call
+//!   `dirs::home_dir()` inside. Build JSON fixtures with `serde_json::json!`,
+//!   not `format!` — a `format!`'d Windows path leaves `\` unescaped → invalid JSON.
+
 use anyhow::{Context, Result};
 use std::path::Path;
 

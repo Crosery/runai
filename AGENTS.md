@@ -106,7 +106,8 @@ runai 在用户 home 里直接读写：
 
 | If you changed … | You MUST update … |
 |---|---|
-| A public API, behavior, invariant, or gotcha of a module | That module's sibling `*.LLM.md` (e.g. `src/core/updater.rs` → `src/core/updater.LLM.md`) |
+| A public API, behavior, invariant, or gotcha of a **folder** module | That folder's `AGENTS.md` (e.g. `src/core/manager/*` → `src/core/manager/AGENTS.md`) |
+| A public API, behavior, invariant, or gotcha of a **single-file** module | The `//!` module comment at the top of that `.rs` (e.g. `src/core/updater.rs`) |
 | User-visible CLI flags, install steps, or features | Both `README.md` AND `README_zh.md` (keep in sync) |
 | Cross-cutting architecture, a new module, or an invariant that spans modules | This file's "Architecture" / "Key constraints" sections + the Module index table |
 | Release-worthy fix or feature | Bump `Cargo.toml` version, tag `vX.Y.Z`, let `.github/workflows/release.yml` build artifacts |
@@ -140,44 +141,48 @@ runai 在用户 home 里直接读写：
 
 ## Module index
 
-File-level LLM docs follow the convention `<name>.LLM.md` as a sibling to the source file. Find the doc for any file by appending `.LLM.md`.
+Module docs follow a per-module convention, no sibling `*.LLM.md` files anymore:
+
+- A **folder** module (its code lives under `src/.../<name>/`) documents itself in one `<folder>/AGENTS.md` covering all code in the folder.
+- A **single-file** module (one `<name>.rs`) documents itself in a `//!` module comment at the top of that file — the Doc column says inline `//!`.
+- `src/core/prompts/*.md` are LLM prompt templates, not module docs — they are not listed here.
 
 | Module | Source | Doc | One-liner |
 |---|---|---|---|
-| cli | [src/cli/mod.rs](src/cli/mod.rs) | [src/cli/mod.LLM.md](src/cli/mod.LLM.md) | clap subcommand dispatcher + TUI launcher |
-| core::auth | [src/core/auth.rs](src/core/auth.rs) | — | Bearer parsing + argon2 password hash/verify + cookie session helpers + new_user_id / new_api_key generators (v15 multi-user) |
-| core::auto_group | [src/core/auto_group.rs](src/core/auto_group.rs) | [src/core/auto_group.LLM.md](src/core/auto_group.LLM.md) | Heuristic grouping of freshly-installed resources |
-| core::autostart | [src/core/autostart.rs](src/core/autostart.rs) | — | OS login auto-start: macOS LaunchAgent plist + Linux systemd user unit. Surfaced via `runai server --install-autostart` / `--uninstall-autostart`. |
-| core::backup | [src/core/backup.rs](src/core/backup.rs) | [src/core/backup.LLM.md](src/core/backup.LLM.md) | Timestamped backup/restore of managed data and CLI configs |
-| core::bm25 | [src/core/bm25.rs](src/core/bm25.rs) | — | Minimal bilingual BM25 ranker used by `recommend` to prefilter the candidate set before LLM rerank |
-| core::channel | [src/core/channel.rs](src/core/channel.rs) | [src/core/channel.LLM.md](src/core/channel.LLM.md) | Release channel (stable / beta) selection |
-| core::classifier | [src/core/classifier.rs](src/core/classifier.rs) | [src/core/classifier.LLM.md](src/core/classifier.LLM.md) | Classifies installable artifacts into Skill vs MCP vs Agent |
-| core::cli_target | [src/core/cli_target.rs](src/core/cli_target.rs) | [src/core/cli_target.LLM.md](src/core/cli_target.LLM.md) | CliTarget enum + per-target dir/config resolvers |
-| core::config_watcher | [src/core/config_watcher.rs](src/core/config_watcher.rs) | [src/core/config_watcher.LLM.md](src/core/config_watcher.LLM.md) | notify-based watcher for 4 CLI MCP configs + skills dirs + mcps backup; drives TUI live reload |
-| core::db | [src/core/db/mod.rs](src/core/db/mod.rs) | [src/core/db.LLM.md](src/core/db.LLM.md) | SQLite schema + migrations + query layer (split by domain: schema / resources / ai_summary / groups / users / library / events) |
-| core::doctor | [src/core/doctor.rs](src/core/doctor.rs) | [src/core/doctor.LLM.md](src/core/doctor.LLM.md) | `runai doctor` health checks |
-| core::group | [src/core/group.rs](src/core/group.rs) | [src/core/group.LLM.md](src/core/group.LLM.md) | Group definition (TOML on disk) + member type |
-| core::installer | [src/core/installer.rs](src/core/installer.rs) | [src/core/installer.LLM.md](src/core/installer.LLM.md) | GitHub / market install pipeline |
-| core::linker | [src/core/linker.rs](src/core/linker.rs) | [src/core/linker.LLM.md](src/core/linker.LLM.md) | Cross-platform symlink create/remove/detect |
-| core::manager | [src/core/manager/mod.rs](src/core/manager/mod.rs) | [src/core/manager.LLM.md](src/core/manager.LLM.md) | `SkillManager` — orchestrates everything (impl split across construction / install / mcp / trash / groups / query files) |
-| core::market | [src/core/market/mod.rs](src/core/market/mod.rs) | [src/core/market.LLM.md](src/core/market.LLM.md) | Market source list + skill index cache (1h TTL) + skills.sh sitemap aggregator |
-| core::mcp_canonical | [src/core/mcp_canonical.rs](src/core/mcp_canonical.rs) | [src/core/mcp_canonical.LLM.md](src/core/mcp_canonical.LLM.md) | Canonical MCP entry shape + per-CLI ↔ canonical converters |
-| core::mcp_discovery | [src/core/mcp_discovery.rs](src/core/mcp_discovery.rs) | [src/core/mcp_discovery.LLM.md](src/core/mcp_discovery.LLM.md) | Discover MCP entries from existing CLI configs |
-| core::mcp_register | [src/core/mcp_register.rs](src/core/mcp_register.rs) | [src/core/mcp_register.LLM.md](src/core/mcp_register.LLM.md) | Self-register runai as an MCP across all four CLIs |
-| core::paths | [src/core/paths.rs](src/core/paths.rs) | [src/core/paths.LLM.md](src/core/paths.LLM.md) | `AppPaths` resolver + legacy-dir migration |
-| core::prefs | [src/core/prefs.rs](src/core/prefs.rs) | — | `UserPrefs` (per-user dashboard / recommend prefs, stored as JSON in `users.prefs_json`) |
-| core::recommend | [src/core/recommend/mod.rs](src/core/recommend/mod.rs) | [src/core/recommend.LLM.md](src/core/recommend.LLM.md) | Opt-in LLM skill router for `UserPromptSubmit` hook; split into config / router / enrich / lang_validation / prompts / llm_call / hook_output |
-| core::resource | [src/core/resource.rs](src/core/resource.rs) | [src/core/resource.LLM.md](src/core/resource.LLM.md) | `Resource` / `ResourceKind` domain types |
-| core::scanner | [src/core/scanner/mod.rs](src/core/scanner/mod.rs) | [src/core/scanner.LLM.md](src/core/scanner.LLM.md) | Filesystem discovery + adoption of unmanaged skills |
-| core::search | [src/core/search.rs](src/core/search.rs) | [src/core/search.LLM.md](src/core/search.LLM.md) | nucleo (fzf v2) fuzzy matcher shared by sm_search / sm_market / CLI search & market |
-| core::transcript_stats | [src/core/transcript_stats.rs](src/core/transcript_stats.rs) | [src/core/transcript_stats.LLM.md](src/core/transcript_stats.LLM.md) | Usage counts mined from Claude Code transcripts, with incremental on-disk cache |
-| core::updater | [src/core/updater.rs](src/core/updater.rs) | [src/core/updater.LLM.md](src/core/updater.LLM.md) | Self-update: check, download, verify, replace binary |
-| mcp::tools | [src/mcp/tools/mod.rs](src/mcp/tools/mod.rs) | [src/mcp/tools.LLM.md](src/mcp/tools.LLM.md) | 21 `sm_*` tools exposed to MCP clients (the `#[tool_router]` impl stays whole in `server.rs`; helpers/types extracted) |
-| server | [src/server/mod.rs](src/server/mod.rs) | [src/server.LLM.md](src/server.LLM.md) | axum HTTP dashboard for router telemetry (`runai server`); single-binary, no CDN — bundles `web/{index.html,app.js,app.css}`. Split into one file per route family. |
-| tui::app | [src/tui/app/mod.rs](src/tui/app/mod.rs) | [src/tui/app.LLM.md](src/tui/app.LLM.md) | TUI state machine and event loop |
-| tui::ui | [src/tui/ui/mod.rs](src/tui/ui/mod.rs) | [src/tui/ui.LLM.md](src/tui/ui.LLM.md) | Rendering for all TUI tabs/panels |
-| tui::theme | [src/tui/theme.rs](src/tui/theme.rs) | [src/tui/theme.LLM.md](src/tui/theme.LLM.md) | Dark/light color themes |
-| tui::i18n | [src/tui/i18n.rs](src/tui/i18n.rs) | [src/tui/i18n.LLM.md](src/tui/i18n.LLM.md) | English/Chinese UI strings |
+| cli | [src/cli/mod.rs](src/cli/mod.rs) | [src/cli/AGENTS.md](src/cli/AGENTS.md) | clap subcommand dispatcher + TUI launcher |
+| core::auth | [src/core/auth.rs](src/core/auth.rs) | inline `//!` | Bearer parsing + argon2 password hash/verify + cookie session helpers + new_user_id / new_api_key generators (v15 multi-user) |
+| core::auto_group | [src/core/auto_group.rs](src/core/auto_group.rs) | inline `//!` | Heuristic grouping of freshly-installed resources |
+| core::autostart | [src/core/autostart.rs](src/core/autostart.rs) | inline `//!` | OS login auto-start: macOS LaunchAgent plist + Linux systemd user unit. Surfaced via `runai server --install-autostart` / `--uninstall-autostart`. |
+| core::backup | [src/core/backup.rs](src/core/backup.rs) | inline `//!` | Timestamped backup/restore of managed data and CLI configs |
+| core::bm25 | [src/core/bm25.rs](src/core/bm25.rs) | inline `//!` | Minimal bilingual BM25 ranker used by `recommend` to prefilter the candidate set before LLM rerank |
+| core::channel | [src/core/channel.rs](src/core/channel.rs) | inline `//!` | Release channel (stable / beta) selection |
+| core::classifier | [src/core/classifier.rs](src/core/classifier.rs) | inline `//!` | Classifies installable artifacts into Skill vs MCP vs Agent |
+| core::cli_target | [src/core/cli_target.rs](src/core/cli_target.rs) | inline `//!` | CliTarget enum + per-target dir/config resolvers |
+| core::config_watcher | [src/core/config_watcher.rs](src/core/config_watcher.rs) | inline `//!` | notify-based watcher for 4 CLI MCP configs + skills dirs + mcps backup; drives TUI live reload |
+| core::db | [src/core/db/mod.rs](src/core/db/mod.rs) | [src/core/db/AGENTS.md](src/core/db/AGENTS.md) | SQLite schema + migrations + query layer (split by domain: schema / resources / ai_summary / groups / users / library / events) |
+| core::doctor | [src/core/doctor.rs](src/core/doctor.rs) | inline `//!` | `runai doctor` health checks |
+| core::group | [src/core/group.rs](src/core/group.rs) | inline `//!` | Group definition (TOML on disk) + member type |
+| core::installer | [src/core/installer.rs](src/core/installer.rs) | inline `//!` | GitHub / market install pipeline |
+| core::linker | [src/core/linker.rs](src/core/linker.rs) | inline `//!` | Cross-platform symlink create/remove/detect |
+| core::manager | [src/core/manager/mod.rs](src/core/manager/mod.rs) | [src/core/manager/AGENTS.md](src/core/manager/AGENTS.md) | `SkillManager` — orchestrates everything (impl split across construction / install / mcp / trash / groups / query files) |
+| core::market | [src/core/market/mod.rs](src/core/market/mod.rs) | [src/core/market/AGENTS.md](src/core/market/AGENTS.md) | Market source list + skill index cache (1h TTL) + skills.sh sitemap aggregator |
+| core::mcp_canonical | [src/core/mcp_canonical.rs](src/core/mcp_canonical.rs) | inline `//!` | Canonical MCP entry shape + per-CLI ↔ canonical converters |
+| core::mcp_discovery | [src/core/mcp_discovery.rs](src/core/mcp_discovery.rs) | inline `//!` | Discover MCP entries from existing CLI configs |
+| core::mcp_register | [src/core/mcp_register.rs](src/core/mcp_register.rs) | inline `//!` | Self-register runai as an MCP across all four CLIs |
+| core::paths | [src/core/paths.rs](src/core/paths.rs) | inline `//!` | `AppPaths` resolver + legacy-dir migration |
+| core::prefs | [src/core/prefs.rs](src/core/prefs.rs) | inline `//!` | `UserPrefs` (per-user dashboard / recommend prefs, stored as JSON in `users.prefs_json`) |
+| core::recommend | [src/core/recommend/mod.rs](src/core/recommend/mod.rs) | [src/core/recommend/AGENTS.md](src/core/recommend/AGENTS.md) | Opt-in LLM skill router for `UserPromptSubmit` hook; split into config / router / enrich / lang_validation / prompts / llm_call / hook_output |
+| core::resource | [src/core/resource.rs](src/core/resource.rs) | inline `//!` | `Resource` / `ResourceKind` domain types |
+| core::scanner | [src/core/scanner/mod.rs](src/core/scanner/mod.rs) | [src/core/scanner/AGENTS.md](src/core/scanner/AGENTS.md) | Filesystem discovery + adoption of unmanaged skills |
+| core::search | [src/core/search.rs](src/core/search.rs) | inline `//!` | nucleo (fzf v2) fuzzy matcher shared by sm_search / sm_market / CLI search & market |
+| core::transcript_stats | [src/core/transcript_stats.rs](src/core/transcript_stats.rs) | inline `//!` | Usage counts mined from Claude Code transcripts, with incremental on-disk cache |
+| core::updater | [src/core/updater.rs](src/core/updater.rs) | inline `//!` | Self-update: check, download, verify, replace binary |
+| mcp::tools | [src/mcp/tools/mod.rs](src/mcp/tools/mod.rs) | [src/mcp/tools/AGENTS.md](src/mcp/tools/AGENTS.md) | 21 `sm_*` tools exposed to MCP clients (the `#[tool_router]` impl stays whole in `server.rs`; helpers/types extracted) |
+| server | [src/server/mod.rs](src/server/mod.rs) | [src/server/AGENTS.md](src/server/AGENTS.md) | axum HTTP dashboard for router telemetry (`runai server`); single-binary, no CDN — bundles `web/{index.html,app.js,app.css}`. Split into one file per route family. |
+| tui::app | [src/tui/app/mod.rs](src/tui/app/mod.rs) | [src/tui/app/AGENTS.md](src/tui/app/AGENTS.md) | TUI state machine and event loop |
+| tui::ui | [src/tui/ui/mod.rs](src/tui/ui/mod.rs) | [src/tui/ui/AGENTS.md](src/tui/ui/AGENTS.md) | Rendering for all TUI tabs/panels |
+| tui::theme | [src/tui/theme.rs](src/tui/theme.rs) | inline `//!` | Dark/light color themes |
+| tui::i18n | [src/tui/i18n.rs](src/tui/i18n.rs) | inline `//!` | English/Chinese UI strings |
 
 Small `mod.rs` wiring files without substance are not separately documented; their contents are obvious `pub mod` declarations.
 
@@ -274,7 +279,7 @@ The `multiuser_owner_e2e` suite is the owner-pool contract test: it covers same-
 
 ## Getting oriented as a new agent
 
-1. Start at the Module index above. Click through to the `*.LLM.md` for whichever module the current task touches.
-2. If you're editing a module's code, the sibling `*.LLM.md` is your first read — it tells you the public API surface, invariants, and gotchas without making you reverse-engineer from code.
+1. Start at the Module index above. For a folder module, open its `<folder>/AGENTS.md`; for a single-file module, read the `//!` comment at the top of its `.rs`.
+2. If you're editing a module's code, that module doc (folder `AGENTS.md` or the file's `//!` comment) is your first read — it tells you the public API surface, invariants, and gotchas without making you reverse-engineer from code.
 3. When unsure about cross-module behavior, re-read "Key constraints" — most non-obvious invariants live there.
-4. When you change anything under an invariant, update both the code and the `*.LLM.md` in the same commit. The invariant at the top of this file is non-negotiable.
+4. When you change anything under an invariant, update both the code and its module doc (folder `AGENTS.md` or the file's `//!` comment) in the same commit. The invariant at the top of this file is non-negotiable.

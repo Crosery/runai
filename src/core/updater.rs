@@ -1,3 +1,39 @@
+//! Self-update flow: poll GitHub releases in the background, download the
+//! matching asset, verify its SHA256, replace the running binary atomically.
+//!
+//! ## Public API
+//! - `asset_name(os, arch) -> Option<String>` — platform → release asset name.
+//!   **Must match `release.yml`.** Windows → `.zip`, others → `.tar.gz`; macOS
+//!   uses `darwin-*`, not `macos-*`.
+//! - `check_for_update(data_dir)` *(async)* — background poll, writes
+//!   `update-check.json`. Errors swallowed to `tracing::debug!`.
+//! - `perform_update(data_dir) -> Result<String>` *(async)* — downloads +
+//!   replaces. Called by `runai update`.
+//! - `update_notification(data_dir) -> Option<String>` / `pending_update_version`
+//!   — compare `cache.latest_version` against `current_version()`
+//!   (`CARGO_PKG_VERSION`), **not** `cache.current_version` (stale after a
+//!   manual upgrade).
+//! - `http_client() -> Client` — `User-Agent: runai/<ver>`, connect_timeout 3s,
+//!   timeout 10s. **Always use this**, never bare reqwest.
+//!
+//! ## Invariants / gotchas
+//! - `current_version()` reads `CARGO_PKG_VERSION` (compile-time). Never trust
+//!   the cache for the running version.
+//! - 24h cooldown via `checked_at`. Cache is written even when no matching
+//!   release is found, to keep the cooldown effective.
+//! - Binary replacement: `rename(current → .bak)`, `write(current, bytes)`,
+//!   `chmod 0o755` (`cfg(unix)` only), `remove(.bak)`. Rollback on failure.
+//! - After `perform_update`, the running process is still the OLD binary, so
+//!   `perform_update` writes the cache with `current_version == latest_version`
+//!   — `update_notification` treats that equality as "just upgraded, nothing to
+//!   notify" so the stale process doesn't falsely re-notify.
+//! - macOS asset is `darwin-*` not `macos-*` — renaming in `release.yml`
+//!   requires matching `asset_name`. Windows asset is `.zip` containing
+//!   `runai.exe` (via `extract_from_zip`); unix uses `extract_from_tar_gz`.
+//!   `PermissionsExt::from_mode(0o755)` is `cfg(unix)`-gated; Windows skips chmod.
+//! - Release tags with a `-` suffix (variant / pre-release) are skipped — only
+//!   clean `vX.Y.Z` tags are upgrade candidates.
+
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};

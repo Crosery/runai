@@ -1,9 +1,28 @@
-//! Skill/MCP classifier for automatic grouping.
+//! Heuristic skill/MCP classifier — group-suggestion engine for auto-grouping.
 //!
-//! Groups skills by:
+//! Given a resource's name + description (and optionally a GitHub source
+//! owner/repo), returns a ranked list of group names it should belong to.
+//! Grouping dimensions:
 //! 1. Collection/series (superpower, impeccable, ECC, bmad, academic)
 //! 2. Language/framework (Python, Rust, Go, Java, Kotlin, etc.)
 //! 3. Functional category (Testing, Workflow, Design/UI, DevOps, etc.)
+//!
+//! ## Public surface
+//! - `Classifier::suggest_groups(name, description) -> Vec<String>`.
+//! - `Classifier::suggest_groups_with_source(name, description, Option<(owner, repo)>)`
+//!   — also matches `REPO_RULES` by GitHub owner/repo.
+//!
+//! ## Matching order / invariants
+//! - Pure function — no I/O, no DB; safe to call from anywhere. Empty input →
+//!   empty result, not an error.
+//! - Inputs are lowercased before matching. `NAME_RULES` is checked first (prefix
+//!   or exact match on the name); KEYWORD_RULES (description `contains`) is the
+//!   fallback only when no name rule hit; REPO_RULES are additive on top.
+//! - Returned groups are de-duplicated, in match/confidence order; the caller
+//!   decides how many to keep.
+//! - Keyword/name lists are hand-tuned and load-bearing — edits shift thousands of
+//!   auto-group assignments. Prefer adding keywords over removing existing ones
+//!   (the `high_coverage_on_real_skills` test enforces >=95% coverage).
 
 /// (pattern, group_name) — matched against skill name (lowercased).
 const NAME_RULES: &[(&str, &str)] = &[
