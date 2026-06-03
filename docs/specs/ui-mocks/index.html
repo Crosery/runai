@@ -3,274 +3,661 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>runai dashboard · 视觉方案对比</title>
+<title>runai dashboard · 三个方向</title>
 <style>
-  *{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --bg:#0e0e10;
+    --bg-2:#16161a;
+    --bg-3:#1d1d22;
+    --ink:#f4f1ea;
+    --ink-2:#a4a09b;
+    --ink-3:#5d5a55;
+    --line:#26262c;
+    --line-bright:#3a3a42;
+    --accent:#ff5a36;
+    --accent-2:#f4c95d;
+    --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,monospace;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  ::selection{background:var(--accent);color:#000}
   html,body{
-    background:#f5f6f8;color:#1f2328;
-    font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
-    line-height:1.55;
-    min-height:100vh;
+    background:var(--bg);color:var(--ink);
+    font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    font-feature-settings:"ss01","cv11";
+    line-height:1.45;
+    overflow-x:hidden;
   }
-  .wrap{max-width:1180px;margin:0 auto;padding:48px 32px 80px}
-
-  h1{font-size:28px;font-weight:700;letter-spacing:-0.4px;margin-bottom:8px}
-  .lede{color:#586069;font-size:15px;max-width:780px;margin-bottom:32px}
-  .lede code{
-    background:#eaecef;padding:1px 6px;border-radius:4px;
-    font-family:ui-monospace,"SF Mono",Consolas,monospace;font-size:13px;
+  body::before{
+    content:"";position:fixed;inset:0;pointer-events:none;z-index:1;
+    background-image:
+      radial-gradient(circle at 1px 1px, rgba(255,255,255,0.018) 1px, transparent 0);
+    background-size:3px 3px;
+    mix-blend-mode:overlay;
   }
-
-  .meta-strip{
-    display:flex;gap:24px;margin-bottom:36px;
-    color:#586069;font-size:13px;
+  body::after{
+    content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+    background:
+      radial-gradient(800px 600px at 18% -10%, rgba(255,90,54,0.10), transparent 60%),
+      radial-gradient(700px 500px at 95% 35%, rgba(244,201,93,0.05), transparent 60%);
   }
-  .meta-strip b{color:#1f2328}
+  main{position:relative;z-index:2}
 
-  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}
-  @media (max-width: 980px){.grid{grid-template-columns:1fr}}
+  /* ============ HEADER ============ */
+  header.bar{
+    display:flex;justify-content:space-between;align-items:center;
+    padding:22px 48px;
+    border-bottom:1px solid var(--line);
+    font-family:var(--mono);
+    font-size:12px;
+    letter-spacing:0.04em;
+    text-transform:uppercase;
+    color:var(--ink-2);
+  }
+  header.bar .brand{display:flex;align-items:center;gap:14px}
+  header.bar .brand .dot{
+    width:10px;height:10px;background:var(--accent);
+    border-radius:50%;
+    box-shadow:0 0 12px var(--accent);
+  }
+  header.bar .brand b{color:var(--ink);font-weight:600;letter-spacing:0}
+  header.bar .crumb{color:var(--ink-3)}
+  header.bar nav{display:flex;gap:28px}
+  header.bar nav a{
+    color:var(--ink-2);text-decoration:none;
+    border-bottom:1px solid transparent;padding-bottom:2px;
+    transition:color 0.15s,border-color 0.15s;
+  }
+  header.bar nav a:hover{color:var(--ink);border-color:var(--accent)}
 
-  .card{
-    background:#fff;
-    border:1px solid #e5e7eb;
-    border-radius:10px;
+  /* ============ HERO ============ */
+  .hero{
+    padding:100px 48px 80px;
+    position:relative;
     overflow:hidden;
-    display:flex;flex-direction:column;
-    transition:transform 0.12s ease, box-shadow 0.12s ease;
   }
-  .card:hover{
-    transform:translateY(-2px);
-    box-shadow:0 6px 24px rgba(15,20,30,0.06);
+  .hero .eyebrow{
+    font-family:var(--mono);
+    font-size:12px;
+    letter-spacing:0.18em;
+    text-transform:uppercase;
+    color:var(--accent);
+    margin-bottom:34px;
+    display:flex;align-items:center;gap:14px;
+  }
+  .hero .eyebrow::before{
+    content:"";width:42px;height:1px;background:var(--accent);
+  }
+  .hero h1{
+    font-size:clamp(72px,11vw,168px);
+    font-weight:800;
+    letter-spacing:-0.05em;
+    line-height:0.86;
+    margin:0 0 36px;
+    color:var(--ink);
+  }
+  .hero h1 span.italic{
+    font-style:italic;font-weight:300;
+    color:var(--ink-2);
+    display:inline-block;
+    letter-spacing:-0.04em;
+  }
+  .hero .lede{
+    max-width:680px;font-size:19px;color:var(--ink-2);
+    line-height:1.55;margin-bottom:54px;
+  }
+  .hero .lede b{color:var(--ink);font-weight:500}
+
+  .stats{
+    display:grid;
+    grid-template-columns:repeat(4,1fr);
+    border-top:1px solid var(--line);
+    margin:0 -48px;
+    padding:32px 48px 0;
+  }
+  .stats .cell{
+    padding:0 32px 0 0;
+    border-left:1px solid var(--line);
+    padding-left:24px;
+  }
+  .stats .cell:first-child{border-left:none;padding-left:0}
+  .stats .num{
+    font-family:var(--mono);
+    font-size:42px;font-weight:600;letter-spacing:-0.02em;
+    color:var(--ink);
+    line-height:1;
+  }
+  .stats .num em{font-style:normal;color:var(--accent)}
+  .stats .lbl{
+    font-family:var(--mono);
+    font-size:11px;
+    text-transform:uppercase;letter-spacing:0.14em;
+    color:var(--ink-3);
+    margin-top:12px;
   }
 
-  .preview{
-    height:200px;
-    position:relative;overflow:hidden;
-    border-bottom:1px solid #e5e7eb;
+  /* ============ VARIANT ROW ============ */
+  .variant{
+    position:relative;
+    padding:120px 48px;
+    border-top:1px solid var(--line);
+    overflow:hidden;
+  }
+  .variant .bignum{
+    position:absolute;
+    left:-12px;top:30px;
+    font-family:var(--mono);
+    font-size:clamp(180px,28vw,420px);
+    font-weight:200;
+    line-height:0.8;
+    letter-spacing:-0.04em;
+    color:transparent;
+    -webkit-text-stroke:1px var(--line-bright);
+    pointer-events:none;
+    z-index:0;
+    user-select:none;
+  }
+  .variant .grid{
+    display:grid;
+    grid-template-columns:1.1fr 1.4fr;
+    gap:80px;
+    position:relative;
+    z-index:1;
+    align-items:start;
+  }
+  .variant.flip .grid{grid-template-columns:1.4fr 1.1fr}
+  .variant.flip .preview-area{order:-1}
+
+  .variant .meta-tag{
+    display:flex;align-items:center;gap:14px;
+    font-family:var(--mono);font-size:12px;
+    letter-spacing:0.14em;text-transform:uppercase;
+    color:var(--ink-3);
+    margin-bottom:22px;
+  }
+  .variant .meta-tag .badge{
+    color:var(--accent);
+    border:1px solid var(--accent);
+    padding:3px 8px;
+  }
+  .variant h2{
+    font-size:64px;
+    font-weight:800;
+    letter-spacing:-0.035em;
+    line-height:0.96;
+    margin-bottom:24px;
+    color:var(--ink);
+  }
+  .variant .desc{
+    font-size:17px;color:var(--ink-2);max-width:520px;
+    line-height:1.6;margin-bottom:34px;
+  }
+  .variant ul.traits{
+    list-style:none;border-top:1px solid var(--line);margin-bottom:36px;
+  }
+  .variant ul.traits li{
+    display:grid;grid-template-columns:140px 1fr;gap:18px;
+    padding:13px 0;border-bottom:1px solid var(--line);
+    font-size:14px;color:var(--ink);
+  }
+  .variant ul.traits .k{
+    font-family:var(--mono);font-size:11px;
+    text-transform:uppercase;letter-spacing:0.14em;color:var(--ink-3);
+    padding-top:2px;
   }
 
-  /* preview - linear */
-  .preview.linear{background:#fafbfc;padding:14px}
-  .preview.linear::before{
-    content:"";position:absolute;top:14px;left:14px;width:44px;height:calc(100% - 28px);
+  .cta{
+    display:inline-flex;align-items:center;gap:14px;
+    padding:18px 26px;
+    background:var(--ink);color:var(--bg);
+    text-decoration:none;
+    font-weight:600;font-size:15px;letter-spacing:-0.005em;
+    transition:transform 0.18s cubic-bezier(.2,.7,.3,1),background 0.18s;
+  }
+  .cta:hover{transform:translate(4px,-2px);background:var(--accent);color:#000}
+  .cta .arr{
+    font-family:var(--mono);font-weight:400;
+    transition:transform 0.18s cubic-bezier(.2,.7,.3,1);
+  }
+  .cta:hover .arr{transform:translateX(4px)}
+  .cta.secondary{background:transparent;color:var(--ink);border:1px solid var(--line-bright)}
+  .cta.secondary:hover{background:var(--ink);color:var(--bg)}
+
+  /* ============ PREVIEW THUMBS ============ */
+  .preview-area{
+    position:relative;
+  }
+  .preview-frame{
+    border:1px solid var(--line-bright);
+    background:var(--bg-2);
+    overflow:hidden;
+    box-shadow:
+      0 30px 60px -20px rgba(0,0,0,0.5),
+      0 18px 36px -18px rgba(0,0,0,0.35);
+    aspect-ratio:1.6 / 1;
+    position:relative;
+  }
+  .preview-frame .titlebar{
+    height:30px;background:var(--bg-3);
+    border-bottom:1px solid var(--line);
+    display:flex;align-items:center;padding:0 14px;gap:6px;
+  }
+  .preview-frame .titlebar i{
+    display:block;width:10px;height:10px;border-radius:50%;
+    background:var(--line-bright);
+  }
+  .preview-frame .titlebar .pathline{
+    margin-left:14px;font-family:var(--mono);font-size:11px;color:var(--ink-3);
+  }
+  .preview-body{
+    height:calc(100% - 30px);
+    overflow:hidden;
+    position:relative;
+  }
+
+  /* Linear preview */
+  .preview-linear .preview-body{
+    background:#fafbfc;color:#1f2328;display:grid;grid-template-columns:48px 1fr;
+    font-family:-apple-system,system-ui,sans-serif;
+  }
+  .preview-linear .lin-sidebar{
+    background:#fff;border-right:1px solid #e5e7eb;
+  }
+  .preview-linear .lin-sidebar .item{padding:8px 0;text-align:center;font-size:10px;color:#aaa}
+  .preview-linear .lin-sidebar .item.active{color:#5e6ad2;background:#eef1ff}
+  .preview-linear .lin-main{padding:16px}
+  .preview-linear .lin-h{font-weight:600;font-size:11px;color:#1f2328;margin-bottom:10px;display:flex;justify-content:space-between}
+  .preview-linear .lin-h .actions{color:#5e6ad2;font-size:10px}
+  .preview-linear .lin-metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:10px}
+  .preview-linear .lin-m{background:#fff;border:1px solid #e5e7eb;border-radius:6px;padding:6px 8px}
+  .preview-linear .lin-m .lbl{font-size:8px;color:#888;text-transform:uppercase;letter-spacing:0.5px}
+  .preview-linear .lin-m .v{font-size:18px;font-weight:600;color:#1f2328;letter-spacing:-0.5px}
+  .preview-linear .lin-m .v.ind{color:#5e6ad2}
+  .preview-linear .lin-row{
     background:#fff;border:1px solid #e5e7eb;border-radius:6px;
+    padding:6px 8px;font-size:10px;color:#586069;margin-bottom:4px;
+    display:flex;justify-content:space-between;
   }
-  .preview.linear .body{
-    margin-left:54px;height:100%;
-    display:grid;grid-template-columns:repeat(2,1fr);gap:8px;align-content:start;
-  }
-  .preview.linear .body .m{
-    background:#fff;border:1px solid #e5e7eb;border-radius:6px;
-    padding:8px;height:64px;
-    display:flex;flex-direction:column;justify-content:space-between;
-  }
-  .preview.linear .body .m .lbl{font-size:9px;color:#999;text-transform:uppercase;letter-spacing:1px}
-  .preview.linear .body .m .v{font-size:18px;font-weight:600;color:#1f2328}
-  .preview.linear .body .row{
-    grid-column:1 / -1;height:34px;background:#fff;border:1px solid #e5e7eb;border-radius:6px;
-    display:flex;align-items:center;padding:0 10px;font-size:10px;color:#586069;
-  }
-  .preview.linear .accent{color:#5e6ad2}
+  .preview-linear .lin-row b{color:#5e6ad2;font-weight:500}
 
-  /* preview - vercel */
-  .preview.vercel{background:#0a0a0a;padding:14px;color:#ededed}
-  .preview.vercel::before{
-    content:"";position:absolute;top:14px;left:14px;width:44px;height:calc(100% - 28px);
-    background:#000;border:1px solid #1f1f1f;border-radius:4px;
+  /* Vercel preview */
+  .preview-vercel .preview-body{
+    background:#000;color:#ededed;display:grid;grid-template-columns:50px 1fr;
+    font-family:system-ui,-apple-system,sans-serif;
   }
-  .preview.vercel .body{
-    margin-left:54px;height:100%;
-    display:grid;grid-template-columns:repeat(2,1fr);gap:8px;align-content:start;
+  .preview-vercel .v-sidebar{
+    background:#0a0a0a;border-right:1px solid #1f1f1f;
   }
-  .preview.vercel .body .m{
-    background:#000;border:1px solid #1f1f1f;border-radius:4px;
-    padding:8px;height:64px;
+  .preview-vercel .v-sidebar .item{padding:8px 0;text-align:center;font-size:10px;color:#525252}
+  .preview-vercel .v-sidebar .item.active{color:#fff;background:#1c1c1c}
+  .preview-vercel .v-main{padding:16px}
+  .preview-vercel .v-h{font-weight:700;font-size:11px;color:#fff;margin-bottom:10px}
+  .preview-vercel .v-metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:10px}
+  .preview-vercel .v-m{background:#0a0a0a;border:1px solid #1f1f1f;border-radius:4px;padding:8px}
+  .preview-vercel .v-m .lbl{font-size:8px;color:#71717a;text-transform:uppercase;letter-spacing:0.5px}
+  .preview-vercel .v-m .v{font-size:20px;font-weight:700;color:#ededed;letter-spacing:-0.5px;margin-top:2px}
+  .preview-vercel .v-m .v.gn{color:#34d399}
+  .preview-vercel .v-m svg{margin-top:4px}
+  .preview-vercel .v-row{
+    background:#0a0a0a;border:1px solid #1f1f1f;border-radius:4px;
+    padding:6px 8px;font-size:10px;color:#a1a1aa;margin-bottom:4px;
+    display:flex;justify-content:space-between;align-items:center;
   }
-  .preview.vercel .body .m .lbl{font-size:9px;color:#71717a;text-transform:uppercase;letter-spacing:1px}
-  .preview.vercel .body .m .v{font-size:18px;font-weight:600;color:#ededed}
-  .preview.vercel .body .m svg{margin-top:4px}
-  .preview.vercel .body .row{
-    grid-column:1 / -1;height:34px;background:#000;border:1px solid #1f1f1f;border-radius:4px;
-    display:flex;align-items:center;padding:0 10px;font-size:10px;color:#a1a1aa;
+  .preview-vercel .v-row b{color:#34d399;font-weight:600}
+  .preview-vercel .v-pill{
+    background:rgba(52,211,153,0.12);color:#34d399;
+    padding:1px 6px;border-radius:3px;font-size:9px;font-weight:600;
   }
-  .preview.vercel .accent{color:#34d399}
 
-  /* preview - htop */
-  .preview.htop{
-    background:#0d0d0d;padding:10px;
-    color:#c8c8c8;
-    font-family:ui-monospace,"SF Mono","JetBrains Mono",Consolas,monospace;
-    font-size:10px;line-height:1.3;
+  /* HTOP preview */
+  .preview-htop .preview-body{
+    background:#0d0d0d;color:#c8c8c8;
+    font-family:var(--mono);font-size:10px;
+    padding:10px 14px;line-height:1.4;
   }
-  .preview.htop pre{font-family:inherit;font-size:inherit;line-height:inherit;color:inherit}
-  .preview.htop .g{color:#50fa7b}
-  .preview.htop .c{color:#8be9fd}
-  .preview.htop .a{color:#ffb86c}
-  .preview.htop .r{color:#ff5555}
-  .preview.htop .d{color:#7a7a7a}
+  .preview-htop pre{font-family:inherit;font-size:inherit;line-height:inherit;color:inherit;white-space:pre;overflow:hidden}
+  .preview-htop .g{color:#50fa7b}
+  .preview-htop .c{color:#8be9fd}
+  .preview-htop .a{color:#ffb86c}
+  .preview-htop .r{color:#ff5555}
+  .preview-htop .d{color:#7a7a7a}
+  .preview-htop .p{color:#bd93f9}
 
-  .meta{padding:18px 20px;display:flex;flex-direction:column;flex:1}
-  .meta h2{font-size:17px;font-weight:600;margin-bottom:6px}
-  .meta .tag{
-    display:inline-block;font-size:11px;text-transform:uppercase;letter-spacing:1px;
-    background:#eef2ff;color:#5e6ad2;padding:2px 8px;border-radius:4px;
-    margin-bottom:8px;
+  /* ============ DECISION + FOOTER ============ */
+  .decision{
+    padding:100px 48px 80px;
+    border-top:1px solid var(--line);
+    position:relative;
   }
-  .meta.vercel .tag{background:#000;color:#34d399}
-  .meta.htop .tag{
-    background:#1a1a1a;color:#50fa7b;
-    font-family:ui-monospace,"SF Mono",Consolas,monospace;
+  .decision .eyebrow{
+    font-family:var(--mono);
+    font-size:12px;letter-spacing:0.18em;text-transform:uppercase;
+    color:var(--accent-2);margin-bottom:24px;
+    display:flex;align-items:center;gap:14px;
   }
-  .meta p{color:#586069;font-size:13.5px;flex:1;margin-bottom:14px}
-  .meta .traits{font-size:12px;color:#586069;margin-bottom:14px}
-  .meta .traits li{margin-bottom:3px}
-  .meta .traits b{color:#1f2328;font-weight:600}
+  .decision .eyebrow::before{content:"";width:42px;height:1px;background:var(--accent-2)}
+  .decision h3{
+    font-size:48px;font-weight:800;letter-spacing:-0.035em;
+    line-height:1;margin-bottom:24px;max-width:780px;
+  }
+  .decision p{font-size:16px;color:var(--ink-2);max-width:680px;line-height:1.6}
+  .decision .grid{
+    display:grid;grid-template-columns:repeat(3,1fr);gap:32px;
+    margin-top:48px;
+  }
+  .decision .col h4{
+    font-family:var(--mono);font-size:11px;
+    letter-spacing:0.14em;text-transform:uppercase;
+    color:var(--ink-3);margin-bottom:14px;
+    border-top:1px solid var(--line);padding-top:18px;
+  }
+  .decision .col p{font-size:14.5px;line-height:1.6}
+  .decision .col p code{
+    font-family:var(--mono);font-size:12.5px;
+    background:var(--bg-2);padding:1px 6px;color:var(--accent-2);
+  }
 
-  .btn{
-    display:inline-flex;align-items:center;justify-content:center;
-    padding:9px 14px;
-    background:#1f2328;color:#fff;
-    border:none;border-radius:6px;
-    font-family:inherit;font-size:13px;font-weight:500;
-    cursor:pointer;text-decoration:none;
-    transition:background 0.12s ease;
+  footer.foot{
+    padding:36px 48px;
+    border-top:1px solid var(--line);
+    font-family:var(--mono);
+    font-size:11px;letter-spacing:0.05em;text-transform:uppercase;
+    color:var(--ink-3);
+    display:flex;justify-content:space-between;align-items:center;
   }
-  .btn:hover{background:#0d1117}
-  .btn.linear{background:#5e6ad2}
-  .btn.linear:hover{background:#4d57b8}
+  footer.foot a{color:var(--ink-2);text-decoration:none;border-bottom:1px solid var(--line)}
+  footer.foot a:hover{color:var(--accent);border-color:var(--accent)}
 
-  .footer-note{
-    margin-top:48px;padding:20px 24px;
-    background:#fff;border:1px solid #e5e7eb;border-radius:10px;
-    font-size:13.5px;color:#586069;
-  }
-  .footer-note h3{font-size:14px;color:#1f2328;margin-bottom:8px;font-weight:600}
-  .footer-note ul{margin-left:18px}
-  .footer-note li{margin-bottom:4px}
-  .footer-note code{
-    background:#eaecef;padding:1px 5px;border-radius:3px;
-    font-family:ui-monospace,"SF Mono",Consolas,monospace;font-size:12px;
+  @media (max-width:880px){
+    header.bar{padding:18px 24px}
+    .hero{padding:60px 24px 50px}
+    .hero h1{font-size:54px}
+    .stats{grid-template-columns:repeat(2,1fr);row-gap:24px}
+    .stats .cell{padding:0;border-left:none;border-top:1px solid var(--line);padding-top:18px}
+    .variant{padding:60px 24px}
+    .variant .grid{grid-template-columns:1fr;gap:36px}
+    .variant.flip .preview-area{order:0}
+    .variant h2{font-size:42px}
+    .variant .bignum{font-size:180px;top:10px}
+    .decision{padding:60px 24px}
+    .decision h3{font-size:32px}
+    .decision .grid{grid-template-columns:1fr;gap:24px}
+    footer.foot{flex-direction:column;align-items:flex-start;gap:8px}
   }
 </style>
 </head>
 <body>
-<div class="wrap">
 
-  <h1>runai dashboard · 视觉方案对比</h1>
-  <p class="lede">
-    下面是 dashboard 重构的 3 个视觉方向。每个方案完整实现 5 个 tab：
-    <code>Overview</code> · <code>Skills</code> · <code>Activity</code> · <code>Settings</code> · <code>Admin</code>。
-    选定方向后再做生产版。打开任意一个即可交互（tab 切换 / toggle 开关 / 主题切换都可点击）。
-  </p>
+<main>
 
-  <div class="meta-strip">
-    <span>分支 <b>feat/multiuser-server</b></span>
-    <span>规范 <b>docs/specs/2026-05-20-multiuser-sandbox-redesign.md</b></span>
-    <span>骨架代码 <b>src/core/{identity,auth,prefs,sandbox}.rs</b></span>
-  </div>
+  <!-- ============ HEADER ============ -->
+  <header class="bar">
+    <div class="brand">
+      <span class="dot"></span>
+      <b>runai</b>
+      <span class="crumb">/ multi-user dashboard / mockups</span>
+    </div>
+    <nav>
+      <a href="./dashboard-linear.html">linear</a>
+      <a href="./dashboard-vercel.html">vercel</a>
+      <a href="./dashboard-htop.html">htop</a>
+    </nav>
+  </header>
 
-  <div class="grid">
+  <!-- ============ HERO ============ -->
+  <section class="hero">
+    <div class="eyebrow">pick a visual direction</div>
+    <h1>三个方向<br><span class="italic">同一份骨架,</span><br>不同的<span class="italic">个性</span>。</h1>
+    <p class="lede">
+      <b>runai dashboard 重构</b>提了三套完整的视觉方案，
+      底层信息架构、mock 数据、5 个 tab 内容全部一致。
+      差异在视觉语言。挑一个方向，落到 web/。
+    </p>
+    <div class="stats">
+      <div class="cell">
+        <div class="num"><em>03</em></div>
+        <div class="lbl">variants</div>
+      </div>
+      <div class="cell">
+        <div class="num">05</div>
+        <div class="lbl">tabs · each</div>
+      </div>
+      <div class="cell">
+        <div class="num">850</div>
+        <div class="lbl">spec lines</div>
+      </div>
+      <div class="cell">
+        <div class="num">943</div>
+        <div class="lbl">scaffold loc</div>
+      </div>
+    </div>
+  </section>
 
-    <!-- Linear -->
-    <article class="card">
-      <div class="preview linear">
-        <div class="body">
-          <div class="m"><div class="lbl">CALLS</div><div class="v">247</div></div>
-          <div class="m"><div class="lbl">HIT</div><div class="v accent">94%</div></div>
-          <div class="row">deep-dive · 412ms · 156 tok</div>
-          <div class="row">html-anything · 2.8s · 1.2k tok</div>
+  <!-- ============ VARIANT 01 — LINEAR ============ -->
+  <section class="variant">
+    <div class="bignum">01</div>
+    <div class="grid">
+
+      <div class="left-col">
+        <div class="meta-tag">
+          <span class="badge">recommended</span>
+          <span>linear-style</span>
         </div>
-      </div>
-      <div class="meta">
-        <span class="tag">linear-style</span>
-        <h2>克制 · 专业 · 大量留白</h2>
-        <p>单 accent color 极简风。无 drop-shadow，细 border 分块，大间距。适合"长期看不腻"的工具型 dashboard，调性接近 Linear / Notion / Vercel 后台。</p>
+        <h2>克制。<br>专业。<br>大量留白。</h2>
+        <p class="desc">
+          单一 accent color，没有阴影泛滥，细 border 分块。
+          调性接近 Linear / Notion / Vercel 后台。
+          长期看不腻，工具型 dashboard 最稳妥的方向。
+        </p>
         <ul class="traits">
-          <li><b>主色</b>: indigo #5e6ad2 · 用得克制</li>
-          <li><b>字体</b>: system-ui 无 web font 加载</li>
-          <li><b>主题</b>: 浅 + 深双模式</li>
-          <li><b>密度</b>: 低 · 阅读优先</li>
+          <li><span class="k">主色</span><span>indigo #5e6ad2，用得克制</span></li>
+          <li><span class="k">字体</span><span>system-ui，无外部 web font</span></li>
+          <li><span class="k">主题</span><span>浅 + 深，跟随系统</span></li>
+          <li><span class="k">密度</span><span>低，阅读优先</span></li>
         </ul>
-        <a class="btn linear" href="./dashboard-linear.html">查看完整页面 →</a>
+        <a class="cta" href="./dashboard-linear.html">
+          打开完整页面 <span class="arr">→</span>
+        </a>
       </div>
-    </article>
 
-    <!-- Vercel -->
-    <article class="card">
-      <div class="preview vercel">
-        <div class="body">
-          <div class="m">
-            <div class="lbl">CALLS</div>
-            <div class="v">247</div>
-            <svg width="100%" height="14" viewBox="0 0 80 14"><polyline points="0,10 12,8 24,9 36,5 48,7 60,3 72,4 80,1" fill="none" stroke="#34d399" stroke-width="1.4"/></svg>
+      <div class="preview-area">
+        <a href="./dashboard-linear.html" style="text-decoration:none;color:inherit">
+        <div class="preview-frame preview-linear">
+          <div class="titlebar"><i></i><i></i><i></i><span class="pathline">dashboard-linear.html</span></div>
+          <div class="preview-body">
+            <div class="lin-sidebar">
+              <div class="item active">○</div>
+              <div class="item">◇</div>
+              <div class="item">◎</div>
+              <div class="item">⚙</div>
+              <div class="item">★</div>
+            </div>
+            <div class="lin-main">
+              <div class="lin-h">Overview <span class="actions">最近 24h</span></div>
+              <div class="lin-metrics">
+                <div class="lin-m"><div class="lbl">CALLS</div><div class="v">247</div></div>
+                <div class="lin-m"><div class="lbl">HIT</div><div class="v ind">94%</div></div>
+                <div class="lin-m"><div class="lbl">SKILLS</div><div class="v">18</div></div>
+                <div class="lin-m"><div class="lbl">QUOTA</div><div class="v">34%</div></div>
+              </div>
+              <div class="lin-row"><span>02:14 · <b>deep-dive</b></span><span>412ms</span></div>
+              <div class="lin-row"><span>02:13 · <b>html-anything</b></span><span>2.8s</span></div>
+              <div class="lin-row"><span>02:11 · <b>verify</b></span><span>218ms</span></div>
+              <div class="lin-row"><span>02:08 · <b>safety-guard</b></span><span>186ms</span></div>
+            </div>
           </div>
-          <div class="m">
-            <div class="lbl">HIT</div>
-            <div class="v accent">94%</div>
-            <svg width="100%" height="14" viewBox="0 0 80 14"><polyline points="0,8 12,9 24,6 36,7 48,4 60,5 72,3 80,2" fill="none" stroke="#34d399" stroke-width="1.4"/></svg>
-          </div>
-          <div class="row">deep-dive · 412ms</div>
-          <div class="row">html-anything · 2.8s</div>
         </div>
+        </a>
       </div>
-      <div class="meta vercel">
-        <span class="tag">vercel-style</span>
-        <h2>深色为主 · 现代 SaaS · 数据更丰富</h2>
-        <p>黑底 + emerald 点缀，sparkline / mini chart 直接进卡片。比 Linear 更"产品力"些，适合给用户看的展示型产品。</p>
-        <ul class="traits">
-          <li><b>主色</b>: 黑白对比 + emerald #34d399</li>
-          <li><b>字体</b>: 'Geist' fallback system-sans</li>
-          <li><b>主题</b>: 深 + 浅双模式</li>
-          <li><b>密度</b>: 中 · 视觉信息更丰</li>
-        </ul>
-        <a class="btn" href="./dashboard-vercel.html">查看完整页面 →</a>
-      </div>
-    </article>
 
-    <!-- HTOP -->
-    <article class="card">
-      <div class="preview htop">
+    </div>
+  </section>
+
+  <!-- ============ VARIANT 02 — VERCEL ============ -->
+  <section class="variant flip">
+    <div class="bignum" style="left:auto;right:-12px">02</div>
+    <div class="grid">
+
+      <div class="preview-area">
+        <a href="./dashboard-vercel.html" style="text-decoration:none;color:inherit">
+        <div class="preview-frame preview-vercel">
+          <div class="titlebar"><i></i><i></i><i></i><span class="pathline">dashboard-vercel.html</span></div>
+          <div class="preview-body">
+            <div class="v-sidebar">
+              <div class="item active">●</div>
+              <div class="item">◇</div>
+              <div class="item">◎</div>
+              <div class="item">⚙</div>
+              <div class="item">★</div>
+            </div>
+            <div class="v-main">
+              <div class="v-h">Overview</div>
+              <div class="v-metrics">
+                <div class="v-m">
+                  <div class="lbl">CALLS</div>
+                  <div class="v">247</div>
+                  <svg width="100%" height="16" viewBox="0 0 80 16"><polyline points="0,12 12,9 24,11 36,5 48,7 60,3 72,4 80,1" fill="none" stroke="#34d399" stroke-width="1.6"/></svg>
+                </div>
+                <div class="v-m">
+                  <div class="lbl">HIT RATE</div>
+                  <div class="v gn">94%</div>
+                  <svg width="100%" height="16" viewBox="0 0 80 16"><polyline points="0,10 12,11 24,8 36,9 48,5 60,6 72,3 80,2" fill="none" stroke="#34d399" stroke-width="1.6"/></svg>
+                </div>
+                <div class="v-m">
+                  <div class="lbl">QUOTA</div>
+                  <div class="v">34%</div>
+                  <svg width="100%" height="16" viewBox="0 0 80 16"><polyline points="0,5 12,8 24,7 36,9 48,12 60,11 72,12 80,13" fill="none" stroke="#71717a" stroke-width="1.6"/></svg>
+                </div>
+              </div>
+              <div class="v-row"><span>02:14 · <b>deep-dive</b></span><span class="v-pill">412ms</span></div>
+              <div class="v-row"><span>02:13 · <b>html-anything</b></span><span class="v-pill">2.8s</span></div>
+              <div class="v-row"><span>02:11 · <b>verify</b></span><span class="v-pill">218ms</span></div>
+            </div>
+          </div>
+        </div>
+        </a>
+      </div>
+
+      <div class="right-col">
+        <div class="meta-tag">
+          <span>vercel / supabase-style</span>
+        </div>
+        <h2>深色为主。<br>数据丰富。<br>现代 SaaS。</h2>
+        <p class="desc">
+          黑底 + emerald 点缀，sparkline / mini chart 直接进卡片。
+          比 Linear 更"产品力"些，
+          适合给客户看的展示型 dashboard。
+        </p>
+        <ul class="traits">
+          <li><span class="k">主色</span><span>黑白对比 + emerald #34d399</span></li>
+          <li><span class="k">字体</span><span>'Geist' fallback system-sans</span></li>
+          <li><span class="k">主题</span><span>深 + 浅，深色主推</span></li>
+          <li><span class="k">密度</span><span>中，视觉信息更丰</span></li>
+        </ul>
+        <a class="cta" href="./dashboard-vercel.html">
+          打开完整页面 <span class="arr">→</span>
+        </a>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ============ VARIANT 03 — HTOP ============ -->
+  <section class="variant">
+    <div class="bignum">03</div>
+    <div class="grid">
+
+      <div class="left-col">
+        <div class="meta-tag">
+          <span>htop / k9s-style</span>
+        </div>
+        <h2>终端美学。<br>等宽全篇。<br>密度拉满。</h2>
+        <p class="desc">
+          monospace 全篇 · box-drawing 边框 · 终端配色 (绿 / 琥珀 / 红 / 青)。
+          F1-F5 快捷键切 tab。
+          硬核 ops 风格，一屏装最多信息。
+        </p>
+        <ul class="traits">
+          <li><span class="k">主色</span><span>终端 4 色 ANSI</span></li>
+          <li><span class="k">字体</span><span>ui-monospace 全篇</span></li>
+          <li><span class="k">主题</span><span>仅深色 (无浅色)</span></li>
+          <li><span class="k">密度</span><span>高 · 信息密度最大</span></li>
+        </ul>
+        <a class="cta" href="./dashboard-htop.html">
+          打开完整页面 <span class="arr">→</span>
+        </a>
+      </div>
+
+      <div class="preview-area">
+        <a href="./dashboard-htop.html" style="text-decoration:none;color:inherit">
+        <div class="preview-frame preview-htop">
+          <div class="titlebar"><i></i><i></i><i></i><span class="pathline">dashboard-htop.html</span></div>
+          <div class="preview-body">
 <pre>
 <span class="g">runai</span> router/v0.12-dev · <span class="c">u_a3f9b2c1d4</span> <span class="a">[admin]</span>
-─────────────────────────────────────────
-<span class="d">CALLS</span>     <span class="g">247</span>   +12% vs 昨
-<span class="d">HIT</span>       <span class="g">94%</span>   34%/q
-<span class="d">SKILL</span>     <span class="c">18</span>/24
-<span class="d">UPTIME</span>    03:42:18
-─────────────────────────────────────────
-02:14:32  <span class="c">deep-dive</span>     <span class="g">ok</span> 412ms
-02:13:08  <span class="c">html-any</span>     <span class="g">ok</span> 2.8s
-02:11:42  <span class="c">verify</span>        <span class="g">ok</span> 218ms
-02:03:48  <span class="c">lark-doc</span>   <span class="r">err</span>  30.0s
+─────────────────────────────────────────────────────────
+                                            CPU  3.2%
+[1] <span class="c">overview</span>  ▸  CALLS    <span class="g">247</span>   MEM  84M
+[2] skills        HIT      <span class="g">94%</span>   POD  ok
+[3] activity      SKILLS   <span class="c">18</span>/24  UP   03:42
+[4] settings      QUOTA    <span class="a">34%</span>
+[5] admin <span class="a">[*]</span>     EXEC/m   <span class="g">18</span>
+─────────────────────────────────────────────────────────
+
+02:14:32  <span class="c">deep-dive</span>      <span class="g">ok</span>    412ms   0 out
+02:13:08  <span class="c">html-anything</span>  <span class="g">ok</span>    2.8s    1 out
+02:11:42  <span class="c">verify</span>         <span class="g">ok</span>    218ms   0 out
+02:08:30  <span class="c">safety-guard</span>   <span class="g">ok</span>    186ms   0 out
+02:03:48  <span class="c">lark-doc</span>       <span class="r">err</span>   30.0s   timeout
 </pre>
+          </div>
+        </div>
+        </a>
       </div>
-      <div class="meta htop">
-        <span class="tag">htop / k9s-style</span>
-        <h2>终端美学 · 等宽 · 高密度</h2>
-        <p>monospace 全篇 · box-drawing 边框 · 终端配色（绿/琥珀/红/青）· F1-F5 切 tab。适合"我就是 ops"的硬核风格，密度最高，一屏装最多信息。</p>
-        <ul class="traits">
-          <li><b>主色</b>: 终端 4 色 ANSI palette</li>
-          <li><b>字体</b>: ui-monospace 全篇</li>
-          <li><b>主题</b>: 仅深色（无浅色模式）</li>
-          <li><b>密度</b>: 高 · 信息密度最大</li>
-        </ul>
-        <a class="btn" href="./dashboard-htop.html">查看完整页面 →</a>
+
+    </div>
+  </section>
+
+  <!-- ============ DECISION / NEXT ============ -->
+  <section class="decision">
+    <div class="eyebrow">挑完以后做什么</div>
+    <h3>选定方向后，<br>把它落到 <span style="color:var(--accent-2)">web/</span> 真实实现。</h3>
+    <p>
+      3 个 mockup 都是 self-contained HTML，双击直接在浏览器打开，
+      所有交互都能点。挑完风格再在 <code style="font-family:var(--mono);color:var(--accent-2);background:var(--bg-2);padding:2px 8px">feat/multiuser-server</code> 分支
+      接着把选中的方向落到 <code style="font-family:var(--mono);color:var(--accent-2);background:var(--bg-2);padding:2px 8px">web/index.html</code> 全量替换。
+    </p>
+
+    <div class="grid">
+      <div class="col">
+        <h4>spec 文档</h4>
+        <p>完整设计规范在 <code>docs/specs/2026-05-20-multiuser-sandbox-redesign.md</code>，
+        13 章 + 3 附录 + 完整 SQL schema + 改动范围。</p>
       </div>
-    </article>
+      <div class="col">
+        <h4>骨架代码</h4>
+        <p>新增 <code>src/core/{identity,auth,prefs,sandbox}.rs</code> + 28 个单元测试，
+        cargo build / test / clippy 全过，未接入既有调用链。</p>
+      </div>
+      <div class="col">
+        <h4>回滚锚点</h4>
+        <p>tag <code>pre-multiuser-redesign</code> + 长期分支
+        <code>backup/pre-multiuser-redesign</code> 已建好，
+        任何时候 <code>git checkout</code> 回去。</p>
+      </div>
+    </div>
+  </section>
 
-  </div>
+  <!-- ============ FOOTER ============ -->
+  <footer class="foot">
+    <span>runai · multi-user redesign mockups · 2026-05-20</span>
+    <span>
+      <a href="../2026-05-20-multiuser-sandbox-redesign.md">view spec</a>
+      &nbsp;·&nbsp;
+      <a href="https://github.com/Crosery/runai">github.com/crosery/runai</a>
+    </span>
+  </footer>
 
-  <div class="footer-note">
-    <h3>验收建议</h3>
-    <ul>
-      <li>每个 mockup 都是 self-contained HTML，<b>双击直接在浏览器打开</b>，无需 server。</li>
-      <li>tab 切换 / toggle 开关 / 主题切换 / 滑块 全部可交互（数据是 mock）。</li>
-      <li>Linear 和 Vercel 有 <code>theme toggle</code>，按你的偏好挑色；HTOP 只有深色（终端调性）。</li>
-      <li>挑完风格后在 <code>feat/multiuser-server</code> 分支接着把选中的方向落到 <code>web/index.html</code> 实现，<code>web/app.css</code> 全量替换。</li>
-      <li>3 个 mockup 共享同一份 mock 数据 / IA / 文案，差异纯粹在视觉。</li>
-    </ul>
-  </div>
+</main>
 
-</div>
 </body>
 </html>

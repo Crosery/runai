@@ -2,986 +2,2524 @@
 <html lang="zh">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>runai dashboard — Linear 风格</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>runai dashboard · linear</title>
 <style>
-  *,*::before,*::after{box-sizing:border-box}
-  html,body{margin:0;padding:0;height:100%}
-  body{
-    font-family: system-ui, -apple-system, "Segoe UI", "Helvetica Neue", sans-serif;
-    font-size:14px;
-    line-height:1.5;
-    color:#1f2328;
-    background:#fafbfc;
+  :root{
+    --serif:ui-serif,"New York","Iowan Old Style","Apple Garamond",Georgia,serif;
+    --sans:-apple-system,BlinkMacSystemFont,system-ui,"SF Pro Text","Helvetica Neue",sans-serif;
+    --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,monospace;
+  }
+
+  /* ============ THEMES ============
+     5 个浅色变体，主流 GitHub / dev IDE 风格
+     默认 github-light，body class 切换 */
+  body, body.theme-github{
+    --bg:#ffffff;
+    --bg-2:#f6f8fa;
+    --bg-3:#eaeef2;
+    --ink:#1f2328;
+    --ink-2:#656d76;
+    --ink-3:#8b949e;
+    --line:#d0d7de;
+    --line-soft:#eaeef2;
+    --accent:#0969da;
+    --accent-2:#1a7f37;
+    --warn:#9a6700;
+    --err:#cf222e;
+  }
+  body.theme-dimmed{
+    --bg:#f6f5f1;
+    --bg-2:#eeece5;
+    --bg-3:#e3e0d5;
+    --ink:#22252a;
+    --ink-2:#5b5f64;
+    --ink-3:#8a8e93;
+    --line:#d8d4c8;
+    --line-soft:#eae6da;
+    --accent:#bc4c00;
+    --accent-2:#1a7f37;
+    --warn:#9a6700;
+    --err:#cf222e;
+  }
+  body.theme-solarized{
+    --bg:#fdf6e3;
+    --bg-2:#eee8d5;
+    --bg-3:#e3dcbf;
+    --ink:#002b36;
+    --ink-2:#586e75;
+    --ink-3:#93a1a1;
+    --line:#d8d2bc;
+    --line-soft:#ede5c8;
+    --accent:#cb4b16;
+    --accent-2:#859900;
+    --warn:#b58900;
+    --err:#dc322f;
+  }
+  body.theme-ayu{
+    --bg:#fafafa;
+    --bg-2:#f3f3f3;
+    --bg-3:#e6e6e6;
+    --ink:#5c6166;
+    --ink-2:#828c99;
+    --ink-3:#abafb2;
+    --line:#dad8d6;
+    --line-soft:#ececec;
+    --accent:#ff8f40;
+    --accent-2:#399ee6;
+    --warn:#fa8d3e;
+    --err:#e65050;
+  }
+  body.theme-catppuccin{
+    --bg:#eff1f5;
+    --bg-2:#e6e9ef;
+    --bg-3:#dce0e8;
+    --ink:#4c4f69;
+    --ink-2:#6c6f85;
+    --ink-3:#9ca0b0;
+    --line:#bcc0cc;
+    --line-soft:#ccd0da;
+    --accent:#8839ef;
+    --accent-2:#40a02b;
+    --warn:#df8e1d;
+    --err:#d20f39;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  ::selection{background:var(--accent);color:#fff}
+  html,body{
+    font-family:var(--sans);
+    font-size:15px;line-height:1.55;
+    background:var(--bg);color:var(--ink);
     -webkit-font-smoothing:antialiased;
     text-rendering:optimizeLegibility;
-  }
-  body.dark{
-    color:#e6edf3;
-    background:#0a0b0d;
-  }
-  /* layout */
-  .app{display:grid;grid-template-columns:220px 1fr;grid-template-rows:52px 1fr;min-height:100vh}
-  .topbar{
-    grid-column:1 / -1;
-    display:flex;align-items:center;justify-content:space-between;
-    padding:0 20px;
-    border-bottom:1px solid #e5e7eb;
-    background:#fff;
-    z-index:10;
-  }
-  body.dark .topbar{background:#0d0f12;border-bottom-color:#22262d}
-  .brand{
-    display:flex;align-items:center;gap:10px;
-    font-weight:600;font-size:14px;letter-spacing:-0.01em;
-  }
-  .brand-dot{
-    width:18px;height:18px;border-radius:5px;
-    background:linear-gradient(135deg,#5e6ad2 0%,#7a86e0 100%);
-    display:inline-flex;align-items:center;justify-content:center;
-    color:#fff;font-size:10px;font-weight:700;
-  }
-  .brand span{color:#1f2328}
-  body.dark .brand span{color:#e6edf3}
-  .top-right{display:flex;align-items:center;gap:14px}
-  .user-id{
-    font-family: ui-monospace, "SF Mono", Menlo, monospace;
-    font-size:12px;
-    color:#656d76;
-    padding:4px 10px;
-    border:1px solid #e5e7eb;
-    border-radius:6px;
-    background:#f6f8fa;
-  }
-  body.dark .user-id{color:#9ba3ad;border-color:#22262d;background:#16181c}
-  .icon-btn{
-    width:30px;height:30px;
-    display:inline-flex;align-items:center;justify-content:center;
-    border:1px solid #e5e7eb;background:#fff;border-radius:6px;
-    color:#1f2328;cursor:pointer;padding:0;
-    font-size:14px;
-  }
-  body.dark .icon-btn{background:#0d0f12;border-color:#22262d;color:#e6edf3}
-  .icon-btn:hover{background:#f6f8fa}
-  body.dark .icon-btn:hover{background:#16181c}
-  .ghost-btn{
-    height:30px;padding:0 12px;
-    border:1px solid #e5e7eb;background:#fff;
-    border-radius:6px;color:#1f2328;cursor:pointer;
-    font-size:13px;font-family:inherit;
-  }
-  body.dark .ghost-btn{background:#0d0f12;border-color:#22262d;color:#e6edf3}
-  .ghost-btn:hover{background:#f6f8fa}
-  body.dark .ghost-btn:hover{background:#16181c}
-  .primary-btn{
-    height:30px;padding:0 12px;
-    border:1px solid #5e6ad2;background:#5e6ad2;
-    border-radius:6px;color:#fff;cursor:pointer;
-    font-size:13px;font-family:inherit;font-weight:500;
-  }
-  .primary-btn:hover{background:#525ec4}
-  .danger-btn{
-    height:30px;padding:0 12px;
-    border:1px solid #e5484d;background:transparent;
-    border-radius:6px;color:#e5484d;cursor:pointer;
-    font-size:13px;font-family:inherit;font-weight:500;
-  }
-  .danger-btn:hover{background:rgba(229,72,77,0.08)}
-
-  /* sidebar */
-  .sidebar{
-    border-right:1px solid #e5e7eb;
-    background:#fff;
-    padding:14px 10px;
-    display:flex;flex-direction:column;gap:2px;
-  }
-  body.dark .sidebar{background:#0d0f12;border-right-color:#22262d}
-  .nav-section{
-    text-transform:uppercase;
-    font-size:11px;letter-spacing:0.04em;
-    color:#8b949e;
-    padding:10px 10px 6px;
-  }
-  .nav-item{
-    display:flex;align-items:center;justify-content:space-between;
-    padding:7px 10px;border-radius:6px;
-    color:#1f2328;cursor:pointer;
-    font-size:13.5px;
-    transition:background 0.08s;
-  }
-  body.dark .nav-item{color:#e6edf3}
-  .nav-item:hover{background:#f3f4f6}
-  body.dark .nav-item:hover{background:#16181c}
-  .nav-item.active{
-    background:rgba(94,106,210,0.12);
-    color:#5e6ad2;
-    font-weight:500;
-  }
-  body.dark .nav-item.active{background:rgba(94,106,210,0.18);color:#9aa3eb}
-  .nav-item .nav-label{display:flex;align-items:center;gap:9px}
-  .nav-glyph{
-    width:14px;height:14px;
-    display:inline-flex;
-    align-items:center;justify-content:center;
-    opacity:0.65;
-  }
-  .nav-item.active .nav-glyph{opacity:1}
-  .admin-tag{
-    font-size:9px;
-    background:#fff7e6;
-    color:#a26a00;
-    padding:2px 5px;border-radius:3px;
-    text-transform:uppercase;letter-spacing:0.04em;
-    border:1px solid #f0d999;
-  }
-  body.dark .admin-tag{background:rgba(255,180,0,0.12);color:#f0c060;border-color:rgba(240,217,153,0.3)}
-
-  /* main */
-  .main{padding:24px 28px;overflow:auto}
-  .page-header{
-    display:flex;align-items:baseline;justify-content:space-between;
-    margin-bottom:20px;
-  }
-  .page-title{font-size:20px;font-weight:600;letter-spacing:-0.01em;margin:0}
-  .page-sub{font-size:13px;color:#656d76;margin:4px 0 0}
-  body.dark .page-sub{color:#9ba3ad}
-
-  /* metric cards */
-  .metric-row{
-    display:grid;grid-template-columns:repeat(4,1fr);gap:12px;
-    margin-bottom:24px;
-  }
-  .metric{
-    background:#fff;
-    border:1px solid #e5e7eb;
-    border-radius:8px;
-    padding:16px 18px;
-  }
-  body.dark .metric{background:#0d0f12;border-color:#22262d}
-  .metric-label{font-size:12px;color:#656d76;margin-bottom:8px}
-  body.dark .metric-label{color:#9ba3ad}
-  .metric-value{
-    font-size:24px;font-weight:600;
-    letter-spacing:-0.02em;
-    font-variant-numeric:tabular-nums;
-    line-height:1.2;
-  }
-  .metric-value .small{font-size:14px;color:#656d76;font-weight:500}
-  body.dark .metric-value .small{color:#9ba3ad}
-  .metric-delta{
-    font-size:12px;color:#656d76;margin-top:6px;
-    display:flex;align-items:center;gap:5px;
-  }
-  body.dark .metric-delta{color:#9ba3ad}
-  .delta-up{color:#1a7f37}
-  body.dark .delta-up{color:#3fb950}
-  .progress{
-    height:4px;background:#eaecef;
-    border-radius:2px;overflow:hidden;
-    margin-top:8px;
-  }
-  body.dark .progress{background:#22262d}
-  .progress-fill{
-    height:100%;background:#5e6ad2;
-    border-radius:2px;
-  }
-
-  /* panel */
-  .panel{
-    background:#fff;
-    border:1px solid #e5e7eb;
-    border-radius:8px;
-    margin-bottom:16px;
-  }
-  body.dark .panel{background:#0d0f12;border-color:#22262d}
-  .panel-head{
-    padding:14px 18px;
-    border-bottom:1px solid #e5e7eb;
-    display:flex;align-items:center;justify-content:space-between;
-  }
-  body.dark .panel-head{border-bottom-color:#22262d}
-  .panel-title{font-size:14px;font-weight:600;margin:0}
-  .panel-sub{font-size:12px;color:#656d76}
-  body.dark .panel-sub{color:#9ba3ad}
-  .panel-body{padding:18px}
-  .panel-body.flush{padding:0}
-
-  /* chart */
-  .chart-wrap{padding:8px 4px 0}
-  .chart{width:100%;height:200px;display:block}
-
-  /* table */
-  table.data{
-    width:100%;border-collapse:collapse;
-    font-size:13px;
-  }
-  table.data th{
-    text-align:left;
-    font-weight:500;
-    color:#656d76;
-    padding:10px 18px;
-    border-bottom:1px solid #e5e7eb;
-    font-size:12px;
-    text-transform:uppercase;letter-spacing:0.03em;
-  }
-  body.dark table.data th{color:#9ba3ad;border-bottom-color:#22262d}
-  table.data td{
-    padding:11px 18px;
-    border-bottom:1px solid #f3f4f6;
-    color:#1f2328;
-  }
-  body.dark table.data td{color:#e6edf3;border-bottom-color:#1a1d22}
-  table.data tr:last-child td{border-bottom:none}
-  table.data td.num,table.data th.num{text-align:right;font-variant-numeric:tabular-nums}
-  table.data tbody tr:hover{background:#f9fafb}
-  body.dark table.data tbody tr:hover{background:#13161a}
-  .skill-chip{
-    font-family: ui-monospace, "SF Mono", Menlo, monospace;
-    font-size:12px;color:#1f2328;
-  }
-  body.dark .skill-chip{color:#e6edf3}
-  .pill{
-    display:inline-block;
-    font-size:11px;
-    padding:2px 8px;
-    border-radius:10px;
-    font-weight:500;
-    text-transform:uppercase;letter-spacing:0.04em;
-    border:1px solid transparent;
-  }
-  .pill-ok{background:rgba(26,127,55,0.08);color:#1a7f37;border-color:rgba(26,127,55,0.2)}
-  .pill-warn{background:rgba(154,103,0,0.08);color:#9a6700;border-color:rgba(154,103,0,0.2)}
-  .pill-err{background:rgba(207,34,46,0.08);color:#cf222e;border-color:rgba(207,34,46,0.2)}
-  .pill-info{background:rgba(94,106,210,0.08);color:#5e6ad2;border-color:rgba(94,106,210,0.2)}
-  .pill-neutral{background:#f3f4f6;color:#656d76;border-color:#e5e7eb}
-  body.dark .pill-ok{background:rgba(63,185,80,0.12);color:#3fb950;border-color:rgba(63,185,80,0.25)}
-  body.dark .pill-warn{background:rgba(255,200,80,0.12);color:#e0af68;border-color:rgba(255,200,80,0.25)}
-  body.dark .pill-err{background:rgba(248,81,73,0.12);color:#f85149;border-color:rgba(248,81,73,0.25)}
-  body.dark .pill-info{background:rgba(154,163,235,0.12);color:#9aa3eb;border-color:rgba(154,163,235,0.25)}
-  body.dark .pill-neutral{background:#1a1d22;color:#9ba3ad;border-color:#22262d}
-
-  /* skills */
-  .filter-row{
-    display:flex;align-items:center;gap:10px;
-    margin-bottom:14px;
-  }
-  .input,.select{
-    height:32px;padding:0 10px;
-    border:1px solid #e5e7eb;background:#fff;
-    border-radius:6px;font-size:13px;color:#1f2328;
-    font-family:inherit;
-  }
-  body.dark .input,body.dark .select{background:#0d0f12;border-color:#22262d;color:#e6edf3}
-  .input:focus,.select:focus{
-    outline:none;
-    border-color:#5e6ad2;
-    box-shadow:0 0 0 3px rgba(94,106,210,0.16);
-  }
-  .input{min-width:240px}
-  .skill-list{
-    display:flex;flex-direction:column;
-  }
-  .skill-row{
-    display:grid;
-    grid-template-columns: 220px 1fr 100px 90px 60px;
-    align-items:center;
-    padding:14px 18px;
-    border-bottom:1px solid #f3f4f6;
-    gap:14px;
-    cursor:pointer;
-    transition:background 0.08s;
-  }
-  body.dark .skill-row{border-bottom-color:#1a1d22}
-  .skill-row:hover{background:#f9fafb}
-  body.dark .skill-row:hover{background:#13161a}
-  .skill-row:last-child{border-bottom:none}
-  .skill-name{
-    font-family: ui-monospace, "SF Mono", Menlo, monospace;
-    font-size:13px;font-weight:500;
-  }
-  .skill-desc{
-    color:#656d76;font-size:13px;
-    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
-  }
-  body.dark .skill-desc{color:#9ba3ad}
-  .skill-used{
-    color:#656d76;font-size:12px;
-    font-variant-numeric:tabular-nums;
-  }
-  body.dark .skill-used{color:#9ba3ad}
-
-  /* toggle switch */
-  .switch{
-    display:inline-block;
-    width:30px;height:18px;
-    background:#d1d5db;
-    border-radius:10px;
+    font-feature-settings:"ss01","ss02","cv11";
+    overflow-x:hidden;
     position:relative;
-    cursor:pointer;
-    transition:background 0.15s;
-    flex-shrink:0;
   }
-  body.dark .switch{background:#3a3f47}
-  .switch::after{
-    content:"";
-    position:absolute;left:2px;top:2px;
-    width:14px;height:14px;
-    background:#fff;border-radius:50%;
-    transition:transform 0.15s;
-    box-shadow:0 1px 2px rgba(0,0,0,0.15);
-  }
-  .switch.on{background:#5e6ad2}
-  .switch.on::after{transform:translateX(12px)}
+  a{color:inherit;text-decoration:none}
+  button{font:inherit;cursor:pointer}
 
-  /* timeline */
-  .timeline{display:flex;flex-direction:column}
-  .timeline-row{
-    display:grid;
-    grid-template-columns: 90px 160px 100px 90px 130px 1fr;
-    gap:14px;align-items:center;
-    padding:11px 18px;
-    border-bottom:1px solid #f3f4f6;
-    font-size:13px;
-  }
-  body.dark .timeline-row{border-bottom-color:#1a1d22}
-  .timeline-row:last-child{border-bottom:none}
-  .timeline-time{font-size:12px;color:#656d76;font-variant-numeric:tabular-nums}
-  body.dark .timeline-time{color:#9ba3ad}
-  .timeline-prompt{
-    color:#656d76;font-size:12.5px;
-    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
-  }
-  body.dark .timeline-prompt{color:#9ba3ad}
-
-  /* settings */
-  .settings-section{margin-bottom:24px}
-  .settings-section h3{
-    font-size:13px;font-weight:600;
-    color:#1f2328;
-    margin:0 0 12px;
-    text-transform:uppercase;letter-spacing:0.04em;
-  }
-  body.dark .settings-section h3{color:#e6edf3}
-  .settings-card{
-    background:#fff;border:1px solid #e5e7eb;border-radius:8px;
+  /* ============ AMBIENT MESH + CURSOR SPOTLIGHT ============
+     Stripe / Linear / Vercel 风格的极慢色斑漂移
+     - 3 个固定色斑慢漂 (60-90s 周期，几乎察觉不到)
+     - 无 opacity 脉动 (避免心跳感)
+     - 鼠标跟随 spotlight (cursor-aware glow)
+     - 不用 mix-blend-mode (避免在暖色主题上发脏)
+     - 颗粒噪点叠在最上，破除塑料感 */
+  .mesh{
+    position:fixed;inset:0;pointer-events:none;z-index:0;
     overflow:hidden;
   }
-  body.dark .settings-card{background:#0d0f12;border-color:#22262d}
-  .settings-row{
-    display:flex;align-items:center;justify-content:space-between;
-    padding:14px 18px;
-    border-bottom:1px solid #f3f4f6;
-    gap:16px;
-  }
-  body.dark .settings-row{border-bottom-color:#1a1d22}
-  .settings-row:last-child{border-bottom:none}
-  .settings-label{
-    font-size:13.5px;font-weight:500;color:#1f2328;
-    margin-bottom:3px;
-  }
-  body.dark .settings-label{color:#e6edf3}
-  .settings-hint{font-size:12px;color:#656d76}
-  body.dark .settings-hint{color:#9ba3ad}
-  .slider-wrap{
-    display:flex;align-items:center;gap:12px;
-  }
-  .slider{
-    appearance:none;
-    width:180px;height:4px;
-    background:#e5e7eb;
-    border-radius:2px;
-    outline:none;
-  }
-  body.dark .slider{background:#22262d}
-  .slider::-webkit-slider-thumb{
-    appearance:none;
-    width:16px;height:16px;
+  .mesh .blob{
+    position:absolute;
+    width:65vw;height:65vw;max-width:1000px;max-height:1000px;
     border-radius:50%;
-    background:#5e6ad2;
-    cursor:pointer;
-    border:2px solid #fff;
-    box-shadow:0 0 0 1px rgba(94,106,210,0.5);
+    filter:blur(120px);
+    opacity:0.18;
+    will-change:transform;
   }
-  body.dark .slider::-webkit-slider-thumb{border-color:#0d0f12}
-  .slider-value{
-    font-family:ui-monospace,"SF Mono",Menlo,monospace;
-    font-size:13px;
-    color:#1f2328;
-    min-width:18px;text-align:right;
+  .mesh .blob.a{
+    background:radial-gradient(circle,var(--accent) 0%,transparent 70%);
+    top:-22vw;left:-20vw;
+    animation:mesh-a 72s ease-in-out infinite alternate;
   }
-  body.dark .slider-value{color:#e6edf3}
+  .mesh .blob.b{
+    background:radial-gradient(circle,var(--accent-2) 0%,transparent 70%);
+    bottom:-22vw;right:-20vw;
+    animation:mesh-b 86s ease-in-out infinite alternate;
+  }
+  .mesh .blob.c{
+    background:radial-gradient(circle,var(--accent) 0%,transparent 70%);
+    top:50%;left:50%;
+    width:45vw;height:45vw;max-width:680px;max-height:680px;
+    opacity:0.10;
+    animation:mesh-c 96s ease-in-out infinite alternate;
+  }
+  @keyframes mesh-a{
+    0%  {transform:translate(0,0)}
+    100%{transform:translate(28vw,18vw)}
+  }
+  @keyframes mesh-b{
+    0%  {transform:translate(0,0)}
+    100%{transform:translate(-26vw,-16vw)}
+  }
+  @keyframes mesh-c{
+    0%  {transform:translate(-50%,-50%) scale(1)}
+    100%{transform:translate(-30%,-65%) scale(1.18)}
+  }
+  /* cursor spotlight — 跟随鼠标的柔光斑 */
+  .cursor-glow{
+    position:fixed;pointer-events:none;z-index:0;
+    width:520px;height:520px;border-radius:50%;
+    background:radial-gradient(circle,var(--accent) 0%,transparent 60%);
+    opacity:0.10;
+    filter:blur(70px);
+    left:var(--mx,50vw);top:var(--my,50vh);
+    transform:translate(-50%,-50%);
+    transition:left 0.6s cubic-bezier(.2,.7,.3,1),top 0.6s cubic-bezier(.2,.7,.3,1);
+    will-change:left,top;
+  }
+  /* 颗粒噪点 — 极轻 SVG 数据 URL，破除塑料感 */
+  .mesh::after{
+    content:"";position:absolute;inset:0;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' seed='3'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.5 0'/></filter><rect width='120' height='120' filter='url(%23n)'/></svg>");
+    background-size:120px 120px;
+    opacity:0.04;
+    pointer-events:none;
+  }
+  body.dark .mesh .blob{opacity:0.14}
+  body.dark .mesh .blob.c{opacity:0.08}
+  body.dark .mesh::after{opacity:0.08}
+  @media (prefers-reduced-motion:reduce){
+    .mesh .blob,.cursor-glow{animation:none;transition:none}
+  }
 
-  .quota-grid{
-    display:grid;grid-template-columns:1fr 1fr;gap:18px;
-    padding:18px;
+  /* ============ CUSTOM CURSOR ============
+     隐藏原生指针，用 dot + lagging ring 替代
+     pointer:fine 才启用 (触屏设备退回原生) */
+  @media (pointer:fine){
+    *,*::before,*::after{cursor:none !important}
+    input[type=text],input:not([type]),textarea,[contenteditable]{
+      cursor:text !important;
+    }
   }
-  .quota-item{}
-  .quota-head{
-    display:flex;align-items:baseline;justify-content:space-between;
-    margin-bottom:6px;
+  /* ============ CURSOR STATE SYSTEM ============
+     10 个状态：rest / hover-default / primary / danger / deep / toggle /
+                theme(dynamic) / disabled / click / text-input(hide)
+     每个 intent 用 CSS 变量控制颜色 + ring 尺寸 + glow，
+     JS 切换 .intent-* class */
+  .cursor-arrow{
+    position:fixed;top:0;left:0;
+    pointer-events:none;z-index:9999;
+    transition:opacity 0.2s,filter 0.18s;
+    will-change:transform;
+    filter:drop-shadow(0 2px 3px rgba(0,0,0,0.22));
+    --c-fill:var(--ink);
+    --c-stroke:var(--ink);
+    --c-tip:var(--bg);
+    --c-tip-opacity:0.6;
+    --c-tip-r:0.7;
   }
-  .quota-label{font-size:13px;color:#1f2328;font-weight:500}
-  body.dark .quota-label{color:#e6edf3}
-  .quota-value{
-    font-family:ui-monospace,"SF Mono",Menlo,monospace;
-    font-size:12px;color:#656d76;
+  .cursor-arrow svg{display:block;width:18px;height:18px;overflow:visible}
+  .cursor-arrow .halo{
+    fill:none;stroke:var(--bg);
+    stroke-width:4.5;stroke-linejoin:round;stroke-linecap:round;
+    transition:stroke 0.18s;
+  }
+  .cursor-arrow .body{
+    fill:var(--c-fill);stroke:var(--c-stroke);
+    stroke-width:2.8;stroke-linejoin:round;stroke-linecap:round;
+    transition:fill 0.22s,stroke 0.22s,transform 0.12s cubic-bezier(.2,.7,.3,1);
+    transform-origin:2px 2px;
+  }
+  .cursor-arrow .tip{
+    fill:var(--c-tip);opacity:var(--c-tip-opacity);
+    transition:r 0.22s cubic-bezier(.2,.7,.3,1),
+               opacity 0.18s,fill 0.18s;
+    r:var(--c-tip-r);
+  }
+
+  /* 拖滞光晕环 */
+  .cursor-ring{
+    position:fixed;top:0;left:0;
+    width:var(--r-size,32px);height:var(--r-size,32px);
+    border:var(--r-stroke,1px) solid var(--r-color,var(--ink));
+    border-radius:50%;
+    pointer-events:none;z-index:9998;
+    transform:translate(-50%,-50%);
+    transition:width 0.26s cubic-bezier(.2,.7,.3,1),
+               height 0.26s cubic-bezier(.2,.7,.3,1),
+               border-color 0.22s,border-width 0.18s,opacity 0.2s,
+               background 0.22s;
+    will-change:transform;
+    opacity:var(--r-opacity,0.4);mix-blend-mode:multiply;
+  }
+  .cursor-arrow.hide,.cursor-ring.hide,.cursor-label.hide{opacity:0}
+
+  /* ====== rest (default) ====== */
+  /* 不加任何 intent class 时即 rest 状态：ink 三角 + 隐藏 ring */
+  .cursor-ring{--r-size:0px;--r-opacity:0}
+
+  /* ====== intent-default: a, button, .nav-item 通用可点 ====== */
+  .cursor-arrow.intent-default{
+    --c-fill:var(--accent);--c-stroke:var(--accent);
+    --c-tip:#fff;--c-tip-opacity:1;--c-tip-r:1.4;
+  }
+  .cursor-ring.intent-default{
+    --r-size:48px;--r-opacity:0.55;
+    --r-color:var(--accent);--r-stroke:1px;
+    background:radial-gradient(circle,rgba(0,0,0,0.04) 0%,transparent 70%);
+  }
+
+  /* ====== intent-primary: CTA / .btn.primary / .dd-opt 关键动作 ====== */
+  .cursor-arrow.intent-primary{
+    --c-fill:var(--accent);--c-stroke:var(--accent);
+    --c-tip:#fff;--c-tip-opacity:1;--c-tip-r:1.6;
+  }
+  .cursor-ring.intent-primary{
+    --r-size:60px;--r-opacity:0.7;
+    --r-color:var(--accent);--r-stroke:1.5px;
+    background:radial-gradient(circle,rgba(0,0,0,0.05) 0%,transparent 65%);
+  }
+
+  /* ====== intent-danger: .btn.danger, disable / 高风险 ====== */
+  .cursor-arrow.intent-danger{
+    --c-fill:var(--err);--c-stroke:var(--err);
+    --c-tip:#fff;--c-tip-opacity:1;--c-tip-r:1.5;
+  }
+  .cursor-ring.intent-danger{
+    --r-size:54px;--r-opacity:0.65;
+    --r-color:var(--err);--r-stroke:1.5px;
+    background:radial-gradient(circle,rgba(207,34,46,0.08) 0%,transparent 65%);
+  }
+
+  /* ====== intent-deep: skill row / drill-in / inspect 深钻探 ====== */
+  .cursor-arrow.intent-deep{
+    --c-fill:var(--accent);--c-stroke:var(--accent);
+    --c-tip:#fff;--c-tip-opacity:1;--c-tip-r:1.6;
+  }
+  .cursor-ring.intent-deep{
+    --r-size:68px;--r-opacity:0.5;
+    --r-color:var(--accent);--r-stroke:1px;
+    background:radial-gradient(circle,rgba(0,0,0,0.045) 0%,transparent 60%);
+  }
+
+  /* ====== intent-toggle: switch 开关，反馈轻 ====== */
+  .cursor-arrow.intent-toggle{
+    --c-fill:var(--ink);--c-stroke:var(--ink);
+    --c-tip:var(--accent);--c-tip-opacity:1;--c-tip-r:1.3;
+  }
+  .cursor-ring.intent-toggle{
+    --r-size:36px;--r-opacity:0.45;
+    --r-color:var(--ink-2);
+  }
+
+  /* ====== intent-theme: swatch hover，三角变那个主题色（预览）====== */
+  .cursor-arrow.intent-theme{
+    --c-fill:var(--swatch-c,var(--accent));
+    --c-stroke:var(--swatch-c,var(--accent));
+    --c-tip:#fff;--c-tip-opacity:1;--c-tip-r:1.5;
+  }
+  .cursor-ring.intent-theme{
+    --r-size:48px;--r-opacity:0.65;
+    --r-color:var(--swatch-c,var(--accent));
+  }
+
+  /* ====== intent-disabled: hover 在禁用元素上，淡灰 ====== */
+  .cursor-arrow.intent-disabled{
+    --c-fill:var(--ink-3);--c-stroke:var(--ink-3);
+    --c-tip:transparent;--c-tip-opacity:0;
+  }
+  .cursor-ring.intent-disabled{
+    --r-size:28px;--r-opacity:0.25;
+    --r-color:var(--ink-3);
+  }
+
+  /* ====== click feedback ====== */
+  .cursor-arrow.click .body{transform:scale(0.86)}
+  .cursor-ring.click{
+    --r-size:22px;--r-opacity:0.85;
+    --r-stroke:1.5px;
+  }
+
+  /* 上下文 label — 跟随手指、hover 时浮现，告诉你做什么 */
+  .cursor-label{
+    position:fixed;top:0;left:0;
+    pointer-events:none;z-index:9999;
+    font-family:var(--mono);font-size:10px;
+    letter-spacing:0.16em;text-transform:uppercase;
+    color:var(--bg);background:var(--ink);
+    padding:5px 9px;
+    transform:translate(18px,18px);
+    opacity:0;
+    transition:opacity 0.18s cubic-bezier(.2,.7,.3,1);
+    will-change:transform;
+    white-space:nowrap;
+  }
+  .cursor-label.visible{opacity:1}
+  .cursor-label.accent{background:var(--accent);color:#fff}
+
+  @media (pointer:coarse){
+    .cursor-arrow,.cursor-ring,.cursor-label{display:none}
+  }
+  @media (prefers-reduced-motion:reduce){
+    .cursor-ring{transition:opacity 0.15s,background 0.15s,border-color 0.15s}
+  }
+
+  /* 进入文本输入语境时整套 custom cursor 让位给原生 I-beam，避免双指针冲突 */
+  body.text-cursor .cursor-arrow,
+  body.text-cursor .cursor-ring,
+  body.text-cursor .cursor-label{
+    opacity:0 !important;
+    transition:opacity 0.12s ease;
+  }
+  body.text-cursor input,
+  body.text-cursor textarea,
+  body.text-cursor [contenteditable]{
+    cursor:text !important;
+  }
+
+  /* ============ LAYOUT ============ */
+  .shell{display:grid;grid-template-rows:auto 1fr;min-height:100vh;position:relative;z-index:1}
+
+  /* ============ TOP BAR ============ */
+  header.bar{
+    display:flex;align-items:center;justify-content:space-between;
+    padding:18px 36px;
+    border-bottom:1px solid var(--line);
+  }
+  header.bar .brand{display:flex;align-items:baseline;gap:14px}
+  header.bar .brand b{
+    font-family:var(--serif);
+    font-style:italic;font-weight:500;
+    font-size:24px;letter-spacing:-0.01em;
+    color:var(--ink);
+  }
+  header.bar .brand .crumb{
+    font-family:var(--mono);font-size:11px;
+    letter-spacing:0.12em;text-transform:uppercase;
+    color:var(--ink-3);
+  }
+  header.bar .right{display:flex;align-items:center;gap:24px;font-family:var(--mono);font-size:12px;color:var(--ink-2)}
+  header.bar .user{
+    color:var(--ink-2);background:transparent;
+    padding:0;border:none;letter-spacing:0.02em;
+  }
+  header.bar .user b{color:var(--ink);font-weight:500}
+  header.bar .role{color:var(--accent);margin-left:6px}
+  header.bar button{
+    background:transparent;border:none;
+    padding:4px 0;color:var(--ink-2);
+    font-family:var(--mono);font-size:11px;
+    letter-spacing:0.12em;text-transform:uppercase;
+    border-bottom:1px solid transparent;
+    transition:color 0.15s,border-color 0.15s;
+  }
+  header.bar button:hover{color:var(--ink);border-bottom-color:var(--ink)}
+  /* theme swatch picker */
+  header.bar .swatches{
+    display:flex;align-items:center;gap:8px;
+    padding:0 14px;border-left:1px solid var(--line);border-right:1px solid var(--line);
+    height:18px;
+  }
+  header.bar .swatch{
+    width:12px;height:12px;border-radius:50%;
+    padding:0;border:none;cursor:pointer;
+    position:relative;
+    transition:transform 0.18s cubic-bezier(.2,.7,.3,1);
+  }
+  header.bar .swatch:hover{transform:scale(1.25)}
+  header.bar .swatch.active::after{
+    content:"";position:absolute;
+    inset:-4px;border-radius:50%;
+    border:1px solid currentColor;
+    opacity:0.6;
+  }
+  header.bar .swatch[data-theme="github"]    {background:#0969da;color:#0969da}
+  header.bar .swatch[data-theme="dimmed"]    {background:#bc4c00;color:#bc4c00}
+  header.bar .swatch[data-theme="solarized"] {background:#cb4b16;color:#cb4b16}
+  header.bar .swatch[data-theme="ayu"]       {background:#ff8f40;color:#ff8f40}
+  header.bar .swatch[data-theme="catppuccin"]{background:#8839ef;color:#8839ef}
+
+  /* ============ BODY ============ */
+  .body-wrap{display:grid;grid-template-columns:200px 1fr;min-height:0}
+
+  /* sidebar */
+  aside.side{
+    border-right:1px solid var(--line);
+    padding:30px 0;
+  }
+  aside.side .group-label{
+    font-family:var(--mono);font-size:10px;
+    letter-spacing:0.16em;text-transform:uppercase;
+    color:var(--ink-3);
+    padding:0 28px 12px;
+  }
+  aside.side .nav{padding:0 14px}
+  aside.side .nav a{
+    display:flex;justify-content:space-between;align-items:baseline;
+    padding:11px 14px;
+    color:var(--ink-2);font-size:15px;font-weight:500;letter-spacing:-0.005em;
+    border-radius:6px;
+  }
+  aside.side .nav a:hover{color:var(--ink);background:var(--bg-2)}
+  aside.side .nav a.active{
+    color:var(--ink);background:var(--bg-2);
+  }
+  aside.side .nav a.active::after{
+    content:"";display:inline-block;width:6px;height:6px;border-radius:50%;
+    background:var(--accent);
+    align-self:center;
+  }
+  aside.side .nav a .key{
+    font-family:var(--mono);font-size:11px;color:var(--ink-3);
+    letter-spacing:0.04em;
+  }
+  aside.side .nav a.active .key{color:var(--ink-2)}
+  /* admin nav 项除了文字本身不加任何装饰，让它跟普通 nav 一致 */
+
+  aside.side .live-strip{
+    margin:24px 28px 0;padding-top:20px;
+    border-top:1px solid var(--line);
+    font-family:var(--mono);font-size:11px;
+    color:var(--ink-3);letter-spacing:0.05em;
+  }
+  aside.side .live-strip .row{
+    display:flex;justify-content:space-between;padding:5px 0;
+  }
+  aside.side .live-strip .v{color:var(--ink)}
+  aside.side .live-strip .dot{
+    display:inline-block;width:6px;height:6px;border-radius:50%;
+    background:var(--accent-2);
+    box-shadow:0 0 0 0 var(--accent-2);
+    animation:pulse 2s infinite;
+    margin-right:6px;vertical-align:middle;
+  }
+  @keyframes pulse{
+    0%{box-shadow:0 0 0 0 rgba(10,111,62,0.55)}
+    70%{box-shadow:0 0 0 6px rgba(10,111,62,0)}
+    100%{box-shadow:0 0 0 0 rgba(10,111,62,0)}
+  }
+
+  /* main */
+  main.main{padding:60px 64px 120px;overflow-x:auto;max-width:1440px}
+  .tab{display:none}
+  .tab.active{display:block}
+
+  /* ============ TAB: OVERVIEW ============ */
+  .hero-grid{
+    display:grid;
+    grid-template-columns:1.6fr 1fr;
+    gap:80px;
+    align-items:start;
+    margin-bottom:120px;
+  }
+
+  .hero-main .eyebrow{
+    font-family:var(--mono);font-size:11px;
+    letter-spacing:0.18em;text-transform:uppercase;
+    color:var(--ink-3);
+    margin-bottom:24px;
+    display:flex;align-items:center;gap:14px;
+  }
+  .hero-main .eyebrow::before{
+    content:"";width:36px;height:1px;background:var(--accent);
+  }
+
+  .hero-main h1{
+    font-family:var(--serif);
+    font-size:clamp(96px,12vw,168px);
+    font-weight:300;
+    font-style:italic;
+    letter-spacing:-0.045em;
+    line-height:0.86;
+    margin-bottom:18px;
+    color:var(--ink);
+  }
+  .hero-main .h1-tail{
+    font-family:var(--sans);
+    font-style:normal;font-weight:700;
+    color:var(--accent);
+    font-size:0.18em;
+    letter-spacing:0.12em;
+    vertical-align:0.6em;
+    margin-left:8px;
+  }
+
+  .hero-main .label{
+    font-size:17px;color:var(--ink-2);
+    margin-bottom:48px;letter-spacing:-0.005em;
+    max-width:520px;line-height:1.6;
+  }
+  .hero-main .label b{color:var(--ink);font-weight:600}
+
+  .hero-strip{
+    display:grid;grid-template-columns:repeat(3,1fr);
+    border-top:1px solid var(--line);
+    padding-top:36px;
+    gap:8px;
+  }
+  .hero-strip .cell{
+    padding-right:28px;
+    position:relative;
+  }
+  .hero-strip .cell + .cell{
+    border-left:1px solid var(--line-soft);
+    padding-left:28px;
+  }
+  .hero-strip .n{
+    font-family:var(--serif);font-weight:400;
+    font-size:46px;line-height:1;letter-spacing:-0.02em;
+    color:var(--ink);
+    font-variant-numeric:lining-nums tabular-nums;
+  }
+  .hero-strip .n em{font-style:italic;color:var(--accent)}
+  .hero-strip .lbl{
+    font-family:var(--mono);font-size:10px;
+    letter-spacing:0.16em;text-transform:uppercase;
+    color:var(--ink-3);margin-top:14px;
+  }
+  .hero-strip .delta{
+    font-family:var(--mono);font-size:11px;
+    color:var(--accent-2);margin-top:3px;
+  }
+  .hero-strip .delta.warn{color:var(--warn)}
+
+  /* live stream */
+  .live-stream{
+    border-left:1px solid var(--line);
+    padding-left:32px;
+    min-height:380px;
+  }
+  .live-stream .stream-head{
+    font-family:var(--mono);font-size:11px;
+    letter-spacing:0.16em;text-transform:uppercase;
+    color:var(--ink-3);margin-bottom:18px;
+    display:flex;justify-content:space-between;
+  }
+  .live-stream .stream-head .live{
+    color:var(--accent-2);display:flex;align-items:center;gap:6px;
+  }
+  .live-stream .stream-head .live i{
+    width:5px;height:5px;border-radius:50%;background:var(--accent-2);
+    animation:blink 1.4s infinite;
+  }
+  @keyframes blink{50%{opacity:0.2}}
+  .stream-item{
+    display:grid;
+    grid-template-columns:62px 1fr auto;
+    align-items:baseline;
+    gap:14px;
+    padding:14px 0;
+    border-bottom:1px solid var(--line-soft);
+  }
+  .stream-item:last-child{border-bottom:none}
+  .stream-item .ts{
+    font-family:var(--mono);font-size:11px;
+    color:var(--ink-3);letter-spacing:0.02em;
+  }
+  .stream-item .nm{
+    font-family:var(--serif);font-style:italic;font-weight:500;
+    font-size:17px;color:var(--ink);letter-spacing:-0.005em;
+  }
+  .stream-item .dur{
+    font-family:var(--mono);font-size:11px;
+    color:var(--ink-3);
+  }
+  .stream-item.err .ts,.stream-item.err .dur{color:var(--err)}
+
+  /* Admin top-users — 不复用 stream-item，独立布局避免 user_id 过长撞列 */
+  .top-users{
+    border-left:1px solid var(--line);
+    padding-left:32px;
+    min-height:380px;
+  }
+  .top-users .stream-head{
+    font-family:var(--mono);font-size:11px;
+    letter-spacing:0.16em;text-transform:uppercase;
+    color:var(--ink-3);margin-bottom:18px;
+    display:flex;justify-content:space-between;
+  }
+  .top-users .stream-head .live{
+    color:var(--accent-2);display:flex;align-items:center;gap:6px;
+  }
+  .top-users .stream-head .live i{
+    width:5px;height:5px;border-radius:50%;background:var(--accent-2);
+    animation:blink 1.4s infinite;
+  }
+  .tu-row{
+    display:grid;
+    grid-template-columns:24px 1fr auto;
+    gap:16px;align-items:baseline;
+    padding:14px 0;
+    border-bottom:1px solid var(--line-soft);
+    color:inherit;text-decoration:none;
+    transition:padding-left 0.18s cubic-bezier(.2,.7,.3,1);
+  }
+  .tu-row:last-child{border-bottom:none}
+  .tu-row:hover{padding-left:8px}
+  .tu-row .tu-rank{
+    font-family:var(--mono);font-size:11px;color:var(--ink-3);
+    letter-spacing:0.04em;
+  }
+  .tu-row .tu-id{
+    font-family:var(--mono);font-size:13px;color:var(--ink);
+    letter-spacing:0;
+  }
+  .tu-row .tu-id small{
+    display:block;
+    font-family:var(--mono);font-size:10px;
+    color:var(--ink-3);
+    margin-top:4px;
+    letter-spacing:0.12em;text-transform:uppercase;
+  }
+  .tu-row .tu-calls{
+    font-family:var(--serif);font-style:italic;font-weight:400;
+    font-size:22px;color:var(--ink);letter-spacing:-0.01em;
+    font-variant-numeric:lining-nums tabular-nums;
+  }
+
+  /* Admin Top skills — 简洁三段式：rank / name + desc / users / calls */
+  .top-skills{border-top:1px solid var(--line)}
+  .ts-row{
+    display:grid;
+    grid-template-columns:36px 1fr 110px 80px;
+    gap:24px;align-items:baseline;
+    padding:22px 0;
+    border-bottom:1px solid var(--line-soft);
+  }
+  .ts-row .ts-rank{
+    font-family:var(--mono);font-size:11px;color:var(--ink-3);
+    letter-spacing:0.04em;font-variant-numeric:tabular-nums;
+  }
+  .ts-row .ts-name{
+    font-family:var(--serif);font-style:italic;font-weight:500;
+    font-size:22px;color:var(--ink);letter-spacing:-0.01em;
+    line-height:1.2;
+  }
+  .ts-row .ts-name em{
+    display:block;
+    font-family:var(--sans);font-style:normal;font-weight:400;
+    font-size:13.5px;color:var(--ink-3);
+    margin-top:5px;letter-spacing:0;line-height:1.45;
+  }
+  .ts-row .ts-users{
+    font-family:var(--mono);font-size:11px;color:var(--ink-3);
+    letter-spacing:0.08em;text-transform:uppercase;
+    text-align:right;
+  }
+  .ts-row .ts-calls{
+    font-family:var(--serif);font-style:italic;font-weight:400;
+    font-size:24px;color:var(--ink);letter-spacing:-0.015em;
+    text-align:right;font-variant-numeric:lining-nums tabular-nums;
+  }
+  .ts-row.warn .ts-name em{color:var(--warn)}
+  .ts-row.warn .ts-calls{color:var(--warn)}
+
+  /* big chart */
+  .chart-block{
+    margin-bottom:120px;
+    border-top:1px solid var(--line);
+    padding-top:44px;
+  }
+  .chart-block .head{
+    display:flex;justify-content:space-between;align-items:baseline;
+    margin-bottom:32px;
+  }
+  .chart-block .head h2{
+    font-family:var(--serif);
+    font-size:44px;font-weight:300;font-style:italic;
+    letter-spacing:-0.03em;color:var(--ink);
+  }
+  .chart-block .head .meta{
+    font-family:var(--mono);font-size:11px;
+    letter-spacing:0.12em;text-transform:uppercase;color:var(--ink-3);
+  }
+  .chart-wrap{
+    height:240px;width:100%;position:relative;
+  }
+  .chart-wrap svg{width:100%;height:100%}
+  .chart-wrap .area-stroke{
+    fill:none;stroke:var(--accent);stroke-width:1.6;
+  }
+  .chart-wrap .area-fill{
+    fill:var(--accent);fill-opacity:0.08;
+  }
+  .chart-wrap .grid line{stroke:var(--line);stroke-dasharray:2 4}
+  .chart-wrap .axis text{
+    fill:var(--ink-3);font-family:var(--mono);font-size:11px;
+    letter-spacing:0.08em;
+  }
+
+  /* recent table */
+  .recent-block{margin-bottom:24px}
+  .recent-block .head{
+    display:flex;justify-content:space-between;align-items:baseline;
+    margin-bottom:32px;
+    border-top:1px solid var(--line);padding-top:44px;
+  }
+  .recent-block .head h2{
+    font-family:var(--serif);
+    font-size:44px;font-weight:300;font-style:italic;
+    letter-spacing:-0.03em;color:var(--ink);
+  }
+  .recent-block .head .meta{
+    font-family:var(--mono);font-size:11px;
+    letter-spacing:0.12em;text-transform:uppercase;color:var(--ink-3);
+  }
+  .recent-list{border-top:1px solid var(--line)}
+  .recent-row{
+    display:grid;
+    grid-template-columns:80px 1fr 100px 80px 90px 50px;
+    gap:24px;align-items:baseline;
+    padding:22px 0;
+    border-bottom:1px solid var(--line-soft);
+  }
+  .recent-row .ts{font-family:var(--mono);font-size:12px;color:var(--ink-3)}
+  .recent-row .nm{
+    font-family:var(--serif);font-style:italic;font-weight:500;
+    font-size:20px;color:var(--ink);letter-spacing:-0.005em;
+  }
+  .recent-row .nm small{
+    display:block;font-family:var(--sans);font-style:normal;font-weight:400;
+    font-size:13px;color:var(--ink-3);margin-top:3px;letter-spacing:0;
+  }
+  .recent-row .mode{
+    font-family:var(--mono);font-size:11px;
+    letter-spacing:0.08em;text-transform:uppercase;
+  }
+  .recent-row .mode.c{color:var(--accent)}
+  .recent-row .mode.e{color:var(--accent-2)}
+  .recent-row .dur{font-family:var(--mono);font-size:14px;color:var(--ink-2);text-align:right;font-variant-numeric:tabular-nums}
+  .recent-row .out{font-family:var(--mono);font-size:11px;color:var(--ink-3);text-align:right;letter-spacing:0.08em;text-transform:uppercase}
+  .recent-row .st{
+    font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:0.08em;
+    text-align:right;
+  }
+  .recent-row .st.ok{color:var(--accent-2)}
+  .recent-row .st.err{color:var(--err)}
+
+  /* ============ TAB: SKILLS ============ */
+  .tab-head{
+    display:flex;justify-content:space-between;align-items:baseline;
+    margin-bottom:64px;
+    padding-top:8px;
+  }
+  .tab-head h1{
+    font-family:var(--serif);
+    font-size:84px;font-weight:300;font-style:italic;
+    letter-spacing:-0.04em;line-height:1;color:var(--ink);
+  }
+  .tab-head h1 em{
+    font-style:normal;font-weight:700;font-size:0.4em;
+    color:var(--accent);
+    letter-spacing:0.04em;
+    vertical-align:0.6em;
+    margin-left:14px;
+    font-family:var(--mono);
+  }
+  .tab-head .meta-line{
+    font-family:var(--mono);font-size:11px;
+    letter-spacing:0.14em;text-transform:uppercase;color:var(--ink-3);
+    text-align:right;
+  }
+  .tab-head .meta-line b{color:var(--ink)}
+
+  .filterbar{
+    display:flex;gap:24px;margin-bottom:36px;
+    padding:18px 0;
+    border-top:1px solid var(--line);border-bottom:1px solid var(--line);
+    align-items:center;
+  }
+  .filterbar input,.filterbar select{
+    background:transparent;border:none;
+    font-family:var(--sans);font-size:15px;
+    color:var(--ink);padding:4px 0;
+    border-bottom:1px dotted var(--line);
+    flex:1;min-width:0;letter-spacing:-0.005em;
+  }
+  .filterbar input::placeholder{color:var(--ink-3)}
+  .filterbar input:focus,.filterbar select:focus{outline:none;border-bottom:1px solid var(--ink);border-bottom-style:solid}
+  .filterbar select{
+    flex:0 0 180px;
+    font-family:var(--mono);font-size:12px;letter-spacing:0.04em;
+    -webkit-appearance:none;appearance:none;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'><path d='M1 1l5 6 5-6' stroke='%238a857d' stroke-width='1.5' fill='none' stroke-linecap='round'/></svg>");
+    background-repeat:no-repeat;
+    background-position:right 2px center;
+    background-size:10px;
+    padding-right:18px;
+    cursor:pointer;
+  }
+  body.dark .filterbar select{
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'><path d='M1 1l5 6 5-6' stroke='%23a5a098' stroke-width='1.5' fill='none' stroke-linecap='round'/></svg>");
+  }
+  .filterbar label{font-family:var(--mono);font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:var(--ink-3)}
+
+  /* ============ CUSTOM DROPDOWN ============
+     原生 <select> 点开后是 OS 浮层，CSS 改不动样式。
+     这里用自建按钮 + 浮层完整融入页面视觉。 */
+  .dropdown{position:relative;display:inline-block}
+  .dropdown.fluid{flex:0 0 180px}
+  .dropdown-trigger{
+    background:transparent;border:none;
+    border-bottom:1px dotted var(--line);
+    padding:4px 0;width:100%;
+    font-family:var(--mono);font-size:12px;
+    letter-spacing:0.04em;color:var(--ink);
+    cursor:pointer;
+    display:flex;justify-content:space-between;align-items:center;gap:14px;
+    transition:border-bottom-color 0.15s;
+  }
+  .dropdown-trigger .dd-chev{
+    width:9px;height:9px;display:inline-block;
+    border-right:1px solid var(--ink-3);
+    border-bottom:1px solid var(--ink-3);
+    transform:rotate(45deg);margin-top:-3px;
+    transition:transform 0.18s cubic-bezier(.2,.7,.3,1),border-color 0.18s;
+  }
+  .dropdown.open .dropdown-trigger{
+    border-bottom:1px solid var(--ink);
+    border-bottom-style:solid;
+  }
+  .dropdown.open .dropdown-trigger .dd-chev{
+    transform:rotate(-135deg);margin-top:3px;
+    border-color:var(--ink);
+  }
+  .dropdown-menu{
+    position:absolute;top:calc(100% + 10px);left:0;
+    min-width:max(100%, 220px);
+    background:var(--bg);
+    border-top:1px solid var(--ink);
+    z-index:100;
+    padding:4px 0;
+    opacity:0;transform:translateY(-6px);
+    pointer-events:none;
+    transition:opacity 0.18s cubic-bezier(.2,.7,.3,1),
+               transform 0.18s cubic-bezier(.2,.7,.3,1);
+  }
+  .dropdown.open .dropdown-menu{
+    opacity:1;transform:translateY(0);
+    pointer-events:auto;
+  }
+  .dropdown-menu .dd-opt{
+    display:flex;align-items:baseline;gap:10px;
+    width:100%;text-align:left;
+    background:transparent;border:none;
+    padding:9px 16px;
+    font-family:var(--mono);font-size:12px;
+    color:var(--ink-2);letter-spacing:0.04em;
+    cursor:pointer;
+    border-bottom:1px solid var(--line-soft);
+    transition:background 0.12s,color 0.12s,padding-left 0.18s;
+  }
+  .dropdown-menu .dd-opt:last-child{border-bottom:none}
+  .dropdown-menu .dd-opt:hover{
+    background:var(--bg-2);color:var(--ink);
+    padding-left:22px;
+  }
+  .dropdown-menu .dd-opt.active{color:var(--accent)}
+  .dropdown-menu .dd-opt.active::before{
+    content:"→";color:var(--accent);
+    font-family:var(--mono);margin-right:2px;
+  }
+  .dropdown-menu .dd-opt:not(.active)::before{
+    content:"";width:14px;display:inline-block;
+  }
+
+  .skill-rows .row{
+    display:grid;
+    grid-template-columns:48px 1fr 120px 80px 90px 60px;
+    gap:20px;
+    align-items:baseline;
+    padding:28px 0;
+    border-bottom:1px solid var(--line-soft);
+    cursor:pointer;
+  }
+  .skill-rows .row .idx{
+    font-family:var(--mono);font-size:11px;color:var(--ink-3);
+    letter-spacing:0.04em;
+  }
+  .skill-rows .row .nm{
+    font-family:var(--serif);font-style:italic;font-weight:500;
+    font-size:24px;color:var(--ink);letter-spacing:-0.01em;
+  }
+  .skill-rows .row .nm .badge-exec{
+    display:inline-block;
+    font-family:var(--mono);font-style:normal;font-weight:600;
+    font-size:9px;letter-spacing:0.16em;text-transform:uppercase;
+    color:var(--accent);border:1px solid var(--accent);
+    padding:1px 5px;margin-left:8px;vertical-align:middle;
+  }
+  .skill-rows .row .nm small{
+    display:block;
+    font-family:var(--sans);font-style:normal;font-weight:400;
+    font-size:13px;color:var(--ink-3);
+    margin-top:4px;letter-spacing:0;
+  }
+  .skill-rows .row .used{
+    font-family:var(--serif);font-size:24px;font-weight:300;letter-spacing:-0.01em;
+    color:var(--ink-2);text-align:right;
+    font-variant-numeric:lining-nums tabular-nums;
+  }
+  .skill-rows .row .last{font-family:var(--mono);font-size:11px;color:var(--ink-3);text-align:right;letter-spacing:0.04em}
+  .skill-rows .row .llm{font-family:var(--mono);font-size:12px;color:var(--ink-2);text-align:right}
+  .skill-rows .row .toggle{
+    width:38px;height:22px;border-radius:11px;
+    background:var(--ink);position:relative;cursor:pointer;
+    justify-self:end;
+    transition:background 0.18s;
+  }
+  .skill-rows .row .toggle::after{
+    content:"";position:absolute;top:2px;right:2px;
+    width:18px;height:18px;border-radius:50%;background:var(--bg);
+    transition:transform 0.18s cubic-bezier(.2,.7,.3,1);
+  }
+  .skill-rows .row.off .toggle{background:var(--bg-3)}
+  .skill-rows .row.off .toggle::after{transform:translateX(-16px)}
+  .skill-rows .row.off .nm,.skill-rows .row.off .used{color:var(--ink-3)}
+
+  /* Library 子页面切换 (Installed / Market) */
+  .library-sub{
+    display:flex;gap:32px;align-items:baseline;
+    border-bottom:1px solid var(--line);
+    margin-bottom:32px;padding-bottom:0;
+  }
+  .lib-sub{
+    font-family:var(--mono);font-size:12px;
+    letter-spacing:0.14em;text-transform:uppercase;
+    color:var(--ink-3);
+    padding:14px 0 16px;
+    border-bottom:2px solid transparent;
+    margin-bottom:-1px;
+    transition:color 0.18s,border-bottom-color 0.18s;
+  }
+  .lib-sub em{
+    font-style:normal;
+    font-size:10px;color:var(--ink-3);
+    margin-left:8px;letter-spacing:0.06em;
+  }
+  .lib-sub:hover{color:var(--ink)}
+  .lib-sub.active{
+    color:var(--ink);
+    border-bottom-color:var(--accent);
+  }
+  .lib-sub.active em{color:var(--accent)}
+  .lib-pane{display:none}
+  .lib-pane.active{display:block}
+
+  /* Skill detail pane (lib-pane[data-lib="detail"]) */
+  .back-link{
+    display:inline-flex;align-items:baseline;gap:8px;
+    font-family:var(--mono);font-size:11px;
+    letter-spacing:0.14em;text-transform:uppercase;
+    color:var(--ink-3);
+    border-bottom:1px solid transparent;
+    padding-bottom:2px;margin-bottom:36px;
+    transition:color 0.15s,gap 0.18s cubic-bezier(.2,.7,.3,1),border-bottom-color 0.15s;
+  }
+  .back-link::before{content:"←";font-family:var(--mono)}
+  .back-link:hover{color:var(--ink);gap:12px;border-bottom-color:var(--ink)}
+
+  .detail-hero{margin-bottom:48px;border-bottom:1px solid var(--line);padding-bottom:36px}
+  .detail-hero .meta-tag{
+    display:flex;align-items:center;gap:14px;
+    font-family:var(--mono);font-size:11px;
+    letter-spacing:0.14em;text-transform:uppercase;
+    color:var(--ink-3);margin-bottom:24px;
+  }
+  .detail-hero .meta-tag .badge{
+    color:var(--accent-2);border:1px solid var(--accent-2);
+    padding:2px 7px;
+  }
+  .detail-hero h1{
+    font-family:var(--serif);
+    font-size:84px;font-weight:300;font-style:italic;
+    letter-spacing:-0.04em;line-height:1;color:var(--ink);
+    margin-bottom:22px;
+  }
+  .detail-hero .desc{
+    font-size:18px;color:var(--ink-2);max-width:680px;
+    line-height:1.55;letter-spacing:-0.005em;
+  }
+
+  /* SKILL.md preview */
+  .skill-md{
+    font-family:var(--mono);font-size:12.5px;
+    line-height:1.7;color:var(--ink);
+    background:var(--bg-2);
+    border-left:2px solid var(--accent);
+    padding:24px 28px;
+    overflow-x:auto;
+    white-space:pre-wrap;
+    border-radius:0 4px 4px 0;
+  }
+  .skill-md b{color:var(--accent);font-weight:600}
+
+  /* file tree */
+  .file-tree{
+    font-family:var(--mono);font-size:13px;
+    line-height:1.9;color:var(--ink-2);
+  }
+  .file-tree .ft-row{
+    display:grid;grid-template-columns:20px 1fr 90px;gap:14px;
+    padding:5px 0;align-items:baseline;
+    border-bottom:1px solid var(--line-soft);
+  }
+  .file-tree .ft-row:last-child{border-bottom:none}
+  .file-tree .ft-row.indent{padding-left:28px}
+  .file-tree .ft-icon{
+    color:var(--ink-3);text-align:center;
+  }
+  .file-tree .ft-name{
+    color:var(--ink);
+  }
+  .file-tree .ft-name.dir{color:var(--accent);font-weight:500}
+  .file-tree .ft-meta{
+    color:var(--ink-3);text-align:right;font-size:11px;letter-spacing:0.04em;
+  }
+
+  /* code / curl block */
+  .code-block{
+    font-family:var(--mono);font-size:13px;
+    line-height:1.65;color:var(--ink);
+    background:var(--bg-2);
+    border:1px solid var(--line);
+    padding:20px 24px;
+    overflow-x:auto;
+    border-radius:4px;
+    white-space:pre;
+  }
+  .code-block .k{color:var(--accent)}
+  .code-block .s{color:var(--accent-2)}
+  .code-block .c{color:var(--ink-3)}
+
+  /* market 行的 install 动作 — serif italic accent，跟 skill 名字的字族同源 */
+  .skill-rows .row.mkt .toggle-install{
+    font-family:var(--serif);
+    font-style:italic;font-weight:400;
+    font-size:17px;letter-spacing:-0.005em;
+    color:var(--accent);
+    background:transparent;border:none;padding:0;
+    cursor:pointer;
+    justify-self:end;align-self:baseline;
+    display:inline-flex;align-items:baseline;gap:6px;
+    transition:gap 0.22s cubic-bezier(.2,.7,.3,1),
+               color 0.18s;
+  }
+  .skill-rows .row.mkt .toggle-install::after{
+    content:"→";
+    font-family:var(--mono);font-style:normal;
+    font-size:13px;font-weight:400;
+    color:inherit;
+    transition:transform 0.22s cubic-bezier(.2,.7,.3,1);
+  }
+  .skill-rows .row.mkt:hover .toggle-install{gap:12px}
+  .skill-rows .row.mkt:hover .toggle-install::after{transform:translateX(3px)}
+  .skill-rows .row.mkt .toggle-install:active{transform:scale(0.96)}
+  .skill-rows .row.mkt .used{
+    font-family:var(--mono);font-size:11px;color:var(--ink-2);letter-spacing:0.04em;text-align:right;
     font-variant-numeric:tabular-nums;
   }
-  body.dark .quota-value{color:#9ba3ad}
+  .skill-rows .row.mkt .last{font-family:var(--mono);font-size:11px;color:var(--ink-3);text-align:right}
+  .skill-rows .row.mkt .llm{
+    font-family:var(--mono);font-size:10px;color:var(--ink-3);
+    letter-spacing:0.12em;text-transform:uppercase;text-align:right;
+  }
 
-  .identity-block{padding:18px}
-  .identity-row{
-    display:flex;align-items:center;gap:10px;
-    margin-bottom:12px;
+  /* ============ TAB: ACTIVITY ============ */
+  .activity-list .row{
+    display:grid;
+    grid-template-columns:70px 180px 90px 70px 100px 1fr;
+    gap:18px;align-items:baseline;
+    padding:16px 0;border-bottom:1px solid var(--line-soft);
   }
-  .identity-id{
-    font-family:ui-monospace,"SF Mono",Menlo,monospace;
-    font-size:14px;
-    padding:6px 12px;
-    background:#f6f8fa;border:1px solid #e5e7eb;border-radius:6px;
-  }
-  body.dark .identity-id{background:#16181c;border-color:#22262d}
-  .identity-btns{
-    display:flex;gap:8px;flex-wrap:wrap;
-    margin-top:14px;
-  }
-  .ip-list{
-    font-family:ui-monospace,"SF Mono",Menlo,monospace;
-    font-size:12px;
-    color:#656d76;
-    margin-top:14px;
-  }
-  body.dark .ip-list{color:#9ba3ad}
+  .activity-list .row .ts{font-family:var(--mono);font-size:11px;color:var(--ink-3)}
+  .activity-list .row .nm{font-family:var(--serif);font-style:italic;font-weight:500;font-size:16px;color:var(--ink);letter-spacing:-0.005em}
+  .activity-list .row .mode{font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:0.12em;color:var(--accent)}
+  .activity-list .row .mode.e{color:var(--accent-2)}
+  .activity-list .row .dur{font-family:var(--mono);font-size:12px;color:var(--ink-2);font-variant-numeric:tabular-nums;text-align:right}
+  .activity-list .row .tok{font-family:var(--mono);font-size:11px;color:var(--ink-3);text-align:right}
+  .activity-list .row .prompt{font-size:13.5px;color:var(--ink-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
-  .exec-badge{
-    display:inline-block;
-    font-size:10px;
-    background:rgba(94,106,210,0.1);
-    color:#5e6ad2;
-    padding:1px 6px;border-radius:3px;
-    margin-left:6px;
-    text-transform:uppercase;letter-spacing:0.04em;
-    font-weight:600;
-    vertical-align:middle;
+  /* ============ TAB: SETTINGS ============ */
+  .settings-section{margin-bottom:100px}
+  .settings-section:last-child{margin-bottom:24px}
+  .settings-section .label{
+    font-family:var(--serif);
+    font-size:36px;font-weight:300;font-style:italic;letter-spacing:-0.025em;
+    color:var(--ink);
+    border-bottom:1px solid var(--line);
+    padding-bottom:24px;margin-bottom:32px;
+    display:flex;justify-content:space-between;align-items:baseline;
   }
-  body.dark .exec-badge{background:rgba(154,163,235,0.14);color:#9aa3eb}
-
-  .mini-stat{
-    background:#fff;border:1px solid #e5e7eb;border-radius:6px;
-    padding:12px 14px;
+  .settings-section .label .helper{
+    font-family:var(--mono);font-style:normal;font-size:11px;
+    letter-spacing:0.14em;text-transform:uppercase;color:var(--ink-3);
   }
-  body.dark .mini-stat{background:#0d0f12;border-color:#22262d}
-  .mini-stat-val{font-size:18px;font-weight:600;font-variant-numeric:tabular-nums}
-  .mini-stat-lab{font-size:11px;color:#656d76;text-transform:uppercase;letter-spacing:0.04em;margin-top:2px}
-  body.dark .mini-stat-lab{color:#9ba3ad}
 
-  .view{display:none}
-  .view.active{display:block}
-  .hidden{display:none !important}
+  .pref-row{
+    display:grid;
+    grid-template-columns:1fr 200px;
+    gap:32px;align-items:center;
+    padding:26px 0;border-bottom:1px solid var(--line-soft);
+  }
+  .pref-row .pref-name{font-size:17px;color:var(--ink);font-weight:500;letter-spacing:-0.005em}
+  .pref-row .pref-desc{font-size:14px;color:var(--ink-3);margin-top:6px;max-width:520px;line-height:1.55}
+  .pref-row .control{display:flex;justify-content:flex-end;align-items:center;gap:10px}
+
+  .toggle-sw{
+    width:42px;height:24px;border-radius:12px;
+    background:var(--ink);position:relative;cursor:pointer;
+    transition:background 0.18s;
+  }
+  .toggle-sw::after{
+    content:"";position:absolute;top:2px;right:2px;
+    width:20px;height:20px;border-radius:50%;background:var(--bg);
+    transition:transform 0.18s cubic-bezier(.2,.7,.3,1);
+  }
+  .toggle-sw.off{background:var(--bg-3)}
+  .toggle-sw.off::after{transform:translateX(-18px)}
+
+  .select-mini{
+    background:transparent;border:none;
+    border-bottom:1px dotted var(--line);
+    padding:4px 24px 4px 0;
+    font-family:var(--mono);font-size:12px;color:var(--ink);
+    letter-spacing:0.04em;
+    -webkit-appearance:none;appearance:none;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'><path d='M1 1l5 6 5-6' stroke='%238a857d' stroke-width='1.5' fill='none' stroke-linecap='round'/></svg>");
+    background-repeat:no-repeat;
+    background-position:right 4px center;
+    background-size:10px;
+    cursor:pointer;
+    transition:border-bottom-color 0.15s;
+  }
+  .select-mini:focus{outline:none;border-bottom:1px solid var(--ink);border-bottom-style:solid}
+  body.dark .select-mini{
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'><path d='M1 1l5 6 5-6' stroke='%23a5a098' stroke-width='1.5' fill='none' stroke-linecap='round'/></svg>");
+  }
+  .slider-mini{
+    width:140px;-webkit-appearance:none;appearance:none;
+    background:transparent;height:14px;outline:none;cursor:pointer;
+  }
+  .slider-mini::-webkit-slider-runnable-track{
+    background:var(--line);height:1px;border:none;
+  }
+  .slider-mini::-moz-range-track{
+    background:var(--line);height:1px;border:none;
+  }
+  .slider-mini::-webkit-slider-thumb{
+    -webkit-appearance:none;appearance:none;
+    margin-top:-6px;
+    width:12px;height:12px;border-radius:50%;
+    background:var(--accent);border:none;cursor:pointer;
+    transition:transform 0.15s;
+  }
+  .slider-mini::-webkit-slider-thumb:hover{transform:scale(1.25)}
+  .slider-mini::-moz-range-thumb{
+    width:12px;height:12px;border-radius:50%;
+    background:var(--accent);border:none;cursor:pointer;
+  }
+  .slider-val{font-family:var(--mono);font-size:13px;color:var(--ink);min-width:18px;text-align:right}
+
+  .quota-row{
+    display:grid;grid-template-columns:140px 1fr 100px;gap:18px;align-items:center;
+    padding:18px 0;border-bottom:1px solid var(--line-soft);
+  }
+  .quota-row .nm{font-family:var(--mono);font-size:12px;letter-spacing:0.04em;text-transform:uppercase;color:var(--ink-2)}
+  .quota-row .bar{height:6px;background:var(--bg-3);position:relative;overflow:hidden}
+  .quota-row .bar i{display:block;height:100%;background:var(--ink);transition:width 0.3s}
+  .quota-row.warn .bar i{background:var(--warn)}
+  .quota-row .num{font-family:var(--mono);font-size:12px;color:var(--ink-3);text-align:right;letter-spacing:0.04em}
+
+  .id-block{display:grid;grid-template-columns:160px 1fr;gap:18px;align-items:baseline;padding:11px 0;border-bottom:1px solid var(--line-soft)}
+  .id-block .k{font-family:var(--mono);font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:var(--ink-3)}
+  .id-block .v{font-family:var(--mono);font-size:13px;color:var(--ink)}
+
+  .btn{
+    background:transparent;border:none;
+    padding:8px 0;font-family:var(--mono);font-size:11px;
+    letter-spacing:0.14em;text-transform:uppercase;color:var(--ink-2);
+    margin:0 28px 6px 0;
+    border-bottom:1px solid var(--line);
+    position:relative;display:inline-flex;align-items:baseline;gap:8px;
+    transition:color 0.18s,border-bottom-color 0.18s;
+  }
+  .btn::after{
+    content:"→";font-family:var(--mono);
+    transition:transform 0.18s cubic-bezier(.2,.7,.3,1);
+    color:inherit;
+  }
+  .btn:hover{color:var(--ink);border-bottom-color:var(--ink)}
+  .btn:hover::after{transform:translateX(4px)}
+  .btn.danger{color:var(--err)}
+  .btn.danger:hover{border-bottom-color:var(--err)}
+  .btn.primary{color:var(--accent)}
+  .btn.primary:hover{border-bottom-color:var(--accent)}
+
+  /* ============ TAB: ADMIN ============ */
+  .admin-stats{
+    display:grid;grid-template-columns:repeat(4,1fr);
+    border-top:1px solid var(--line);border-bottom:1px solid var(--line);
+    margin-bottom:48px;
+  }
+  .admin-stats .cell{padding:24px 24px 24px 0;border-left:1px solid var(--line)}
+  .admin-stats .cell:first-child{border-left:none}
+  .admin-stats .cell + .cell{padding-left:24px}
+  .admin-stats .n{
+    font-family:var(--serif);font-size:54px;font-weight:300;font-style:italic;
+    letter-spacing:-0.025em;color:var(--ink);line-height:1;
+    font-variant-numeric:lining-nums tabular-nums;
+  }
+  .admin-stats .lbl{font-family:var(--mono);font-size:10px;letter-spacing:0.16em;text-transform:uppercase;color:var(--ink-3);margin-top:14px}
+  .admin-stats .delta{font-family:var(--mono);font-size:11px;color:var(--accent-2);margin-top:3px}
+
+  .users-tbl{width:100%;border-collapse:collapse}
+  .users-tbl thead th{
+    font-family:var(--mono);font-size:10px;
+    letter-spacing:0.16em;text-transform:uppercase;
+    color:var(--ink-3);text-align:left;font-weight:500;
+    padding:16px 14px 16px 0;
+    border-bottom:1px solid var(--line);
+  }
+  .users-tbl thead th.num{text-align:right}
+  .users-tbl tbody td{padding:22px 14px 22px 0;border-bottom:1px solid var(--line-soft)}
+  .users-tbl tbody td.num{text-align:right;font-family:var(--mono);font-size:13px;color:var(--ink-2);font-variant-numeric:tabular-nums}
+  .users-tbl tbody .uid{font-family:var(--mono);font-size:13px;color:var(--ink)}
+  .users-tbl tbody .when{font-family:var(--mono);font-size:11px;color:var(--ink-3)}
+  .users-tbl tbody .st{font-family:var(--mono);font-size:10px;letter-spacing:0.14em;text-transform:uppercase}
+  .users-tbl tbody .st.admin{color:var(--accent)}
+  .users-tbl tbody .st.active{color:var(--accent-2)}
+  .users-tbl tbody .st.disabled{color:var(--ink-3)}
+  .users-tbl tbody .act{font-family:var(--mono);font-size:11px;color:var(--ink-2);letter-spacing:0.06em}
+  .users-tbl tbody .act a:hover{color:var(--ink)}
+
+  /* responsive */
+  @media (max-width:880px){
+    .body-wrap{grid-template-columns:1fr}
+    aside.side{display:none}
+    main.main{padding:24px}
+    .hero-grid{grid-template-columns:1fr;gap:48px}
+    .live-stream{border-left:none;padding-left:0;border-top:1px solid var(--line);padding-top:30px}
+    .recent-row{grid-template-columns:1fr 1fr;gap:8px}
+    .recent-row .ts,.recent-row .mode,.recent-row .out{display:none}
+    .skill-rows .row{grid-template-columns:1fr 80px}
+    .skill-rows .row .idx,.skill-rows .row .last,.skill-rows .row .llm{display:none}
+    .tab-head h1{font-size:54px}
+    .hero-main h1{font-size:84px}
+  }
 </style>
 </head>
 <body>
-<div class="app">
-  <header class="topbar">
+
+<div class="mesh" aria-hidden="true">
+  <div class="blob a"></div>
+  <div class="blob b"></div>
+  <div class="blob c"></div>
+</div>
+<div class="cursor-glow" aria-hidden="true"></div>
+<div class="cursor-arrow hide" aria-hidden="true">
+  <svg viewBox="0 0 18 18">
+    <!-- 纯三角形 3 顶点：tip 左上 / 右点 / 下点；NW 朝向 -->
+    <path class="halo" d="M2 2 L14 7 L7 14 Z"/>
+    <path class="body" d="M2 2 L14 7 L7 14 Z"/>
+    <circle class="tip" cx="2" cy="2"/>
+  </svg>
+</div>
+<div class="cursor-ring hide" aria-hidden="true"></div>
+<div class="cursor-label hide" aria-hidden="true"></div>
+
+<div class="shell">
+
+  <!-- ============ TOP BAR ============ -->
+  <header class="bar">
     <div class="brand">
-      <span class="brand-dot">r</span>
-      <span>runai</span>
+      <b>runai</b>
+      <span class="crumb">— skill router / multi-user</span>
     </div>
-    <div class="top-right">
-      <span class="user-id">u_a3f9b2c1d4</span>
-      <button class="icon-btn" id="theme-toggle" title="切换主题" aria-label="切换主题">
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-          <circle cx="8" cy="8" r="3"/>
-          <path d="M8 1v2M8 13v2M1 8h2M13 8h2M2.93 2.93l1.41 1.41M11.66 11.66l1.41 1.41M2.93 13.07l1.41-1.41M11.66 4.34l1.41-1.41"/>
-        </svg>
-      </button>
-      <button class="ghost-btn">登出</button>
+    <div class="right">
+      <span class="user"><b>u_a3f9b2c1d4</b><span class="role">/ admin</span></span>
+      <div class="swatches" title="切换主题">
+        <button class="swatch active" data-theme="github" title="GitHub Light"></button>
+        <button class="swatch" data-theme="dimmed" title="GitHub Dimmed (warm)"></button>
+        <button class="swatch" data-theme="solarized" title="Solarized Light"></button>
+        <button class="swatch" data-theme="ayu" title="Ayu Light"></button>
+        <button class="swatch" data-theme="catppuccin" title="Catppuccin Latte"></button>
+      </div>
+      <button>logout</button>
     </div>
   </header>
-  <aside class="sidebar">
-    <div class="nav-section">导航</div>
-    <div class="nav-item active" data-tab="overview">
-      <span class="nav-label">
-        <span class="nav-glyph">
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></svg>
-        </span>
-        Overview
-      </span>
-    </div>
-    <div class="nav-item" data-tab="skills">
-      <span class="nav-label">
-        <span class="nav-glyph">
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 4h12M2 8h12M2 12h8"/></svg>
-        </span>
-        Skills
-      </span>
-    </div>
-    <div class="nav-item" data-tab="activity">
-      <span class="nav-label">
-        <span class="nav-glyph">
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 8h3l2-5 2 10 2-5h3"/></svg>
-        </span>
-        Activity
-      </span>
-    </div>
-    <div class="nav-item" data-tab="settings">
-      <span class="nav-label">
-        <span class="nav-glyph">
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="2.5"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3 3l1.5 1.5M11.5 11.5L13 13M3 13l1.5-1.5M11.5 4.5L13 3"/></svg>
-        </span>
-        Settings
-      </span>
-    </div>
-    <div class="nav-item" data-tab="admin">
-      <span class="nav-label">
-        <span class="nav-glyph">
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 1l6 3v4c0 4-3 6-6 7-3-1-6-3-6-7V4z"/></svg>
-        </span>
-        Admin
-      </span>
-      <span class="admin-tag">admin</span>
-    </div>
-  </aside>
-  <main class="main">
 
-    <!-- OVERVIEW -->
-    <div class="view active" id="view-overview">
-      <div class="page-header">
-        <div>
-          <h1 class="page-title">Overview</h1>
-          <p class="page-sub">u_a3f9b2c1d4 · 最近 24 小时</p>
-        </div>
-        <button class="ghost-btn">导出报告</button>
+  <div class="body-wrap">
+
+    <!-- ============ SIDEBAR ============ -->
+    <aside class="side">
+      <div class="group-label">workspace</div>
+      <nav class="nav">
+        <a href="#" class="active" data-tab="overview"><span>Overview</span><span class="key">o</span></a>
+        <a href="#" data-tab="skills"><span>Skills</span><span class="key">s</span></a>
+        <a href="#" data-tab="activity"><span>Activity</span><span class="key">a</span></a>
+        <a href="#" data-tab="settings"><span>Settings</span><span class="key">,</span></a>
+        <a href="#" class="admin" data-tab="admin"><span>Admin</span><span class="key">⇧a</span></a>
+      </nav>
+
+      <div class="live-strip">
+        <div class="row"><span><span class="dot"></span>online</span><span class="v">17888</span></div>
+        <div class="row"><span>exec/min</span><span class="v">18</span></div>
+        <div class="row"><span>queue</span><span class="v">0</span></div>
+        <div class="row"><span>uptime</span><span class="v">03:42</span></div>
       </div>
+    </aside>
 
-      <div class="metric-row">
-        <div class="metric">
-          <div class="metric-label">今日调用</div>
-          <div class="metric-value">247</div>
-          <div class="metric-delta"><span class="delta-up">+12%</span> vs 昨天</div>
-        </div>
-        <div class="metric">
-          <div class="metric-label">启用 skill</div>
-          <div class="metric-value">18<span class="small"> / 24</span></div>
-          <div class="metric-delta">75% 已开启</div>
-        </div>
-        <div class="metric">
-          <div class="metric-label">配额用量</div>
-          <div class="metric-value">34<span class="small">%</span></div>
-          <div class="progress"><div class="progress-fill" style="width:34%"></div></div>
-        </div>
-        <div class="metric">
-          <div class="metric-label">上次活动</div>
-          <div class="metric-value" style="font-size:18px">3 分钟前</div>
-          <div class="metric-delta">claude-api · /generate</div>
-        </div>
-      </div>
+    <!-- ============ MAIN ============ -->
+    <main class="main">
 
-      <div class="panel">
-        <div class="panel-head">
-          <h2 class="panel-title">24 小时活动</h2>
-          <span class="panel-sub">每小时调用次数</span>
-        </div>
-        <div class="panel-body chart-wrap">
-          <svg class="chart" id="overview-chart" viewBox="0 0 800 200" preserveAspectRatio="none"></svg>
-        </div>
-      </div>
+      <!-- =========== OVERVIEW =========== -->
+      <section class="tab active" data-pane="overview">
 
-      <div class="panel">
-        <div class="panel-head">
-          <h2 class="panel-title">最近 exec</h2>
-          <span class="panel-sub">8 条最新执行</span>
+        <div class="hero-grid">
+
+          <div class="hero-main">
+            <div class="eyebrow">today · 5 月 20</div>
+            <h1>247<span class="h1-tail">CALLS</span></h1>
+            <p class="label">命中率 <b>94%</b>，比昨天高 <b>+12%</b>。<br>
+              延迟中位数 412ms，p95 1.2s，3 次沙箱失败。</p>
+
+            <div class="hero-strip">
+              <div class="cell">
+                <div class="n">18<em>/24</em></div>
+                <div class="lbl">enabled skills</div>
+                <div class="delta">3 hidden · 3 disabled</div>
+              </div>
+              <div class="cell">
+                <div class="n">34<em>%</em></div>
+                <div class="lbl">quota used</div>
+                <div class="delta warn">refill in 38s</div>
+              </div>
+              <div class="cell">
+                <div class="n">3m</div>
+                <div class="lbl">last activity</div>
+                <div class="delta">deep-dive · 412ms</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="live-stream">
+            <div class="stream-head">
+              <span>live activity</span>
+              <span class="live"><i></i>streaming</span>
+            </div>
+            <div class="stream-item">
+              <div class="ts">02:14:32</div>
+              <div class="nm">deep-dive</div>
+              <div class="dur">412ms</div>
+            </div>
+            <div class="stream-item">
+              <div class="ts">02:13:08</div>
+              <div class="nm">html-anything</div>
+              <div class="dur">2.8s</div>
+            </div>
+            <div class="stream-item">
+              <div class="ts">02:11:42</div>
+              <div class="nm">verify</div>
+              <div class="dur">218ms</div>
+            </div>
+            <div class="stream-item">
+              <div class="ts">02:08:30</div>
+              <div class="nm">safety-guard</div>
+              <div class="dur">186ms</div>
+            </div>
+            <div class="stream-item">
+              <div class="ts">02:06:55</div>
+              <div class="nm">brainstorming</div>
+              <div class="dur">624ms</div>
+            </div>
+            <div class="stream-item">
+              <div class="ts">02:05:21</div>
+              <div class="nm">find-skills</div>
+              <div class="dur">301ms</div>
+            </div>
+            <div class="stream-item err">
+              <div class="ts">02:03:48</div>
+              <div class="nm">lark-doc</div>
+              <div class="dur">timeout</div>
+            </div>
+          </div>
+
         </div>
-        <div class="panel-body flush">
-          <table class="data">
-            <thead><tr><th>时间</th><th>skill</th><th>状态</th><th class="num">耗时</th><th class="num">output</th></tr></thead>
-            <tbody id="recent-exec"></tbody>
+
+        <div class="chart-block">
+          <div class="head">
+            <h2>24 小时 <em style="font-style:normal;font-family:var(--mono);font-size:0.32em;letter-spacing:0.14em;text-transform:uppercase;color:var(--ink-3);font-weight:500;vertical-align:0.5em">activity</em></h2>
+            <div class="meta">每 5 分钟 · 实时</div>
+          </div>
+          <div class="chart-wrap">
+            <svg viewBox="0 0 800 240" preserveAspectRatio="none">
+              <g class="grid">
+                <line x1="0" y1="60"  x2="800" y2="60"/>
+                <line x1="0" y1="120" x2="800" y2="120"/>
+                <line x1="0" y1="180" x2="800" y2="180"/>
+              </g>
+              <path class="area-fill" d="M0,200 L34,184 L68,170 L102,176 L136,158 L170,148 L204,154 L238,142 L272,124 L306,118 L340,128 L374,108 L408,102 L442,82 L476,96 L510,84 L544,76 L578,62 L612,80 L646,48 L680,68 L714,54 L748,56 L782,40 L800,32 L800,240 L0,240 Z"/>
+              <path class="area-stroke" d="M0,200 L34,184 L68,170 L102,176 L136,158 L170,148 L204,154 L238,142 L272,124 L306,118 L340,128 L374,108 L408,102 L442,82 L476,96 L510,84 L544,76 L578,62 L612,80 L646,48 L680,68 L714,54 L748,56 L782,40 L800,32"/>
+              <g class="axis">
+                <text x="2"   y="232">-24h</text>
+                <text x="400" y="232" text-anchor="middle">-12h</text>
+                <text x="798" y="232" text-anchor="end">now</text>
+              </g>
+            </svg>
+          </div>
+        </div>
+
+        <div class="recent-block">
+          <div class="head">
+            <h2>最近 <em style="font-style:normal;font-family:var(--mono);font-size:0.32em;letter-spacing:0.14em;text-transform:uppercase;color:var(--ink-3);font-weight:500;vertical-align:0.5em">exec</em></h2>
+            <div class="meta">8 条 / 共 247</div>
+          </div>
+          <div class="recent-list">
+            <div class="recent-row">
+              <div class="ts">02:14:32</div>
+              <div class="nm">deep-dive <small>因果溯源调查 + 需求提炼流水线</small></div>
+              <div class="mode c">Compatible</div>
+              <div class="dur">412ms</div>
+              <div class="out">0 out</div>
+              <div class="st ok">ok</div>
+            </div>
+            <div class="recent-row">
+              <div class="ts">02:13:08</div>
+              <div class="nm">html-anything <small>把文件/URL 转成单文件 HTML</small></div>
+              <div class="mode e">Exclusive</div>
+              <div class="dur">2.8s</div>
+              <div class="out">1 out</div>
+              <div class="st ok">ok</div>
+            </div>
+            <div class="recent-row">
+              <div class="ts">02:11:42</div>
+              <div class="nm">verify <small>验证变更是否真正生效</small></div>
+              <div class="mode c">Compatible</div>
+              <div class="dur">218ms</div>
+              <div class="out">0 out</div>
+              <div class="st ok">ok</div>
+            </div>
+            <div class="recent-row">
+              <div class="ts">02:08:30</div>
+              <div class="nm">safety-guard <small>防止破坏性命令、保护项目安全</small></div>
+              <div class="mode e">Exclusive</div>
+              <div class="dur">186ms</div>
+              <div class="out">0 out</div>
+              <div class="st ok">ok</div>
+            </div>
+            <div class="recent-row">
+              <div class="ts">02:06:55</div>
+              <div class="nm">brainstorming <small>对话引导澄清需求、形成设计文档</small></div>
+              <div class="mode c">Compatible</div>
+              <div class="dur">624ms</div>
+              <div class="out">0 out</div>
+              <div class="st ok">ok</div>
+            </div>
+            <div class="recent-row">
+              <div class="ts">02:05:21</div>
+              <div class="nm">find-skills <small>搜索和推荐可安装的 agent 技能包</small></div>
+              <div class="mode c">Compatible</div>
+              <div class="dur">301ms</div>
+              <div class="out">0 out</div>
+              <div class="st ok">ok</div>
+            </div>
+            <div class="recent-row">
+              <div class="ts">02:03:48</div>
+              <div class="nm">lark-doc <small>飞书云文档 / Docx / 知识库 Wiki</small></div>
+              <div class="mode e">Exclusive</div>
+              <div class="dur">30.0s</div>
+              <div class="out">0 out</div>
+              <div class="st err">timeout</div>
+            </div>
+            <div class="recent-row">
+              <div class="ts">02:02:14</div>
+              <div class="nm">deep-dive <small>因果溯源调查 + 需求提炼流水线</small></div>
+              <div class="mode c">Compatible</div>
+              <div class="dur">498ms</div>
+              <div class="out">0 out</div>
+              <div class="st ok">ok</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- =========== SKILLS (LIBRARY) =========== -->
+      <section class="tab" data-pane="skills">
+        <div class="tab-head">
+          <h1>Library<em>18 installed</em></h1>
+          <div class="meta-line">点 skill 行进入详情 · description / SKILL.md / files / 调用历史</div>
+        </div>
+
+        <div class="library-sub">
+          <a href="#" class="lib-sub active" data-sub="installed">已安装<em>18</em></a>
+          <a href="#" class="lib-sub" data-sub="market">市场<em>1247</em></a>
+        </div>
+
+        <!-- 已安装 -->
+        <div class="lib-pane active" data-lib="installed">
+          <div class="filterbar">
+            <label>filter</label>
+            <input type="text" placeholder="名字 / 描述 / summary"/>
+            <label>sort</label>
+            <div class="dropdown fluid">
+              <button type="button" class="dropdown-trigger">
+                <span class="dd-label">综合分高 → 低</span>
+                <span class="dd-chev"></span>
+              </button>
+              <div class="dropdown-menu" role="listbox">
+                <button type="button" class="dd-opt active" data-value="score-desc">综合分高 → 低</button>
+                <button type="button" class="dd-opt" data-value="used-desc">使用次数高 → 低</button>
+                <button type="button" class="dd-opt" data-value="name">名字</button>
+                <button type="button" class="dd-opt" data-value="off-first">未启用优先</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="skill-rows">
+          <div class="row">
+            <div class="idx">01</div>
+            <div class="nm">find-skills<span class="badge-exec">exec</span>
+              <small>搜索和推荐可安装的 agent 技能包</small></div>
+            <div class="used">124</div>
+            <div class="last">3m ago</div>
+            <div class="llm">9.1</div>
+            <div class="toggle"></div>
+          </div>
+          <div class="row">
+            <div class="idx">02</div>
+            <div class="nm">deep-dive<span class="badge-exec">exec</span>
+              <small>因果溯源调查 + 需求提炼的二级流水线</small></div>
+            <div class="used">87</div>
+            <div class="last">8m ago</div>
+            <div class="llm">8.7</div>
+            <div class="toggle"></div>
+          </div>
+          <div class="row">
+            <div class="idx">03</div>
+            <div class="nm">safety-guard
+              <small>防止破坏性命令执行、保护项目安全</small></div>
+            <div class="used">76</div>
+            <div class="last">22m ago</div>
+            <div class="llm">8.2</div>
+            <div class="toggle"></div>
+          </div>
+          <div class="row off">
+            <div class="idx">04</div>
+            <div class="nm">verify
+              <small>验证变更是否真正生效</small></div>
+            <div class="used">62</div>
+            <div class="last">1h ago</div>
+            <div class="llm">7.9</div>
+            <div class="toggle"></div>
+          </div>
+          <div class="row">
+            <div class="idx">05</div>
+            <div class="nm">brainstorming
+              <small>编码前通过对话引导澄清需求、形成设计文档</small></div>
+            <div class="used">58</div>
+            <div class="last">2h ago</div>
+            <div class="llm">8.4</div>
+            <div class="toggle"></div>
+          </div>
+          <div class="row">
+            <div class="idx">06</div>
+            <div class="nm">lark-doc<span class="badge-exec">exec</span>
+              <small>飞书云文档 / Docx / 知识库 Wiki</small></div>
+            <div class="used">54</div>
+            <div class="last">3h ago</div>
+            <div class="llm">8.0</div>
+            <div class="toggle"></div>
+          </div>
+          <div class="row">
+            <div class="idx">07</div>
+            <div class="nm">html-anything<span class="badge-exec">exec</span>
+              <small>把任意答案/文件/URL 转成单文件 HTML</small></div>
+            <div class="used">49</div>
+            <div class="last">4h ago</div>
+            <div class="llm">9.0</div>
+            <div class="toggle"></div>
+          </div>
+          <div class="row">
+            <div class="idx">08</div>
+            <div class="nm">claude-api
+              <small>构建/调试/优化 Claude API 应用</small></div>
+            <div class="used">43</div>
+            <div class="last">6h ago</div>
+            <div class="llm">8.6</div>
+            <div class="toggle"></div>
+          </div>
+          <div class="row">
+            <div class="idx">09</div>
+            <div class="nm">security-review
+              <small>对当前分支待提交变更做安全审查</small></div>
+            <div class="used">38</div>
+            <div class="last">8h ago</div>
+            <div class="llm">8.3</div>
+            <div class="toggle"></div>
+          </div>
+          <div class="row off">
+            <div class="idx">10</div>
+            <div class="nm">simplify
+              <small>review changed code · 复用 / 质量 / 效率</small></div>
+            <div class="used">19</div>
+            <div class="last">2d ago</div>
+            <div class="llm">7.4</div>
+            <div class="toggle"></div>
+          </div>
+        </div>
+        </div>
+
+        <!-- 市场 -->
+        <div class="lib-pane" data-lib="market" hidden>
+          <div class="filterbar">
+            <label>search</label>
+            <input type="text" placeholder="搜全网 skill (1247 个 · 来自 184 个 source)"/>
+            <label>category</label>
+            <div class="dropdown fluid">
+              <button type="button" class="dropdown-trigger">
+                <span class="dd-label">全部</span>
+                <span class="dd-chev"></span>
+              </button>
+              <div class="dropdown-menu">
+                <button type="button" class="dd-opt active" data-value="all">全部</button>
+                <button type="button" class="dd-opt" data-value="dev">开发工具</button>
+                <button type="button" class="dd-opt" data-value="doc">文档协作</button>
+                <button type="button" class="dd-opt" data-value="data">数据分析</button>
+                <button type="button" class="dd-opt" data-value="design">设计</button>
+                <button type="button" class="dd-opt" data-value="ops">运维 / 监控</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="skill-rows market">
+            <div class="row mkt">
+              <div class="idx">M1</div>
+              <div class="nm">data-analyzer<span class="badge-exec">exec</span>
+                <small>多源数据探查 + 自动图表生成 · pandas / matplotlib 预装</small></div>
+              <div class="used">★ 4.8</div>
+              <div class="last">48k installs</div>
+              <div class="llm">opensource</div>
+              <div class="toggle-install">install</div>
+            </div>
+            <div class="row mkt">
+              <div class="idx">M2</div>
+              <div class="nm">code-search<span class="badge-exec">exec</span>
+                <small>跨仓库语义搜索代码片段 · ast-grep + bm25</small></div>
+              <div class="used">★ 4.7</div>
+              <div class="last">36k installs</div>
+              <div class="llm">opensource</div>
+              <div class="toggle-install">install</div>
+            </div>
+            <div class="row mkt">
+              <div class="idx">M3</div>
+              <div class="nm">ml-trainer<span class="badge-exec">exec</span>
+                <small>PyTorch 训练 helper · 自动 sweep / 早停 / 可视化 loss</small></div>
+              <div class="used">★ 4.6</div>
+              <div class="last">28k installs</div>
+              <div class="llm">opensource</div>
+              <div class="toggle-install">install</div>
+            </div>
+            <div class="row mkt">
+              <div class="idx">M4</div>
+              <div class="nm">api-mock
+                <small>从 OpenAPI 描述生成 mock server · 一行启动</small></div>
+              <div class="used">★ 4.5</div>
+              <div class="last">22k installs</div>
+              <div class="llm">opensource</div>
+              <div class="toggle-install">install</div>
+            </div>
+            <div class="row mkt">
+              <div class="idx">M5</div>
+              <div class="nm">db-migrate<span class="badge-exec">exec</span>
+                <small>Postgres / MySQL / SQLite 迁移生成器 · dry-run 默认</small></div>
+              <div class="used">★ 4.5</div>
+              <div class="last">18k installs</div>
+              <div class="llm">opensource</div>
+              <div class="toggle-install">install</div>
+            </div>
+            <div class="row mkt">
+              <div class="idx">M6</div>
+              <div class="nm">screenshot-diff<span class="badge-exec">exec</span>
+                <small>视觉回归测试 · headless chrome + ssim diff</small></div>
+              <div class="used">★ 4.4</div>
+              <div class="last">14k installs</div>
+              <div class="llm">opensource</div>
+              <div class="toggle-install">install</div>
+            </div>
+            <div class="row mkt">
+              <div class="idx">M7</div>
+              <div class="nm">notion-sync
+                <small>Notion ↔ markdown 双向同步 · 支持 database / page</small></div>
+              <div class="used">★ 4.3</div>
+              <div class="last">11k installs</div>
+              <div class="llm">opensource</div>
+              <div class="toggle-install">install</div>
+            </div>
+            <div class="row mkt">
+              <div class="idx">M8</div>
+              <div class="nm">log-parser<span class="badge-exec">exec</span>
+                <small>JSON / regex / nginx / k8s 日志统一查询接口</small></div>
+              <div class="used">★ 4.2</div>
+              <div class="last">9k installs</div>
+              <div class="llm">opensource</div>
+              <div class="toggle-install">install</div>
+            </div>
+          </div>
+
+          <div style="margin-top:32px;text-align:center;font-family:var(--mono);font-size:11px;letter-spacing:0.14em;color:var(--ink-3);text-transform:uppercase">
+            +1239 more · <a href="#" style="color:var(--accent);border-bottom:1px dotted var(--accent)">浏览全部市场 →</a>
+          </div>
+        </div>
+
+        <!-- 单 skill 详情 (点击列表行进入；back 链返回) -->
+        <div class="lib-pane" data-lib="detail" hidden>
+          <a href="#" class="back-link" data-back-to="installed">back to library</a>
+
+          <div class="detail-hero">
+            <div class="meta-tag">
+              <span class="badge">installed</span>
+              <span>v2.1.4 · ghcr.io/crosery/runai-deep-dive</span>
+              <span>更新于 3d ago</span>
+            </div>
+            <h1 id="detail-name">deep-dive</h1>
+            <p class="desc" id="detail-desc">因果溯源调查 + 需求提炼的二级流水线。先查根因再精准定义做什么。triggers 包括 深潜 / root cause / 追根溯源 / 问题定位 / 3点注入 / 平行调查 等场景词。</p>
+          </div>
+
+          <div class="hero-strip" style="border-top:none;padding-top:0;margin-bottom:80px">
+            <div class="cell">
+              <div class="n">87</div>
+              <div class="lbl">your calls 24h</div>
+              <div class="delta">+12% vs 昨</div>
+            </div>
+            <div class="cell">
+              <div class="n">312</div>
+              <div class="lbl">network 24h</div>
+              <div class="delta">18 users</div>
+            </div>
+            <div class="cell">
+              <div class="n">412<em style="font-size:0.4em;font-family:var(--mono);letter-spacing:0.06em">ms</em></div>
+              <div class="lbl">your avg latency</div>
+              <div class="delta">p95 1.2s</div>
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <div class="label">SKILL.md <span class="helper">注入到 claude 的指令</span></div>
+            <pre class="skill-md"><b>---
+name: deep-dive
+description: 因果溯源调查+需求提炼的二级流水线
+triggers: 深潜, 深度调查, root cause, 根因分析, 追根溯源,
+          先调查后执行, 问题定位, 3 点注入, 平行调查
+inputs: 用户描述的问题 / 现象 / 故障 / 探索目标
+outputs: 因果溯源报告 + 规格说明书 (spec) + 可接 plan / autopilot
+---</b>
+
+## 使用场景
+
+当用户描述一个问题或目标，但根因不清晰时，先做溯源调查
+再精准定义需求，避免基于错觉症状做错决策。
+
+## 流程
+
+1. <b>三点注入</b>：在用户上下文中插入 3 个并行的根因假设
+2. <b>平行调查</b>：每个假设独立 grep / read / test 验证
+3. <b>因果合并</b>：把验证下来的 fact 收敛成单一根因
+4. <b>需求重提</b>：基于根因输出 spec，标注哪些是必做、哪些可延后
+5. <b>对接执行</b>：spec 直接喂给 plan / autopilot</pre>
+          </div>
+
+          <div class="settings-section">
+            <div class="label">文件 <span class="helper">7 个 · 总 24.6 KB</span></div>
+            <div class="file-tree">
+              <div class="ft-row">
+                <span class="ft-icon">─</span>
+                <span class="ft-name">SKILL.md</span>
+                <span class="ft-meta">3.2 KB</span>
+              </div>
+              <div class="ft-row">
+                <span class="ft-icon">└</span>
+                <span class="ft-name dir">references/</span>
+                <span class="ft-meta">5 files · 18 KB</span>
+              </div>
+              <div class="ft-row indent">
+                <span class="ft-icon">├</span>
+                <span class="ft-name">trace-template.md</span>
+                <span class="ft-meta">1.8 KB</span>
+              </div>
+              <div class="ft-row indent">
+                <span class="ft-icon">├</span>
+                <span class="ft-name">parallel-investigate.md</span>
+                <span class="ft-meta">4.2 KB</span>
+              </div>
+              <div class="ft-row indent">
+                <span class="ft-icon">├</span>
+                <span class="ft-name">interview-questions.md</span>
+                <span class="ft-meta">3.6 KB</span>
+              </div>
+              <div class="ft-row indent">
+                <span class="ft-icon">├</span>
+                <span class="ft-name">spec-output-format.md</span>
+                <span class="ft-meta">2.4 KB</span>
+              </div>
+              <div class="ft-row indent">
+                <span class="ft-icon">└</span>
+                <span class="ft-name">examples/3-cases.md</span>
+                <span class="ft-meta">6.0 KB</span>
+              </div>
+              <div class="ft-row">
+                <span class="ft-icon">└</span>
+                <span class="ft-name dir">scripts/</span>
+                <span class="ft-meta">1 file · 3.4 KB</span>
+              </div>
+              <div class="ft-row indent">
+                <span class="ft-icon">└</span>
+                <span class="ft-name">root-cause-trace.sh</span>
+                <span class="ft-meta">3.4 KB</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <div class="label">你的调用历史 <span class="helper">最近 8 条 · 共 87 次</span></div>
+            <table class="users-tbl">
+              <thead>
+                <tr>
+                  <th>ts</th>
+                  <th>mode</th>
+                  <th class="num">latency</th>
+                  <th class="num">tokens</th>
+                  <th>prompt 摘要</th>
+                  <th class="num">status</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr><td class="when">02:14:32</td><td class="st admin">compat</td><td class="num">412ms</td><td class="num">1.2k → 156</td><td>runai 这个项目目前有个痛点 ...</td><td class="num"><span style="color:var(--accent-2)">ok</span></td></tr>
+                <tr><td class="when">02:02:14</td><td class="st admin">compat</td><td class="num">498ms</td><td class="num">1.4k → 312</td><td>为什么 ci 又挂了</td><td class="num"><span style="color:var(--accent-2)">ok</span></td></tr>
+                <tr><td class="when">昨 18:24</td><td class="st admin">compat</td><td class="num">624ms</td><td class="num">2.1k → 480</td><td>这个 bug 在 v0.10 就有，找一下根</td><td class="num"><span style="color:var(--accent-2)">ok</span></td></tr>
+                <tr><td class="when">昨 16:08</td><td class="st admin">compat</td><td class="num">386ms</td><td class="num">980 → 142</td><td>训练 reward 在 step 4k 后突然降</td><td class="num"><span style="color:var(--accent-2)">ok</span></td></tr>
+                <tr><td class="when">昨 11:42</td><td class="st admin">compat</td><td class="num">512ms</td><td class="num">1.6k → 240</td><td>multi-user redesign 真的需要 admin bootstrap 吗</td><td class="num"><span style="color:var(--accent-2)">ok</span></td></tr>
+                <tr><td class="when">前天</td><td class="st admin">compat</td><td class="num">298ms</td><td class="num">820 → 98</td><td>install.sh 在 windows 上 utf-8 编码错</td><td class="num"><span style="color:var(--accent-2)">ok</span></td></tr>
+                <tr><td class="when">前天</td><td class="st admin">compat</td><td class="num">428ms</td><td class="num">1.1k → 184</td><td>scanner 在非默认 RUNE_DATA_DIR 下行为</td><td class="num"><span style="color:var(--accent-2)">ok</span></td></tr>
+                <tr><td class="when">3d ago</td><td class="st admin">compat</td><td class="num">682ms</td><td class="num">2.4k → 412</td><td>为什么 podman per-call 比容器池贵 10 倍</td><td class="num"><span style="color:var(--accent-2)">ok</span></td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="settings-section">
+            <div class="label">Exec 接口 <span class="helper">claude 或 curl 触发</span></div>
+            <pre class="code-block"><span class="c"># 在 claude 里：</span>
+<span class="k">curl</span> -s -X POST <span class="s">'http://server.local:17888/skills/exec/deep-dive'</span> \
+  -H <span class="s">"Authorization: Bearer rnai_live_***"</span> \
+  -H <span class="s">"Content-Type: application/json"</span> \
+  -d <span class="s">'{"args":["--question","为什么 ci 又挂了"], "stdin":"..."}'</span>
+
+<span class="c"># 响应 (JSON):</span>
+{
+  <span class="s">"exec_id"</span>: <span class="s">"e_8c2d4e6f"</span>,
+  <span class="s">"exit_code"</span>: 0,
+  <span class="s">"stdout"</span>: <span class="s">"... 因果溯源报告 + spec ..."</span>,
+  <span class="s">"duration_ms"</span>: 412,
+  <span class="s">"outputs"</span>: [
+    { <span class="s">"path"</span>: <span class="s">"trace-report.md"</span>, <span class="s">"size"</span>: 4821,
+      <span class="s">"url"</span>: <span class="s">"/skills/output/e_8c2d4e6f/trace-report.md"</span> }
+  ]
+}</pre>
+          </div>
+
+          <div style="margin-top:48px;padding-top:36px;border-top:1px solid var(--line);display:flex;gap:24px;flex-wrap:wrap">
+            <button class="btn">禁用此 skill</button>
+            <button class="btn">检查更新</button>
+            <button class="btn">在文件系统打开</button>
+            <button class="btn danger">卸载</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- =========== ACTIVITY =========== -->
+      <section class="tab" data-pane="activity">
+        <div class="tab-head">
+          <h1>Activity<em>247 today</em></h1>
+          <div class="meta-line"><b>10 visible</b> · last 24h · all status</div>
+        </div>
+
+        <div class="filterbar">
+          <label>skill</label>
+          <input type="text" placeholder="过滤"/>
+          <label>window</label>
+          <div class="dropdown fluid">
+            <button type="button" class="dropdown-trigger">
+              <span class="dd-label">last 24h</span>
+              <span class="dd-chev"></span>
+            </button>
+            <div class="dropdown-menu">
+              <button type="button" class="dd-opt" data-value="1h">last 1h</button>
+              <button type="button" class="dd-opt active" data-value="24h">last 24h</button>
+              <button type="button" class="dd-opt" data-value="7d">last 7d</button>
+              <button type="button" class="dd-opt" data-value="30d">last 30d</button>
+            </div>
+          </div>
+          <label>status</label>
+          <div class="dropdown fluid">
+            <button type="button" class="dropdown-trigger">
+              <span class="dd-label">all</span>
+              <span class="dd-chev"></span>
+            </button>
+            <div class="dropdown-menu">
+              <button type="button" class="dd-opt active" data-value="all">all</button>
+              <button type="button" class="dd-opt" data-value="hit">hit</button>
+              <button type="button" class="dd-opt" data-value="skip">skip</button>
+              <button type="button" class="dd-opt" data-value="error">error</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="activity-list">
+          <div class="row"><div class="ts">02:14:32</div><div class="nm">deep-dive</div><div class="mode">compat</div><div class="dur">412ms</div><div class="tok">1.2k → 156</div><div class="prompt">runai 这个项目目前有个痛点 ...</div></div>
+          <div class="row"><div class="ts">02:13:08</div><div class="nm">html-anything</div><div class="mode e">exclusive</div><div class="dur">2.8s</div><div class="tok">3.4k → 1.2k</div><div class="prompt">把这个会议纪要转成 web ...</div></div>
+          <div class="row"><div class="ts">02:11:42</div><div class="nm">verify</div><div class="mode">compat</div><div class="dur">218ms</div><div class="tok">820 → 142</div><div class="prompt">这个 PR 跑测试看下结果</div></div>
+          <div class="row"><div class="ts">02:10:11</div><div class="nm">claude-api</div><div class="mode">compat</div><div class="dur">12ms</div><div class="tok">540 → 0</div><div class="prompt">什么是 prompt caching</div></div>
+          <div class="row"><div class="ts">02:08:30</div><div class="nm">safety-guard</div><div class="mode e">exclusive</div><div class="dur">186ms</div><div class="tok">980 → 89</div><div class="prompt">帮我清理一下 logs 目录</div></div>
+          <div class="row"><div class="ts">02:06:55</div><div class="nm">brainstorming</div><div class="mode">compat</div><div class="dur">624ms</div><div class="tok">1.8k → 482</div><div class="prompt">想做个用户偏好系统</div></div>
+          <div class="row"><div class="ts">02:05:21</div><div class="nm">find-skills</div><div class="mode">compat</div><div class="dur">301ms</div><div class="tok">650 → 234</div><div class="prompt">有没有处理 csv 的 skill</div></div>
+          <div class="row"><div class="ts">02:03:48</div><div class="nm">lark-doc</div><div class="mode e">exclusive</div><div class="dur">30.0s</div><div class="tok">4.1k → ?</div><div class="prompt">把这个 doc 转成 markdown</div></div>
+          <div class="row"><div class="ts">02:02:14</div><div class="nm">deep-dive</div><div class="mode">compat</div><div class="dur">498ms</div><div class="tok">1.4k → 312</div><div class="prompt">为什么 ci 又挂了</div></div>
+          <div class="row"><div class="ts">02:00:55</div><div class="nm">security-review</div><div class="mode e">exclusive</div><div class="dur">1.4s</div><div class="tok">2.8k → 720</div><div class="prompt">提交前过一遍安全审查</div></div>
+        </div>
+      </section>
+
+      <!-- =========== SETTINGS =========== -->
+      <section class="tab" data-pane="settings">
+
+        <div class="tab-head">
+          <h1>Settings</h1>
+          <div class="meta-line"><b>auto-save</b> · changes apply immediately</div>
+        </div>
+
+        <div class="settings-section">
+          <div class="label">Hook 行为 <span class="helper">5 toggles</span></div>
+          <div class="pref-row">
+            <div>
+              <div class="pref-name">回复开头交代取舍</div>
+              <div class="pref-desc">关闭后 claude 不再写"激活/跳过"原因，直接执行选中的 skill</div>
+            </div>
+            <div class="control"><div class="toggle-sw"></div></div>
+          </div>
+          <div class="pref-row">
+            <div>
+              <div class="pref-name">注入历史 skill 参考池</div>
+              <div class="pref-desc">把本 session 看过的 skill 列出来，便于 follow-up 复用</div>
+            </div>
+            <div class="control"><div class="toggle-sw"></div></div>
+          </div>
+          <div class="pref-row">
+            <div>
+              <div class="pref-name">注入反馈协议提示</div>
+              <div class="pref-desc">用户正向 / 负向评价时上报 server，用于改进路由</div>
+            </div>
+            <div class="control"><div class="toggle-sw"></div></div>
+          </div>
+          <div class="pref-row">
+            <div>
+              <div class="pref-name">推荐模式</div>
+              <div class="pref-desc">off 时整个 hook 静默</div>
+            </div>
+            <div class="control">
+              <div class="dropdown" style="min-width:140px">
+                <button type="button" class="dropdown-trigger">
+                  <span class="dd-label">compatible</span>
+                  <span class="dd-chev"></span>
+                </button>
+                <div class="dropdown-menu">
+                  <button type="button" class="dd-opt active" data-value="compatible">compatible</button>
+                  <button type="button" class="dd-opt" data-value="exclusive">exclusive</button>
+                  <button type="button" class="dd-opt" data-value="off">off</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="pref-row">
+            <div>
+              <div class="pref-name">候选数上限</div>
+              <div class="pref-desc">每条 prompt 最多推几个 skill</div>
+            </div>
+            <div class="control">
+              <input type="range" class="slider-mini" min="1" max="5" value="3"/>
+              <span class="slider-val">3</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-section">
+          <div class="label">沙箱运行状态 <span class="helper">实时</span></div>
+          <p style="font-size:14px;color:var(--ink-2);max-width:620px;line-height:1.65;margin-bottom:24px">
+            个人开源场景不做配额限制。看你的容器当前在做什么、最近跑了什么、有没有异常。
+          </p>
+          <div class="id-block"><div class="k">活跃沙箱</div><div class="v"><span class="ok" style="color:var(--accent-2)">1 running</span> · deep-dive · started 12s ago · pid 48312</div></div>
+          <div class="id-block"><div class="k">容器运行时</div><div class="v">podman 5.6.0 · rootless · cgroup v2 · seccomp profile loaded</div></div>
+          <div class="id-block"><div class="k">镜像</div><div class="v">ghcr.io/crosery/runai-sandbox-py:0.12.0 (cached, last pulled 3d ago)</div></div>
+          <div class="id-block"><div class="k">/data 卷</div><div class="v">~/.runai/sandbox/users/u_a3f9b2c1d4/data/ · 240 MB · 14 files</div></div>
+          <div class="id-block"><div class="k">/output 历史</div><div class="v">87 MB · 28 个产物文件 · 最旧 7d 前 (GC 周期 30d)</div></div>
+          <div class="id-block"><div class="k">最近 1h 事件</div><div class="v"><span style="color:var(--accent-2)">12 success</span> · <span style="color:var(--ink-3)">3 skip</span> · 0 fail</div></div>
+        </div>
+
+        <div class="settings-section">
+          <div class="label">身份</div>
+          <div class="id-block"><div class="k">user_id</div><div class="v">u_a3f9b2c1d4</div></div>
+          <div class="id-block"><div class="k">api_key</div><div class="v" style="color:var(--ink-3)">●●●●●●●●●●●●● · 点 view 查看</div></div>
+          <div class="id-block"><div class="k">server_url</div><div class="v">http://server.local:17888</div></div>
+          <div class="id-block"><div class="k">created_at</div><div class="v">2026-04-29 18:11:24</div></div>
+          <div class="id-block"><div class="k">recent_ip</div><div class="v">192.168.1.42 · 10.0.3.18 · 100.66.124.7</div></div>
+          <div style="margin-top:22px">
+            <button class="btn primary">导出 identity</button>
+            <button class="btn">rotate api key</button>
+            <button class="btn danger">注销并清除本机 identity</button>
+          </div>
+        </div>
+
+      </section>
+
+      <!-- =========== ADMIN =========== -->
+      <section class="tab" data-pane="admin">
+
+        <!-- HERO BAND (统领全网使用数据，结构对应 Overview hero) -->
+        <div class="hero-grid">
+
+          <div class="hero-main">
+            <div class="eyebrow">网络全局 · 2026-05-20</div>
+            <h1>1247<span class="h1-tail">CALLS</span></h1>
+            <p class="label">全网 <b>27 用户</b>，24h 内 <b>23 人</b>活跃。<br>
+              全网命中率 <b>91%</b>，沙箱 <b>3 次失败</b>（2 timeout / 1 oom），p95 延迟 1.2s。</p>
+
+            <div class="hero-strip">
+              <div class="cell">
+                <div class="n">23<em>/27</em></div>
+                <div class="lbl">active users 24h</div>
+                <div class="delta">+3 本周</div>
+              </div>
+              <div class="cell">
+                <div class="n">24</div>
+                <div class="lbl">skills in use</div>
+                <div class="delta">14 with exec</div>
+              </div>
+              <div class="cell">
+                <div class="n">412<em style="font-size:0.4em;font-family:var(--mono);letter-spacing:0.06em">ms</em></div>
+                <div class="lbl">avg latency</div>
+                <div class="delta">p95 1.2s</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="top-users">
+            <div class="stream-head">
+              <span>top users · 24h</span>
+              <span class="live"><i></i>realtime</span>
+            </div>
+            <a href="#" class="tu-row">
+              <span class="tu-rank">1</span>
+              <span class="tu-id">u_a3f9b2c1d4<small>admin</small></span>
+              <span class="tu-calls">247</span>
+            </a>
+            <a href="#" class="tu-row">
+              <span class="tu-rank">2</span>
+              <span class="tu-id">u_b7e2c8d9f1<small>active</small></span>
+              <span class="tu-calls">198</span>
+            </a>
+            <a href="#" class="tu-row">
+              <span class="tu-rank">3</span>
+              <span class="tu-id">u_c4d8e1a6b3<small>active</small></span>
+              <span class="tu-calls">142</span>
+            </a>
+            <a href="#" class="tu-row">
+              <span class="tu-rank">4</span>
+              <span class="tu-id">u_d9a1f3c7e2<small>active</small></span>
+              <span class="tu-calls">98</span>
+            </a>
+            <a href="#" class="tu-row">
+              <span class="tu-rank">5</span>
+              <span class="tu-id">u_e2b4d6f8a1<small>active</small></span>
+              <span class="tu-calls">64</span>
+            </a>
+            <a href="#" class="tu-row">
+              <span class="tu-rank">6</span>
+              <span class="tu-id">u_d2a7c4f9b1<small>active</small></span>
+              <span class="tu-calls">52</span>
+            </a>
+            <a href="#" class="tu-row">
+              <span class="tu-rank">7</span>
+              <span class="tu-id">u_a8e3b6d2c5<small>active</small></span>
+              <span class="tu-calls">41</span>
+            </a>
+          </div>
+        </div>
+
+        <!-- 全网 24h 活动图 -->
+        <div class="chart-block">
+          <div class="head">
+            <h2>全网 24 小时 <em style="font-style:normal;font-family:var(--mono);font-size:0.32em;letter-spacing:0.14em;text-transform:uppercase;color:var(--ink-3);font-weight:500;vertical-align:0.5em">aggregated activity</em></h2>
+            <div class="meta">所有用户 · 每 5 分钟一格</div>
+          </div>
+          <div class="chart-wrap">
+            <svg viewBox="0 0 800 240" preserveAspectRatio="none">
+              <g class="grid">
+                <line x1="0" y1="60"  x2="800" y2="60"/>
+                <line x1="0" y1="120" x2="800" y2="120"/>
+                <line x1="0" y1="180" x2="800" y2="180"/>
+              </g>
+              <path class="area-fill" d="M0,180 L34,168 L68,152 L102,144 L136,128 L170,118 L204,124 L238,108 L272,90 L306,82 L340,96 L374,72 L408,64 L442,48 L476,58 L510,42 L544,34 L578,22 L612,38 L646,16 L680,30 L714,14 L748,18 L782,8 L800,4 L800,240 L0,240 Z"/>
+              <path class="area-stroke" d="M0,180 L34,168 L68,152 L102,144 L136,128 L170,118 L204,124 L238,108 L272,90 L306,82 L340,96 L374,72 L408,64 L442,48 L476,58 L510,42 L544,34 L578,22 L612,38 L646,16 L680,30 L714,14 L748,18 L782,8 L800,4"/>
+              <g class="axis">
+                <text x="2"   y="232">-24h</text>
+                <text x="400" y="232" text-anchor="middle">-12h</text>
+                <text x="798" y="232" text-anchor="end">now</text>
+              </g>
+            </svg>
+          </div>
+        </div>
+
+        <!-- 容器运维状态：全网层面，admin 视角看运行时健康 -->
+        <div class="settings-section">
+          <div class="label">沙箱运维 <span class="helper">实时 · 最近 24h</span></div>
+          <div class="id-block"><div class="k">活跃容器</div><div class="v"><span style="color:var(--accent-2)">3 running</span> · 跨 3 个用户 · 平均跑了 8s</div></div>
+          <div class="id-block"><div class="k">容器池</div><div class="v">ghcr.io/crosery/runai-sandbox-py · 镜像层 cached on disk 184 MB</div></div>
+          <div class="id-block"><div class="k">runtime 健康</div><div class="v">podman 5.6.0 · cgroup v2 · seccomp loaded · /etc/subuid 已配 · rootless ok</div></div>
+          <div class="id-block"><div class="k">24h 调用</div><div class="v"><span style="color:var(--accent-2)">1135 success</span> · <span style="color:var(--ink-3)">109 skip</span> · <span style="color:var(--warn)">2 timeout</span> · <span style="color:var(--err)">1 oom</span></div></div>
+          <div class="id-block"><div class="k">延迟分布</div><div class="v">中位数 412ms · p95 1.2s · p99 2.8s</div></div>
+          <div class="id-block"><div class="k">产物体积</div><div class="v">24h 写入 /output 累计 14.3 MB · 平均 12 KB / call · 最大单文件 2.1 MB (html-anything)</div></div>
+          <div class="id-block"><div class="k">最近异常</div><div class="v"><span style="color:var(--warn)">02:03:48 lark-doc timeout · u_e2b4d6f8a1</span> · <a href="#" style="color:var(--accent);border-bottom:1px dotted var(--accent)">查看完整 audit →</a></div></div>
+        </div>
+
+        <!-- 管理动作（次要位置） -->
+        <div class="settings-section">
+          <div class="label">User 视图 <span class="helper">点 user_id 钻取单用户使用详情 + 容器状态</span></div>
+          <table class="users-tbl">
+            <thead>
+              <tr>
+                <th>user_id</th>
+                <th>status</th>
+                <th class="num">24h calls</th>
+                <th class="num">hit rate</th>
+                <th class="num">avg lat</th>
+                <th class="num">active</th>
+                <th class="num">data used</th>
+                <th>actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td class="uid"><a href="#" style="color:var(--ink);border-bottom:1px dotted var(--line)">u_a3f9b2c1d4 →</a></td><td class="st admin">admin</td><td class="num">247</td><td class="num">96%</td><td class="num">408ms</td><td class="num">1</td><td class="num">240 MB</td><td class="act"><a href="#">drill in</a></td></tr>
+              <tr><td class="uid"><a href="#" style="color:var(--ink);border-bottom:1px dotted var(--line)">u_b7e2c8d9f1 →</a></td><td class="st active">active</td><td class="num">198</td><td class="num">92%</td><td class="num">432ms</td><td class="num">2</td><td class="num">512 MB</td><td class="act"><a href="#">drill in</a> · <a href="#">disable</a></td></tr>
+              <tr><td class="uid"><a href="#" style="color:var(--ink);border-bottom:1px dotted var(--line)">u_c4d8e1a6b3 →</a></td><td class="st active">active</td><td class="num">142</td><td class="num">89%</td><td class="num">386ms</td><td class="num">0</td><td class="num">88 MB</td><td class="act"><a href="#">drill in</a> · <a href="#">disable</a></td></tr>
+              <tr><td class="uid"><a href="#" style="color:var(--ink);border-bottom:1px dotted var(--line)">u_d9a1f3c7e2 →</a></td><td class="st active">active</td><td class="num">98</td><td class="num">94%</td><td class="num">524ms</td><td class="num">0</td><td class="num">740 MB</td><td class="act"><a href="#">drill in</a> · <a href="#">disable</a></td></tr>
+              <tr><td class="uid"><a href="#" style="color:var(--ink);border-bottom:1px dotted var(--line)">u_e2b4d6f8a1 →</a></td><td class="st active">active</td><td class="num">64</td><td class="num">88%</td><td class="num">298ms</td><td class="num">0</td><td class="num">12 MB</td><td class="act"><a href="#">drill in</a> · <a href="#">disable</a></td></tr>
+              <tr><td class="uid"><a href="#" style="color:var(--ink-3);border-bottom:1px dotted var(--line)">u_f5a8c2d1b9 →</a></td><td class="st disabled">disabled</td><td class="num">0</td><td class="num">—</td><td class="num">—</td><td class="num">0</td><td class="num">0</td><td class="act"><a href="#">drill in</a> · <a href="#">enable</a></td></tr>
+            </tbody>
           </table>
         </div>
-      </div>
-    </div>
 
-    <!-- SKILLS -->
-    <div class="view" id="view-skills">
-      <div class="page-header">
-        <div>
-          <h1 class="page-title">Skills</h1>
-          <p class="page-sub">18 个已启用 · 6 个未启用</p>
+        <div class="settings-section">
+          <div class="label">注册流水 <span class="helper">install 脚本自动 register</span></div>
+          <p style="font-size:14px;color:var(--ink-2);max-width:620px;line-height:1.65;margin-bottom:24px">
+            没有邀请码机制。用户在自己机器上跑 install 脚本，<code style="font-family:var(--mono);font-size:12.5px;color:var(--accent);background:transparent">~/.runai-identity</code> 自动生成 secret + user_id，注册请求直接走 server，幂等。卸载不删 identity，重装恢复同身份。
+          </p>
+          <table class="users-tbl">
+            <thead><tr><th>user_id</th><th>installed</th><th>last seen</th><th>device hint</th><th class="num">total exec</th></tr></thead>
+            <tbody>
+              <tr><td class="uid">u_a3f9b2c1d4</td><td class="when">2026-04-29 18:11</td><td class="when">2 min ago</td><td class="when">macOS · 192.168.1.42</td><td class="num">3,247</td></tr>
+              <tr><td class="uid">u_b7e2c8d9f1</td><td class="when">2026-05-02 09:34</td><td class="when">14 min ago</td><td class="when">Linux · 10.0.3.18</td><td class="num">2,189</td></tr>
+              <tr><td class="uid">u_c4d8e1a6b3</td><td class="when">2026-05-04 14:22</td><td class="when">38 min ago</td><td class="when">macOS · 100.66.124.7</td><td class="num">1,856</td></tr>
+              <tr><td class="uid">u_d9a1f3c7e2</td><td class="when">2026-05-09 11:08</td><td class="when">1h ago</td><td class="when">Windows · 192.168.2.4</td><td class="num">1,124</td></tr>
+              <tr><td class="uid">u_e2b4d6f8a1</td><td class="when">2026-05-12 16:55</td><td class="when">3h ago</td><td class="when">macOS · 10.0.5.12</td><td class="num">486</td></tr>
+              <tr><td class="uid">u_f5a8c2d1b9</td><td class="when">2026-05-15 10:42</td><td class="when">2d ago</td><td class="when">Linux · 172.16.0.8</td><td class="num">94</td></tr>
+            </tbody>
+          </table>
         </div>
-      </div>
-      <div class="filter-row">
-        <input class="input" placeholder="搜索 skill 名 / 描述">
-        <select class="select">
-          <option>综合分</option>
-          <option>使用次数</option>
-          <option>名字</option>
-          <option>未启用</option>
-        </select>
-      </div>
-      <div class="panel">
-        <div class="skill-list" id="skill-list"></div>
-      </div>
-    </div>
+      </section>
 
-    <!-- ACTIVITY -->
-    <div class="view" id="view-activity">
-      <div class="page-header">
-        <div>
-          <h1 class="page-title">Activity</h1>
-          <p class="page-sub">prompt-by-prompt 时间线</p>
-        </div>
-      </div>
-      <div class="filter-row">
-        <input class="input" placeholder="skill 名">
-        <select class="select"><option>1 小时</option><option selected>24 小时</option><option>7 天</option><option>30 天</option></select>
-        <select class="select"><option>全部状态</option><option>命中</option><option>跳过</option><option>错误</option></select>
-      </div>
-      <div class="panel">
-        <div class="panel-body flush">
-          <div class="timeline" id="timeline"></div>
-        </div>
-      </div>
-    </div>
+    </main>
+  </div>
 
-    <!-- SETTINGS -->
-    <div class="view" id="view-settings">
-      <div class="page-header">
-        <div>
-          <h1 class="page-title">Settings</h1>
-          <p class="page-sub">影响 hook 行为 + 你的配额</p>
-        </div>
-      </div>
-
-      <div class="settings-section">
-        <h3>Hook 行为</h3>
-        <div class="settings-card">
-          <div class="settings-row">
-            <div>
-              <div class="settings-label">在回复开头要求 claude 交代取舍</div>
-              <div class="settings-hint">关闭后 claude 不再交代为什么用 / 跳过某个 skill</div>
-            </div>
-            <span class="switch on" data-switch></span>
-          </div>
-          <div class="settings-row">
-            <div>
-              <div class="settings-label">注入历史 skill 参考池</div>
-              <div class="settings-hint">把最近高频 skill 当作正例提示</div>
-            </div>
-            <span class="switch on" data-switch></span>
-          </div>
-          <div class="settings-row">
-            <div>
-              <div class="settings-label">注入反馈协议提示</div>
-              <div class="settings-hint">让 claude 在用错 skill 时主动写 feedback</div>
-            </div>
-            <span class="switch on" data-switch></span>
-          </div>
-          <div class="settings-row">
-            <div>
-              <div class="settings-label">推荐模式</div>
-              <div class="settings-hint">compatible 允许多 skill 同时注入 / exclusive 只挑最相关一个 / off 不路由</div>
-            </div>
-            <select class="select">
-              <option>compatible</option>
-              <option>exclusive</option>
-              <option>off</option>
-            </select>
-          </div>
-          <div class="settings-row">
-            <div>
-              <div class="settings-label">候选数上限</div>
-              <div class="settings-hint">同一 prompt 最多注入的 skill 数</div>
-            </div>
-            <div class="slider-wrap">
-              <input class="slider" id="cand-slider" type="range" min="1" max="5" value="3">
-              <span class="slider-value" id="cand-val">3</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="settings-section">
-        <h3>Skill 库</h3>
-        <div class="settings-card">
-          <div class="settings-row" style="background:#fbfbfd;padding:10px 18px">
-            <div>
-              <div class="settings-label">对你可见的 skill <span class="pill pill-info" style="margin-left:6px">24</span></div>
-              <div class="settings-hint">点 toggle 关掉某个 skill 不影响 hook 全局开关</div>
-            </div>
-            <a class="ghost-btn" style="text-decoration:none;display:inline-flex;align-items:center" href="#">查看全部</a>
-          </div>
-          <div class="settings-row"><span class="skill-name">find-skills</span><span class="switch on" data-switch></span></div>
-          <div class="settings-row"><span class="skill-name">deep-dive</span><span class="switch on" data-switch></span></div>
-          <div class="settings-row"><span class="skill-name">safety-guard</span><span class="switch on" data-switch></span></div>
-          <div class="settings-row"><span class="skill-name">verify</span><span class="switch" data-switch></span></div>
-          <div class="settings-row"><span class="skill-name">brainstorming</span><span class="switch on" data-switch></span></div>
-        </div>
-      </div>
-
-      <div class="settings-section">
-        <h3>配额 + 用量</h3>
-        <div class="settings-card">
-          <div class="quota-grid">
-            <div class="quota-item">
-              <div class="quota-head"><span class="quota-label">exec / 分钟</span><span class="quota-value">18 / 60</span></div>
-              <div class="progress"><div class="progress-fill" style="width:30%"></div></div>
-            </div>
-            <div class="quota-item">
-              <div class="quota-head"><span class="quota-label">/data 存储</span><span class="quota-value">240 / 1024 MB</span></div>
-              <div class="progress"><div class="progress-fill" style="width:23%"></div></div>
-            </div>
-            <div class="quota-item">
-              <div class="quota-head"><span class="quota-label">/output 总量</span><span class="quota-value">87 / 500 MB</span></div>
-              <div class="progress"><div class="progress-fill" style="width:17%"></div></div>
-            </div>
-            <div class="quota-item">
-              <div class="quota-head"><span class="quota-label">并发 exec</span><span class="quota-value">1 / 4</span></div>
-              <div class="progress"><div class="progress-fill" style="width:25%"></div></div>
-            </div>
-          </div>
-          <div style="padding:0 18px 16px;font-size:12px;color:#656d76">重置时间: 每分钟</div>
-        </div>
-      </div>
-
-      <div class="settings-section">
-        <h3>身份</h3>
-        <div class="settings-card">
-          <div class="identity-block">
-            <div class="identity-row">
-              <span class="identity-id">u_a3f9b2c1d4</span>
-              <button class="ghost-btn">复制</button>
-            </div>
-            <div class="identity-btns">
-              <button class="primary-btn">查看 API key</button>
-              <button class="danger-btn">Rotate API key</button>
-              <button class="ghost-btn">导出 identity</button>
-            </div>
-            <div class="ip-list">最近活跃 IP: 192.168.1.42 · 10.0.3.18</div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- ADMIN -->
-    <div class="view" id="view-admin">
-      <div class="page-header">
-        <div>
-          <h1 class="page-title">Admin</h1>
-          <p class="page-sub">仅 admin 可见 · 全局视图</p>
-        </div>
-      </div>
-
-      <div class="settings-section">
-        <h3>全局统计</h3>
-        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px">
-          <div class="mini-stat"><div class="mini-stat-val">27</div><div class="mini-stat-lab">总用户数</div></div>
-          <div class="mini-stat"><div class="mini-stat-val">1.2k</div><div class="mini-stat-lab">今日 exec</div></div>
-          <div class="mini-stat"><div class="mini-stat-val">3</div><div class="mini-stat-lab">沙箱失败</div></div>
-          <div class="mini-stat"><div class="mini-stat-val">412<span style="font-size:11px;color:#656d76"> ms</span></div><div class="mini-stat-lab">平均延迟</div></div>
-        </div>
-      </div>
-
-      <div class="settings-section">
-        <h3>用户管理</h3>
-        <div class="panel">
-          <div class="panel-body flush">
-            <table class="data">
-              <thead><tr><th>user_id</th><th>注册时间</th><th>状态</th><th class="num">exec / min</th><th>操作</th></tr></thead>
-              <tbody id="admin-users"></tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-
-      <div class="settings-section">
-        <h3 style="display:flex;align-items:center;justify-content:space-between">
-          Invite tokens
-          <button class="primary-btn">生成新 invite</button>
-        </h3>
-        <div class="panel">
-          <div class="panel-body flush">
-            <table class="data">
-              <thead><tr><th>token</th><th>创建时间</th><th>状态</th><th>使用者</th></tr></thead>
-              <tbody id="admin-invites"></tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-    </div>
-
-  </main>
 </div>
 
 <script>
-(function(){
   // tab switching
-  document.querySelectorAll('.nav-item').forEach(function(el){
-    el.addEventListener('click', function(){
+  document.querySelectorAll('aside.side .nav a').forEach(function(el){
+    el.addEventListener('click', function(e){
+      e.preventDefault();
       var tab = el.getAttribute('data-tab');
-      document.querySelectorAll('.nav-item').forEach(function(x){x.classList.remove('active')});
+      if(!tab) return;
+      document.querySelectorAll('aside.side .nav a').forEach(function(x){x.classList.remove('active')});
+      document.querySelectorAll('.tab').forEach(function(x){x.classList.remove('active')});
       el.classList.add('active');
-      document.querySelectorAll('.view').forEach(function(v){v.classList.remove('active')});
-      document.getElementById('view-' + tab).classList.add('active');
+      var pane = document.querySelector('.tab[data-pane="'+tab+'"]');
+      if(pane) pane.classList.add('active');
+      window.scrollTo({top:0,behavior:'smooth'});
     });
   });
 
-  // theme toggle
-  document.getElementById('theme-toggle').addEventListener('click', function(){
-    document.body.classList.toggle('dark');
+  // Library subtab (Installed / Market / Detail)
+  function showLibPane(sub){
+    document.querySelectorAll('.lib-sub').forEach(function(x){x.classList.remove('active')});
+    document.querySelectorAll('.lib-pane').forEach(function(x){
+      x.classList.remove('active');
+      x.hidden = (x.getAttribute('data-lib') !== sub);
+    });
+    var pane = document.querySelector('.lib-pane[data-lib="'+sub+'"]');
+    if(pane){pane.classList.add('active');pane.hidden = false;}
+    var tab = document.querySelector('.lib-sub[data-sub="'+sub+'"]');
+    if(tab) tab.classList.add('active');
+    // detail pane 不在 subnav 里，需要隐藏 subnav
+    var subnav = document.querySelector('.library-sub');
+    if(subnav) subnav.style.display = (sub === 'detail') ? 'none' : 'flex';
+    window.scrollTo({top:0,behavior:'smooth'});
+  }
+
+  document.querySelectorAll('.lib-sub').forEach(function(el){
+    el.addEventListener('click', function(e){
+      e.preventDefault();
+      showLibPane(el.getAttribute('data-sub'));
+    });
+  });
+
+  // 点 installed 里的 skill 行 → 进入 detail
+  document.querySelectorAll('.lib-pane[data-lib="installed"] .skill-rows .row:not(.mkt)').forEach(function(row){
+    row.addEventListener('click', function(e){
+      // 让 toggle 仍然能切开关，不冒泡触发详情
+      if(e.target.closest('.toggle')) return;
+      var nameEl = row.querySelector('.nm');
+      var name = nameEl ? nameEl.firstChild.textContent.trim() : '';
+      var detailNameEl = document.getElementById('detail-name');
+      if(detailNameEl && name) detailNameEl.textContent = name;
+      showLibPane('detail');
+    });
+  });
+
+  // back link
+  document.querySelectorAll('.back-link[data-back-to]').forEach(function(a){
+    a.addEventListener('click', function(e){
+      e.preventDefault();
+      showLibPane(a.getAttribute('data-back-to'));
+    });
+  });
+
+  // cursor: SVG arrow + lagging ring + contextual label
+  (function(){
+    if(!window.matchMedia || !window.matchMedia('(pointer:fine)').matches) return;
+
+    var glow  = document.querySelector('.cursor-glow');
+    var arrow = document.querySelector('.cursor-arrow');
+    var ring  = document.querySelector('.cursor-ring');
+    var label = document.querySelector('.cursor-label');
+    if(!arrow || !ring || !label) return;
+
+    var mx = window.innerWidth/2, my = window.innerHeight/2;
+    var rx = mx, ry = my;
+    var lx = mx, ly = my;
+
+    function frame(){
+      // SVG tip is at internal (2, 2). Translate so tip lands on exact cursor (mx, my).
+      arrow.style.transform = 'translate(' + (mx - 2) + 'px,' + (my - 2) + 'px)';
+      // ring follows with lerp (0.18 = comfortable lag)
+      rx += (mx - rx) * 0.18;
+      ry += (my - ry) * 0.18;
+      ring.style.transform = 'translate(' + (rx - ring.offsetWidth/2) + 'px,' + (ry - ring.offsetHeight/2) + 'px)';
+      // label trails slower
+      lx += (mx - lx) * 0.32;
+      ly += (my - ly) * 0.32;
+      label.style.transform = 'translate(' + (lx + 18) + 'px,' + (ly + 18) + 'px)';
+      // glow cheap update
+      if(glow){
+        glow.style.setProperty('--mx', mx + 'px');
+        glow.style.setProperty('--my', my + 'px');
+      }
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+
+    document.addEventListener('mousemove', function(e){
+      mx = e.clientX; my = e.clientY;
+      if(arrow.classList.contains('hide')){
+        arrow.classList.remove('hide');
+        ring.classList.remove('hide');
+      }
+    }, {passive:true});
+
+    document.addEventListener('mouseleave', function(){
+      arrow.classList.add('hide');
+      ring.classList.add('hide');
+      label.classList.remove('visible');
+    });
+    document.addEventListener('mouseenter', function(){
+      arrow.classList.remove('hide');
+      ring.classList.remove('hide');
+    });
+
+    // contextual label — different copy per element type
+    function showLabel(text, accent){
+      label.textContent = text;
+      label.classList.toggle('accent', !!accent);
+      label.classList.remove('hide');
+      label.classList.add('visible');
+    }
+    function hideLabel(){
+      label.classList.remove('visible');
+    }
+
+    // intent state machine：hover 不同元素 → 切换 .intent-* class
+    var currentIntent = null;
+    function applyIntent(name){
+      if(currentIntent){
+        arrow.classList.remove('intent-' + currentIntent);
+        ring.classList.remove('intent-' + currentIntent);
+      }
+      if(name){
+        arrow.classList.add('intent-' + name);
+        ring.classList.add('intent-' + name);
+      }
+      currentIntent = name;
+    }
+
+    // 每条 binding 是 [selector, label-text, intent-class, label-accent-style]
+    var bindings = [
+      // 深钻探类（最大 ring）
+      ['.skill-rows .row',                    'open skill',  'deep',     true ],
+      ['.tu-row',                             'drill in',    'deep',     true ],
+      ['.ts-row',                             'inspect',     'deep',     true ],
+      ['.recent-row',                         'view exec',   'deep',     false],
+      ['.activity-list .row',                 'view exec',   'deep',     false],
+      ['.stream-item',                        'view exec',   'deep',     false],
+      // 危险类（红）
+      ['.btn.danger',                         'careful →',   'danger',   true ],
+      ['.users-tbl a[href="#"]:not(.nav-item)', 'edit',      'default',  false],
+      // 关键 CTA（最大 glow）
+      ['.cta',                                'go →',        'primary',  true ],
+      ['.btn.primary',                        'go →',        'primary',  true ],
+      ['.dd-opt',                             'select',      'primary',  true ],
+      // 普通可点
+      ['.dropdown-trigger',                   'open',        'default',  false],
+      ['.btn:not(.primary):not(.danger)',     'go →',        'default',  false],
+      ['.id-block .v a',                      'open',        'default',  false],
+      ['a:not(.cta):not(.btn)',               'open',        'default',  false],
+      ['button',                              'tap',         'default',  false],
+      ['.nav-item, aside.side .nav a',        'navigate',    'default',  false],
+      // 开关（小 ring）
+      ['.toggle-sw',                          'toggle',      'toggle',   false],
+      ['.skill-rows .row .toggle',            'toggle',      'toggle',   false],
+      // 主题色块（动态颜色，预览模式）
+      ['.swatch',                             'preview',     'theme',    false]
+    ];
+
+    bindings.forEach(function(pair){
+      var sel = pair[0], text = pair[1], intent = pair[2], accent = pair[3];
+      document.querySelectorAll(sel).forEach(function(el){
+        // 禁用元素 (skill-rows .row.off) hover 时走 disabled intent
+        var hoverIntent = intent;
+        if(el.classList.contains('off') || el.classList.contains('disabled') ||
+           el.closest('[disabled]') || el.getAttribute('aria-disabled') === 'true'){
+          hoverIntent = 'disabled';
+        }
+
+        el.addEventListener('mouseenter', function(){
+          // theme swatch：动态注入它的色块色
+          if(intent === 'theme'){
+            var c = getComputedStyle(el).backgroundColor;
+            arrow.style.setProperty('--swatch-c', c);
+            ring.style.setProperty('--swatch-c', c);
+          }
+          applyIntent(hoverIntent);
+          showLabel(text, accent);
+        });
+        el.addEventListener('mouseleave', function(){
+          if(intent === 'theme'){
+            arrow.style.removeProperty('--swatch-c');
+            ring.style.removeProperty('--swatch-c');
+          }
+          applyIntent(null);
+          hideLabel();
+        });
+      });
+    });
+
+    // 文本输入语境：hover 在 input / textarea / [contenteditable] 上时让位给原生 I-beam
+    document.querySelectorAll('input,textarea,[contenteditable]').forEach(function(el){
+      el.addEventListener('mouseenter', function(){
+        document.body.classList.add('text-cursor');
+        applyIntent(null);
+        hideLabel();
+      });
+      el.addEventListener('mouseleave', function(){
+        document.body.classList.remove('text-cursor');
+      });
+    });
+
+    // click feedback
+    document.addEventListener('mousedown', function(){ ring.classList.add('click'); });
+    document.addEventListener('mouseup',   function(){ ring.classList.remove('click'); });
+  })();
+
+  // theme swatch picker
+  document.querySelectorAll('.swatch').forEach(function(s){
+    s.addEventListener('click', function(){
+      var t = s.getAttribute('data-theme');
+      document.body.className = document.body.className
+        .replace(/\btheme-\w+\b/g,'').trim();
+      document.body.classList.add('theme-' + t);
+      document.querySelectorAll('.swatch').forEach(function(x){x.classList.remove('active')});
+      s.classList.add('active');
+    });
   });
 
   // toggle switches
-  document.querySelectorAll('[data-switch]').forEach(function(s){
-    s.addEventListener('click', function(){s.classList.toggle('on')});
-  });
-
-  // slider
-  var slider = document.getElementById('cand-slider'), out = document.getElementById('cand-val');
-  slider.addEventListener('input', function(){ out.textContent = slider.value; });
-
-  // area chart 24h
-  (function(){
-    var data = [4,3,3,2,2,3,5,8,12,18,22,19,24,27,22,16,14,18,21,17,11,8,6,5];
-    var svg = document.getElementById('overview-chart');
-    var W=800,H=200,P=10;
-    var max = Math.max.apply(null, data);
-    var pts = data.map(function(v,i){
-      var x = (i/(data.length-1)) * (W - P*2) + P;
-      var y = H - P - (v/max)*(H - P*2);
-      return [x,y];
-    });
-    var d = 'M' + pts.map(function(p){return p[0]+','+p[1]}).join(' L ');
-    var area = d + ' L ' + (W-P) + ',' + (H-P) + ' L ' + P + ',' + (H-P) + ' Z';
-    var grid = '';
-    for (var i=0;i<5;i++){
-      var y = P + i*((H - P*2)/4);
-      grid += '<line x1="'+P+'" y1="'+y+'" x2="'+(W-P)+'" y2="'+y+'" stroke="#e5e7eb" stroke-width="1"/>';
-    }
-    svg.innerHTML =
-      '<defs><linearGradient id="lg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#5e6ad2" stop-opacity="0.18"/><stop offset="100%" stop-color="#5e6ad2" stop-opacity="0"/></linearGradient></defs>' +
-      grid +
-      '<path d="'+area+'" fill="url(#lg)"/>' +
-      '<path d="'+d+'" fill="none" stroke="#5e6ad2" stroke-width="1.8"/>';
-  })();
-
-  // recent exec
-  var rows = [
-    ['3 分钟前','claude-api','ok',342,'2 files'],
-    ['12 分钟前','lark-doc','ok',1207,'1 file'],
-    ['28 分钟前','find-skills','ok',86,'—'],
-    ['41 分钟前','safety-guard','skip',12,'—'],
-    ['1 小时前','html-anything','ok',2418,'1 file'],
-    ['1 小时前','deep-dive','ok',856,'3 files'],
-    ['2 小时前','verify','err',5021,'—'],
-    ['3 小时前','simplify','ok',743,'1 file']
-  ];
-  var pillMap = {ok:'pill-ok',skip:'pill-neutral',err:'pill-err'};
-  var pillLabel = {ok:'命中',skip:'跳过',err:'错误'};
-  document.getElementById('recent-exec').innerHTML = rows.map(function(r){
-    return '<tr><td>'+r[0]+'</td><td><span class="skill-chip">'+r[1]+'</span></td>'+
-      '<td><span class="pill '+pillMap[r[2]]+'">'+pillLabel[r[2]]+'</span></td>'+
-      '<td class="num">'+r[3]+' ms</td><td class="num">'+r[4]+'</td></tr>';
-  }).join('');
-
-  // skills
-  var skills = [
-    ['find-skills','在 ~/.claude/skills 和 market 中搜可装的 skill',412,true,true],
-    ['deep-dive','结构化深挖一个主题，分阶段产出',287,true,false],
-    ['safety-guard','改高危路径前强制写沙箱 + 物理 e2e',156,true,true],
-    ['verify','交付前自测脚手架，跑命令验证假设',98,true,false],
-    ['brainstorming','头脑风暴 5-7 个互不重叠方向',184,true,false],
-    ['lark-doc','飞书云文档 v2 读写 / Wiki / DocxXML',76,true,false],
-    ['html-anything','把回答 / 文件 / URL 渲染成单文件 HTML',243,true,true],
-    ['claude-api','Anthropic SDK 集成 + prompt caching',61,true,true],
-    ['security-review','分支 pending changes 做安全审查',23,false,false],
-    ['simplify','review 改动 + 修可复用 / 质量 / 效率',45,false,false]
-  ];
-  document.getElementById('skill-list').innerHTML = skills.map(function(s){
-    return '<div class="skill-row">' +
-      '<div class="skill-name">'+s[0]+(s[4]?'<span class="exec-badge">exec</span>':'')+'</div>' +
-      '<div class="skill-desc">'+s[1]+'</div>' +
-      '<div class="skill-used">used '+s[2]+'</div>' +
-      '<div><span class="pill '+(s[3]?'pill-ok':'pill-neutral')+'">'+(s[3]?'启用':'未启用')+'</span></div>' +
-      '<div><span class="switch '+(s[3]?'on':'')+'" data-switch></span></div>' +
-      '</div>';
-  }).join('');
-  // wire switches on dynamic content
-  document.querySelectorAll('#skill-list [data-switch]').forEach(function(s){
-    s.addEventListener('click', function(e){
+  document.querySelectorAll('.toggle-sw').forEach(function(sw){
+    sw.addEventListener('click', function(e){
       e.stopPropagation();
-      s.classList.toggle('on');
+      sw.classList.toggle('off');
+    });
+  });
+  document.querySelectorAll('.skill-rows .row .toggle').forEach(function(t){
+    t.addEventListener('click', function(e){
+      e.stopPropagation();
+      t.closest('.row').classList.toggle('off');
+    });
+  });
+  document.querySelectorAll('.skill-rows .row').forEach(function(r){
+    r.addEventListener('click', function(){
+      r.classList.toggle('off');
     });
   });
 
-  // activity timeline
-  var prompts = [
-    '帮我改一下 scanner 里的 adopt_entry 多打点 log',
-    '飞书文档 doxhxLY... 总结一下',
-    '今天的 PR 安全 review',
-    '给我画个 dashboard 重构的方案 HTML',
-    'cargo test --lib scanner 跑过没',
-    '这个 prompt 路由到了哪些 skill',
-    '把 README 里的 install.ps1 段重写一下',
-    'claude-api migrate 4.6 → 4.7',
-    '写 release 0.11.0-beta.5 的 tag message',
-    'cherry-pick 53456a8 到 release/0.10.x',
-    '这一段 unsafe 有问题吗',
-    '把 mcp_canonical 的测试矩阵补上',
-    '我的 ~/.runai/skills/find-skills/SKILL.md 在哪',
-    '帮我 brainstorm hook v2 形态',
-    '配额怎么算的 / 触顶后怎么办',
-    '把这份逐字稿润色成博客',
-    '日历上明天有什么会',
-    '今天的妙记摘要',
-    '给我列一下安装 runai 的 PowerShell 一行',
-    '看下这个 SVG 在 firefox 渲染对吗'
-  ];
-  var skillsForTimeline = ['claude-api','lark-doc','security-review','html-anything','verify','find-skills','simplify','claude-api','simplify','simplify','safety-guard','verify','find-skills','brainstorming','deep-dive','simplify','lark-doc','lark-doc','find-skills','html-anything'];
-  var modes = ['compatible','exclusive','compatible','compatible','exclusive','compatible','compatible','compatible','exclusive','exclusive','compatible','exclusive','compatible','compatible','compatible','compatible','exclusive','compatible','compatible','compatible'];
-  var ts = ['2 分钟前','7 分钟前','15 分钟前','22 分钟前','38 分钟前','51 分钟前','1 小时前','1 小时前','2 小时前','2 小时前','3 小时前','4 小时前','5 小时前','6 小时前','7 小时前','8 小时前','12 小时前','13 小时前','18 小时前','20 小时前'];
-  var lats = [342,1207,847,2418,103,86,743,1532,178,221,5021,412,98,612,154,1820,2010,1450,73,3210];
-  var tokensIn = [820,1450,2100,640,330,180,560,1200,210,290,4400,820,150,720,460,1800,1900,1620,140,2900];
-  var tokensOut = [156,1200,420,2800,210,75,890,540,80,120,150,210,40,460,310,2100,720,1840,30,3200];
-  var tl = document.getElementById('timeline');
-  tl.innerHTML = prompts.map(function(p,i){
-    return '<div class="timeline-row">' +
-      '<div class="timeline-time">'+ts[i]+'</div>' +
-      '<div><span class="skill-chip">'+skillsForTimeline[i]+'</span></div>' +
-      '<div><span class="pill '+(modes[i]==='exclusive'?'pill-warn':'pill-info')+'">'+modes[i]+'</span></div>' +
-      '<div class="timeline-time">'+lats[i]+' ms</div>' +
-      '<div class="timeline-time">'+(tokensIn[i]>=1000?(tokensIn[i]/1000).toFixed(1)+'k':tokensIn[i])+' → '+(tokensOut[i]>=1000?(tokensOut[i]/1000).toFixed(1)+'k':tokensOut[i])+'</div>' +
-      '<div class="timeline-prompt">'+p+'</div>' +
-    '</div>';
-  }).join('');
+  // slider live value
+  document.querySelectorAll('.slider-mini').forEach(function(r){
+    var out = r.parentElement.querySelector('.slider-val');
+    r.addEventListener('input', function(){ if(out) out.textContent = r.value; });
+  });
 
-  // admin tables
-  var users = [
-    ['u_a3f9b2c1d4','2026-03-12','active',60],
-    ['u_8d2e1a7f3b','2026-03-21','active',60],
-    ['u_2f1c4b8e0a','2026-04-02','active',30],
-    ['u_b7e6c1a2d8','2026-04-15','suspended',0],
-    ['u_4d3a9e2f01','2026-05-01','active',120],
-    ['u_e9f1b2c4a7','2026-05-08','active',60]
-  ];
-  document.getElementById('admin-users').innerHTML = users.map(function(u){
-    var pill = u[2]==='active' ? 'pill-ok' : 'pill-err';
-    return '<tr><td><span class="skill-chip">'+u[0]+'</span></td><td>'+u[1]+'</td>'+
-      '<td><span class="pill '+pill+'">'+u[2]+'</span></td>'+
-      '<td class="num">'+u[3]+'</td>'+
-      '<td><button class="ghost-btn" style="height:24px;padding:0 8px;font-size:12px">调整配额</button> <button class="danger-btn" style="height:24px;padding:0 8px;font-size:12px">禁用</button></td></tr>';
-  }).join('');
+  // custom dropdowns
+  document.querySelectorAll('.dropdown').forEach(function(dd){
+    var trigger = dd.querySelector('.dropdown-trigger');
+    var menu = dd.querySelector('.dropdown-menu');
+    var labelEl = trigger.querySelector('.dd-label');
 
-  var invites = [
-    ['inv_7f3a91b2','2026-05-12','已使用','u_e9f1b2c4a7'],
-    ['inv_2c8d10e4','2026-05-15','待用','—'],
-    ['inv_b0a1c2d3','2026-05-18','待用','—']
-  ];
-  document.getElementById('admin-invites').innerHTML = invites.map(function(i){
-    var pill = i[2]==='已使用' ? 'pill-neutral' : 'pill-info';
-    return '<tr><td><span class="skill-chip">'+i[0]+'</span></td><td>'+i[1]+'</td>'+
-      '<td><span class="pill '+pill+'">'+i[2]+'</span></td><td>'+i[3]+'</td></tr>';
-  }).join('');
-})();
+    trigger.addEventListener('click', function(e){
+      e.stopPropagation();
+      var wasOpen = dd.classList.contains('open');
+      document.querySelectorAll('.dropdown.open').forEach(function(x){
+        if(x !== dd) x.classList.remove('open');
+      });
+      dd.classList.toggle('open', !wasOpen);
+    });
+
+    menu.querySelectorAll('.dd-opt').forEach(function(opt){
+      opt.addEventListener('click', function(e){
+        e.stopPropagation();
+        menu.querySelectorAll('.dd-opt').forEach(function(x){x.classList.remove('active')});
+        opt.classList.add('active');
+        if(labelEl) labelEl.textContent = opt.textContent.trim();
+        dd.classList.remove('open');
+      });
+    });
+  });
+
+  document.addEventListener('click', function(){
+    document.querySelectorAll('.dropdown.open').forEach(function(x){x.classList.remove('open')});
+  });
+  document.addEventListener('keydown', function(e){
+    if(e.key === 'Escape'){
+      document.querySelectorAll('.dropdown.open').forEach(function(x){x.classList.remove('open')});
+    }
+  });
+
+  // keyboard shortcuts
+  document.addEventListener('keydown', function(e){
+    if(e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return;
+    var map = {'o':'overview','s':'skills','a':'activity',',':'settings','A':'admin'};
+    if(map[e.key]){
+      e.preventDefault();
+      var nav = document.querySelector('aside.side .nav a[data-tab="'+map[e.key]+'"]');
+      if(nav) nav.click();
+    }
+  });
 </script>
 </body>
 </html>

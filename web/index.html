@@ -3,229 +3,681 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>runai · router dashboard</title>
-  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%230d1117'/><circle cx='8' cy='16' r='3' fill='%2358a6ff'/><circle cx='24' cy='9' r='3' fill='%23a371f7'/><circle cx='24' cy='23' r='3' fill='%233fb950'/><path d='M11 16 Q 17 12 21 9' stroke='%2358a6ff' stroke-width='1.6' fill='none' opacity='0.65'/><path d='M11 16 Q 17 20 21 23' stroke='%2358a6ff' stroke-width='1.6' fill='none' opacity='0.65'/></svg>">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <title>runai · router</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23ffffff'/><circle cx='8' cy='16' r='3' fill='%230969da'/><circle cx='24' cy='9' r='3' fill='%231a7f37'/><circle cx='24' cy='23' r='3' fill='%230969da'/><path d='M11 16 Q 17 12 21 9' stroke='%230969da' stroke-width='1.6' fill='none' opacity='0.65'/><path d='M11 16 Q 17 20 21 23' stroke='%230969da' stroke-width='1.6' fill='none' opacity='0.65'/></svg>">
   <link rel="stylesheet" href="/app.css">
 </head>
-<body>
+<body class="theme-github">
+
+  <!-- ambient backdrop layer -->
+  <div class="mesh" aria-hidden="true">
+    <div class="blob a"></div>
+    <div class="blob b"></div>
+    <div class="blob c"></div>
+  </div>
+  <div class="cursor-glow" aria-hidden="true"></div>
+  <div class="cursor-arrow hide" aria-hidden="true">
+    <svg viewBox="0 0 18 18">
+      <path class="halo" d="M2 2 L14 7 L7 14 Z"/>
+      <path class="body" d="M2 2 L14 7 L7 14 Z"/>
+      <circle class="tip" cx="2" cy="2"/>
+    </svg>
+  </div>
+  <div class="cursor-ring hide" aria-hidden="true"></div>
+  <div class="cursor-label hide" aria-hidden="true"></div>
+
   <div class="shell">
-    <header class="topbar">
-      <div class="topbar-left">
-        <div class="brand">
-          <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
-            <circle cx="8"  cy="16" r="3.4" fill="var(--accent)"/>
-            <circle cx="24" cy="9"  r="3.4" fill="var(--done)"/>
-            <circle cx="24" cy="23" r="3.4" fill="var(--success)"/>
-            <path d="M11 16 Q 17 12 21 9"  stroke="var(--accent)" stroke-width="1.6" fill="none" opacity="0.75"/>
-            <path d="M11 16 Q 17 20 21 23" stroke="var(--accent)" stroke-width="1.6" fill="none" opacity="0.75"/>
-          </svg>
-          <div class="brand-text">
-            <h1>runai<em>router</em></h1>
-            <span class="sub">SKILL ROUTER · TELEMETRY</span>
-          </div>
-        </div>
-        <nav class="route-tabs" aria-label="primary">
-          <a class="tab" data-route="" href="#/">概览</a>
-          <a class="tab" data-route="skills" href="#/skills">skills</a>
-        </nav>
+
+    <!-- ============ TOP BAR ============ -->
+    <header class="bar">
+      <div class="brand">
+        <b>runai</b>
+        <span class="crumb">— skill router</span>
       </div>
-      <nav class="filters" id="dashboard-filters" aria-label="filters">
-        <span class="live-pulse" id="live-indicator" title="每 5 秒自动刷新">
-          <span class="dot"></span>
-          <span id="live-text">实时</span>
-        </span>
-        <select id="hours" aria-label="window">
-          <option value="">全部时间</option>
-          <option value="1">最近 1 小时</option>
-          <option value="24" selected>最近 24 小时</option>
-          <option value="168">最近 7 天</option>
-          <option value="720">最近 30 天</option>
-        </select>
-        <select id="model" aria-label="model">
-          <option value="">全部模型</option>
-        </select>
-        <label class="toggle">
-          <input type="checkbox" id="hit_only">
-          只看命中
-        </label>
-        <button type="button" id="refresh" class="primary">刷新</button>
-      </nav>
+      <div class="right">
+        <span class="live-pulse" id="live-indicator" title="每 5 秒自动刷新"><span class="live-dot"></span><span id="live-text">实时</span></span>
+        <!-- v15 multi-user: account widget. Filled by app.js on boot. -->
+        <div class="account-pill" id="account-pill">
+          <button type="button" class="account-login" id="account-login-btn">登录</button>
+          <span class="account-info hide" id="account-info">
+            <span class="account-name" id="account-name">—</span>
+            <button type="button" class="account-logout" id="account-logout-btn" title="退出登录">×</button>
+          </span>
+        </div>
+        <div class="swatches" title="切换主题">
+          <button class="swatch active" data-theme="github" title="GitHub Light"></button>
+          <button class="swatch" data-theme="dimmed" title="GitHub Dimmed"></button>
+          <button class="swatch" data-theme="solarized" title="Solarized Light"></button>
+          <button class="swatch" data-theme="ayu" title="Ayu Light"></button>
+          <button class="swatch" data-theme="catppuccin" title="Catppuccin Latte"></button>
+        </div>
+      </div>
     </header>
 
-    <!-- ============ DASHBOARD VIEW ============ -->
-    <main id="view-dashboard" class="view">
-      <section class="kpis" aria-label="key metrics">
-        <article class="kpi accent-ok"><div class="label">总调用</div><div class="value" id="kpi-total">—</div><div class="delta" id="kpi-total-sub"></div></article>
-        <article class="kpi accent-ok"><div class="label">命中率</div><div class="value" id="kpi-hit">—<span class="unit">%</span></div><div class="delta" id="kpi-hit-sub"></div></article>
-        <article class="kpi"><div class="label">平均延迟</div><div class="value" id="kpi-latency">—<span class="unit">ms</span></div></article>
-        <article class="kpi"><div class="label">平均输入</div><div class="value" id="kpi-tokens">—<span class="unit">tok</span></div><div class="delta" id="kpi-tokens-sub"></div></article>
-        <article class="kpi accent-err"><div class="label">错误数</div><div class="value" id="kpi-errors">—</div></article>
-      </section>
+    <!-- v15 multi-user: generic confirm modal (matches auth-modal style) -->
+    <div class="auth-modal hide" id="confirm-modal" role="dialog" aria-modal="true">
+      <div class="auth-card confirm-card">
+        <h2 id="confirm-title">确认</h2>
+        <p class="confirm-body" id="confirm-body">—</p>
+        <div class="auth-actions">
+          <button type="button" class="auth-toggle" id="confirm-cancel">取消</button>
+          <button type="button" class="auth-submit confirm-danger" id="confirm-ok">确定</button>
+        </div>
+      </div>
+    </div>
 
-      <section class="panel" aria-label="trend">
-        <header>
-          <h2>调用趋势</h2>
-          <div class="legend">
-            <span><span class="swatch sw-total"></span>总调用</span>
-            <span><span class="swatch sw-hit"></span>命中</span>
-            <span><span class="swatch sw-err"></span>错误</span>
+    <!-- v15 multi-user: login modal (hidden until #account-login-btn click) -->
+    <div class="auth-modal hide" id="auth-modal" role="dialog" aria-modal="true">
+      <div class="auth-card">
+        <h2 id="auth-title">登录 runai</h2>
+        <p class="auth-sub" id="auth-sub">没有账号？切换到注册</p>
+        <form id="auth-form" class="auth-form" autocomplete="off">
+          <label>用户名 <input type="text" id="auth-username" required minlength="3" maxlength="32" autocomplete="username"></label>
+          <label>密码 <input type="password" id="auth-password" required minlength="6" maxlength="256" autocomplete="current-password"></label>
+          <div class="auth-actions">
+            <button type="button" class="auth-toggle" id="auth-toggle">注册新账号</button>
+            <button type="submit" class="auth-submit" id="auth-submit">登录</button>
           </div>
-        </header>
-        <svg class="chart" id="trend-chart" viewBox="0 0 800 200" preserveAspectRatio="none" role="img" aria-label="时间趋势">
-          <defs>
-            <linearGradient id="gradTotal" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stop-color="#58a6ff" stop-opacity="0.4"/>
-              <stop offset="100%" stop-color="#58a6ff" stop-opacity="0"/>
-            </linearGradient>
-          </defs>
-          <g class="grid"></g>
-          <g class="axis-x axis"></g>
-          <g class="series"></g>
-        </svg>
-      </section>
+          <div class="auth-err hide" id="auth-err"></div>
+        </form>
+        <button type="button" class="auth-close" id="auth-close" aria-label="关闭">×</button>
+      </div>
+    </div>
 
-      <section class="panel" aria-label="per model">
-        <header>
-          <h2>按模型分组</h2>
-          <div class="meta" id="model-count"></div>
-        </header>
-        <div class="model-strip" id="model-strip"></div>
-      </section>
+    <div class="body-wrap">
 
-      <section class="panel" aria-label="events">
-        <header>
-          <h2>最近事件</h2>
-          <div class="meta" id="events-count"></div>
-        </header>
-        <div class="events-wrap">
-          <table class="events">
-            <thead>
-              <tr>
-                <th>时间</th>
-                <th>模型</th>
-                <th>状态</th>
-                <th>模式</th>
-                <th>BM25</th>
-                <th class="num">tokens</th>
-                <th class="num">延迟</th>
-                <th>chosen</th>
-                <th>prompt</th>
-              </tr>
-            </thead>
-            <tbody id="events-body"></tbody>
-          </table>
-        </div>
-        <div id="empty-state" class="empty" hidden>
-          <div class="icon"></div>
-          <div class="title">这个区间没有事件</div>
-          <div class="hint">切换时间窗口或关闭过滤试试</div>
-        </div>
-        <div class="pager">
-          <button type="button" id="prev">上一页</button>
-          <span id="page-info" class="info"></span>
-          <button type="button" id="next">下一页</button>
-        </div>
-      </section>
-    </main>
+      <!-- ============ SIDEBAR ============ -->
+      <aside class="side">
+        <div class="group-label">workspace</div>
+        <nav class="nav">
+          <a href="#/" class="nav-item active" data-route=""><span>Overview</span><span class="key">o</span></a>
+          <a href="#/skills" class="nav-item" data-route="skills"><span>Library</span><span class="key">l</span></a>
+          <a href="#/market" class="nav-item" data-route="market"><span>Market</span><span class="key">m</span></a>
+          <a href="#/activity" class="nav-item" data-route="activity"><span>Activity</span><span class="key">a</span></a>
+          <a href="#/settings" class="nav-item" data-route="settings"><span>Settings</span><span class="key">s</span></a>
+          <a href="#/admin" class="nav-item nav-admin hide" data-route="admin"><span>Admin</span><span class="key">d</span></a>
+        </nav>
 
-    <!-- ============ SKILLS LIST VIEW ============ -->
-    <main id="view-skills" class="view" hidden>
-      <section class="panel">
-        <header>
-          <h2>Skill 列表</h2>
-          <div class="meta" id="skills-progress"></div>
-        </header>
-        <div class="skills-filters">
-          <input type="text" id="skill-filter" class="ctrl ctrl-input" placeholder="筛选 skill 名 / 描述 / summary" />
-          <select id="skill-sort" class="ctrl">
-            <option value="score-desc">综合分高 → 低</option>
-            <option value="score-asc">综合分低 → 高</option>
-            <option value="used-desc">使用次数高 → 低</option>
-            <option value="name">按名字</option>
-            <option value="unenriched">未富集优先</option>
-          </select>
+        <div class="live-strip" id="side-live-strip">
+          <div class="row"><span><span class="dot"></span>online</span><span class="v" id="side-total">—</span></div>
+          <div class="row"><span>hit rate</span><span class="v" id="side-hit">—</span></div>
+          <div class="row"><span>avg lat</span><span class="v" id="side-lat">—</span></div>
+          <div class="row"><span>errors</span><span class="v" id="side-err">—</span></div>
         </div>
-        <div class="events-wrap">
-          <table class="events skills-table">
-            <thead>
-              <tr>
-                <th>skill</th>
-                <th class="num">used</th>
-                <th class="num">LLM</th>
-                <th>描述</th>
-              </tr>
-            </thead>
-            <tbody id="skills-body"></tbody>
-          </table>
-        </div>
-      </section>
-    </main>
+      </aside>
 
-    <!-- ============ SKILL DETAIL VIEW ============ -->
-    <main id="view-skill-detail" class="view" hidden>
-      <section class="panel skill-detail-panel">
-        <header class="skill-detail-head">
-          <div>
-            <a class="back-link" href="#/skills">← 返回 skill 列表</a>
-            <h2 id="skill-detail-name" class="skill-detail-name">—</h2>
-            <p id="skill-detail-desc" class="skill-detail-desc"></p>
-          </div>
-        </header>
-        <div class="skill-detail-stats">
-          <div class="stat-block">
-            <div class="stat-label">使用次数</div>
-            <div class="stat-value" id="skill-detail-used">—</div>
-          </div>
-          <div class="stat-block">
-            <div class="stat-label">LLM 评分</div>
-            <div class="stat-value" id="skill-detail-llm">—</div>
-          </div>
-        </div>
+      <!-- ============ MAIN ============ -->
+      <main class="main">
 
-        <div class="section-label">AI 摘要 (BM25 索引信号)</div>
-        <div class="prompt-block" id="skill-detail-summary"></div>
+        <!-- =========== OVERVIEW =========== -->
+        <section class="tab" data-pane="overview">
 
-        <div class="section-label">使用历史 <span class="muted" id="skill-detail-events-meta"></span></div>
-        <div class="events-wrap">
-          <table class="events">
-            <thead>
-              <tr>
-                <th>时间</th>
-                <th>session</th>
-                <th>模式</th>
-                <th class="num">延迟</th>
-                <th class="num">tokens</th>
-                <th>注入</th>
-                <th>prompt</th>
-              </tr>
-            </thead>
-            <tbody id="skill-detail-events-body"></tbody>
-          </table>
-        </div>
-        <p class="muted skill-events-empty" id="skill-detail-events-empty" hidden>这个 skill 还没被推过任何 prompt</p>
+          <div class="hero-grid">
 
-        <div class="section-label">skill 目录 <span class="muted" id="skill-detail-dir-meta"></span></div>
-        <div class="file-browser">
-          <aside class="file-tree" id="file-tree"></aside>
-          <div class="file-viewer">
-            <div class="file-viewer-head">
-              <span class="mono" id="file-viewer-path">—</span>
-              <span class="muted" id="file-viewer-meta"></span>
+            <div class="hero-main">
+              <div class="eyebrow" id="hero-eyebrow">today</div>
+              <h1><span id="hero-total">—</span><span class="h1-tail">CALLS</span></h1>
+              <p class="label muted" id="hero-label">lifetime 累计 · 自首次安装至今</p>
+
+              <div class="hero-strip">
+                <div class="cell">
+                  <div class="n" id="hero-strip-skills">—</div>
+                  <div class="lbl">已安装</div>
+                  <div class="delta" id="hero-strip-skills-delta"></div>
+                </div>
+                <div class="cell">
+                  <div class="n" id="hero-strip-hit">—<em>%</em></div>
+                  <div class="lbl">命中率</div>
+                  <div class="delta" id="hero-strip-hit-delta"></div>
+                </div>
+                <div class="cell">
+                  <div class="n" id="hero-strip-lat">—<em class="ms-tail">ms</em></div>
+                  <div class="lbl">平均延迟</div>
+                  <div class="delta" id="hero-strip-lat-delta"></div>
+                </div>
+                <div class="cell">
+                  <div class="n" id="hero-strip-tok">—</div>
+                  <div class="lbl">累计 token</div>
+                  <div class="delta" id="hero-strip-tok-delta"></div>
+                </div>
+                <div class="cell">
+                  <div class="n" id="hero-strip-err">—</div>
+                  <div class="lbl">错误</div>
+                  <div class="delta" id="hero-strip-err-delta"></div>
+                </div>
+                <div class="cell">
+                  <div class="n" id="hero-strip-last">—</div>
+                  <div class="lbl">最近活动</div>
+                  <div class="delta" id="hero-strip-last-delta"></div>
+                </div>
+              </div>
+
+              <!-- 模型用量 — 放进 hero-main 左列填满 live activity 旁边的空白 -->
+              <div class="models-block">
+                <div class="head">
+                  <h2>模型用量 <em class="hh-tail">lifetime 累计</em></h2>
+                  <div class="meta" id="models-meta">—</div>
+                </div>
+                <div class="model-row model-head">
+                  <div class="mname-h">model</div>
+                  <div class="mcalls-h">总调用</div>
+                  <div class="mlat-h">平均延迟</div>
+                  <div class="mhit-h">命中率</div>
+                  <div class="mtok-h">总 token</div>
+                </div>
+                <div class="models-list" id="models-list"></div>
+              </div>
             </div>
-            <pre class="prompt-block file-viewer-body" id="file-viewer-body"></pre>
+
+            <div class="live-stream">
+              <div class="stream-head">
+                <span>live activity</span>
+                <span class="live"><i></i>streaming</span>
+              </div>
+              <div id="live-stream-body">
+                <div class="stream-empty muted">等待数据...</div>
+              </div>
+            </div>
+
+          </div>
+
+          <div class="recent-block" style="margin-top:0">
+            <div class="head">
+              <h2>最近 <em class="hh-tail">exec</em></h2>
+              <div class="meta">
+                <span id="recent-meta">—</span>
+                <a href="#/activity" class="recent-more">查看详情 →</a>
+              </div>
+            </div>
+            <div class="recent-head overview-head">
+              <div class="rh-ts">时间</div>
+              <div class="rh-nm">skill · prompt 摘要</div>
+              <div class="rh-mode">模式</div>
+              <div class="rh-dur">延迟</div>
+              <div class="rh-tok">token</div>
+              <div class="rh-st">状态</div>
+            </div>
+            <div class="recent-list" id="recent-list"></div>
+          </div>
+        </section>
+
+        <!-- =========== ACTIVITY =========== -->
+        <section class="tab" data-pane="activity">
+          <div class="tab-head">
+            <h1>Activity<em id="activity-count">—</em></h1>
+            <div class="meta-line">完整事件 · 含图表 · chosen 模型与 skill</div>
+          </div>
+
+          <div class="filterbar">
+            <label>skill</label>
+            <input type="text" id="activity-filter" placeholder="过滤名字 / prompt"/>
+            <label>window</label>
+            <div class="dropdown fluid" id="activity-window">
+              <button type="button" class="dropdown-trigger">
+                <span class="dd-label">last 24h</span>
+                <span class="dd-chev"></span>
+              </button>
+              <div class="dropdown-menu">
+                <button type="button" class="dd-opt" data-value="1">last 1h</button>
+                <button type="button" class="dd-opt active" data-value="24">last 24h</button>
+                <button type="button" class="dd-opt" data-value="168">last 7d</button>
+                <button type="button" class="dd-opt" data-value="720">last 30d</button>
+              </div>
+            </div>
+            <label>hit only</label>
+            <div class="dropdown fluid" id="activity-hit">
+              <button type="button" class="dropdown-trigger">
+                <span class="dd-label">all</span>
+                <span class="dd-chev"></span>
+              </button>
+              <div class="dropdown-menu">
+                <button type="button" class="dd-opt active" data-value="">all</button>
+                <button type="button" class="dd-opt" data-value="1">hit only</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="chart-block" style="margin-top:0;border-top:none;padding-top:0">
+            <div class="chart-wrap">
+              <svg id="activity-chart" viewBox="0 0 800 240" preserveAspectRatio="none">
+                <g class="grid">
+                  <line x1="0" y1="60"  x2="800" y2="60"/>
+                  <line x1="0" y1="120" x2="800" y2="120"/>
+                  <line x1="0" y1="180" x2="800" y2="180"/>
+                </g>
+                <path class="area-fill" d=""/>
+                <path class="area-stroke" d=""/>
+              </svg>
+              <div class="chart-axis">
+                <span class="ax-start"></span>
+                <span class="ax-mid"></span>
+                <span class="ax-end"></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="recent-block" style="border-top:1px solid var(--line);padding-top:24px">
+            <div class="recent-head activity-head">
+              <div class="rh-ts">时间</div>
+              <div class="rh-nm">skill · prompt 摘要</div>
+              <div class="rh-mode">模式</div>
+              <div class="rh-model">模型</div>
+              <div class="rh-dur">延迟</div>
+              <div class="rh-tok">token</div>
+              <div class="rh-st">状态</div>
+            </div>
+            <div class="recent-list activity-list" id="activity-list"></div>
+            <div class="activity-pager">
+              <button type="button" id="activity-prev" class="btn">prev</button>
+              <span class="info" id="activity-page">—</span>
+              <button type="button" id="activity-next" class="btn">next</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- =========== LIBRARY =========== -->
+        <section class="tab" data-pane="skills">
+          <div class="tab-head">
+            <h1>Library<em id="library-count">—</em></h1>
+            <div class="meta-line">点 skill 行进入详情 · SKILL.md / files / 调用历史</div>
+          </div>
+
+          <div class="library-sub">
+            <a href="#/skills" class="lib-sub active" data-sub="installed">已安装<em id="lib-sub-installed-count">—</em></a>
+          </div>
+
+          <!-- v15 multi-user: scope filter + select-mode + library quick actions (requires login). -->
+          <div class="library-scope" id="library-scope-bar">
+            <div class="scope-group">
+              <span class="scope-label">范围</span>
+              <button type="button" class="scope-btn active" data-scope="all">全部 <em id="scope-all-count">0</em></button>
+              <button type="button" class="scope-btn" data-scope="my">我的库 <em id="scope-my-count">0</em></button>
+              <button type="button" class="scope-btn" data-scope="public">仅公共 <em id="scope-public-count">0</em></button>
+            </div>
+            <div class="scope-group hide" id="select-mode-group">
+              <button type="button" class="btn-small select-mode-btn" id="select-mode-btn">进入选中模式</button>
+              <span class="bulk-sel hide" id="bulk-sel-count">已选 0</span>
+              <button type="button" class="btn-small hide" data-bulk="add" id="bulk-add">加入我的库</button>
+              <button type="button" class="btn-small hide" data-bulk="remove" id="bulk-remove">移出我的库</button>
+              <button type="button" class="btn-small hide" data-bulk="select-all" id="bulk-select-all">全选可见</button>
+              <button type="button" class="btn-small hide" data-bulk="clear-sel" id="bulk-clear-sel">取消全选</button>
+            </div>
+            <div class="scope-quick hide" id="library-quick-actions">
+              <button type="button" class="btn-small" id="lib-import-github">从 GitHub 导入</button>
+              <button type="button" class="btn-small" id="lib-fill-50">一键填充 top 50</button>
+              <button type="button" class="btn-small" id="lib-import-usage">从使用记录导入</button>
+              <button type="button" class="btn-small" id="lib-clear">清空我的库</button>
+            </div>
+          </div>
+
+          <!-- 已安装 -->
+          <div class="lib-pane active" data-lib="installed">
+            <div class="filterbar">
+              <label>filter</label>
+              <input type="text" id="skill-filter" placeholder="名字 / 描述 / summary"/>
+              <label>sort</label>
+              <div class="dropdown fluid" id="skill-sort-dd">
+                <button type="button" class="dropdown-trigger">
+                  <span class="dd-label">综合分高 → 低</span>
+                  <span class="dd-chev"></span>
+                </button>
+                <div class="dropdown-menu" role="listbox">
+                  <button type="button" class="dd-opt active" data-value="score-desc">综合分高 → 低</button>
+                  <button type="button" class="dd-opt" data-value="score-asc">综合分低 → 高</button>
+                  <button type="button" class="dd-opt" data-value="used-desc">使用次数高 → 低</button>
+                  <button type="button" class="dd-opt" data-value="name">按名字</button>
+                  <button type="button" class="dd-opt" data-value="unenriched">未富集优先</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="skill-rows-head">
+              <div class="sh-idx">#</div>
+              <div class="sh-name">名字 · 描述</div>
+              <div class="sh-used">使用次数</div>
+              <div class="sh-last">最近调用</div>
+              <div class="sh-llm">LLM 分</div>
+              <div class="sh-lib">在我的库</div>
+            </div>
+            <div class="skill-rows" id="skill-rows"></div>
+            <div class="skills-empty muted" id="skills-empty" hidden>没有匹配的 skill</div>
+          </div>
+        </section>
+
+        <!-- =========== SKILL DETAIL =========== -->
+        <section class="tab" data-pane="detail">
+          <a href="#/skills" class="back-link">back to library</a>
+
+          <div class="detail-hero">
+            <div class="meta-tag">
+              <span class="badge">installed</span>
+              <span id="detail-meta-path">—</span>
+            </div>
+            <h1 id="detail-name">—</h1>
+            <p class="desc" id="detail-desc"></p>
+          </div>
+
+          <div class="hero-strip detail-strip">
+            <div class="cell">
+              <div class="n" id="detail-strip-used">—</div>
+              <div class="lbl">your calls</div>
+              <div class="delta" id="detail-strip-used-delta"></div>
+            </div>
+            <div class="cell">
+              <div class="n" id="detail-strip-llm">—</div>
+              <div class="lbl">LLM score</div>
+              <div class="delta">/ 10</div>
+            </div>
+            <div class="cell">
+              <div class="n" id="detail-strip-lat">—<em class="ms-tail">ms</em></div>
+              <div class="lbl">avg latency</div>
+              <div class="delta" id="detail-strip-lat-delta"></div>
+            </div>
+          </div>
+
+          <div class="settings-section" id="detail-summary-section">
+            <div class="label">AI 摘要 <span class="helper">BM25 索引信号</span></div>
+            <pre class="skill-md" id="detail-summary"></pre>
+          </div>
+
+          <div class="settings-section">
+            <div class="label">文件 <span class="helper" id="detail-files-helper">—</span></div>
+            <div class="file-browser">
+              <div class="file-tree" id="detail-file-tree"></div>
+              <div class="file-viewer">
+                <div class="file-viewer-head">
+                  <span class="mono" id="detail-file-path">—</span>
+                  <span class="muted" id="detail-file-meta"></span>
+                </div>
+                <pre class="skill-md file-viewer-body" id="detail-file-body"></pre>
+              </div>
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <div class="label">Exec 接口 <span class="helper">claude 或 curl 触发 · 示例</span></div>
+            <pre class="code-block"><span class="c"># 在 claude 里通过 hook 注入；也可以本地直接 curl：</span>
+<span class="k">curl</span> -s -X POST <span class="s">'http://server.local:17888/skills/exec/&lt;skill-name&gt;'</span> \
+  -H <span class="s">"Authorization: Bearer rnai_live_***"</span> \
+  -H <span class="s">"Content-Type: application/json"</span> \
+  -d <span class="s">'{"args":["--question","..."], "stdin":"..."}'</span>
+
+<span class="c"># 响应 (JSON):</span>
+{
+  <span class="s">"exec_id"</span>: <span class="s">"e_8c2d4e6f"</span>,
+  <span class="s">"exit_code"</span>: 0,
+  <span class="s">"stdout"</span>: <span class="s">"..."</span>,
+  <span class="s">"duration_ms"</span>: 412
+}</pre>
+          </div>
+
+          <div class="settings-section">
+            <div class="label">调用历史 <span class="helper" id="detail-events-helper">—</span></div>
+            <div class="events-frame">
+              <div class="events-head">
+                <div class="eh-ts">时间</div>
+                <div class="eh-mode">模式</div>
+                <div class="eh-dur">延迟</div>
+                <div class="eh-tok">token (in → out)</div>
+                <div class="eh-prompt">prompt 摘要</div>
+                <div class="eh-st">状态</div>
+              </div>
+              <div class="events-scroll">
+                <div class="events-rows" id="detail-events-body"></div>
+              </div>
+            </div>
+            <div class="muted detail-events-empty" id="detail-events-empty" hidden>这个 skill 还没被推过任何 prompt</div>
+          </div>
+        </section>
+
+        <!-- =========== MARKET (skills.sh aggregator + GitHub repos) =========== -->
+        <!-- Layout inspired by skills.sh: hero → try-it → source chips
+             → leaderboard table. Cards-grid design retired (see web/app.js
+             renderMarketLeaderboard). -->
+        <section class="tab" data-pane="market">
+
+          <div class="market-hero">
+            <div class="market-hero-title">
+              <div class="mh-eyebrow">SKILLS LEADERBOARD</div>
+              <h1 class="mh-title">Market<span class="mh-count" id="market-count">—</span></h1>
+              <p class="mh-sub">浏览公开 SKILL 仓库 · 一键安装到我的库 · 也可粘贴 GITHUB 仓库地址自助添加</p>
+            </div>
+            <div class="market-hero-tryit">
+              <div class="mh-tryit-label">TRY IT NOW</div>
+              <div class="mh-tryit-cmd">
+                <span class="mh-tryit-prompt">$</span>
+                <code id="market-tryit-cmd">runai install &lt;owner/repo&gt;</code>
+                <button type="button" class="mh-tryit-copy" id="market-tryit-copy" title="复制命令">copy</button>
+              </div>
+              <div class="mh-tryit-help">或粘贴单个 skill 名字到下方搜索框，直接安装到自己的库。</div>
+            </div>
+          </div>
+
+          <div class="market-toolbar">
+            <div class="market-search-wrap">
+              <span class="market-search-icon">SEARCH</span>
+              <input type="text" id="market-filter" class="market-search" placeholder="按名字 / owner/repo 过滤 skill …" />
+              <span class="market-search-kbd">/</span>
+            </div>
+            <div class="market-toolbar-actions">
+              <button type="button" class="mbtn" id="market-refresh-btn" title="重新拉取 skills.sh leaderboard + sitemap">刷新</button>
+              <button type="button" class="mbtn primary" id="market-add-github-btn" title="粘贴 GitHub 仓库地址安装">+ GitHub</button>
+            </div>
+          </div>
+
+          <div class="market-tabs market-tabs-row">
+            <button type="button" class="market-tab-btn active" data-mtab="all">All Time</button>
+            <button type="button" class="market-tab-btn" data-mtab="trending">Trending (24h)</button>
+            <button type="button" class="market-tab-btn" data-mtab="hot">Hot</button>
+            <span class="market-tab-sep"></span>
+            <button type="button" class="market-tab-btn" data-mtab="library">我的库</button>
+            <button type="button" class="market-tab-btn" data-mtab="installed">已装</button>
+          </div>
+
+          <!-- Source status (hidden when only skills.sh is enabled, shown
+               when user added their own GitHub repos via "+ GitHub"). -->
+          <div class="market-sources" id="market-source-status"></div>
+
+          <div class="market-empty muted" id="market-empty" hidden>
+            没有匹配的 skill。试试切换 tab 或者粘贴 GitHub 仓库地址通过 "+ GitHub" 安装。
+          </div>
+
+          <div class="market-leaderboard" id="market-leaderboard">
+            <div class="ml-head">
+              <div class="ml-rank">#</div>
+              <div class="ml-skill">SKILL</div>
+              <div class="ml-trend">8W TREND</div>
+              <div class="ml-installs">INSTALLS</div>
+              <div class="ml-action">ACTION</div>
+            </div>
+            <div class="ml-rows-wrap">
+              <div class="ml-rows" id="market-grid"></div>
+            </div>
+          </div>
+          <div class="ml-pager" id="market-pager"></div>
+        </section>
+
+        <!-- v15 marketplace: skill detail modal (preview SKILL.md before install) -->
+        <div class="auth-modal hide" id="market-detail-modal" role="dialog" aria-modal="true">
+          <div class="auth-card market-detail-card">
+            <button type="button" class="auth-close" id="market-detail-close" aria-label="关闭">×</button>
+            <h2 id="market-detail-name">—</h2>
+            <div class="market-detail-meta">
+              <span id="market-detail-source" class="md-source">—</span>
+              <span id="market-detail-status" class="md-status"></span>
+            </div>
+            <a id="market-detail-repo" class="md-repo" href="#" target="_blank" rel="noopener">在 GitHub 打开 →</a>
+            <div class="md-files-label">附带文件</div>
+            <div id="market-detail-files" class="md-files muted">加载中 …</div>
+            <div class="md-files-label">SKILL.md</div>
+            <pre id="market-detail-md" class="market-detail-md">SKILL.md 加载中 …</pre>
+            <div class="auth-actions">
+              <button type="button" class="mbtn" id="market-detail-dismiss">关闭</button>
+              <button type="button" class="mbtn primary" id="market-detail-install">安装到我的库</button>
+            </div>
           </div>
         </div>
-      </section>
-    </main>
+
+        <!-- v15: GitHub parse + pick modal. Paste a repo, server returns
+             the list of skill dirs inside; user ticks which ones to import. -->
+        <div class="auth-modal hide" id="github-modal" role="dialog" aria-modal="true">
+          <div class="auth-card github-picker-card">
+            <button type="button" class="auth-close" id="github-cancel" aria-label="关闭">×</button>
+            <h2>从 GitHub 导入</h2>
+            <p class="auth-sub">支持 <code>owner/repo</code> / <code>owner/repo@branch</code> / 完整 URL。先解析，再勾选要导入的 skill。</p>
+            <form id="github-form" class="auth-form" autocomplete="off">
+              <label>仓库地址
+                <input type="text" id="github-src" required placeholder="anthropics/skills">
+              </label>
+              <div class="auth-actions" style="justify-content:flex-end;gap:8px">
+                <button type="submit" class="mbtn primary" id="github-parse-btn">解析</button>
+              </div>
+              <div class="auth-err hide" id="github-err"></div>
+            </form>
+
+            <!-- 解析结果 -->
+            <div class="github-result hide" id="github-result">
+              <div class="github-result-head">
+                <span id="github-result-summary">—</span>
+                <span class="github-result-tools">
+                  <button type="button" class="btn-small" id="github-select-all">全选未导入</button>
+                  <button type="button" class="btn-small" id="github-clear">取消选中</button>
+                </span>
+              </div>
+              <div class="github-skill-list" id="github-skill-list"></div>
+              <div class="auth-actions" style="justify-content:flex-end;gap:8px">
+                <button type="button" class="mbtn" id="github-back">返回输入</button>
+                <button type="button" class="mbtn primary" id="github-install-selected">
+                  导入选中 <em id="github-install-count">0</em>
+                </button>
+              </div>
+            </div>
+
+            <div class="auth-busy hide" id="github-busy">处理中 …</div>
+          </div>
+        </div>
+
+        <section class="tab" data-pane="settings">
+          <div class="tab-head">
+            <h1>Settings</h1>
+            <div class="meta-line">个人偏好 · 每个账户独立</div>
+          </div>
+
+          <!-- v15 multi-user: per-user preferences (requires login).
+               These are all stored in users.prefs_json and override the
+               server-global RecommendConfig for the authenticated user. -->
+          <div class="settings-section" id="settings-user-section">
+            <div class="label">我的偏好 · 推荐范围 <span class="helper">当前 <em id="settings-me-label">未登录</em></span></div>
+            <div class="setting-row">
+              <div class="setting-meta">
+                <div class="setting-title">允许从公共库推荐</div>
+                <div class="setting-hint">关闭时（默认）：推荐只在「我的库」里挑。开启后：所有公共 skill 都进候选池</div>
+              </div>
+              <label class="switch"><input type="checkbox" id="set-allow-public-recommend" disabled><span></span></label>
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <div class="label">我的偏好 · Hook 行为</div>
+            <div class="setting-row">
+              <div class="setting-meta">
+                <div class="setting-title">启用 recommend</div>
+                <div class="setting-hint">关闭后我的 UserPromptSubmit hook 不会调用 LLM 路由，不消耗 token</div>
+              </div>
+              <label class="switch"><input type="checkbox" id="set-enabled" disabled><span></span></label>
+            </div>
+            <div class="setting-row">
+              <div class="setting-meta">
+                <div class="setting-title">读取 CLAUDE.md</div>
+                <div class="setting-hint">把 cwd 的 CLAUDE.md 和它 @ 引用的文件注入路由 LLM 作为项目上下文</div>
+              </div>
+              <label class="switch"><input type="checkbox" id="set-read-claude-md" disabled><span></span></label>
+            </div>
+            <div class="setting-row">
+              <div class="setting-meta">
+                <div class="setting-title">启用跳过提醒</div>
+                <div class="setting-hint">把下方模板插入 hook 输出末尾，主 Claude 收到时按这段判断是否跳过激活</div>
+              </div>
+              <label class="switch"><input type="checkbox" id="set-skip-reminder" disabled><span></span></label>
+            </div>
+            <div class="setting-row column">
+              <div class="setting-meta">
+                <div class="setting-title">跳过提醒模板</div>
+                <div class="setting-hint">这段文本会原样附在 hook 输出 `{ACTIVATION_DIRECTIVE}` 之后；留空表示用服务器默认值</div>
+              </div>
+              <textarea id="set-skip-reminder-template" class="setting-textarea" rows="3" disabled></textarea>
+            </div>
+          </div>
+        </section>
+
+        <!-- v15 multi-user: admin-only pane (sidebar nav hidden for non-admins) -->
+        <section class="tab" data-pane="admin">
+          <div class="tab-head">
+            <h1>Admin</h1>
+            <div class="meta-line">推荐路由配置 · 多运营商 · 用户管理（仅管理员可见）</div>
+          </div>
+
+          <div class="settings-section admin-block">
+            <div class="label">运营商 <span class="helper">当前 active <em id="set-active-label">—</em></span></div>
+            <div class="providers-list" id="providers-list"></div>
+            <button type="button" class="btn provider-add-btn" id="provider-add-btn">+ 添加运营商</button>
+          </div>
+
+          <div class="settings-section admin-block provider-form" id="provider-form" hidden>
+            <div class="label" id="provider-form-title">添加运营商</div>
+            <div class="provider-form-grid">
+              <label>ID <input type="text" id="prov-id" placeholder="deepseek"></label>
+              <label>显示名 <input type="text" id="prov-label" placeholder="DeepSeek v4-flash"></label>
+              <label>类型
+                <div class="dropdown fluid" id="prov-kind-dd">
+                  <button type="button" class="dropdown-trigger">
+                    <span class="dd-label">openai-compat</span>
+                    <span class="dd-chev"></span>
+                  </button>
+                  <div class="dropdown-menu" role="listbox">
+                    <button type="button" class="dd-opt active" data-value="openai-compat">openai-compat</button>
+                    <button type="button" class="dd-opt" data-value="anthropic">anthropic</button>
+                    <button type="button" class="dd-opt" data-value="claude-cli">claude-cli</button>
+                  </div>
+                </div>
+              </label>
+              <label>Model <input type="text" id="prov-model" placeholder="deepseek-v4-flash"></label>
+              <label class="wide">Base URL <input type="text" id="prov-base-url" placeholder="https://api.deepseek.com/v1"></label>
+              <label class="wide">API Key <input type="password" id="prov-api-key" placeholder="sk-... (留空保留现有)"></label>
+            </div>
+            <div class="provider-form-actions">
+              <button type="button" class="btn" id="provider-save-btn">保存</button>
+              <button type="button" class="btn provider-cancel-btn" id="provider-cancel-btn">取消</button>
+            </div>
+          </div>
+
+          <div class="settings-section admin-block">
+            <div class="label">用户管理 <span class="helper">共 <em id="admin-users-count">—</em> 个账号</span></div>
+            <div class="admin-users-table">
+              <div class="admin-users-head">
+                <div>用户名</div>
+                <div>权限</div>
+                <div>状态</div>
+                <div>我的库</div>
+                <div>调用</div>
+                <div>注册时间</div>
+                <div>操作</div>
+              </div>
+              <div id="admin-users-rows"></div>
+            </div>
+          </div>
+        </section>
+
+      </main>
+    </div>
+
   </div>
 
-  <dialog id="detail">
+  <!-- ============ EVENT DETAIL DIALOG ============ -->
+  <dialog id="detail-dialog" class="event-dialog">
     <div class="head">
       <h2>事件详情<span class="id-tag" id="detail-id"></span></h2>
-      <button id="detail-close" type="button">关闭</button>
+      <button id="detail-close" type="button" class="btn">关闭</button>
     </div>
     <div id="detail-body"></div>
   </dialog>
