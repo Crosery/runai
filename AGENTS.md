@@ -259,6 +259,7 @@ cargo build
 
 ## Build & CI
 
+- **The local gate is mandatory before every commit / push: `./scripts/ci-local.sh`.** It mirrors `.github/workflows/ci.yml` EXACTLY and in the same order — `cargo fmt --check` → `cargo clippy --all-targets -- -W clippy::all` → `cargo test -- --test-threads=1`. CI gates each step on the previous, so a single unformatted line fails at the **formatting** step *before any test runs* (this is how the 2026-06-03 push broke — fmt was not run locally). If `fmt --check` fails, run `cargo fmt`. A pre-push hook (`.beads/hooks/pre-push`) enforces this gate; bypass only in emergencies with `SKIP_CI_GATE=1 git push`. **Never push on a red gate.**
 - **CI** (`.github/workflows/ci.yml`): `cargo fmt --check` → `cargo clippy --all-targets -- -W clippy::all` → `cargo test -- --test-threads=1`, matrix = `[ubuntu-latest, macos-latest, windows-latest]`, `fail-fast: false`.
 - **Release** (`.github/workflows/release.yml`): triggered by `v*` tags; matrix produces `runai-{linux,darwin,windows}-{amd64,arm64}.{tar.gz,zip}` + `checksums.txt`. Windows target skipped for arm64 (no MSVC cross from runner host); all others present. Release body comes from the **annotated tag message body** (`git tag -a vX.Y.Z -m "..."`), with fallback to GitHub auto-generated notes when the tag has no annotation. Always use `git tag -a` and write a real changelog in the message — that becomes the GitHub release page.
 - **HOME mocking** in `manager::tests` uses `HOME` env var — unix only. Do not assume it works on Windows (see Key constraints).
@@ -268,9 +269,12 @@ cargo build
 ## Tests
 
 ```bash
+./scripts/ci-local.sh            # the full gate — fmt + clippy + test; run before EVERY commit/push
 cargo test -- --test-threads=1   # default in CI; SQLite dislikes parallel I/O here
 cargo test --lib <module>        # scope to a module
 ```
+
+`cargo test -- --test-threads=1` (and therefore `ci-local.sh`) runs the **physical e2e suites** on unix — `safety_e2e`, `multiuser_owner_e2e`, `cli_target_symmetry`, `mcp_canonical_e2e`, `mcp_stdio` — which are the real regression gate for the destructive-path and owner-isolation invariants. Treat a single failure there as a release blocker, not a flake.
 
 **Test count varies by platform**: unix currently runs 302 lib tests + 26 integration tests (7 safety_e2e + 5 cli_target_symmetry + 7 mcp_canonical_e2e + 1 mcp_stdio + 6 multiuser_owner_e2e) = 328 active, plus 1 ignored (`install_test::test_real_install_minimax`, manual network test). Windows skips `manager::tests`, `safety_e2e`, `cli_target_symmetry`, `mcp_canonical_e2e`, and `multiuser_owner_e2e` because HOME mocking + symlinks are unix-only — the count is lower there. That's intentional — see Key constraints.
 

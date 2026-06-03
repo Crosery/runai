@@ -22,3 +22,14 @@ if command -v bd >/dev/null 2>&1; then
   if [ $_bd_exit -ne 0 ]; then exit $_bd_exit; fi
 fi
 # --- END BEADS INTEGRATION v1.0.4 ---
+
+# --- runai local CI gate (mirrors .github/workflows/ci.yml) ---
+# Blocks the push if fmt / clippy / test fail, so a broken commit never reaches
+# GitHub CI. Emergency bypass:  SKIP_CI_GATE=1 git push
+if [ "${SKIP_CI_GATE:-0}" != "1" ] && [ -f scripts/ci-local.sh ]; then
+  echo "runai: running local CI gate before push (SKIP_CI_GATE=1 to bypass)..." >&2
+  if ! sh scripts/ci-local.sh; then
+    echo "runai: local CI gate FAILED — push blocked. Fix it, or SKIP_CI_GATE=1 git push." >&2
+    exit 1
+  fi
+fi
