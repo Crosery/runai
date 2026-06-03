@@ -2156,7 +2156,7 @@ dependencies = [
 
 [[package]]
 name = "runai"
-version = "0.11.0-beta.6"
+version = "0.11.0-beta.7"
 dependencies = [
  "anyhow",
  "argon2",

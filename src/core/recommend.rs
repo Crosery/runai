@@ -1641,14 +1641,23 @@ fn has_en_stopword(s: &str) -> bool {
 
 /// Whether one prose field's value is written in `lang`.
 ///
+/// `is_anchor` marks the `task` field — the one-line description of what the
+/// skill does. A task is ALWAYS prose (never a bare identifier list), so in
+/// `zh` it MUST carry Chinese: a zero-CJK task is a leak even when it dodges
+/// every English stopword (e.g. `task: PDF extraction toolkit`). This anchor
+/// rule is what makes a whole-English summary impossible to pass — the task
+/// line can never be language-neutral. Non-anchor fields (inputs/outputs/
+/// not-for) keep the lenient rule so a Chinese summary whose `inputs` is just
+/// `URL, --baseline, package.json` is not falsely flagged.
+///
 /// - `zh`: any kana / hangul = foreign-script leak (Japanese / Korean source).
 ///   Any Chinese present = fine, even peppered with tool / API / path
-///   identifiers. Zero Chinese = wrong only if it reads as a sentence (an
-///   English stopword is present); a bare identifier / flag / proper-noun list
-///   is language-neutral and left alone.
+///   identifiers. Zero Chinese in a non-anchor field = wrong only if it reads
+///   as a sentence (an English stopword is present); zero Chinese in the
+///   anchor `task` field = always wrong.
 /// - `en`: rejects any CJK / kana / hangul in the prose (English prose has none).
 /// - `ja`: requires kana (kanji alone is ambiguous with Chinese).
-fn field_matches_lang(value: &str, lang: &str) -> bool {
+fn field_matches_lang(value: &str, lang: &str, is_anchor: bool) -> bool {
     let v = value.trim();
     if v.is_empty() {
         return true;
@@ -1664,7 +1673,9 @@ fn field_matches_lang(value: &str, lang: &str) -> bool {
             if cjk > 0 {
                 return true;
             }
-            !has_en_stopword(v)
+            // Zero Chinese: the anchor task line is always a leak; a
+            // non-anchor field is a leak only if it reads as a sentence.
+            !is_anchor && !has_en_stopword(v)
         }
         "en" => cjk == 0 && kana == 0 && hangul == 0,
         "ja" => kana > 0,
@@ -1687,7 +1698,7 @@ pub fn summary_matches_lang(summary: &str, summary_lang: &str) -> bool {
     }
     prose_fields(summary)
         .iter()
-        .all(|(_, value)| field_matches_lang(value, lang))
+        .all(|(label, value)| field_matches_lang(value, lang, label == "task"))
 }
 
 /// Names of skills whose stored summary's prose fields are NOT in the
@@ -2861,6 +2872,27 @@ mod tests {
         let ko = "task: 문서를 생성하고 편집하기\ninputs: 템플릿\noutputs: 파일";
         assert!(!summary_matches_lang(ja, "zh"));
         assert!(!summary_matches_lang(ko, "zh"));
+    }
+
+    #[test]
+    fn zh_anchor_task_must_have_chinese_even_without_stopword() {
+        // The stopword-dodging hole: a task line that is pure English proper
+        // nouns with no recognised function word. Before the anchor rule this
+        // slipped through; now a zero-CJK `task` is always a leak.
+        let dodger = "task: PDF extraction toolkit\ninputs: 文件\noutputs: 文件";
+        assert!(!summary_matches_lang(dodger, "zh"));
+    }
+
+    #[test]
+    fn zh_rejects_digital_human_turntable_regression() {
+        // The exact summary the stale beta.5 binary wrote (2026-06-03) and the
+        // user flagged. Must be rejected so the fixed binary re-enriches it.
+        let leaked = "task: Create digital human/anime character turntable sprite assets with reference extraction, transparent frames, and drag-rotate preview\n\
+                      triggers: digital human, anime character, turntable, sprite sheet\n\
+                      inputs: character concept, output directory, reference image\n\
+                      outputs: canonical reference image, horizontal turntable sprite sheet\n\
+                      not-for: true 3D meshes, rigging";
+        assert!(!summary_matches_lang(leaked, "zh"));
     }
 
     #[test]
