@@ -48,6 +48,22 @@ pub struct RouterEvent {
     /// Capped at ~16 KB. Empty for pre-schema-v13 rows. Useful for
     /// diagnosing mis-routes — answers "what did the model see?".
     pub llm_input: String,
+    /// Authenticated user_id this event belongs to. None for pre-schema-v15
+    /// rows and for unauthenticated requests during the compat window
+    /// (prefs.require_auth=false). Per-user dashboard views filter on this.
+    pub user_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct User {
+    pub user_id: String,
+    pub username: String,
+    pub password_hash: String,
+    pub api_key_hash: String,
+    pub is_admin: bool,
+    pub disabled: bool,
+    pub prefs_json: String,
+    pub created_at: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -115,6 +131,7 @@ fn row_to_router_event(r: &rusqlite::Row<'_>) -> rusqlite::Result<RouterEvent> {
             .get::<_, Option<String>>(22)
             .unwrap_or_default()
             .unwrap_or_default(),
+        user_id: r.get::<_, Option<String>>(23).unwrap_or_default(),
     })
 }
 
@@ -124,6 +141,13 @@ impl Database {
         let db = Self { conn };
         db.init_schema()?;
         Ok(db)
+    }
+
+    /// Borrow the underlying SQLite connection. Use only when the typed
+    /// CRUD on this struct can't express what you need (e.g. ad-hoc joins
+    /// over `router_events.user_id`).
+    pub fn conn_ref(&self) -> &Connection {
+        &self.conn
     }
 
     fn init_schema(&self) -> Result<()> {
@@ -399,6 +423,52 @@ impl Database {
                    ON router_session_adoptions(session_id);
                  DELETE FROM schema_version;
                  INSERT INTO schema_version VALUES (14);",
+            )?;
+        }
+
+        if version < 15 {
+            // Multi-user support: per-user accounts, per-user skill ownership
+            // (resources.owner_user_id NULL = public pool admin-owned, set =
+            // private user-owned at ~/.runai/users/<username>/skills/<name>),
+            // optional library "favorites" table for subscribing to public
+            // skills, and user_id stamp on router_events for per-user
+            // dashboard views. router_events.user_id stays NULL for
+            // pre-migration rows and for unauthenticated requests during the
+            // compat window (prefs.require_auth=false). Auth + library logic
+            // lives in src/core/auth.rs and src/core/manager.rs.
+            self.conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS users (
+                    user_id TEXT PRIMARY KEY,
+                    username TEXT NOT NULL UNIQUE,
+                    password_hash TEXT NOT NULL,
+                    api_key_hash TEXT NOT NULL,
+                    is_admin INTEGER NOT NULL DEFAULT 0,
+                    disabled INTEGER NOT NULL DEFAULT 0,
+                    prefs_json TEXT NOT NULL DEFAULT '{}',
+                    created_at INTEGER NOT NULL
+                 );
+                 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username);
+                 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_api_key_hash ON users(api_key_hash);
+
+                 CREATE TABLE IF NOT EXISTS user_skill_library (
+                    user_id TEXT NOT NULL,
+                    skill_name TEXT NOT NULL,
+                    added_at INTEGER NOT NULL,
+                    PRIMARY KEY (user_id, skill_name)
+                 );
+                 CREATE INDEX IF NOT EXISTS idx_user_library_user
+                   ON user_skill_library(user_id);
+
+                 ALTER TABLE resources ADD COLUMN owner_user_id TEXT;
+                 CREATE INDEX IF NOT EXISTS idx_resources_owner
+                   ON resources(owner_user_id);
+
+                 ALTER TABLE router_events ADD COLUMN user_id TEXT;
+                 CREATE INDEX IF NOT EXISTS idx_router_events_user_id
+                   ON router_events(user_id);
+
+                 DELETE FROM schema_version;
+                 INSERT INTO schema_version VALUES (15);",
             )?;
         }
 
@@ -748,6 +818,16 @@ impl Database {
     }
 
     pub fn router_stats_summary(&self, since_ts: Option<i64>) -> Result<RouterStatsSummary> {
+        self.router_stats_summary_filtered(since_ts, None)
+    }
+
+    /// Per-user variant. `user_id_filter = Some(uid)` scopes the stats
+    /// to that user's router_events; None = every row.
+    pub fn router_stats_summary_filtered(
+        &self,
+        since_ts: Option<i64>,
+        user_id_filter: Option<&str>,
+    ) -> Result<RouterStatsSummary> {
         let (total_calls, total_prompt, total_completion, total_reasoning, total_tokens, errors): (
             i64,
             i64,
@@ -764,8 +844,9 @@ impl Database {
                 COALESCE(SUM(total_tokens), 0),
                 COALESCE(SUM(CASE WHEN status != 'ok' THEN 1 ELSE 0 END), 0)
              FROM router_events
-             WHERE (?1 IS NULL OR ts >= ?1)",
-            params![since_ts],
+             WHERE (?1 IS NULL OR ts >= ?1)
+               AND (?2 IS NULL OR user_id = ?2)",
+            params![since_ts, user_id_filter],
             |r| {
                 Ok((
                     r.get(0)?,
@@ -778,8 +859,11 @@ impl Database {
             },
         )?;
         let avg_latency_ms: Option<f64> = self.conn.query_row(
-            "SELECT AVG(latency_ms) FROM router_events WHERE (?1 IS NULL OR ts >= ?1) AND status = 'ok'",
-            params![since_ts],
+            "SELECT AVG(latency_ms) FROM router_events
+             WHERE (?1 IS NULL OR ts >= ?1)
+               AND (?2 IS NULL OR user_id = ?2)
+               AND status = 'ok'",
+            params![since_ts, user_id_filter],
             |r| r.get(0),
         ).ok().flatten();
         let mut per_model = Vec::new();
@@ -787,10 +871,11 @@ impl Database {
             "SELECT model, COUNT(*), COALESCE(SUM(total_tokens), 0)
              FROM router_events
              WHERE (?1 IS NULL OR ts >= ?1)
+               AND (?2 IS NULL OR user_id = ?2)
              GROUP BY model
              ORDER BY 3 DESC",
         )?;
-        let rows = stmt.query_map(params![since_ts], |r| {
+        let rows = stmt.query_map(params![since_ts, user_id_filter], |r| {
             Ok(RouterModelStat {
                 model: r.get(0)?,
                 calls: r.get(1)?,
@@ -827,12 +912,29 @@ impl Database {
         model: Option<&str>,
         hit_only: bool,
     ) -> Result<Vec<RouterEvent>> {
+        self.router_events_paged_filtered(since_ts, limit, offset, model, hit_only, None)
+    }
+
+    /// Like `router_events_paged` but adds an optional `user_id_filter`.
+    /// Some("uid") → only that user's events. None → every row (admin /
+    /// compat view). v15 multi-user: Activity tab default is the
+    /// authenticated user's own events so no one accidentally sees
+    /// other tenants' prompts / cwd.
+    pub fn router_events_paged_filtered(
+        &self,
+        since_ts: Option<i64>,
+        limit: usize,
+        offset: usize,
+        model: Option<&str>,
+        hit_only: bool,
+        user_id_filter: Option<&str>,
+    ) -> Result<Vec<RouterEvent>> {
         let mut sql = String::from(
             "SELECT id, ts, provider, model, prompt_tokens, completion_tokens, reasoning_tokens,
                     total_tokens, cache_hit_tokens, cache_miss_tokens, latency_ms,
                     chosen_skills_json, candidate_count, status, error_msg,
                     session_id, mode, user_prompt, cwd, bm25_kept,
-                    llm_raw_response, hook_output, llm_input
+                    llm_raw_response, hook_output, llm_input, user_id
              FROM router_events WHERE 1=1",
         );
         if since_ts.is_some() {
@@ -848,11 +950,22 @@ impl Database {
         if hit_only {
             sql.push_str(" AND status = 'ok' AND chosen_skills_json != '[]'");
         }
+        if user_id_filter.is_some() {
+            sql.push_str(" AND user_id = ?5");
+        } else {
+            sql.push_str(" AND (?5 IS NULL OR 1=1)");
+        }
         sql.push_str(" ORDER BY ts DESC LIMIT ?3 OFFSET ?4");
 
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(
-            params![since_ts, model, limit as i64, offset as i64],
+            params![
+                since_ts,
+                model,
+                limit as i64,
+                offset as i64,
+                user_id_filter
+            ],
             row_to_router_event,
         )?;
         let mut out = Vec::new();
@@ -870,6 +983,16 @@ impl Database {
         model: Option<&str>,
         hit_only: bool,
     ) -> Result<i64> {
+        self.router_events_count_filtered(since_ts, model, hit_only, None)
+    }
+
+    pub fn router_events_count_filtered(
+        &self,
+        since_ts: Option<i64>,
+        model: Option<&str>,
+        hit_only: bool,
+        user_id_filter: Option<&str>,
+    ) -> Result<i64> {
         let mut sql = String::from("SELECT COUNT(*) FROM router_events WHERE 1=1");
         if since_ts.is_some() {
             sql.push_str(" AND ts >= ?1");
@@ -884,9 +1007,16 @@ impl Database {
         if hit_only {
             sql.push_str(" AND status = 'ok' AND chosen_skills_json != '[]'");
         }
-        let n: i64 = self
-            .conn
-            .query_row(&sql, params![since_ts, model], |r| r.get(0))?;
+        if user_id_filter.is_some() {
+            sql.push_str(" AND user_id = ?3");
+        } else {
+            sql.push_str(" AND (?3 IS NULL OR 1=1)");
+        }
+        let n: i64 = self.conn.query_row(
+            &sql,
+            params![since_ts, model, user_id_filter],
+            |r| r.get(0),
+        )?;
         Ok(n)
     }
 
@@ -894,6 +1024,16 @@ impl Database {
     /// Returns N buckets of `bucket_secs` width ending at `now`, oldest first.
     /// Each bucket reports the count of total/hit/error events that fell into it.
     pub fn router_timeline(&self, bucket_secs: i64, buckets: i64) -> Result<Vec<TimelineBucket>> {
+        self.router_timeline_filtered(bucket_secs, buckets, None)
+    }
+
+    /// Per-user variant of `router_timeline`.
+    pub fn router_timeline_filtered(
+        &self,
+        bucket_secs: i64,
+        buckets: i64,
+        user_id_filter: Option<&str>,
+    ) -> Result<Vec<TimelineBucket>> {
         let now = chrono::Utc::now().timestamp();
         let start = now - bucket_secs * buckets;
         let mut stmt = self.conn.prepare(
@@ -905,12 +1045,13 @@ impl Database {
                 COALESCE(AVG(latency_ms), 0) AS avg_lat
              FROM router_events
              WHERE ts >= ?1 AND ts < ?3
+               AND (?4 IS NULL OR user_id = ?4)
              GROUP BY bucket_idx
              ORDER BY bucket_idx",
         )?;
         let mut by_idx: std::collections::HashMap<i64, (i64, i64, i64, f64)> =
             std::collections::HashMap::new();
-        let rows = stmt.query_map(params![start, bucket_secs, now], |r| {
+        let rows = stmt.query_map(params![start, bucket_secs, now, user_id_filter], |r| {
             let idx: i64 = r.get(0)?;
             let total: i64 = r.get(1)?;
             let hits: i64 = r.get(2).unwrap_or(0);
@@ -977,14 +1118,15 @@ impl Database {
 
     pub fn insert_resource(&self, res: &Resource) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO resources (id, name, kind, description, directory, source_type, source_meta, installed_at, usage_count, last_used_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            "INSERT INTO resources (id, name, kind, description, directory, source_type, source_meta, installed_at, usage_count, last_used_at, owner_user_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
              ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 description = excluded.description,
                 directory = excluded.directory,
                 source_type = excluded.source_type,
-                source_meta = excluded.source_meta",
+                source_meta = excluded.source_meta,
+                owner_user_id = excluded.owner_user_id",
             params![
                 res.id,
                 res.name,
@@ -996,6 +1138,7 @@ impl Database {
                 res.installed_at,
                 res.usage_count as i64,
                 res.last_used_at,
+                res.owner_user_id,
             ],
         )?;
         Ok(())
@@ -1072,7 +1215,7 @@ impl Database {
 
     pub fn get_resource(&self, id: &str) -> Result<Option<Resource>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, kind, description, directory, source_type, source_meta, installed_at, usage_count, last_used_at
+            "SELECT id, name, kind, description, directory, source_type, source_meta, installed_at, usage_count, last_used_at, owner_user_id
              FROM resources WHERE id = ?1"
         )?;
 
@@ -1099,6 +1242,7 @@ impl Database {
             enabled: HashMap::new(),
             usage_count: row.get::<_, Option<i64>>(8)?.unwrap_or(0) as u64,
             last_used_at: row.get(9)?,
+            owner_user_id: row.get::<_, Option<String>>(10)?,
         }))
     }
 
@@ -1110,14 +1254,14 @@ impl Database {
         let mut resources = match kind {
             Some(k) => {
                 let mut stmt = self.conn.prepare(
-                    "SELECT id, name, kind, description, directory, source_type, source_meta, installed_at, usage_count, last_used_at
+                    "SELECT id, name, kind, description, directory, source_type, source_meta, installed_at, usage_count, last_used_at, owner_user_id
                      FROM resources WHERE kind = ?1 ORDER BY name"
                 )?;
                 self.collect_resources(&mut stmt, params![k.as_str()])?
             }
             None => {
                 let mut stmt = self.conn.prepare(
-                    "SELECT id, name, kind, description, directory, source_type, source_meta, installed_at, usage_count, last_used_at
+                    "SELECT id, name, kind, description, directory, source_type, source_meta, installed_at, usage_count, last_used_at, owner_user_id
                      FROM resources ORDER BY name"
                 )?;
                 self.collect_resources(&mut stmt, params![])?
@@ -1127,6 +1271,104 @@ impl Database {
             res.enabled = HashMap::new();
         }
         Ok(resources)
+    }
+
+    /// Owner-scoped variant of [`list_resources`].
+    ///
+    /// `owner = None` → public-pool resources only (`owner_user_id IS NULL`).
+    /// `owner = Some(uid)` → public pool ∪ this user's private resources.
+    /// `owner = Some("*")` → everything (admin override; matches every row).
+    pub fn list_resources_for_user(
+        &self,
+        kind: Option<ResourceKind>,
+        owner: Option<&str>,
+    ) -> Result<Vec<Resource>> {
+        // Build the `owner_user_id` predicate once; SQL stays static-shaped so
+        // sqlite can cache the plan.
+        let owner_pred = match owner {
+            None => "owner_user_id IS NULL",
+            Some("*") => "1=1",
+            Some(_) => "(owner_user_id IS NULL OR owner_user_id = ?2)",
+        };
+        let mut resources = match kind {
+            Some(k) => {
+                let sql = format!(
+                    "SELECT id, name, kind, description, directory, source_type, source_meta, installed_at, usage_count, last_used_at, owner_user_id
+                     FROM resources WHERE kind = ?1 AND {owner_pred} ORDER BY name"
+                );
+                let mut stmt = self.conn.prepare(&sql)?;
+                match owner {
+                    Some(uid) if uid != "*" => {
+                        self.collect_resources(&mut stmt, params![k.as_str(), uid])?
+                    }
+                    _ => self.collect_resources(&mut stmt, params![k.as_str()])?,
+                }
+            }
+            None => {
+                let sql = format!(
+                    "SELECT id, name, kind, description, directory, source_type, source_meta, installed_at, usage_count, last_used_at, owner_user_id
+                     FROM resources WHERE {} ORDER BY name",
+                    owner_pred.replace("?2", "?1")
+                );
+                let mut stmt = self.conn.prepare(&sql)?;
+                match owner {
+                    Some(uid) if uid != "*" => self.collect_resources(&mut stmt, params![uid])?,
+                    _ => self.collect_resources(&mut stmt, params![])?,
+                }
+            }
+        };
+        for res in &mut resources {
+            res.enabled = HashMap::new();
+        }
+        Ok(resources)
+    }
+
+    /// Look up a resource by `(name, owner)`. Private rows win over public
+    /// ones with the same name when `owner` is Some — that matches the
+    /// runtime semantic ("my private skill shadows the public one of the
+    /// same name"). `owner = None` matches the public pool exclusively.
+    /// `owner = Some("*")` is the admin scope — matches any owner.
+    pub fn find_resource_by_name_for_user(
+        &self,
+        kind: ResourceKind,
+        name: &str,
+        owner: Option<&str>,
+    ) -> Result<Option<Resource>> {
+        match owner {
+            None => {
+                let mut stmt = self.conn.prepare(
+                    "SELECT id, name, kind, description, directory, source_type, source_meta, installed_at, usage_count, last_used_at, owner_user_id
+                     FROM resources
+                     WHERE kind = ?1 AND name = ?2 AND owner_user_id IS NULL
+                     ORDER BY installed_at DESC LIMIT 1",
+                )?;
+                let mut resources = self.collect_resources(&mut stmt, params![kind.as_str(), name])?;
+                Ok(resources.pop())
+            }
+            Some("*") => {
+                // Admin scope: any owner. Prefer the most recently installed
+                // row so the dashboard "drill into a skill" picks the
+                // freshest copy (private installs win over an older public).
+                let mut stmt = self.conn.prepare(
+                    "SELECT id, name, kind, description, directory, source_type, source_meta, installed_at, usage_count, last_used_at, owner_user_id
+                     FROM resources
+                     WHERE kind = ?1 AND name = ?2
+                     ORDER BY CASE WHEN owner_user_id IS NULL THEN 1 ELSE 0 END, installed_at DESC LIMIT 1",
+                )?;
+                let mut resources = self.collect_resources(&mut stmt, params![kind.as_str(), name])?;
+                Ok(resources.pop())
+            }
+            Some(uid) => {
+                let mut stmt = self.conn.prepare(
+                    "SELECT id, name, kind, description, directory, source_type, source_meta, installed_at, usage_count, last_used_at, owner_user_id
+                     FROM resources
+                     WHERE kind = ?1 AND name = ?2 AND (owner_user_id IS NULL OR owner_user_id = ?3)
+                     ORDER BY CASE WHEN owner_user_id IS NULL THEN 1 ELSE 0 END, installed_at DESC LIMIT 1",
+                )?;
+                let mut resources = self.collect_resources(&mut stmt, params![kind.as_str(), name, uid])?;
+                Ok(resources.pop())
+            }
+        }
     }
 
     fn collect_resources(
@@ -1154,6 +1396,7 @@ impl Database {
                 enabled: HashMap::new(),
                 usage_count: row.get::<_, Option<i64>>(8)?.unwrap_or(0) as u64,
                 last_used_at: row.get(9)?,
+                owner_user_id: row.get::<_, Option<String>>(10)?,
             })
         })?;
 
@@ -1282,7 +1525,7 @@ impl Database {
 
     pub fn get_group_members(&self, group_id: &str) -> Result<Vec<Resource>> {
         let mut stmt = self.conn.prepare(
-            "SELECT r.id, r.name, r.kind, r.description, r.directory, r.source_type, r.source_meta, r.installed_at, r.usage_count, r.last_used_at
+            "SELECT r.id, r.name, r.kind, r.description, r.directory, r.source_type, r.source_meta, r.installed_at, r.usage_count, r.last_used_at, r.owner_user_id
              FROM resources r JOIN group_members gm ON r.id = gm.resource_id
              WHERE gm.group_id = ?1 ORDER BY r.name"
         )?;
@@ -1376,6 +1619,240 @@ impl Database {
         )?;
         Ok(count as usize)
     }
+
+    // ===================================================================
+    //  Users (schema v15+): username / password / api_key auth and per-user
+    //  ownership of skills. owner_user_id NULL on resources = public pool.
+    // ===================================================================
+
+    pub fn create_user(
+        &self,
+        user_id: &str,
+        username: &str,
+        password_hash: &str,
+        api_key_hash: &str,
+        is_admin: bool,
+    ) -> Result<()> {
+        let ts = chrono::Utc::now().timestamp();
+        self.conn.execute(
+            "INSERT INTO users (user_id, username, password_hash, api_key_hash,
+                                is_admin, disabled, prefs_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 0, '{}', ?6)",
+            params![
+                user_id,
+                username,
+                password_hash,
+                api_key_hash,
+                if is_admin { 1 } else { 0 },
+                ts,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn find_user_by_username(&self, username: &str) -> Result<Option<User>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT user_id, username, password_hash, api_key_hash,
+                    is_admin, disabled, prefs_json, created_at
+             FROM users WHERE username = ?1",
+        )?;
+        let user = stmt
+            .query_row(params![username], row_to_user)
+            .ok();
+        Ok(user)
+    }
+
+    pub fn find_user_by_api_key_hash(&self, api_key_hash: &str) -> Result<Option<User>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT user_id, username, password_hash, api_key_hash,
+                    is_admin, disabled, prefs_json, created_at
+             FROM users WHERE api_key_hash = ?1",
+        )?;
+        let user = stmt
+            .query_row(params![api_key_hash], row_to_user)
+            .ok();
+        Ok(user)
+    }
+
+    pub fn find_user_by_id(&self, user_id: &str) -> Result<Option<User>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT user_id, username, password_hash, api_key_hash,
+                    is_admin, disabled, prefs_json, created_at
+             FROM users WHERE user_id = ?1",
+        )?;
+        let user = stmt
+            .query_row(params![user_id], row_to_user)
+            .ok();
+        Ok(user)
+    }
+
+    pub fn list_users(&self) -> Result<Vec<User>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT user_id, username, password_hash, api_key_hash,
+                    is_admin, disabled, prefs_json, created_at
+             FROM users ORDER BY created_at ASC",
+        )?;
+        let rows = stmt.query_map([], row_to_user)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    pub fn set_user_admin(&self, user_id: &str, is_admin: bool) -> Result<()> {
+        self.conn.execute(
+            "UPDATE users SET is_admin = ?1 WHERE user_id = ?2",
+            params![if is_admin { 1 } else { 0 }, user_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_user_disabled(&self, user_id: &str, disabled: bool) -> Result<()> {
+        self.conn.execute(
+            "UPDATE users SET disabled = ?1 WHERE user_id = ?2",
+            params![if disabled { 1 } else { 0 }, user_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_user_prefs(&self, user_id: &str, prefs_json: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE users SET prefs_json = ?1 WHERE user_id = ?2",
+            params![prefs_json, user_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn rotate_api_key(&self, user_id: &str, new_api_key_hash: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE users SET api_key_hash = ?1 WHERE user_id = ?2",
+            params![new_api_key_hash, user_id],
+        )?;
+        Ok(())
+    }
+
+    // ===================================================================
+    //  user_skill_library: a user's "favorites" subscription to public-pool
+    //  skills (resources.owner_user_id IS NULL). Private skills the user
+    //  owns are NOT tracked here — they're identified via owner_user_id.
+    // ===================================================================
+
+    pub fn library_add(&self, user_id: &str, skill_name: &str) -> Result<()> {
+        let ts = chrono::Utc::now().timestamp();
+        self.conn.execute(
+            "INSERT OR IGNORE INTO user_skill_library (user_id, skill_name, added_at)
+             VALUES (?1, ?2, ?3)",
+            params![user_id, skill_name, ts],
+        )?;
+        Ok(())
+    }
+
+    pub fn library_remove(&self, user_id: &str, skill_name: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM user_skill_library WHERE user_id = ?1 AND skill_name = ?2",
+            params![user_id, skill_name],
+        )?;
+        Ok(())
+    }
+
+    /// Drop every user's library reference to this `skill_name`. Used by
+    /// `trash_resource` when a public-pool skill is deleted — every
+    /// subscriber loses the orphan entry so the UI doesn't show a row
+    /// that 404s on click.
+    pub fn library_remove_for_all(&self, skill_name: &str) -> Result<usize> {
+        let n = self.conn.execute(
+            "DELETE FROM user_skill_library WHERE skill_name = ?1",
+            params![skill_name],
+        )?;
+        Ok(n)
+    }
+
+    /// Sweep `user_skill_library` for entries pointing at skills that no
+    /// longer exist in `resources` (kind='skill'). Returns the row count
+    /// removed. Run at startup so a database imported from an older
+    /// release (pre-`library_remove_for_all`-on-trash) doesn't leave the
+    /// dashboard with "我的库 N" rows that 404 on click.
+    pub fn cleanup_orphan_library_entries(&self) -> Result<usize> {
+        let n = self.conn.execute(
+            "DELETE FROM user_skill_library
+             WHERE skill_name NOT IN (
+                 SELECT name FROM resources WHERE kind = 'skill'
+             )",
+            [],
+        )?;
+        Ok(n)
+    }
+
+    pub fn library_list(&self, user_id: &str) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT skill_name FROM user_skill_library
+             WHERE user_id = ?1 ORDER BY added_at DESC",
+        )?;
+        let rows = stmt.query_map(params![user_id], |r| r.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    pub fn library_contains(&self, user_id: &str, skill_name: &str) -> Result<bool> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM user_skill_library
+             WHERE user_id = ?1 AND skill_name = ?2",
+            params![user_id, skill_name],
+            |r| r.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
+    pub fn library_clear(&self, user_id: &str) -> Result<usize> {
+        let n = self.conn.execute(
+            "DELETE FROM user_skill_library WHERE user_id = ?1",
+            params![user_id],
+        )?;
+        Ok(n)
+    }
+
+    pub fn library_count(&self, user_id: &str) -> Result<usize> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM user_skill_library WHERE user_id = ?1",
+            params![user_id],
+            |r| r.get(0),
+        )?;
+        Ok(count as usize)
+    }
+
+    /// Top N public skills by global usage_count, used to pre-fill a new
+    /// user's library so their first /recommend isn't empty.
+    pub fn top_public_skills(&self, limit: usize) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT name FROM resources
+             WHERE kind = 'skill' AND owner_user_id IS NULL
+             ORDER BY usage_count DESC, installed_at DESC
+             LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |r| r.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+}
+
+fn row_to_user(r: &rusqlite::Row<'_>) -> rusqlite::Result<User> {
+    Ok(User {
+        user_id: r.get(0)?,
+        username: r.get(1)?,
+        password_hash: r.get(2)?,
+        api_key_hash: r.get(3)?,
+        is_admin: r.get::<_, i64>(4)? != 0,
+        disabled: r.get::<_, i64>(5)? != 0,
+        prefs_json: r.get(6)?,
+        created_at: r.get(7)?,
+    })
 }
 
 #[cfg(test)]
@@ -1390,7 +1867,7 @@ mod tests {
             .conn
             .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 14);
+        assert_eq!(version, 15);
     }
 
     #[test]
@@ -1415,6 +1892,7 @@ mod tests {
             enabled: std::collections::HashMap::new(),
             usage_count: 0,
             last_used_at: None,
+            owner_user_id: None,
         };
         db.insert_resource(&res).unwrap();
 
@@ -1442,6 +1920,7 @@ mod tests {
             enabled: std::collections::HashMap::new(),
             usage_count: 0,
             last_used_at: None,
+            owner_user_id: None,
         };
         db.insert_resource(&res).unwrap();
 
@@ -1482,6 +1961,7 @@ mod tests {
                 enabled: std::collections::HashMap::new(),
                 usage_count: 0,
                 last_used_at: None,
+                owner_user_id: None,
             };
             db.insert_resource(&res).unwrap();
         }
@@ -1521,6 +2001,7 @@ mod tests {
             enabled: std::collections::HashMap::new(),
             usage_count: 0,
             last_used_at: None,
+            owner_user_id: None,
         };
         db.insert_resource(&res).unwrap();
 
@@ -1540,6 +2021,7 @@ mod tests {
             enabled: std::collections::HashMap::new(),
             usage_count: 0,
             last_used_at: None,
+            owner_user_id: None,
         };
         db.insert_resource(&res2).unwrap();
 
@@ -1574,6 +2056,7 @@ mod tests {
             installed_at: 1,
             usage_count: 3,
             last_used_at: Some(4),
+            owner_user_id: None,
             deleted_at: 2,
             payload_path: Some(PathBuf::from("/tmp/trash/foo")),
             enabled_targets: vec![CliTarget::Claude, CliTarget::Codex],
@@ -1621,5 +2104,404 @@ mod tests {
         assert_eq!(ids.len(), 2);
         assert!(ids.contains(&"local:foo".to_string()));
         assert!(ids.contains(&"mcp:bar".to_string()));
+    }
+
+    // -------- v15 multi-user tests --------
+
+    #[test]
+    fn schema_at_v15_after_open() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = Database::open(&tmp.path().join("v15.db")).unwrap();
+        let version: i64 = db
+            .conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 15);
+
+        // Tables must exist
+        for tbl in &["users", "user_skill_library"] {
+            let count: i64 = db
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                    params![tbl],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 1, "table {} missing", tbl);
+        }
+
+        // resources.owner_user_id must exist
+        let owner_col: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('resources') WHERE name='owner_user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(owner_col, 1);
+
+        // router_events.user_id must exist
+        let user_id_col: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('router_events') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(user_id_col, 1);
+    }
+
+    #[test]
+    fn user_crud_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = Database::open(&tmp.path().join("users.db")).unwrap();
+
+        db.create_user("u1", "alice", "phash1", "akhash1", false)
+            .unwrap();
+
+        // Look up by username
+        let u = db.find_user_by_username("alice").unwrap().unwrap();
+        assert_eq!(u.user_id, "u1");
+        assert_eq!(u.username, "alice");
+        assert!(!u.is_admin);
+        assert!(!u.disabled);
+
+        // Look up by api_key_hash
+        let u2 = db.find_user_by_api_key_hash("akhash1").unwrap().unwrap();
+        assert_eq!(u2.user_id, "u1");
+
+        // Username uniqueness enforced
+        let dup = db.create_user("u2", "alice", "phash2", "akhash2", false);
+        assert!(dup.is_err(), "duplicate username must fail");
+
+        // Admin promotion
+        db.set_user_admin("u1", true).unwrap();
+        let promoted = db.find_user_by_id("u1").unwrap().unwrap();
+        assert!(promoted.is_admin);
+
+        // Disable
+        db.set_user_disabled("u1", true).unwrap();
+        let disabled = db.find_user_by_id("u1").unwrap().unwrap();
+        assert!(disabled.disabled);
+
+        // Prefs update
+        db.update_user_prefs("u1", r#"{"allow_public_recommend":true}"#)
+            .unwrap();
+        let with_prefs = db.find_user_by_id("u1").unwrap().unwrap();
+        assert!(with_prefs.prefs_json.contains("allow_public_recommend"));
+
+        // Rotate api key
+        db.rotate_api_key("u1", "akhash1_new").unwrap();
+        assert!(db.find_user_by_api_key_hash("akhash1").unwrap().is_none());
+        assert!(db.find_user_by_api_key_hash("akhash1_new").unwrap().is_some());
+
+        // List
+        db.create_user("u2", "bob", "phash2", "akhash2", false)
+            .unwrap();
+        let list = db.list_users().unwrap();
+        assert_eq!(list.len(), 2);
+    }
+
+    #[test]
+    fn library_crud_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = Database::open(&tmp.path().join("lib.db")).unwrap();
+
+        db.create_user("u1", "alice", "p", "k", false).unwrap();
+
+        // Empty by default
+        assert_eq!(db.library_count("u1").unwrap(), 0);
+        assert!(!db.library_contains("u1", "bolder").unwrap());
+
+        // Add
+        db.library_add("u1", "bolder").unwrap();
+        db.library_add("u1", "delight").unwrap();
+        assert_eq!(db.library_count("u1").unwrap(), 2);
+        assert!(db.library_contains("u1", "bolder").unwrap());
+
+        // Idempotent add (INSERT OR IGNORE)
+        db.library_add("u1", "bolder").unwrap();
+        assert_eq!(db.library_count("u1").unwrap(), 2);
+
+        // Remove one
+        db.library_remove("u1", "bolder").unwrap();
+        assert!(!db.library_contains("u1", "bolder").unwrap());
+        assert_eq!(db.library_count("u1").unwrap(), 1);
+
+        // List in DESC order of added_at
+        let list = db.library_list("u1").unwrap();
+        assert_eq!(list, vec!["delight"]);
+
+        // Clear
+        let cleared = db.library_clear("u1").unwrap();
+        assert_eq!(cleared, 1);
+        assert_eq!(db.library_count("u1").unwrap(), 0);
+
+        // Per-user isolation
+        db.create_user("u2", "bob", "p", "k2", false).unwrap();
+        db.library_add("u1", "bolder").unwrap();
+        db.library_add("u2", "overdrive").unwrap();
+        assert_eq!(db.library_list("u1").unwrap(), vec!["bolder"]);
+        assert_eq!(db.library_list("u2").unwrap(), vec!["overdrive"]);
+    }
+
+    // =========================================================================
+    //  Phase B: owner_user_id write-path + per-user query helpers
+    // =========================================================================
+
+    fn mk_skill(id: &str, name: &str, owner: Option<&str>) -> Resource {
+        Resource {
+            id: id.into(),
+            name: name.into(),
+            kind: ResourceKind::Skill,
+            description: "x".into(),
+            directory: PathBuf::from("/tmp"),
+            source: crate::core::resource::Source::Local {
+                path: PathBuf::from("/tmp"),
+            },
+            installed_at: 0,
+            enabled: HashMap::new(),
+            usage_count: 0,
+            last_used_at: None,
+            owner_user_id: owner.map(String::from),
+        }
+    }
+
+    #[test]
+    fn insert_resource_persists_owner_user_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = Database::open(&tmp.path().join("test.db")).unwrap();
+
+        db.insert_resource(&mk_skill("local:pub", "pub", None)).unwrap();
+        db.insert_resource(&mk_skill("u:usr_alice:local:priv", "priv", Some("usr_alice")))
+            .unwrap();
+
+        let pub_row = db.get_resource("local:pub").unwrap().unwrap();
+        let priv_row = db.get_resource("u:usr_alice:local:priv").unwrap().unwrap();
+        assert_eq!(pub_row.owner_user_id, None, "public row stays NULL");
+        assert_eq!(
+            priv_row.owner_user_id.as_deref(),
+            Some("usr_alice"),
+            "private row carries owner"
+        );
+    }
+
+    #[test]
+    fn list_resources_for_user_filters_by_owner() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = Database::open(&tmp.path().join("test.db")).unwrap();
+
+        db.insert_resource(&mk_skill("local:pubA", "pubA", None)).unwrap();
+        db.insert_resource(&mk_skill("local:pubB", "pubB", None)).unwrap();
+        db.insert_resource(&mk_skill(
+            "u:usr_alice:local:apriv",
+            "apriv",
+            Some("usr_alice"),
+        ))
+        .unwrap();
+        db.insert_resource(&mk_skill(
+            "u:usr_bob:local:bpriv",
+            "bpriv",
+            Some("usr_bob"),
+        ))
+        .unwrap();
+
+        // owner = None: public only.
+        let public_only =
+            db.list_resources_for_user(Some(ResourceKind::Skill), None).unwrap();
+        let names: Vec<_> = public_only.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, vec!["pubA", "pubB"]);
+
+        // owner = Some(alice): public ∪ alice's private.
+        let alice = db
+            .list_resources_for_user(Some(ResourceKind::Skill), Some("usr_alice"))
+            .unwrap();
+        let names: Vec<_> = alice.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, vec!["apriv", "pubA", "pubB"]);
+
+        // owner = Some(bob): public ∪ bob's private, NOT alice's.
+        let bob = db
+            .list_resources_for_user(Some(ResourceKind::Skill), Some("usr_bob"))
+            .unwrap();
+        let names: Vec<_> = bob.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, vec!["bpriv", "pubA", "pubB"]);
+        assert!(bob.iter().all(|r| r.name != "apriv"));
+
+        // owner = Some("*"): admin sees everything across all owners.
+        let admin = db
+            .list_resources_for_user(Some(ResourceKind::Skill), Some("*"))
+            .unwrap();
+        let names: Vec<_> = admin.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, vec!["apriv", "bpriv", "pubA", "pubB"]);
+    }
+
+    #[test]
+    fn same_name_private_skills_coexist_across_users() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = Database::open(&tmp.path().join("test.db")).unwrap();
+
+        // Same `name` (foo), different ids that include the owner prefix.
+        db.insert_resource(&mk_skill(
+            &Resource::generate_id(
+                &crate::core::resource::Source::Local {
+                    path: PathBuf::from("/tmp"),
+                },
+                "foo",
+                Some("usr_alice"),
+            ),
+            "foo",
+            Some("usr_alice"),
+        ))
+        .unwrap();
+        db.insert_resource(&mk_skill(
+            &Resource::generate_id(
+                &crate::core::resource::Source::Local {
+                    path: PathBuf::from("/tmp"),
+                },
+                "foo",
+                Some("usr_bob"),
+            ),
+            "foo",
+            Some("usr_bob"),
+        ))
+        .unwrap();
+
+        // Each owner sees only their own foo (no public version exists).
+        let alice = db
+            .list_resources_for_user(Some(ResourceKind::Skill), Some("usr_alice"))
+            .unwrap();
+        assert_eq!(alice.len(), 1);
+        assert_eq!(alice[0].name, "foo");
+        assert_eq!(alice[0].owner_user_id.as_deref(), Some("usr_alice"));
+
+        let bob = db
+            .list_resources_for_user(Some(ResourceKind::Skill), Some("usr_bob"))
+            .unwrap();
+        assert_eq!(bob.len(), 1);
+        assert_eq!(bob[0].owner_user_id.as_deref(), Some("usr_bob"));
+
+        // Public scope sees neither (both are private).
+        let public_only = db
+            .list_resources_for_user(Some(ResourceKind::Skill), None)
+            .unwrap();
+        assert!(public_only.is_empty(), "no public foo exists");
+    }
+
+    #[test]
+    fn find_by_name_for_user_private_wins_over_public() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = Database::open(&tmp.path().join("test.db")).unwrap();
+
+        // Public foo, and alice's private foo. Alice sees the private one.
+        db.insert_resource(&mk_skill("local:foo", "foo", None)).unwrap();
+        db.insert_resource(&mk_skill(
+            "u:usr_alice:local:foo",
+            "foo",
+            Some("usr_alice"),
+        ))
+        .unwrap();
+
+        // Anonymous lookup → public.
+        let pub_hit = db
+            .find_resource_by_name_for_user(ResourceKind::Skill, "foo", None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(pub_hit.owner_user_id, None);
+
+        // Alice's lookup → her private one (shadows public).
+        let alice_hit = db
+            .find_resource_by_name_for_user(ResourceKind::Skill, "foo", Some("usr_alice"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(alice_hit.owner_user_id.as_deref(), Some("usr_alice"));
+
+        // Bob's lookup → public foo (he has no private one).
+        let bob_hit = db
+            .find_resource_by_name_for_user(ResourceKind::Skill, "foo", Some("usr_bob"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(bob_hit.owner_user_id, None);
+
+        // Unknown name → None.
+        assert!(
+            db.find_resource_by_name_for_user(ResourceKind::Skill, "nope", Some("usr_alice"))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn generate_id_distinguishes_public_from_private() {
+        let src = crate::core::resource::Source::Local {
+            path: PathBuf::from("/tmp"),
+        };
+        let pub_id = Resource::generate_id(&src, "foo", None);
+        let alice_id = Resource::generate_id(&src, "foo", Some("usr_alice"));
+        let bob_id = Resource::generate_id(&src, "foo", Some("usr_bob"));
+
+        assert_eq!(pub_id, "local:foo", "public id is back-compat with pre-v15");
+        assert_eq!(alice_id, "u:usr_alice:local:foo");
+        assert_eq!(bob_id, "u:usr_bob:local:foo");
+        assert_ne!(alice_id, bob_id);
+        assert_ne!(alice_id, pub_id);
+    }
+
+    #[test]
+    fn trash_entry_owner_user_id_survives_serde_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = Database::open(&tmp.path().join("test.db")).unwrap();
+
+        let entry = TrashEntry {
+            id: "trash:priv".into(),
+            resource_id: "u:usr_alice:local:secret".into(),
+            name: "secret".into(),
+            kind: ResourceKind::Skill,
+            description: "alice's".into(),
+            directory: PathBuf::from("/tmp/secret"),
+            source: crate::core::resource::Source::Local {
+                path: PathBuf::from("/tmp/secret"),
+            },
+            installed_at: 1,
+            usage_count: 0,
+            last_used_at: None,
+            owner_user_id: Some("usr_alice".into()),
+            deleted_at: 2,
+            payload_path: None,
+            enabled_targets: vec![],
+            group_ids: vec![],
+            mcp_configs: HashMap::new(),
+            disabled_backup: None,
+        };
+        db.insert_trash_entry(&entry).unwrap();
+
+        let loaded = db.get_trash_entry("trash:priv").unwrap().unwrap();
+        assert_eq!(loaded.owner_user_id.as_deref(), Some("usr_alice"));
+    }
+
+    #[test]
+    fn pre_v15_trash_payload_decodes_with_owner_default_none() {
+        // Older payload_json blobs predate the owner_user_id field. They
+        // must still decode (serde(default)) and surface as public-pool
+        // trash so the restore path treats them as public.
+        let pre_v15_json = r#"{
+            "id": "trash:legacy",
+            "resource_id": "local:legacy",
+            "name": "legacy",
+            "kind": "skill",
+            "description": "",
+            "directory": "/tmp/legacy",
+            "source": { "type": "local", "path": "/tmp/legacy" },
+            "installed_at": 0,
+            "usage_count": 0,
+            "last_used_at": null,
+            "deleted_at": 0,
+            "payload_path": null
+        }"#;
+        let entry: TrashEntry = serde_json::from_str(pre_v15_json).unwrap();
+        assert_eq!(entry.owner_user_id, None);
+        assert_eq!(entry.id, "trash:legacy");
     }
 }
