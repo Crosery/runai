@@ -146,6 +146,7 @@ Module docs follow a per-module convention, no sibling `*.LLM.md` files anymore:
 - A **folder** module (its code lives under `src/.../<name>/`) documents itself in one `<folder>/AGENTS.md` covering all code in the folder.
 - A **single-file** module (one `<name>.rs`) documents itself in a `//!` module comment at the top of that file — the Doc column says inline `//!`.
 - `src/core/prompts/*.md` are LLM prompt templates, not module docs — they are not listed here.
+- **Auto-load wiring**: each folder module also carries a one-line `<folder>/CLAUDE.md` containing `@AGENTS.md`. Claude Code only proximity-loads `CLAUDE.md` (not `AGENTS.md`) from subdirectories, on-demand when it reads files there; that thin `CLAUDE.md` imports the sibling `AGENTS.md`, so the module doc enters context exactly when you work in that folder — no bloat on the always-loaded root, and `AGENTS.md` stays the cross-tool name (Codex / Cursor read it directly). Do NOT `@`-import module docs into the root `AGENTS.md`: `@`-imports load at startup, so that would pull every module doc into every session.
 
 | Module | Source | Doc | One-liner |
 |---|---|---|---|
