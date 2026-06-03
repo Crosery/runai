@@ -84,14 +84,28 @@ pub struct Resource {
     pub enabled: HashMap<CliTarget, bool>,
     pub usage_count: u64,
     pub last_used_at: Option<i64>,
+    /// Owner of a private resource. `None` = public-pool resource (visible
+    /// to every user, physically at `<data>/skills/<name>/`). `Some(uid)` =
+    /// private to that user (physically at `<data>/users/<uid>/skills/<name>/`).
+    /// Introduced in v15 schema; auto-defaulted to `None` for pre-v15 rows.
+    pub owner_user_id: Option<String>,
 }
 
 impl Resource {
-    pub fn generate_id(source: &Source, name: &str) -> String {
-        match source {
+    /// Build a stable DB id from `(source, name, owner_user_id)`.
+    /// Public ids match the pre-v15 shape exactly (`local:foo`,
+    /// `github:o/r:foo`, `adopted:foo`) so existing rows keep their PK.
+    /// Private ids gain a `u:<uid>:` prefix so the same `(source, name)`
+    /// can coexist across users without PK collision.
+    pub fn generate_id(source: &Source, name: &str, owner_user_id: Option<&str>) -> String {
+        let base = match source {
             Source::Local { .. } => format!("local:{name}"),
             Source::GitHub { owner, repo, .. } => format!("github:{owner}/{repo}:{name}"),
             Source::Adopted { .. } => format!("adopted:{name}"),
+        };
+        match owner_user_id {
+            Some(uid) => format!("u:{uid}:{base}"),
+            None => base,
         }
     }
 
@@ -122,6 +136,11 @@ pub struct TrashEntry {
     pub mcp_configs: HashMap<CliTarget, Value>,
     #[serde(default)]
     pub disabled_backup: Option<Value>,
+    /// Carries the trashed resource's owner_user_id so restore can recreate
+    /// the row with the correct owner. `serde(default)` keeps pre-v15 trash
+    /// payloads decodable (those rows simply restore as public).
+    #[serde(default)]
+    pub owner_user_id: Option<String>,
 }
 
 /// Usage statistics for a resource.

@@ -15,20 +15,23 @@ role: runtime
 
 **Resource lifecycle**:
 - `scan()` — delegate to scanner.
-- `register_local_skill(name)` — add a skill that's already under `skills/` to the DB.
-- `enable_resource(id, target, group?)` / `disable_resource(...)` — for skill: create/remove symlink; for MCP: edit target's config file.
-- `trash_resource(id)` / `uninstall(id)` — move a skill/MCP into global trash. `uninstall` is now a compatibility wrapper over `trash_resource`.
+- `register_local_skill(name)` — add a public-pool skill that's already under `skills/` to the DB. Wrapper over `register_local_skill_for(name, None)`.
+- `register_local_skill_for(name, owner_user_id)` — Phase C: owner-aware adopt. `Some(uid)` adopts `<data>/users/<uid>/skills/<name>/` into uid's private pool; `None` is the public-pool path. Returns `Err` when the candidate dir doesn't exist or the uid fails `paths::is_safe_user_id`.
+- `enable_resource(id, target, group?)` / `disable_resource(...)` — for skill: create/remove symlink; for MCP: edit target's config file. Private skills do NOT get symlinked (remote clients pull them via `/skills/get` + `/skills/file`, not via the local Claude Code symlink farm).
+- `trash_resource(id)` / `uninstall(id)` — move a skill/MCP into trash. `uninstall` is now a compatibility wrapper over `trash_resource`. Trash payload is owner-aware: public rows land in `<data>/trash/`, private rows land in `<data>/users/<uid>/trash/`. Restoration uses `entry.directory` (saved at trash time) so private skills come back to their per-user dir, never spilling into the public pool.
 - `list_trash()` / `find_trash_id(query)` / `restore_from_trash(id)` / `purge_trash(id)` / `empty_trash()`.
-- `list_resources(kind?, target?)` — unified listing (Skills from DB + MCPs by reading each CLI's config live via `mcp_discovery`).
-- `find_resource_id(name)` / `find_group_id(query)` — fuzzy lookup.
+- `list_resources(kind?, target?)` — unified listing (Skills from DB + MCPs by reading each CLI's config live via `mcp_discovery`). NOT owner-filtered — use `db.list_resources_for_user` directly for per-user views (the server's `/api/skills` handler does this).
+- `find_resource_id(name)` / `find_group_id(query)` — fuzzy lookup. Public-pool only; the server's owner-aware lookup goes through `db.find_resource_by_name_for_user`.
 - `record_usage(name)` / `usage_stats()` — usage tracking (DB-backed).
 
 **Groups**:
 - `create_group(id, group)` / `list_groups()` / `rename_group` / `update_group` / `get_group_members(id)` / `enable_group` / `disable_group`.
 
 **Install**:
-- `install_github_repo(owner, repo, branch, target)` — fetch, classify, register, group.
-- `register_and_group_skills(...)` — called after market install.
+- `install_github_repo(owner, repo, branch, target)` — public-pool wrapper.
+- `install_github_repo_filtered(... only?)` — public-pool, with skill-name filter (for the dashboard's "parse → pick → install" flow).
+- `install_github_repo_filtered_for(... only?, owner_user_id)` — Phase C: owner-aware install. `Some(uid)` downloads into `<data>/users/<uid>/skills/`, stamps `owner_user_id` on every row, skips symlink registration and group auto-creation. The server's `/api/install/github` and `/api/market/install` call this with the authenticated user.
+- `register_and_group_skills(...)` — called after market install (public-pool only).
 - `batch_delete(names) -> (count, failed)` — now batch-trash, not permanent delete.
 
 **Status**: `status(target) -> (enabled_skills, enabled_mcps)`, `resource_count()`, `is_first_launch()`.

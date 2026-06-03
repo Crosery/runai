@@ -281,6 +281,7 @@ impl Scanner {
                 enabled: HashMap::new(),
                 usage_count: 0,
                 last_used_at: None,
+                owner_user_id: None,
             };
 
             match db.insert_resource(&resource) {
@@ -464,6 +465,7 @@ impl Scanner {
             enabled: HashMap::from([(target, true)]),
             usage_count: 0,
             last_used_at: None,
+            owner_user_id: None,
         };
 
         db.insert_resource(&resource)?;
@@ -518,6 +520,7 @@ impl Scanner {
                 enabled: HashMap::new(),
                 usage_count: 0,
                 last_used_at: None,
+                owner_user_id: None,
             };
             let adopted_name = resource.name.clone();
             match db.insert_resource(&resource) {

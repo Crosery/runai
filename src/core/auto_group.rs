@@ -126,6 +126,7 @@ mod tests {
             enabled: StdHashMap::new(),
             usage_count: 0,
             last_used_at: None,
+            owner_user_id: None,
         }
     }
 

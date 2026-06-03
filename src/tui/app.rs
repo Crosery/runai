@@ -77,6 +77,7 @@ mod tests {
             enabled: HashMap::new(),
             usage_count: 0,
             last_used_at: None,
+            owner_user_id: None,
         };
         mgr.db().insert_resource(&resource).unwrap();
 
@@ -889,8 +890,9 @@ impl App {
             let sources = market::load_sources(&data_dir);
             if let Some(found) = market::find_skill_in_sources(&data_dir, &sources, &name, None) {
                 let paths = self.mgr.paths().clone();
+                let install_root = paths.skills_dir();
                 let rt = tokio::runtime::Runtime::new().unwrap();
-                match rt.block_on(Market::install_single(&found, &paths)) {
+                match rt.block_on(Market::install_single(&found, &install_root)) {
                     Ok(_) => {
                         let _ = self.mgr.register_local_skill(&name);
                         if let Some(id) = self.mgr.find_resource_id(&name) {
@@ -1598,7 +1600,7 @@ impl App {
 
         // Download only the SKILL.md for this one skill
         let rt = tokio::runtime::Runtime::new().unwrap();
-        match rt.block_on(Market::install_single(&skill, self.mgr.paths())) {
+        match rt.block_on(Market::install_single(&skill, &self.mgr.paths().skills_dir())) {
             Ok(_) => {
                 let _ = self.mgr.register_local_skill(&skill.name);
                 self.message = Some(format!("Installed '{}'", skill.name));

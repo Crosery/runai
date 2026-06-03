@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod auto_group;
+pub mod autostart;
 pub mod backup;
 pub mod bm25;
 pub mod channel;

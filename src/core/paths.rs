@@ -174,6 +174,41 @@ impl AppPaths {
         self.base.join("trash")
     }
 
+    /// Per-user data root: `<data>/users/<user_id>/`.
+    /// Errors when `user_id` fails [`is_safe_user_id`] — defense-in-depth
+    /// against path traversal regardless of where the id came from.
+    pub fn user_root(&self, user_id: &str) -> Result<PathBuf> {
+        if !is_safe_user_id(user_id) {
+            anyhow::bail!("invalid user_id: {user_id:?}");
+        }
+        Ok(self.base.join("users").join(user_id))
+    }
+
+    /// Per-user skills root: `<data>/users/<user_id>/skills/`.
+    /// Owner-scoped install destination for private skills. Public skills
+    /// continue to live in [`skills_dir`].
+    pub fn user_skills_dir(&self, user_id: &str) -> Result<PathBuf> {
+        Ok(self.user_root(user_id)?.join("skills"))
+    }
+
+    /// Per-user MCPs root: `<data>/users/<user_id>/mcps/`.
+    pub fn user_mcps_dir(&self, user_id: &str) -> Result<PathBuf> {
+        Ok(self.user_root(user_id)?.join("mcps"))
+    }
+
+    /// Per-user trash root: `<data>/users/<user_id>/trash/`.
+    pub fn user_trash_dir(&self, user_id: &str) -> Result<PathBuf> {
+        Ok(self.user_root(user_id)?.join("trash"))
+    }
+
+    /// Create all per-user subdirectories. Idempotent.
+    pub fn ensure_user_dirs(&self, user_id: &str) -> Result<()> {
+        std::fs::create_dir_all(self.user_skills_dir(user_id)?)?;
+        std::fs::create_dir_all(self.user_mcps_dir(user_id)?)?;
+        std::fs::create_dir_all(self.user_trash_dir(user_id)?)?;
+        Ok(())
+    }
+
     pub fn db_path(&self) -> PathBuf {
         // Try new name first, fallback to old name for compat
         let new_db = self.base.join("runai.db");
@@ -196,6 +231,23 @@ impl AppPaths {
         std::fs::create_dir_all(self.trash_dir())?;
         Ok(())
     }
+}
+
+/// Path-traversal guard for user_id strings before they're joined into a
+/// filesystem path. Accepts ascii alnum + `_` `-` only; max 64 chars. The
+/// canonical id shape (`usr_<16 base32>`, see [`crate::core::auth::new_user_id`])
+/// trivially passes; admin-created usernames-as-ids would too. Rejects empty,
+/// over-long, `..`, `/`, and any control / non-ascii input.
+///
+/// This is defense-in-depth: even when the id comes from a trusted source
+/// (db `users.user_id`), a malformed value must never widen to a path like
+/// `../../../etc/passwd`.
+fn is_safe_user_id(s: &str) -> bool {
+    if s.is_empty() || s.len() > 64 {
+        return false;
+    }
+    s.chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
 #[cfg(all(test, not(target_os = "windows")))]
@@ -349,6 +401,7 @@ mod tests {
                 enabled: std::collections::HashMap::new(),
                 usage_count: 0,
                 last_used_at: None,
+                owner_user_id: None,
             };
             db.insert_resource(&res).unwrap();
         }
@@ -425,5 +478,113 @@ mod tests {
             tmp.path().join("runai.db"),
             "should default to new name for fresh installs"
         );
+    }
+
+    // =========================================================================
+    //  Phase A: user-scoped paths for private skill isolation
+    // =========================================================================
+
+    #[test]
+    fn user_root_layout_matches_data_subtree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::with_base(tmp.path().to_path_buf());
+        let uid = "usr_abc123";
+        assert_eq!(paths.user_root(uid).unwrap(), tmp.path().join("users").join(uid));
+        assert_eq!(
+            paths.user_skills_dir(uid).unwrap(),
+            tmp.path().join("users").join(uid).join("skills")
+        );
+        assert_eq!(
+            paths.user_mcps_dir(uid).unwrap(),
+            tmp.path().join("users").join(uid).join("mcps")
+        );
+        assert_eq!(
+            paths.user_trash_dir(uid).unwrap(),
+            tmp.path().join("users").join(uid).join("trash")
+        );
+    }
+
+    #[test]
+    fn user_root_rejects_path_traversal_and_garbage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::with_base(tmp.path().to_path_buf());
+        let bad = [
+            "", "..", ".", "../etc", "a/b", "a\\b", "a b", "中文", "a:b",
+            "a;b", "a\0b", "\n",
+        ];
+        for id in bad {
+            assert!(
+                paths.user_root(id).is_err(),
+                "user_root must reject {id:?}"
+            );
+            assert!(paths.user_skills_dir(id).is_err());
+            assert!(paths.user_mcps_dir(id).is_err());
+            assert!(paths.user_trash_dir(id).is_err());
+            assert!(paths.ensure_user_dirs(id).is_err());
+        }
+
+        // Over-long id (65 chars) rejected; exact 64 accepted.
+        assert!(paths.user_root(&"a".repeat(65)).is_err());
+        assert!(paths.user_root(&"a".repeat(64)).is_ok());
+    }
+
+    #[test]
+    fn ensure_user_dirs_creates_three_subdirs_idempotently() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::with_base(tmp.path().to_path_buf());
+        let uid = "usr_xyz789";
+
+        paths.ensure_user_dirs(uid).unwrap();
+        assert!(paths.user_skills_dir(uid).unwrap().is_dir());
+        assert!(paths.user_mcps_dir(uid).unwrap().is_dir());
+        assert!(paths.user_trash_dir(uid).unwrap().is_dir());
+
+        // Second call must not error (idempotent).
+        paths.ensure_user_dirs(uid).unwrap();
+    }
+
+    #[test]
+    fn user_paths_isolate_alice_from_bob() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::with_base(tmp.path().to_path_buf());
+        let alice = paths.user_skills_dir("usr_alice000").unwrap();
+        let bob = paths.user_skills_dir("usr_bob00000").unwrap();
+        assert_ne!(alice, bob);
+        assert!(!alice.starts_with(&bob));
+        assert!(!bob.starts_with(&alice));
+    }
+
+    #[test]
+    fn user_paths_disjoint_from_public_skills_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::with_base(tmp.path().to_path_buf());
+        let public = paths.skills_dir();
+        let private = paths.user_skills_dir("usr_someone00").unwrap();
+        assert_ne!(public, private);
+        // Private must NOT be inside public (would defeat the whole isolation).
+        assert!(!private.starts_with(&public));
+        // Public must NOT be inside private either.
+        assert!(!public.starts_with(&private));
+    }
+
+    #[test]
+    fn safe_user_id_accepts_real_world_shapes() {
+        // Canonical shape minted by auth::new_user_id.
+        assert!(is_safe_user_id("usr_abcdefghij234567"));
+        // Admin-created human ids would also pass (used in dev / tests).
+        assert!(is_safe_user_id("alice"));
+        assert!(is_safe_user_id("alice_99"));
+        assert!(is_safe_user_id("a-b-c"));
+        assert!(is_safe_user_id("A0"));
+
+        // Boundary
+        assert!(is_safe_user_id(&"a".repeat(64)));
+        assert!(!is_safe_user_id(&"a".repeat(65)));
+        assert!(!is_safe_user_id(""));
+
+        // Path-traversal flavors must all reject.
+        for bad in ["..", ".", "../x", "a/b", "a\\b", "a b", "中", "."] {
+            assert!(!is_safe_user_id(bad), "must reject {bad:?}");
+        }
     }
 }

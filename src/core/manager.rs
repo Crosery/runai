@@ -36,6 +36,10 @@ impl SkillManager {
         // `0/280 skills` while the list shows 278 is exactly this — fix at
         // load time so the user never sees the divergence again.
         let _ = db.dedupe_skills_by_name();
+        // Sweep orphan library entries left behind by pre-2025-fix trash
+        // flows so the dashboard's "我的库" count never includes rows
+        // that 404 on click.
+        let _ = db.cleanup_orphan_library_entries();
         Ok(Self { paths, db })
     }
 
@@ -45,6 +49,7 @@ impl SkillManager {
         let _ = Self::migrate_mcp_backups(&paths);
         let db = Database::open(&paths.db_path())?;
         let _ = db.dedupe_skills_by_name();
+        let _ = db.cleanup_orphan_library_entries();
         Ok(Self { paths, db })
     }
 
@@ -134,7 +139,12 @@ impl SkillManager {
         format!("trash:{deleted_at_ms}:{resource_id}")
     }
 
-    fn trash_payload_path(&self, name: &str, deleted_at_ms: i64) -> PathBuf {
+    fn trash_payload_path(
+        &self,
+        name: &str,
+        deleted_at_ms: i64,
+        owner_user_id: Option<&str>,
+    ) -> Result<PathBuf> {
         let slug = name
             .chars()
             .map(|c| {
@@ -148,9 +158,17 @@ impl SkillManager {
             .trim_matches('-')
             .to_string();
         let slug = if slug.is_empty() { "resource" } else { &slug };
-        self.paths
-            .trash_dir()
-            .join(format!("{deleted_at_ms}-{slug}"))
+        // Public resources land in the global trash; private ones land in
+        // the owner's per-user trash subtree so restore mirrors install
+        // and `purge_trash` can never cross owner boundaries.
+        let root = match owner_user_id {
+            None => self.paths.trash_dir(),
+            Some(uid) => {
+                self.paths.ensure_user_dirs(uid)?;
+                self.paths.user_trash_dir(uid)?
+            }
+        };
+        Ok(root.join(format!("{deleted_at_ms}-{slug}")))
     }
 
     // --- Scan ---
@@ -162,14 +180,29 @@ impl SkillManager {
     // --- Resource management ---
 
     pub fn register_local_skill(&self, name: &str) -> Result<()> {
-        let dir = self.paths.skills_dir().join(name);
+        self.register_local_skill_for(name, None)
+    }
+
+    /// Owner-aware variant. `owner_user_id`:
+    /// - `None` → adopt `<data>/skills/<name>/` into the public pool
+    /// - `Some(uid)` → adopt `<data>/users/<uid>/skills/<name>/` into uid's private pool
+    pub fn register_local_skill_for(
+        &self,
+        name: &str,
+        owner_user_id: Option<&str>,
+    ) -> Result<()> {
+        let root = match owner_user_id {
+            None => self.paths.skills_dir(),
+            Some(uid) => self.paths.user_skills_dir(uid)?,
+        };
+        let dir = root.join(name);
         if !dir.exists() {
             bail!("skill directory not found: {}", dir.display());
         }
 
         let description = Self::extract_description(&dir);
         let source = Source::Local { path: dir.clone() };
-        let id = Resource::generate_id(&source, name);
+        let id = Resource::generate_id(&source, name, owner_user_id);
 
         let resource = Resource {
             id,
@@ -182,6 +215,7 @@ impl SkillManager {
             enabled: HashMap::new(),
             usage_count: 0,
             last_used_at: None,
+            owner_user_id: owner_user_id.map(String::from),
         };
 
         self.db.insert_resource(&resource)?;
@@ -569,6 +603,7 @@ impl SkillManager {
                     enabled: targets.clone(),
                     usage_count: 0,
                     last_used_at: None,
+                    owner_user_id: None,
                 });
             }
 
@@ -604,6 +639,7 @@ impl SkillManager {
                         enabled: HashMap::new(), // no targets = disabled
                         usage_count: 0,
                         last_used_at: None,
+                        owner_user_id: None,
                     });
                 }
             }
@@ -700,6 +736,7 @@ impl SkillManager {
                 installed_at: 0,
                 usage_count: 0,
                 last_used_at: None,
+                owner_user_id: None,
                 deleted_at,
                 payload_path: None,
                 enabled_targets,
@@ -722,7 +759,11 @@ impl SkillManager {
             .copied()
             .filter(|target| enabled_map.get(target).copied().unwrap_or(false))
             .collect::<Vec<_>>();
-        let payload_path = self.trash_payload_path(&resource.name, deleted_at_ms);
+        let payload_path = self.trash_payload_path(
+            &resource.name,
+            deleted_at_ms,
+            resource.owner_user_id.as_deref(),
+        )?;
 
         self.remove_skill_links(&resource.name)?;
         if resource.directory.exists() {
@@ -756,6 +797,7 @@ impl SkillManager {
             installed_at: resource.installed_at,
             usage_count: resource.usage_count,
             last_used_at: resource.last_used_at,
+            owner_user_id: resource.owner_user_id.clone(),
             deleted_at,
             payload_path: Some(payload_path),
             enabled_targets,
@@ -764,6 +806,13 @@ impl SkillManager {
             disabled_backup: None,
         };
         self.db.insert_trash_entry(&entry)?;
+        // Trashing a skill should also drop every user's library
+        // subscription so the "我的库" tab doesn't show a row that
+        // 404s on click. For a private skill only the owner could
+        // have subscribed; for a public-pool skill any user could —
+        // either way `library_remove_for_all(name)` is correct and
+        // idempotent.
+        let _ = self.db.library_remove_for_all(&entry.name);
         Ok(entry)
     }
 
@@ -806,6 +855,7 @@ impl SkillManager {
                     enabled: HashMap::new(),
                     usage_count: entry.usage_count,
                     last_used_at: entry.last_used_at,
+                    owner_user_id: entry.owner_user_id.clone(),
                 };
                 self.db.insert_resource(&resource)?;
                 for group_id in &entry.group_ids {
@@ -947,6 +997,7 @@ impl SkillManager {
                     enabled,
                     usage_count: 0,
                     last_used_at: None,
+                    owner_user_id: None,
                 });
             } else if let Ok(Some(mut res)) = self.db.get_resource(id) {
                 res.enabled = self.check_skill_symlinks(&res.name);
@@ -1085,13 +1136,51 @@ impl SkillManager {
         branch: &str,
         target: CliTarget,
     ) -> Result<(String, Vec<String>)> {
+        self.install_github_repo_filtered_for(owner, repo, branch, target, None, None)
+    }
+
+    /// Like `install_github_repo` but `only` restricts which discovered
+    /// skill names get downloaded. None = all (legacy behavior). Used by
+    /// the dashboard "parse → user picks → install" flow so users don't
+    /// have to pull every skill in a monorepo.
+    ///
+    /// Owner of resulting resources defaults to public (None); to install
+    /// into a user's private pool, call [`install_github_repo_filtered_for`].
+    pub fn install_github_repo_filtered(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+        target: CliTarget,
+        only: Option<&[String]>,
+    ) -> Result<(String, Vec<String>)> {
+        self.install_github_repo_filtered_for(owner, repo, branch, target, only, None)
+    }
+
+    /// Phase C: owner-aware install. `owner_user_id`:
+    /// - `None` → public pool (`<data>/skills/<name>/`, id `github:owner/repo:name`)
+    /// - `Some(uid)` → private to that user (`<data>/users/<uid>/skills/<name>/`,
+    ///   id `u:<uid>:github:owner/repo:name`)
+    ///
+    /// CLI / TUI callers without a user context use the wrappers above.
+    /// The server's `/api/install/github` and `/api/market/install` handlers
+    /// pass the authenticated user via this entrypoint.
+    pub fn install_github_repo_filtered_for(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+        target: CliTarget,
+        only: Option<&[String]>,
+        owner_user_id: Option<&str>,
+    ) -> Result<(String, Vec<String>)> {
         use crate::core::market::{Market, SourceEntry};
 
         let source = SourceEntry::from_input(&format!("{owner}/{repo}@{branch}"))?;
         let rt = tokio::runtime::Runtime::new()?;
 
         // Step 1: Discover skills via git tree API (fast, single request)
-        let extract = rt.block_on(Market::fetch(&source))?;
+        let mut extract = rt.block_on(Market::fetch(&source))?;
 
         if extract.plugin_detected && extract.skills.is_empty() {
             bail!(
@@ -1103,8 +1192,61 @@ impl SkillManager {
             bail!("No skills found in {owner}/{repo}");
         }
 
+        // Narrow to user-selected skills if a filter was supplied.
+        if let Some(allowed) = only {
+            let set: std::collections::HashSet<&str> =
+                allowed.iter().map(|s| s.as_str()).collect();
+            extract.skills.retain(|s| set.contains(s.name.as_str()));
+            if extract.skills.is_empty() {
+                // Single-skill-in-root fallback. Repos like anysearch-ai/
+                // anysearch-skill have a root SKILL.md (no per-skill
+                // subdirectory). skills.sh assigns those a slug derived
+                // from the repo name (e.g. `anysearch` from `-skill`),
+                // so `only=["anysearch"]` won't match the root entry
+                // (which `extract_skills` named `anysearch-skill`).
+                // When `only` has exactly one name and the repo's root
+                // SKILL.md is present, treat that as the requested skill.
+                let has_root_skill_md = extract
+                    .tree
+                    .tree
+                    .iter()
+                    .any(|n| n.path == "SKILL.md");
+                if allowed.len() == 1 && has_root_skill_md {
+                    // `.` marks a root-skill install — collect_download_tasks
+                    // treats this as "pull every non-VCS file from the
+                    // repo root into <install_root>/<name>/".
+                    extract.skills = vec![crate::core::market::MarketSkill {
+                        name: allowed[0].clone(),
+                        repo_path: ".".to_string(),
+                        source_label: source.label.clone(),
+                        source_repo: source.repo_id(),
+                        branch: source.branch.clone(),
+                        installs: 0,
+                        trending_installs: 0,
+                        hot_score: 0,
+                        weekly_installs: Vec::new(),
+                        is_official: false,
+                        installed: false,
+                    }];
+                } else {
+                    bail!("none of the selected skill names matched anything in {owner}/{repo}");
+                }
+            }
+        }
+
+        // Resolve the install root: public → skills_dir, private → user_skills_dir.
+        // The per-user directory is created on demand here so the rest of
+        // the path-handling code can assume it exists.
+        let install_root = match owner_user_id {
+            None => self.paths.skills_dir(),
+            Some(uid) => {
+                self.paths.ensure_user_dirs(uid)?;
+                self.paths.user_skills_dir(uid)?
+            }
+        };
+
         // Step 2: Download ALL files across ALL skills concurrently
-        let tasks = Market::collect_download_tasks(&extract, self.paths());
+        let tasks = Market::collect_download_tasks(&extract, &install_root);
         let downloaded = rt.block_on(Market::execute_downloads(tasks));
 
         if downloaded.is_empty() {
@@ -1114,9 +1256,14 @@ impl SkillManager {
         // Step 3: Register downloaded skills in DB + enable
         let mut skill_names: Vec<String> = downloaded.into_iter().collect();
         skill_names.sort();
+        let github_src = Source::GitHub {
+            owner: owner.to_string(),
+            repo: repo.to_string(),
+            branch: branch.to_string(),
+        };
         for name in &skill_names {
-            let resource_id = format!("github:{owner}/{repo}:{name}");
-            let dir = self.paths.skills_dir().join(name);
+            let resource_id = Resource::generate_id(&github_src, name, owner_user_id);
+            let dir = install_root.join(name);
             let description = Self::extract_description(&dir);
             let resource = Resource {
                 id: resource_id.clone(),
@@ -1124,37 +1271,45 @@ impl SkillManager {
                 kind: ResourceKind::Skill,
                 description,
                 directory: dir,
-                source: Source::GitHub {
-                    owner: owner.to_string(),
-                    repo: repo.to_string(),
-                    branch: branch.to_string(),
-                },
+                source: github_src.clone(),
                 installed_at: chrono::Utc::now().timestamp(),
                 enabled: HashMap::new(),
                 usage_count: 0,
                 last_used_at: None,
+                owner_user_id: owner_user_id.map(String::from),
             };
             let _ = self.db.insert_resource(&resource);
-            let _ = self.enable_resource(&resource_id, target, None);
+            // Symlink registration on CLI targets only makes sense for the
+            // public pool — private skills are served remotely via HTTP,
+            // not via the local Claude Code symlink farm.
+            if owner_user_id.is_none() {
+                let _ = self.enable_resource(&resource_id, target, None);
+            }
         }
 
-        // Step 4: Auto-create group
-        let group_id = repo.to_lowercase();
-        let group = crate::core::group::Group {
-            name: repo.to_string(),
-            description: format!("Skills from {owner}/{repo}"),
-            kind: crate::core::group::GroupKind::Custom,
-            auto_enable: false,
-            members: vec![],
-        };
-        let _ = self.create_group(&group_id, &group);
+        // Step 4: Auto-create group (public installs only; private skills
+        // skip group bookkeeping to keep group_members user-agnostic).
+        if owner_user_id.is_none() {
+            let group_id = repo.to_lowercase();
+            let group = crate::core::group::Group {
+                name: repo.to_string(),
+                description: format!("Skills from {owner}/{repo}"),
+                kind: crate::core::group::GroupKind::Custom,
+                auto_enable: false,
+                members: vec![],
+            };
+            let _ = self.create_group(&group_id, &group);
 
-        for name in &skill_names {
-            let rid = format!("github:{owner}/{repo}:{name}");
-            let _ = self.db.add_group_member(&group_id, &rid);
+            for name in &skill_names {
+                let rid = Resource::generate_id(&github_src, name, None);
+                let _ = self.db.add_group_member(&group_id, &rid);
+            }
+            return Ok((group_id, skill_names));
         }
 
-        Ok((group_id, skill_names))
+        // Private install: no group, return an empty group_id sentinel so
+        // the existing return shape stays stable.
+        Ok((String::new(), skill_names))
     }
 
     /// Register already-downloaded skills (in managed dir) and create group.
@@ -1199,6 +1354,7 @@ impl SkillManager {
                 enabled: HashMap::new(),
                 usage_count: 0,
                 last_used_at: None,
+                owner_user_id: None,
             };
             if self.db.insert_resource(&resource).is_ok() {
                 let _ = self.enable_resource(&resource_id, target, None);
@@ -2328,6 +2484,7 @@ args = []
                 enabled: std::collections::HashMap::new(),
                 usage_count: 0,
                 last_used_at: None,
+                owner_user_id: None,
             };
             mgr.db().insert_resource(&res).unwrap();
 
@@ -2593,6 +2750,7 @@ args = []
                     enabled: HashMap::new(),
                     usage_count: 0,
                     last_used_at: None,
+                    owner_user_id: None,
                 })
                 .unwrap();
 
@@ -2635,6 +2793,7 @@ args = []
                     enabled: HashMap::new(),
                     usage_count: 0,
                     last_used_at: None,
+                    owner_user_id: None,
                 })
                 .unwrap();
 
@@ -2678,6 +2837,7 @@ args = []
                         enabled: HashMap::new(),
                         usage_count: 0,
                         last_used_at: None,
+                        owner_user_id: None,
                     })
                     .unwrap();
             }
@@ -2981,6 +3141,134 @@ approval_mode = "approve"
             );
             assert!(after.contains("cdp_navigate"), "tool 1 preserved");
             assert!(after.contains("export_node_as_image"), "tool 2 preserved");
+        });
+    }
+
+    // =========================================================================
+    //  Phase C: owner-aware install / adopt — physical isolation under
+    //  ~/.runai/users/<uid>/skills/ and DB owner_user_id stamping.
+    // =========================================================================
+
+    #[test]
+    fn register_local_skill_for_private_owner_stamps_owner_and_uses_user_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm_data = tmp.path().join("sm-data");
+        let uid = "usr_alice000";
+        let alice_skills = sm_data.join("users").join(uid).join("skills");
+        std::fs::create_dir_all(alice_skills.join("secret")).unwrap();
+        std::fs::write(
+            alice_skills.join("secret/SKILL.md"),
+            "# alice's private skill",
+        )
+        .unwrap();
+
+        with_home(tmp.path(), || {
+            let mgr = SkillManager::with_base(sm_data.clone()).unwrap();
+            mgr.register_local_skill_for("secret", Some(uid)).unwrap();
+
+            // DB id encodes the owner; row carries owner_user_id.
+            let id = format!("u:{uid}:local:secret");
+            let row = mgr.db().get_resource(&id).unwrap().unwrap();
+            assert_eq!(row.owner_user_id.as_deref(), Some(uid));
+            assert_eq!(row.directory, alice_skills.join("secret"));
+            assert!(!row.directory.starts_with(sm_data.join("skills")),
+                "private skill must NOT land under the public pool");
+        });
+    }
+
+    #[test]
+    fn register_local_skill_for_missing_user_dir_errors() {
+        // Private adopt against a uid that has no skill directory should
+        // surface an explicit error — never silently degrade to public.
+        let tmp = tempfile::tempdir().unwrap();
+        let sm_data = tmp.path().join("sm-data");
+        std::fs::create_dir_all(&sm_data).unwrap();
+
+        with_home(tmp.path(), || {
+            let mgr = SkillManager::with_base(sm_data.clone()).unwrap();
+            let err = mgr
+                .register_local_skill_for("ghost", Some("usr_nobody00"))
+                .expect_err("missing private dir must error");
+            assert!(
+                err.to_string().contains("skill directory not found"),
+                "unexpected error: {err}"
+            );
+        });
+    }
+
+    #[test]
+    fn private_and_public_skill_with_same_name_coexist() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm_data = tmp.path().join("sm-data");
+        let uid = "usr_alice000";
+
+        // Public foo
+        let public = sm_data.join("skills/foo");
+        std::fs::create_dir_all(&public).unwrap();
+        std::fs::write(public.join("SKILL.md"), "# public foo").unwrap();
+
+        // Alice's private foo
+        let alice = sm_data.join("users").join(uid).join("skills/foo");
+        std::fs::create_dir_all(&alice).unwrap();
+        std::fs::write(alice.join("SKILL.md"), "# alice's foo").unwrap();
+
+        with_home(tmp.path(), || {
+            let mgr = SkillManager::with_base(sm_data.clone()).unwrap();
+            mgr.register_local_skill("foo").unwrap();
+            mgr.register_local_skill_for("foo", Some(uid)).unwrap();
+
+            // Both rows live in the DB with different ids.
+            let public_row = mgr.db().get_resource("local:foo").unwrap().unwrap();
+            let alice_row = mgr
+                .db()
+                .get_resource(&format!("u:{uid}:local:foo"))
+                .unwrap()
+                .unwrap();
+            assert_eq!(public_row.owner_user_id, None);
+            assert_eq!(alice_row.owner_user_id.as_deref(), Some(uid));
+            assert_ne!(public_row.directory, alice_row.directory);
+
+            // db-level scope checks (phase B contract) carry into manager
+            // since list_resources delegates without owner filter today.
+            let alice_view = mgr
+                .db()
+                .list_resources_for_user(
+                    Some(crate::core::resource::ResourceKind::Skill),
+                    Some(uid),
+                )
+                .unwrap();
+            let names: Vec<_> = alice_view.iter().map(|r| r.name.as_str()).collect();
+            assert_eq!(names, vec!["foo", "foo"], "alice sees public + her private");
+            let public_only = mgr
+                .db()
+                .list_resources_for_user(
+                    Some(crate::core::resource::ResourceKind::Skill),
+                    None,
+                )
+                .unwrap();
+            assert_eq!(public_only.len(), 1, "public scope sees one foo");
+        });
+    }
+
+    #[test]
+    fn register_for_rejects_path_traversal_in_user_id() {
+        // user_id 走 paths::user_skills_dir → is_safe_user_id 校验。
+        // 不合法的 uid 必须立即报错，不能把别的路径当 user dir 用。
+        let tmp = tempfile::tempdir().unwrap();
+        let sm_data = tmp.path().join("sm-data");
+        std::fs::create_dir_all(&sm_data).unwrap();
+
+        with_home(tmp.path(), || {
+            let mgr = SkillManager::with_base(sm_data.clone()).unwrap();
+            for bad in ["../etc", "a/b", "", "a b"] {
+                let err = mgr
+                    .register_local_skill_for("foo", Some(bad))
+                    .expect_err(&format!("uid {bad:?} must be rejected"));
+                assert!(
+                    err.to_string().contains("invalid user_id"),
+                    "expected path-traversal guard, got {err}"
+                );
+            }
         });
     }
 }
