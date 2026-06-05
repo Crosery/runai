@@ -33,7 +33,12 @@ pub(crate) fn parse_leaderboard(body: &str) -> Vec<LeaderboardRow> {
         }
         let after_source = start + end_source + needle.len() - "source\\\":\\\"".len();
         // Look ahead within a bounded window for skillId + installs (+ optional fields).
-        let window_end = (after_source + 800).min(body.len());
+        // Clamp window_end down to the nearest UTF-8 char boundary — skills.sh HTML
+        // contains em-dash and other multi-byte chars; slicing inside one panics.
+        let mut window_end = (after_source + 800).min(body.len());
+        while window_end > after_source && !body.is_char_boundary(window_end) {
+            window_end -= 1;
+        }
         let window = &body[after_source..window_end];
 
         let Some(skill_id) = extract_quoted_field(window, "skillId") else {
