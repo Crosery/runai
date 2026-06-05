@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use crate::core::auth as authmod;
+use crate::core::server_mode::ServerMode;
 
 use super::error::ApiError;
 use super::state::{AppState, require_user};
@@ -44,6 +45,13 @@ pub(super) async fn api_register(
     State(state): State<Arc<AppState>>,
     Json(req): Json<RegisterReq>,
 ) -> Result<(StatusCode, Json<RegisterResp>), ApiError> {
+    // Owner mode = single-user self-serve. The /users/register endpoint is
+    // off — only the operator on the box, who already implicitly has admin,
+    // can use this dashboard. Cuts off remote account creation entirely.
+    // See PLANNING.md §1.1.
+    if state.mode == ServerMode::Owner {
+        return Err(ApiError::Forbidden);
+    }
     let resp = tokio::task::spawn_blocking(move || -> Result<RegisterResp, ApiError> {
         authmod::validate_username(&req.username)
             .map_err(|e| ApiError::BadRequest(e.to_string()))?;
@@ -107,55 +115,90 @@ pub(super) struct LoginResp {
     api_key: String,
 }
 
+/// Canonical failure body for /auth/login. Used for BOTH "user does not
+/// exist" and "password mismatch" (and "account disabled") so an attacker
+/// cannot enumerate account existence by diffing error strings. PLANNING
+/// §2.3 item 5 — abuser sees the same byte sequence on every miss.
+///
+/// Status: always 401. Body: `{"error":"invalid_credentials"}`. Both are
+/// deliberately generic. Server-side logs can still record the real reason
+/// for the admin reading the dashboard; the wire format is the gate.
+const LOGIN_FAILURE_BODY: &str = r#"{"error":"invalid_credentials"}"#;
+
+fn login_failure() -> Response {
+    (
+        StatusCode::UNAUTHORIZED,
+        [(header::CONTENT_TYPE, "application/json".to_string())],
+        LOGIN_FAILURE_BODY.to_string(),
+    )
+        .into_response()
+}
+
 /// POST /auth/login
 /// body: {"username": "...", "password": "..."}
 /// Returns the api_key in JSON and sets the runai_session cookie. Either
 /// channel can be used afterwards.
+///
+/// Failure shape: always 401 + `{"error":"invalid_credentials"}` — same
+/// body for "no such user" / "wrong password" / "account disabled" so an
+/// attacker cannot enumerate accounts via response diffing (PLANNING
+/// §2.3 item 5). The 500 path (DB unavailable) still routes through
+/// `ApiError::Internal` because it is operationally distinct.
 pub(super) async fn api_login(
     State(state): State<Arc<AppState>>,
     Json(req): Json<LoginReq>,
-) -> Result<Response, ApiError> {
-    let resp = tokio::task::spawn_blocking(move || -> Result<LoginResp, ApiError> {
-        let db = state.db().map_err(ApiError::Internal)?;
-        let user = match db
-            .find_user_by_username(&req.username)
-            .map_err(ApiError::Internal)?
-        {
-            Some(u) => u,
-            None => return Err(ApiError::Unauthorized),
-        };
-        if user.disabled {
-            return Err(ApiError::Unauthorized);
-        }
-        if !authmod::verify_password(&req.password, &user.password_hash)
-            .map_err(ApiError::Internal)?
-        {
-            return Err(ApiError::Unauthorized);
-        }
+) -> Response {
+    // Outer Result is Internal (5xx) vs login-flow (success-or-401).
+    // The login-flow branch is `Result<LoginResp, ()>` — the `Err(())`
+    // payload is intentionally type-erased because all three failure
+    // reasons collapse to the same wire response.
+    let join =
+        tokio::task::spawn_blocking(move || -> Result<Result<LoginResp, ()>, anyhow::Error> {
+            let db = state.db()?;
+            let user = match db.find_user_by_username(&req.username)? {
+                Some(u) => u,
+                None => return Ok(Err(())),
+            };
+            if user.disabled {
+                return Ok(Err(()));
+            }
+            if !authmod::verify_password(&req.password, &user.password_hash)? {
+                return Ok(Err(()));
+            }
 
-        // On login we rotate-issue: re-emit the api_key from the row.
-        // We cannot recover the original secret from the hash, so login
-        // must mint a new api_key and update the hash. This invalidates
-        // any previously-installed client that hasn't logged in since —
-        // intentional: the password is the source of truth.
-        let new_key = authmod::new_api_key();
-        let new_hash = authmod::key_hash(&authmod::BearerToken(new_key.clone()));
-        db.rotate_api_key(&user.user_id, &new_hash)
-            .map_err(ApiError::Internal)?;
+            // On login we rotate-issue: re-emit the api_key from the row.
+            // We cannot recover the original secret from the hash, so login
+            // must mint a new api_key and update the hash. This invalidates
+            // any previously-installed client that hasn't logged in since —
+            // intentional: the password is the source of truth.
+            let new_key = authmod::new_api_key();
+            let new_hash = authmod::key_hash(&authmod::BearerToken(new_key.clone()));
+            db.rotate_api_key(&user.user_id, &new_hash)?;
 
-        Ok(LoginResp {
-            user_id: user.user_id,
-            username: user.username,
-            is_admin: user.is_admin,
-            api_key: new_key,
+            Ok(Ok(LoginResp {
+                user_id: user.user_id,
+                username: user.username,
+                is_admin: user.is_admin,
+                api_key: new_key,
+            }))
         })
-    })
-    .await
-    .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))??;
+        .await;
+
+    let inner = match join {
+        Ok(inner) => inner,
+        Err(e) => {
+            return ApiError::Internal(anyhow::anyhow!(e)).into_response();
+        }
+    };
+    let resp = match inner {
+        Ok(Ok(r)) => r,
+        Ok(Err(())) => return login_failure(),
+        Err(e) => return ApiError::Internal(e).into_response(),
+    };
 
     let cookie = authmod::build_session_cookie(&resp.api_key, false, 60 * 60 * 24 * 30);
     let body = serde_json::to_string(&resp).unwrap_or_else(|_| "{}".into());
-    Ok((
+    (
         StatusCode::OK,
         [
             (header::CONTENT_TYPE, "application/json".to_string()),
@@ -163,7 +206,7 @@ pub(super) async fn api_login(
         ],
         body,
     )
-        .into_response())
+        .into_response()
 }
 
 /// POST /auth/logout — clears the session cookie. Does NOT rotate the
