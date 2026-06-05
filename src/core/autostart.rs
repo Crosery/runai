@@ -12,10 +12,18 @@
 //! always rewritten with the current binary's absolute path so a
 //! `cargo install --force runai` upgrade picks up the new path on next
 //! `runai server --install-autostart` call.
+//!
+//! `install(host, port, mode)` accepts a `ServerMode` and injects
+//! `--mode owner|team` into the relaunch command line so the boot-time
+//! server uses the same identity model the operator opted into at install
+//! time (PLANNING §1.1). Switching modes = re-run `--install-autostart`
+//! with the new `--mode` flag.
 
 use anyhow::{Context, Result, bail};
 use std::path::PathBuf;
 use std::process::Command;
+
+use crate::core::server_mode::ServerMode;
 
 #[derive(Debug)]
 pub enum AutostartStatus {
@@ -29,7 +37,7 @@ pub enum AutostartStatus {
     NotInstalled,
 }
 
-pub fn install(host: &str, port: u16) -> Result<AutostartStatus> {
+pub fn install(host: &str, port: u16, mode: ServerMode) -> Result<AutostartStatus> {
     let exe = std::env::current_exe()
         .context("locate runai binary via current_exe")?
         .canonicalize()
@@ -37,25 +45,25 @@ pub fn install(host: &str, port: u16) -> Result<AutostartStatus> {
 
     #[cfg(target_os = "macos")]
     {
-        install_macos(&exe, host, port)
+        install_macos(&exe, host, port, mode)
     }
     #[cfg(target_os = "linux")]
     {
-        install_linux(&exe, host, port)
+        install_linux(&exe, host, port, mode)
     }
     #[cfg(target_os = "windows")]
     {
-        let _ = (exe, host, port);
+        let _ = (exe, host, port, mode);
         bail!(
             "Windows auto-start is not yet implemented. Use Task Scheduler:\n\
              1) Open `taskschd.msc`\n\
              2) Create Task → Triggers → At log on\n\
-             3) Actions → Start a program → `<path to runai.exe>` with args `server --port {port} --host {host}`"
+             3) Actions → Start a program → `<path to runai.exe>` with args `server --port {port} --host {host} --mode {mode}`"
         )
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
-        let _ = (exe, host, port);
+        let _ = (exe, host, port, mode);
         bail!("auto-start unsupported on this platform")
     }
 }
@@ -96,7 +104,12 @@ fn macos_plist_path() -> Result<PathBuf> {
 }
 
 #[cfg(target_os = "macos")]
-fn install_macos(exe: &std::path::Path, host: &str, port: u16) -> Result<AutostartStatus> {
+fn install_macos(
+    exe: &std::path::Path,
+    host: &str,
+    port: u16,
+    mode: ServerMode,
+) -> Result<AutostartStatus> {
     let plist_path = macos_plist_path()?;
     let already = plist_path.exists();
     if let Some(parent) = plist_path.parent() {
@@ -113,7 +126,7 @@ fn install_macos(exe: &std::path::Path, host: &str, port: u16) -> Result<Autosta
             .output();
     }
 
-    let plist = build_macos_plist(exe, host, port);
+    let plist = build_macos_plist(exe, host, port, mode);
     std::fs::write(&plist_path, plist)
         .with_context(|| format!("write {}", plist_path.display()))?;
 
@@ -155,11 +168,12 @@ fn uninstall_macos() -> Result<AutostartStatus> {
 }
 
 #[cfg(target_os = "macos")]
-fn build_macos_plist(exe: &std::path::Path, host: &str, port: u16) -> String {
+fn build_macos_plist(exe: &std::path::Path, host: &str, port: u16, mode: ServerMode) -> String {
     // Stdout/stderr land in /tmp so users can `tail -f` to debug autostart
     // failures without having to run `launchctl print` manually.
     let exe_str = xml_escape(&exe.display().to_string());
     let host_str = xml_escape(host);
+    let mode_str = mode.as_str();
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -175,6 +189,8 @@ fn build_macos_plist(exe: &std::path::Path, host: &str, port: u16) -> String {
     <string>{port}</string>
     <string>--host</string>
     <string>{host_str}</string>
+    <string>--mode</string>
+    <string>{mode_str}</string>
   </array>
   <key>RunAtLoad</key>
   <true/>
@@ -211,13 +227,18 @@ fn linux_unit_path() -> Result<PathBuf> {
 }
 
 #[cfg(target_os = "linux")]
-fn install_linux(exe: &std::path::Path, host: &str, port: u16) -> Result<AutostartStatus> {
+fn install_linux(
+    exe: &std::path::Path,
+    host: &str,
+    port: u16,
+    mode: ServerMode,
+) -> Result<AutostartStatus> {
     let unit_path = linux_unit_path()?;
     let already = unit_path.exists();
     if let Some(parent) = unit_path.parent() {
         std::fs::create_dir_all(parent).with_context(|| format!("mkdir {}", parent.display()))?;
     }
-    let unit = build_linux_unit(exe, host, port);
+    let unit = build_linux_unit(exe, host, port, mode);
     std::fs::write(&unit_path, unit).with_context(|| format!("write {}", unit_path.display()))?;
 
     let reload = Command::new("systemctl")
@@ -267,15 +288,16 @@ fn uninstall_linux() -> Result<AutostartStatus> {
 }
 
 #[cfg(target_os = "linux")]
-fn build_linux_unit(exe: &std::path::Path, host: &str, port: u16) -> String {
+fn build_linux_unit(exe: &std::path::Path, host: &str, port: u16, mode: ServerMode) -> String {
     let exe_str = exe.display();
+    let mode_str = mode.as_str();
     format!(
         "[Unit]\n\
          Description=runai dashboard server\n\
          After=default.target\n\
          \n\
          [Service]\n\
-         ExecStart={exe_str} server --port {port} --host {host}\n\
+         ExecStart={exe_str} server --port {port} --host {host} --mode {mode_str}\n\
          Environment=RUNAI_NO_AUTOSPAWN=1\n\
          Restart=on-failure\n\
          RestartSec=3\n\
@@ -302,8 +324,9 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn macos_plist_contains_program_args_and_label() {
+        use crate::core::server_mode::ServerMode;
         let exe = std::path::PathBuf::from("/usr/local/bin/runai");
-        let plist = super::build_macos_plist(&exe, "127.0.0.1", 17888);
+        let plist = super::build_macos_plist(&exe, "127.0.0.1", 17888, ServerMode::Owner);
         assert!(plist.contains("<string>cn.crosery.runai</string>"));
         assert!(plist.contains("<string>/usr/local/bin/runai</string>"));
         assert!(plist.contains("<string>server</string>"));
@@ -312,13 +335,26 @@ mod tests {
         assert!(plist.contains("<key>KeepAlive</key>"));
         assert!(plist.contains("<key>RunAtLoad</key>"));
         assert!(plist.contains("RUNAI_NO_AUTOSPAWN"));
+        assert!(plist.contains("<string>--mode</string>"));
+        assert!(plist.contains("<string>owner</string>"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_plist_emits_team_mode() {
+        use crate::core::server_mode::ServerMode;
+        let exe = std::path::PathBuf::from("/usr/local/bin/runai");
+        let plist = super::build_macos_plist(&exe, "127.0.0.1", 17888, ServerMode::Team);
+        assert!(plist.contains("<string>--mode</string>"));
+        assert!(plist.contains("<string>team</string>"));
     }
 
     #[cfg(target_os = "macos")]
     #[test]
     fn macos_plist_escapes_xml_metachars_in_host() {
+        use crate::core::server_mode::ServerMode;
         let exe = std::path::PathBuf::from("/usr/local/bin/runai");
-        let plist = super::build_macos_plist(&exe, "a<b&c\">d", 1);
+        let plist = super::build_macos_plist(&exe, "a<b&c\">d", 1, ServerMode::Owner);
         assert!(plist.contains("a&lt;b&amp;c&quot;&gt;d"));
         assert!(!plist.contains("a<b&c\">d"), "raw metachars must not leak");
     }
@@ -326,14 +362,24 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn linux_unit_contains_exec_start_and_restart() {
+        use crate::core::server_mode::ServerMode;
         let exe = std::path::PathBuf::from("/usr/local/bin/runai");
-        let unit = super::build_linux_unit(&exe, "127.0.0.1", 17888);
-        assert!(
-            unit.contains("ExecStart=/usr/local/bin/runai server --port 17888 --host 127.0.0.1")
-        );
+        let unit = super::build_linux_unit(&exe, "127.0.0.1", 17888, ServerMode::Owner);
+        assert!(unit.contains(
+            "ExecStart=/usr/local/bin/runai server --port 17888 --host 127.0.0.1 --mode owner"
+        ));
         assert!(unit.contains("Restart=on-failure"));
         assert!(unit.contains("Environment=RUNAI_NO_AUTOSPAWN=1"));
         assert!(unit.contains("[Install]"));
         assert!(unit.contains("WantedBy=default.target"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_unit_emits_team_mode() {
+        use crate::core::server_mode::ServerMode;
+        let exe = std::path::PathBuf::from("/usr/local/bin/runai");
+        let unit = super::build_linux_unit(&exe, "127.0.0.1", 17888, ServerMode::Team);
+        assert!(unit.contains("--mode team"));
     }
 }

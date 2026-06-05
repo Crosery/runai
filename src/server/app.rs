@@ -3,18 +3,28 @@
 
 use anyhow::{Context, Result, bail};
 use axum::{
-    Router,
-    http::header,
+    Json, Router,
+    extract::{DefaultBodyLimit, State},
+    http::{StatusCode, header},
+    middleware as axum_middleware,
     response::{IntoResponse, Response},
-    routing::{delete, get, post},
+    routing::{any, delete, get, post},
 };
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::core::paths::AppPaths;
+use crate::core::server_mode::{self, ServerMode};
+
+use super::middleware::rate_limit;
 
 use super::admin::{api_admin_users_delete, api_admin_users_list, api_admin_users_update};
 use super::auth::{api_login, api_logout, api_me, api_register};
+use super::community::{
+    api_community_delete, api_community_download, api_community_install, api_community_list,
+    api_community_skill_detail, api_community_upload,
+};
 use super::install::{
     handle_install_ps1, handle_install_script, handle_uninstall_ps1, handle_uninstall_script,
 };
@@ -96,10 +106,47 @@ pub fn ensure_running(host: &str, port: u16) -> Result<EnsureStatus> {
 }
 
 pub async fn serve(host: &str, port: u16) -> Result<()> {
+    serve_with(host, port, ServerMode::Owner, None, None).await
+}
+
+/// Boot the dashboard server with a fully-specified runtime identity.
+/// `serve` keeps the legacy signature (owner mode, no TLS) for compat with
+/// `ensure_running`'s detached spawn path; `serve_with` is the canonical
+/// path the CLI dispatcher uses to pass through the operator's chosen
+/// `--mode` / `--tls-cert` / `--tls-key`. See PLANNING.md §1.1 / §2.3.2.
+pub async fn serve_with(
+    host: &str,
+    port: u16,
+    mode: ServerMode,
+    tls_cert: Option<PathBuf>,
+    tls_key: Option<PathBuf>,
+) -> Result<()> {
+    server_mode::validate_startup(mode, host, tls_cert.as_deref(), tls_key.as_deref())?;
+
     let paths = AppPaths::default_path();
     let state = Arc::new(AppState {
         db_path: paths.db_path(),
+        mode,
+        tls_cert: tls_cert.clone(),
+        tls_key: tls_key.clone(),
     });
+
+    // Sub-routers for the rate-limited families. Building them as
+    // independent sub-routers means the `from_fn` middleware applies
+    // exactly to those paths and only those paths — no risk that the
+    // limit accidentally covers an unrelated handler.
+    let login_router = Router::new()
+        .route("/auth/login", post(api_login))
+        .layer(axum_middleware::from_fn(rate_limit::login_limit));
+    let upload_router = Router::new()
+        .route(
+            "/api/community/upload",
+            post(api_community_upload).layer(DefaultBodyLimit::max(64 * 1024 * 1024)),
+        )
+        .layer(axum_middleware::from_fn(rate_limit::upload_limit));
+    let skills_get_router = Router::new()
+        .route("/skills/get/{name}", post(handle_skill_get))
+        .layer(axum_middleware::from_fn(rate_limit::skills_get_limit));
 
     let app = Router::new()
         .route("/", get(serve_index))
@@ -113,11 +160,18 @@ pub async fn serve(host: &str, port: u16) -> Result<()> {
         .route("/api/skill/{name}", get(api_skill_detail))
         .route("/api/skill/{name}/files", get(api_skill_files))
         .route("/api/skill/{name}/file", get(api_skill_file))
+        // PLANNING §2.3 item 3: clients pin the server's leaf-cert
+        // SHA-256 at install time so a later MITM that swaps the cert
+        // gets rejected. The endpoint is unauthenticated by design —
+        // anyone who can reach the server already sees the cert on the
+        // TLS handshake, exposing the fingerprint over HTTP adds no info.
+        .route("/api/tls/fingerprint", get(api_tls_fingerprint))
         // Remote-hook protocol: teammates' Claude Code UserPromptSubmit hooks
         // POST their standard hook JSON here and pipe stdout back into the
         // agent. See scripts/runai-client-install.sh for the wrapper they run.
         .route("/recommend", post(handle_recommend))
-        .route("/skills/get/{name}", post(handle_skill_get))
+        // /skills/get/{name} is mounted via the `skills_get_router` sub-router
+        // below so it picks up the 20/sec/IP rate limit (PLANNING §2.3 item 6).
         // GET /skills/file/{name}/{*path} — raw file body for any path
         // inside a skill directory. Acts as a Read-tool replacement so
         // remote teammates can fetch references/X.md, scripts/Y.py, etc.
@@ -164,7 +218,8 @@ pub async fn serve(host: &str, port: u16) -> Result<()> {
         .route("/api/parse/github", post(api_parse_github))
         // ---- v15 multi-user (auth + per-user library + per-user prefs) ----
         .route("/users/register", post(api_register))
-        .route("/auth/login", post(api_login))
+        // /auth/login is mounted via the `login_router` sub-router below so it
+        // picks up the 5/min/IP rate limit (PLANNING §2.3 item 6).
         .route("/auth/logout", post(api_logout))
         .route("/api/me", get(api_me))
         .route("/api/prefs", get(api_get_prefs).post(api_post_prefs))
@@ -178,17 +233,131 @@ pub async fn serve(host: &str, port: u16) -> Result<()> {
             "/api/skills/library/import-from-usage",
             post(api_library_import_from_usage),
         )
+        // ---- v16 community market (team mode only — owner mode 404s) ----
+        // /api/community/upload is mounted via the `upload_router` sub-router
+        // below — it picks up both the 64 MiB body limit AND the 10/hour/user
+        // rate limit (PLANNING §2.3 item 6).
+        .route("/api/community/list", get(api_community_list))
+        .route(
+            "/api/community/skill/{uid}/{name}",
+            get(api_community_skill_detail).delete(api_community_delete),
+        )
+        .route(
+            "/api/community/download/{uid}/{name}",
+            get(api_community_download),
+        )
+        .route(
+            "/api/community/install/{uid}/{name}",
+            post(api_community_install),
+        )
+        // PLANNING §2.3 item 4 — explicitly reject the canonical
+        // self-describing-API paths an automated agent would probe to map
+        // the surface. Method-agnostic (`any(...)`) so a HEAD/POST/OPTIONS
+        // probe gets the same 404 + empty body as a GET. The fallback
+        // handler covers everything else, so this list is "name the well
+        // known probes explicitly" — defense in depth, not load-bearing.
+        .route("/openapi.json", any(empty_404))
+        .route("/openapi.yaml", any(empty_404))
+        .route("/swagger", any(empty_404))
+        .route("/swagger.json", any(empty_404))
+        .route("/swagger-ui", any(empty_404))
+        .route("/swagger-ui/", any(empty_404))
+        .route("/swagger-ui/{*rest}", any(empty_404))
+        .route("/docs", any(empty_404))
+        .route("/docs/", any(empty_404))
+        .route("/docs/{*rest}", any(empty_404))
+        .route("/api-docs", any(empty_404))
+        .route("/api-docs/", any(empty_404))
+        .route("/api-docs/{*rest}", any(empty_404))
+        .route("/__schema", any(empty_404))
+        .route("/graphql", any(empty_404))
+        .route("/redoc", any(empty_404))
+        // Merge the rate-limited sub-routers and attach the shared state.
+        .merge(login_router)
+        .merge(upload_router)
+        .merge(skills_get_router)
+        // PLANNING §2.3 item 4 — every un-matched path returns a uniform
+        // empty-body 404. No X-Powered-By, no JSON `{"error":"not found"}`,
+        // no hint that there could be a similarly-named route somewhere.
+        .fallback(empty_404)
         .with_state(state);
 
     let addr: SocketAddr = format!("{host}:{port}")
         .parse()
         .with_context(|| format!("parse {host}:{port}"))?;
-    println!("runai dashboard at http://{addr}");
-    let listener = tokio::net::TcpListener::bind(addr)
+    let use_tls = tls_cert.is_some() && tls_key.is_some();
+    let scheme = if use_tls { "https" } else { "http" };
+    println!("runai dashboard at {scheme}://{addr} (mode={mode})");
+    if use_tls {
+        // PLANNING §2.3 item 2 — real TLS via axum-server's rustls feature.
+        // `validate_startup` already gated team + non-loopback + no TLS,
+        // but owner mode (and team-loopback) can still opt in via the
+        // explicit --tls-cert / --tls-key flags. The check here is "both
+        // flags were passed" — not "we are required to use TLS".
+        let cert = tls_cert.as_deref().expect("checked use_tls");
+        let key = tls_key.as_deref().expect("checked use_tls");
+        let cfg = super::tls::load_rustls_config(cert, key).await?;
+        axum_server::bind_rustls(addr, cfg)
+            .serve(app.into_make_service_with_connect_info::<SocketAddr>())
+            .await
+            .context("axum_server::bind_rustls serve")?;
+    } else {
+        let listener = tokio::net::TcpListener::bind(addr)
+            .await
+            .with_context(|| format!("bind {addr}"))?;
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
         .await
-        .with_context(|| format!("bind {addr}"))?;
-    axum::serve(listener, app).await.context("axum::serve")?;
+        .context("axum::serve")?;
+    }
     Ok(())
+}
+
+/// PLANNING §2.3 item 4: uniform 404 for any unmatched path AND for the
+/// explicitly-rejected anti-probe routes. Empty body — no diagnostic JSON,
+/// no `Content-Type` hint at all. The Status line itself plus an empty
+/// body is the only thing the wire sees, so an attacker cannot diff
+/// "unknown path" against "auth required" against "internal error" via
+/// response shape.
+async fn empty_404() -> Response {
+    (StatusCode::NOT_FOUND, "").into_response()
+}
+
+/// GET /api/tls/fingerprint — return the SHA-256 of the server's leaf
+/// certificate so the install script can pin it into `~/.runai-server.json`.
+///
+/// Output shape:
+///   - TLS configured: `200 + {"fingerprint":"<64 hex chars>"}`
+///   - No TLS:         `404 + ""` (we don't have one to give)
+///   - PEM unreadable: `500` (operator misconfiguration)
+///
+/// We deliberately do NOT gate this on auth: an attacker on the network
+/// already sees the cert on the TLS handshake. The only people who can't
+/// see the cert without this endpoint are clients on an HTTP-only deploy,
+/// and those clients hit the 404 path here anyway — no pinning is possible
+/// without TLS.
+async fn api_tls_fingerprint(State(state): State<Arc<AppState>>) -> Response {
+    let Some(cert_path) = state.tls_cert.as_deref() else {
+        return (StatusCode::NOT_FOUND, "").into_response();
+    };
+    let cert_path = cert_path.to_path_buf();
+    let fp =
+        match tokio::task::spawn_blocking(move || super::tls::leaf_fingerprint_sha256(&cert_path))
+            .await
+        {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => {
+                eprintln!("/api/tls/fingerprint: leaf_fingerprint_sha256 failed: {e:#}");
+                return (StatusCode::INTERNAL_SERVER_ERROR, "").into_response();
+            }
+            Err(e) => {
+                eprintln!("/api/tls/fingerprint: spawn_blocking join failed: {e}");
+                return (StatusCode::INTERNAL_SERVER_ERROR, "").into_response();
+            }
+        };
+    (StatusCode::OK, Json(serde_json::json!({"fingerprint": fp}))).into_response()
 }
 
 /// Process-lifetime cache-buster. Generated once when the server boots from

@@ -22,6 +22,9 @@
 //!   `user_root`, `user_skills_dir`, `user_mcps_dir`, `user_trash_dir` (all
 //!   `Result`, `bail!` when `user_id` fails `is_safe_user_id`); `ensure_user_dirs`
 //!   mkdir-p's the three, idempotent.
+//! - Community-market subdirs under `<data>/community/<uploader_uid>/`:
+//!   `community_dir`, `community_uploader_dir`, `community_skill_dir` (the
+//!   uploader-scoped helpers `bail!` on bad `uploader_uid`). PLANNING §1.4.
 //!
 //! Invariants / gotchas:
 //! - **Owner pool layout** (hard invariant): `<data>/skills/<name>/` is the
@@ -215,6 +218,32 @@ impl AppPaths {
 
     pub fn trash_dir(&self) -> PathBuf {
         self.base.join("trash")
+    }
+
+    /// Community market payload root: `<data>/community/`.
+    /// Per-uploader storage lives at `<data>/community/<uploader_uid>/<name>/`
+    /// — owner-scoped paths come from [`community_skill_dir`]. The shared
+    /// `community/` directory is sibling to `skills/` / `users/`, NOT inside
+    /// either, so the team-mode social pool is isolated from both the public
+    /// pool and per-user private pools.
+    pub fn community_dir(&self) -> PathBuf {
+        self.base.join("community")
+    }
+
+    /// Per-uploader community sub-root: `<data>/community/<uploader_uid>/`.
+    /// Errors when `uploader_uid` fails [`is_safe_user_id`] — same
+    /// defense-in-depth contract as the per-user private paths.
+    pub fn community_uploader_dir(&self, uploader_uid: &str) -> Result<PathBuf> {
+        if !is_safe_user_id(uploader_uid) {
+            anyhow::bail!("invalid user_id: {uploader_uid:?}");
+        }
+        Ok(self.community_dir().join(uploader_uid))
+    }
+
+    /// Per-uploader per-skill directory: `<data>/community/<uploader_uid>/<name>/`.
+    /// The caller is responsible for validating `name` (length, allowed chars).
+    pub fn community_skill_dir(&self, uploader_uid: &str, name: &str) -> Result<PathBuf> {
+        Ok(self.community_uploader_dir(uploader_uid)?.join(name))
     }
 
     /// Per-user data root: `<data>/users/<user_id>/`.

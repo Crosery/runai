@@ -98,8 +98,8 @@ impl Database {
                 latency_ms, chosen_skills_json, candidate_count, status, error_msg,
                 session_id, mode,
                 user_prompt, cwd, bm25_kept,
-                llm_raw_response, hook_output, llm_input
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
+                llm_raw_response, hook_output, llm_input, user_id
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
             params![
                 ev.ts,
                 ev.provider,
@@ -123,6 +123,10 @@ impl Database {
                 llm_raw_capped,
                 hook_out_capped,
                 llm_input_capped,
+                // v15 multi-user: stamp the request's user_id so dashboard /
+                // per-user filtering / prompt-injection multi-user e2e
+                // (PLANNING §1.3) can scope rows. NULL = unauthenticated.
+                ev.user_id,
             ],
         )?;
         Ok(())

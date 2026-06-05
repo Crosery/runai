@@ -1,4 +1,6 @@
+use crate::core::server_mode::ServerMode;
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(
@@ -123,6 +125,22 @@ pub enum Commands {
         /// Remove the OS-level login auto-start created by `--install-autostart`.
         #[arg(long, conflicts_with_all = ["install_autostart", "install_hook", "uninstall_hook", "ensure"])]
         uninstall_autostart: bool,
+        /// Server mode — `owner` (default, single-user self-serve) or `team`
+        /// (multi-tenant; opens register/install endpoints). Picks the
+        /// behavior of every route family explicitly so the dashboard isn't
+        /// guessing based on DB state. See PLANNING.md §1.1.
+        #[arg(long, value_enum, default_value_t = ServerMode::Owner)]
+        mode: ServerMode,
+        /// Path to a PEM-encoded TLS certificate. Required when --mode team
+        /// binds a non-loopback host (cleartext over the network is rejected
+        /// at startup). Used together with --tls-key. See PLANNING.md §2.3
+        /// item 2 ("强制 HTTPS"). Actual rustls wiring lands in P5; this
+        /// flag is the scaffold that carries the path through to AppState.
+        #[arg(long, value_name = "PATH")]
+        tls_cert: Option<PathBuf>,
+        /// Path to the PEM-encoded TLS private key matching --tls-cert.
+        #[arg(long, value_name = "PATH")]
+        tls_key: Option<PathBuf>,
     },
     /// Register runai as MCP server in all CLI configs
     Register,
@@ -150,6 +168,61 @@ pub enum Commands {
         command: Option<RecommendCommands>,
         /// Run router for the given prompt (positional, no subcommand)
         prompt: Option<String>,
+    },
+    /// Community market (team mode): upload, list, install, delete shared skills.
+    Community {
+        #[command(subcommand)]
+        command: CommunityCommands,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum CommunityCommands {
+    /// Upload a local skill directory to the community pool.
+    ///
+    /// Reads `<path>/SKILL.md` to confirm it's a skill, tar.gz it, POST
+    /// to `<server>/api/community/upload` with the Bearer key from
+    /// `~/.runai-identity`. `--name` defaults to the directory's basename.
+    Upload {
+        /// Path to the skill directory (must contain SKILL.md)
+        #[arg(long)]
+        path: std::path::PathBuf,
+        /// Skill name in the community pool (defaults to dirname)
+        #[arg(long)]
+        name: Option<String>,
+        /// Server base URL; defaults to RUNAI_SERVER env or http://127.0.0.1:17888
+        #[arg(long)]
+        server: Option<String>,
+    },
+    /// List skills in the community pool. Output: tab-separated rows
+    /// `<uploader_uid> <name> <version> <installs>`, no header (agent-friendly).
+    List {
+        /// Sort by: installs / created / name
+        #[arg(long, default_value = "installs")]
+        sort: String,
+        /// Server base URL; defaults to RUNAI_SERVER env or http://127.0.0.1:17888
+        #[arg(long)]
+        server: Option<String>,
+    },
+    /// Install a community skill into this account's private pool.
+    Install {
+        /// uploader user id (from `community list`)
+        uploader: String,
+        /// skill name
+        name: String,
+        /// Server base URL
+        #[arg(long)]
+        server: Option<String>,
+    },
+    /// Delete a community skill (only uploader or admin can).
+    Delete {
+        /// uploader user id
+        uploader: String,
+        /// skill name
+        name: String,
+        /// Server base URL
+        #[arg(long)]
+        server: Option<String>,
     },
 }
 

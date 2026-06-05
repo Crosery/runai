@@ -12,6 +12,7 @@ use std::path::PathBuf;
 
 use crate::core::auth as authmod;
 use crate::core::db::{Database, User};
+use crate::core::server_mode::ServerMode;
 
 use super::error::ApiError;
 
@@ -20,8 +21,21 @@ use super::error::ApiError;
 /// handler opens its own connection per request. SQLite open is cheap
 /// (microseconds for the same file in the OS page cache); this keeps the
 /// server lock-free and avoids serialising readers on a Mutex.
+///
+/// `mode` is the runtime owner-vs-team flag from `runai server --mode`
+/// (default `owner`). Every handler that branches on identity model reads
+/// it from here rather than re-deriving from DB state. `tls_cert` /
+/// `tls_key` are the resolved `--tls-cert` / `--tls-key` paths from the
+/// operator — `app.rs::serve_with` swaps `axum::serve` for
+/// `axum_server::bind_rustls` when both are present, and
+/// `app.rs::api_tls_fingerprint` reads `tls_cert` so clients can pin the
+/// leaf-cert SHA-256.
 pub(super) struct AppState {
     pub(super) db_path: PathBuf,
+    pub(super) mode: ServerMode,
+    pub(super) tls_cert: Option<PathBuf>,
+    #[allow(dead_code)] // read by app.rs::serve_with at bind time only
+    pub(super) tls_key: Option<PathBuf>,
 }
 
 impl AppState {

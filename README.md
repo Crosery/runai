@@ -24,7 +24,7 @@
   <a href="AGENTS.md"><b>AGENT guide</b></a>
 </p>
 
-<sub>Single Rust binary · macOS / Linux / Windows · No runtime deps · MIT</sub>
+<sub>Single Rust binary · macOS / Linux / Windows · No runtime deps · CC BY-NC-SA 4.0</sub>
 
 </div>
 
@@ -246,4 +246,10 @@ Per-module deep-dive docs in `src/**/*.LLM.md`. Architecture invariants in [AGEN
 
 ## License
 
-MIT
+[CC BY-NC-SA 4.0](LICENSE) — Attribution-NonCommercial-ShareAlike 4.0 International.
+
+- **Non-commercial only** — you may not use the material for commercial purposes.
+- **ShareAlike** — if you remix, transform, or build upon the material, you must distribute your contributions under the same license.
+- **Attribution** — credit the original author and link back to this repository.
+
+Full text: [creativecommons.org/licenses/by-nc-sa/4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/).

@@ -1,5 +1,7 @@
 use super::command_enums::{Cli, Commands};
-use super::handlers::{handle_group_command, handle_recommend, handle_trash_command};
+use super::handlers::{
+    handle_community, handle_group_command, handle_recommend, handle_trash_command,
+};
 use super::helpers::{find_resource_id_by_name, spawn_targeted_enrich};
 use crate::core::cli_target::CliTarget;
 use crate::core::manager::SkillManager;
@@ -422,10 +424,13 @@ pub fn run(cli: Cli) -> Result<()> {
             uninstall_hook,
             install_autostart,
             uninstall_autostart,
+            mode,
+            tls_cert,
+            tls_key,
         }) => {
             if install_autostart {
                 use crate::core::autostart::{self, AutostartStatus};
-                match autostart::install(&host, port)? {
+                match autostart::install(&host, port, mode)? {
                     AutostartStatus::Installed { path } => println!(
                         "autostart installed at {} — server will start at every login",
                         path.display()
@@ -482,7 +487,9 @@ pub fn run(cli: Cli) -> Result<()> {
                 return Ok(());
             }
             let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(crate::server::serve(&host, port))?;
+            rt.block_on(crate::server::serve_with(
+                &host, port, mode, tls_cert, tls_key,
+            ))?;
             Ok(())
         }
         Some(Commands::Register) => {
@@ -585,5 +592,6 @@ pub fn run(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
+        Some(Commands::Community { command }) => handle_community(command),
     }
 }

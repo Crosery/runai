@@ -1,4 +1,4 @@
-//! Schema creation + ALL migrations (v1–v15), monolithic.
+//! Schema creation + ALL migrations (v1–v16), monolithic.
 //!
 //! INVARIANT: keep `init_schema` and every versioned migration in this one
 //! file. Migrations run on every `open()` with no version lock; splitting them
@@ -327,6 +327,36 @@ impl Database {
 
                  DELETE FROM schema_version;
                  INSERT INTO schema_version VALUES (15);",
+            )?;
+        }
+
+        if version < 16 {
+            // PLANNING.md §1.4 — community market.
+            // Tracks user-uploaded skills available for cross-user discovery.
+            // Physical payload lives at `<data>/community/<uploader_uid>/<name>/`
+            // (a normal directory tree, NOT a gz archive — the download
+            // endpoint re-tars on demand). PK is `(uploader_uid, name)` so
+            // the same name can coexist across uploaders. `version` is a
+            // monotonic bump applied on every re-upload by the same uploader.
+            // `installs_total` counts how many times any user has called
+            // POST /api/community/install/<uid>/<name>.
+            self.conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS community_skills (
+                    uploader_uid TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    version TEXT NOT NULL,
+                    installs_total INTEGER NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY(uploader_uid, name)
+                 );
+                 CREATE INDEX IF NOT EXISTS idx_community_skills_name
+                   ON community_skills(name);
+                 CREATE INDEX IF NOT EXISTS idx_community_skills_uploader
+                   ON community_skills(uploader_uid);
+
+                 DELETE FROM schema_version;
+                 INSERT INTO schema_version VALUES (16);",
             )?;
         }
 

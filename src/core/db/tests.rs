@@ -13,7 +13,7 @@ fn migration_creates_schema_version() {
         .conn
         .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 15);
+    assert_eq!(version, 16);
 }
 
 #[test]
@@ -262,7 +262,11 @@ fn schema_at_v15_after_open() {
         .conn
         .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 15);
+    // After v16 added community_skills the freshly-opened DB should report
+    // the current head, not the v15 snapshot. The name of this test is kept
+    // for git-blame continuity; the v15 tables it spot-checks below are
+    // still there post-v16, just behind a higher version number.
+    assert_eq!(version, 16);
 
     // Tables must exist
     for tbl in &["users", "user_skill_library"] {
@@ -654,4 +658,119 @@ fn pre_v15_trash_payload_decodes_with_owner_default_none() {
     let entry: TrashEntry = serde_json::from_str(pre_v15_json).unwrap();
     assert_eq!(entry.owner_user_id, None);
     assert_eq!(entry.id, "trash:legacy");
+}
+
+// =========================================================================
+//  v16: community market — community_skills table CRUD
+// =========================================================================
+
+#[test]
+fn community_skills_crud_roundtrip() {
+    use crate::core::db::CommunitySort;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(&tmp.path().join("community.db")).unwrap();
+
+    // Table empty by default.
+    assert_eq!(db.count_community_skills().unwrap(), 0);
+    assert!(
+        db.get_community_skill("usr_alice", "foo")
+            .unwrap()
+            .is_none(),
+        "missing row → None"
+    );
+
+    // Insert a fresh row, then re-read.
+    db.insert_community_skill("usr_alice", "foo", "v1").unwrap();
+    let row = db
+        .get_community_skill("usr_alice", "foo")
+        .unwrap()
+        .expect("row present after insert");
+    assert_eq!(row.uploader_uid, "usr_alice");
+    assert_eq!(row.name, "foo");
+    assert_eq!(row.version, "v1");
+    assert_eq!(row.installs_total, 0);
+
+    // PK collision on raw insert → error.
+    assert!(
+        db.insert_community_skill("usr_alice", "foo", "v1-dup")
+            .is_err(),
+        "same (uploader_uid, name) must collide on PK"
+    );
+
+    // Upsert bumps version + updated_at, preserves installs_total.
+    db.increment_community_installs("usr_alice", "foo").unwrap();
+    db.increment_community_installs("usr_alice", "foo").unwrap();
+    let pre_upsert = db.get_community_skill("usr_alice", "foo").unwrap().unwrap();
+    assert_eq!(pre_upsert.installs_total, 2);
+
+    db.upsert_community_skill("usr_alice", "foo", "v2").unwrap();
+    let post_upsert = db.get_community_skill("usr_alice", "foo").unwrap().unwrap();
+    assert_eq!(post_upsert.version, "v2", "upsert bumped version");
+    assert_eq!(
+        post_upsert.installs_total, 2,
+        "upsert preserves installs_total"
+    );
+    assert_eq!(
+        post_upsert.created_at, pre_upsert.created_at,
+        "upsert preserves created_at"
+    );
+
+    // Different uploaders can share a name.
+    db.insert_community_skill("usr_bob", "foo", "vbob").unwrap();
+    assert!(db.get_community_skill("usr_bob", "foo").unwrap().is_some());
+
+    // List sorted by installs (alice/foo has 2, bob/foo has 0).
+    let list = db
+        .list_community_skills(CommunitySort::Installs, 0, 50)
+        .unwrap();
+    assert_eq!(list.len(), 2);
+    assert_eq!(list[0].uploader_uid, "usr_alice");
+    assert_eq!(list[1].uploader_uid, "usr_bob");
+
+    // List sorted by name (both are "foo" — tie-break is uploader asc).
+    let by_name = db
+        .list_community_skills(CommunitySort::Name, 0, 50)
+        .unwrap();
+    assert_eq!(by_name[0].uploader_uid, "usr_alice");
+    assert_eq!(by_name[1].uploader_uid, "usr_bob");
+
+    // Pagination: offset=1 limit=1 returns the second row.
+    let page = db
+        .list_community_skills(CommunitySort::Installs, 1, 1)
+        .unwrap();
+    assert_eq!(page.len(), 1);
+    assert_eq!(page[0].uploader_uid, "usr_bob");
+
+    assert_eq!(db.count_community_skills().unwrap(), 2);
+
+    // Delete returns true on hit, false on miss.
+    assert!(db.delete_community_skill("usr_alice", "foo").unwrap());
+    assert!(!db.delete_community_skill("usr_alice", "foo").unwrap());
+    assert!(
+        db.get_community_skill("usr_alice", "foo")
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(db.count_community_skills().unwrap(), 1);
+}
+
+#[test]
+fn community_sort_parses_query_strings() {
+    use crate::core::db::CommunitySort;
+    matches!(
+        CommunitySort::parse(Some("installs")),
+        CommunitySort::Installs
+    );
+    matches!(CommunitySort::parse(Some("name")), CommunitySort::Name);
+    matches!(
+        CommunitySort::parse(Some("created")),
+        CommunitySort::Created
+    );
+    // Default + unknown both fall through to Installs.
+    matches!(CommunitySort::parse(None), CommunitySort::Installs);
+    matches!(
+        CommunitySort::parse(Some("garbage")),
+        CommunitySort::Installs
+    );
 }

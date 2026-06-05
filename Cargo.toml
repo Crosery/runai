@@ -4,6 +4,7 @@ version = "0.11.0-beta.4"
 edition = "2024"
 description = "AI CLI resource manager for skills and MCP servers"
 authors = ["Crosery"]
+license-file = "LICENSE"
 
 [dependencies]
 # Database
@@ -18,7 +19,8 @@ serde_json = "1"
 toml = "0.8"
 
 # HTTP (GitHub install)
-reqwest = { version = "0.13", features = ["json", "rustls", "blocking"], default-features = false }
+reqwest = { version = "0.13", features = ["json", "rustls", "blocking", "multipart"], default-features = false }
+percent-encoding = "2"
 tokio = { version = "1", features = ["full"] }
 
 # MCP
@@ -46,13 +48,20 @@ notify-debouncer-mini = "0.6"
 # Fuzzy matcher (fzf v2 algorithm) for sm_search / sm_market / CLI search & market
 nucleo-matcher = "0.3"
 # Web dashboard for router telemetry (runai server)
-axum = "0.8"
+axum = { version = "0.8", features = ["multipart"] }
 tower-http = { version = "0.6", features = ["fs"] }
+# Real TLS for `--mode team` exposed binds (PLANNING §2.3 item 2).
+# Pinned to versions known compatible with axum 0.8.
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+rustls-pemfile = "2"
 # Crypto-secure random for identity generation
 rand = "0.8"
 # Base32 encoding for user-friendly key/user_id format
 base32 = "0.5"
 argon2 = "0.5.3"
+# Lock-free concurrent map — backing store for the rate-limiter buckets
+# in src/server/middleware/rate_limit.rs.
+dashmap = "6"
 
 [profile.release]
 strip = true

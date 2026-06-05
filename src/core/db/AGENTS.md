@@ -17,6 +17,7 @@ As of the v0.11 decoupling, the former 2507-line `db.rs` is a directory: a thin 
 - `crate::core::db::Database` — the connection wrapper + all CRUD methods.
 - `crate::core::db::RouterEvent` — one router-telemetry row.
 - `crate::core::db::User` — one account row (schema v15+).
+- `crate::core::db::CommunitySkill` / `CommunitySort` — community-market row + sort enum (schema v16+).
 - `crate::core::db::RouterModelStat` / `RouterStatsSummary` / `TimelineBucket` — aggregate stats value types.
 
 ### `Database` method surface (unchanged — moved, not renamed)
@@ -32,6 +33,7 @@ As of the v0.11 decoupling, the former 2507-line `db.rs` is a directory: a thin 
 - Router stats: `router_stats_summary[_filtered]` / `router_timeline[_filtered]`. (`router_stats.rs`)
 - Users (v15+): `create_user` / `find_user_by_username` / `find_user_by_api_key_hash` / `find_user_by_id` / `list_users` / `set_user_admin` / `set_user_disabled` / `update_user_prefs` / `rotate_api_key`. (`users.rs`)
 - Library (v15+): `library_add` / `library_remove` / `library_remove_for_all` / `cleanup_orphan_library_entries` / `library_list` / `library_contains` / `library_clear` / `library_count` / `top_public_skills`. (`library.rs`)
+- Community (v16+): `insert_community_skill` / `upsert_community_skill` / `get_community_skill` / `list_community_skills` / `count_community_skills` / `increment_community_installs` / `delete_community_skill`. (`community.rs`)
 
 ## Submodule map
 | File | Responsibility | Key items |
@@ -48,13 +50,14 @@ As of the v0.11 decoupling, the former 2507-line `db.rs` is a directory: a thin 
 | `trash.rs` | `trash_entries` CRUD + `delete_resource` | JSON `TrashEntry` payloads |
 | `users.rs` | `users` CRUD + auth lookups | `row_to_user` (positional) |
 | `library.rs` | `user_skill_library` CRUD | `top_public_skills` |
+| `community.rs` | `community_skills` CRUD (v16+) | `row_to_community_skill` (positional), `CommunitySort` query enum |
 | `tests.rs` | migration / users / library / resources fixtures | unit suite (18 tests) |
 
 ## Invariants (load-bearing — do not break silently)
-- **`schema.rs` keeps `init_schema` + every v1–v15 migration MONOLITHIC.** Migrations run on every `open()` with no version lock; splitting them across files risks a half-applied schema. Do not factor per-version files.
+- **`schema.rs` keeps `init_schema` + every v1–v16 migration MONOLITHIC.** Migrations run on every `open()` with no version lock; splitting them across files risks a half-applied schema. Do not factor per-version files.
 - **Row converters read columns POSITIONALLY.** `router.rs::row_to_router_event`, `users.rs::row_to_user`, and `resources.rs::collect_resources` index by `r.get(N)`. Each lives in the SAME file as the SELECTs whose column order it depends on. Never reorder a SELECT's columns without updating its converter, and never separate a query from its converter.
 - **Schema migrations are idempotent** — `Database::open` must be safe to call repeatedly on an existing DB.
-- Schema version `4` adds `trash_entries`; version `15` adds `users`, `user_skill_library`, `resources.owner_user_id`, `router_events.user_id`. Owner-aware separation: `owner_user_id IS NULL` = public pool, `Some(uid)` = uid's private.
+- Schema version `4` adds `trash_entries`; version `15` adds `users`, `user_skill_library`, `resources.owner_user_id`, `router_events.user_id`. Owner-aware separation: `owner_user_id IS NULL` = public pool, `Some(uid)` = uid's private. Version `16` adds `community_skills` (PK `(uploader_uid, name)`) for the team-mode community market; the on-disk payload sits at `<data>/community/<uploader_uid>/<name>/`.
 - Legacy table names (from the `skill-manager` era) are **kept alive** for rollback safety; new code writes only to the renamed tables.
 - `insert_resource` round-trips `Source` via `to_meta_json` / `from_meta_json` and preserves usage columns on conflict — re-scan/update paths must not zero usage. PK `id` already encodes the owner (`u:<uid>:` prefix from `Resource::generate_id`) so same `(source, name)` across users do not collide.
 - Trash payloads are stored as JSON `TrashEntry` blobs; new `TrashEntry` fields must stay serde backward-compatible. `owner_user_id` was added with `#[serde(default)]` so pre-v15 payloads still decode (owner surfaces as `None`).

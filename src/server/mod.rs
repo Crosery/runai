@@ -15,19 +15,22 @@
 mod admin;
 mod app;
 mod auth;
+mod community;
 mod error;
 mod install;
 mod library;
 mod market;
 mod market_github;
 mod market_preview;
+mod middleware;
 mod prefs;
 mod recommend;
 mod skills;
 mod state;
 mod telemetry;
+mod tls;
 
-pub use app::{EnsureStatus, ensure_running, serve};
+pub use app::{EnsureStatus, ensure_running, serve, serve_with};
 
 const INDEX_HTML: &str = include_str!("../../web/index.html");
 // app.js / app.css are split into safe-boundary parts under web/{js,css}/.
@@ -51,6 +54,7 @@ const APP_JS: &str = concat!(
     include_str!("../../web/js/13-auth-bulk-prefs.js"),
     include_str!("../../web/js/14-market-list.js"),
     include_str!("../../web/js/15-market-detail-github.js"),
+    include_str!("../../web/js/17-community-market.js"),
     include_str!("../../web/js/16-boot.js"),
 );
 const APP_CSS: &str = concat!(
@@ -65,6 +69,7 @@ const APP_CSS: &str = concat!(
     include_str!("../../web/css/09-settings-tab.css"),
     include_str!("../../web/css/10-v15-account-auth-library.css"),
     include_str!("../../web/css/11-v15-market-github.css"),
+    include_str!("../../web/css/12-community-market.css"),
 );
 /// Client-side install / uninstall scripts. The server serves these from
 /// GET /install and GET /uninstall after replacing the `{SERVER_URL}`
