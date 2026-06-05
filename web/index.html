@@ -436,6 +436,14 @@
              renderMarketLeaderboard). -->
         <section class="tab" data-pane="market">
 
+          <!-- §1.4 source switcher: skills.sh aggregator (default) vs the
+               team-mode community pool. Wired by 17-community-market.js. -->
+          <div class="market-source-tabs" id="market-source-tabs">
+            <button type="button" class="market-source-tab-btn active" data-mtsource="skillshub">skills.sh</button>
+            <button type="button" class="market-source-tab-btn" data-mtsource="community">社区</button>
+          </div>
+
+          <div class="market-skillshub-pane" id="market-skillshub-pane">
           <div class="market-hero">
             <div class="market-hero-title">
               <div class="mh-eyebrow">SKILLS LEADERBOARD</div>
@@ -495,7 +503,68 @@
             </div>
           </div>
           <div class="ml-pager" id="market-pager"></div>
+          </div>
+
+          <!-- §1.4 community pane (team-mode only). Hidden by default;
+               17-community-market.js shows it when the user clicks the
+               "社区" source tab. -->
+          <div class="market-community-pane hide" id="market-community-pane">
+            <div class="cm-hero">
+              <div class="cm-hero-title">
+                <div class="cm-eyebrow">TEAM COMMUNITY MARKET</div>
+                <h1 class="cm-title">社区<span class="cm-count" id="community-count">—</span></h1>
+                <p class="cm-sub">团队内部互享 skill 池 · 上传、浏览、安装到自己的私有库 · 仅 team 模式可用</p>
+              </div>
+              <div class="cm-hero-actions">
+                <button type="button" class="mbtn" id="community-refresh-btn">刷新</button>
+              </div>
+            </div>
+
+            <div class="cm-toolbar">
+              <div class="cm-sort">
+                <span class="cm-sort-label">SORT</span>
+                <button type="button" class="cm-sort-btn active" data-cmsort="installs">下载量</button>
+                <button type="button" class="cm-sort-btn" data-cmsort="created">最新</button>
+                <button type="button" class="cm-sort-btn" data-cmsort="name">名字</button>
+              </div>
+            </div>
+
+            <div class="cm-empty muted" id="community-empty" hidden>社区池空 — 用 <code>runai community upload</code> 或 TUI 上传第一个 skill。</div>
+
+            <div class="cm-leaderboard">
+              <div class="cm-head">
+                <div class="cm-rank">#</div>
+                <div class="cm-skill">SKILL · UPLOADER</div>
+                <div class="cm-version">VERSION</div>
+                <div class="cm-installs">INSTALLS</div>
+                <div class="cm-action">ACTION</div>
+              </div>
+              <div class="cm-rows" id="community-rows"></div>
+            </div>
+            <div class="cm-pager" id="community-pager"></div>
+          </div>
+
         </section>
+
+        <!-- §1.4 community: skill detail modal (preview SKILL.md before install). -->
+        <div class="auth-modal hide" id="community-detail-modal" role="dialog" aria-modal="true">
+          <div class="auth-card market-detail-card">
+            <button type="button" class="auth-close" id="community-detail-close" aria-label="关闭">×</button>
+            <h2 id="community-detail-name">—</h2>
+            <div class="market-detail-meta">
+              <span id="community-detail-uploader" class="md-source">—</span>
+              <span id="community-detail-version" class="md-status"></span>
+            </div>
+            <div class="md-files-label">SKILL.md</div>
+            <pre id="community-detail-md" class="market-detail-md">SKILL.md 加载中 …</pre>
+            <div class="auth-actions">
+              <button type="button" class="mbtn" id="community-detail-dismiss">关闭</button>
+              <button type="button" class="mbtn danger hide" id="community-detail-delete">删除</button>
+              <button type="button" class="mbtn primary" id="community-detail-install">安装到我的库</button>
+            </div>
+          </div>
+        </div>
+
 
         <!-- v15 marketplace: skill detail modal (preview SKILL.md before install) -->
         <div class="auth-modal hide" id="market-detail-modal" role="dialog" aria-modal="true">
@@ -574,6 +643,17 @@
                 <div class="setting-hint">关闭时（默认）：推荐只在「我的库」里挑。开启后：所有公共 skill 都进候选池</div>
               </div>
               <label class="switch"><input type="checkbox" id="set-allow-public-recommend" disabled><span></span></label>
+            </div>
+          </div>
+
+          <!-- §1.3 prompt injection toggles. Rendered dynamically by
+               10-settings.js::renderPromptInjectionFlags from
+               /api/prompts (server-supplied descriptors) crossed against
+               account.prefs.prompt_injection_flags. -->
+          <div class="settings-section" id="settings-prefs">
+            <div class="label">我的偏好 · 提示词注入 <span class="helper">每条独立开关 · 改动即时同步</span></div>
+            <div class="prefs-flags-list" id="prefs-flags-list">
+              <div class="muted prefs-flags-empty">登录后即可调整每个提示词的注入开关。</div>
             </div>
           </div>
 

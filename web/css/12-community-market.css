@@ -1,0 +1,130 @@
+/* ============================================================
+ * §1.4 Community market — dashboard pane styles
+ *
+ * Lives under the Market tab as a sibling pane to the existing
+ * skills.sh aggregator (.market-skillshub-pane). The visual
+ * grammar reuses .ml-row patterns so leaderboard rows feel
+ * native to anyone who already learned the skills.sh view.
+ * ========================================================== */
+
+/* Source switcher ----------------------------------------- */
+.market-source-tabs{
+  display:flex;gap:6px;margin:0 0 18px;
+  border-bottom:1px solid var(--line);
+}
+.market-source-tab-btn{
+  appearance:none;background:transparent;border:0;cursor:pointer;
+  font-family:var(--mono);font-size:11px;letter-spacing:0.12em;
+  text-transform:uppercase;color:var(--ink-3);
+  padding:8px 14px;margin-bottom:-1px;
+  border-bottom:2px solid transparent;
+}
+.market-source-tab-btn:hover{color:var(--ink)}
+.market-source-tab-btn.active{
+  color:var(--accent);border-bottom-color:var(--accent);
+}
+
+/* Community hero ----------------------------------------- */
+.cm-hero{
+  display:grid;grid-template-columns:1fr auto;align-items:center;gap:28px;
+  margin-bottom:18px;padding-bottom:14px;
+}
+.cm-eyebrow{
+  font-family:var(--mono);font-size:10px;letter-spacing:0.18em;
+  text-transform:uppercase;color:var(--ink-3);margin-bottom:6px;
+}
+.cm-title{
+  font-family:var(--serif);font-weight:600;letter-spacing:-0.02em;
+  font-size:48px;line-height:1;color:var(--ink);margin:0;
+}
+.cm-count{
+  font-family:var(--mono);font-size:14px;color:var(--ink-3);
+  letter-spacing:0.02em;font-weight:400;margin-left:14px;
+}
+.cm-sub{
+  font-family:var(--sans);font-size:13px;color:var(--ink-2);
+  letter-spacing:-0.005em;margin:8px 0 0;line-height:1.5;
+}
+.cm-hero-actions{display:flex;gap:10px;align-items:center}
+
+/* Toolbar (sort buttons) -------------------------------- */
+.cm-toolbar{
+  display:flex;align-items:center;gap:14px;
+  margin-bottom:18px;padding-bottom:12px;
+  border-bottom:1px solid var(--line-soft);
+}
+.cm-sort{display:flex;gap:6px;align-items:center}
+.cm-sort-label{
+  font-family:var(--mono);font-size:10px;letter-spacing:0.18em;
+  text-transform:uppercase;color:var(--ink-3);margin-right:8px;
+}
+.cm-sort-btn{
+  appearance:none;background:transparent;border:1px solid var(--line);
+  font-family:var(--mono);font-size:11px;color:var(--ink-2);
+  padding:5px 10px;border-radius:3px;cursor:pointer;
+}
+.cm-sort-btn:hover{color:var(--ink);border-color:var(--ink-3)}
+.cm-sort-btn.active{color:var(--accent);border-color:var(--accent)}
+
+/* Empty state ------------------------------------------- */
+.cm-empty{padding:36px 0;text-align:center;font-family:var(--mono);font-size:12px}
+
+/* Leaderboard rows -------------------------------------- */
+.cm-leaderboard{
+  border-top:1px solid var(--line);
+}
+.cm-head{
+  display:grid;
+  grid-template-columns:60px minmax(0,2.4fr) 140px 110px minmax(0,1fr);
+  gap:14px;padding:10px 12px;
+  font-family:var(--mono);font-size:10px;letter-spacing:0.12em;
+  text-transform:uppercase;color:var(--ink-3);
+  border-bottom:1px solid var(--line-soft);
+}
+.cm-rows{display:flex;flex-direction:column}
+.cm-row{
+  display:grid;
+  grid-template-columns:60px minmax(0,2.4fr) 140px 110px minmax(0,1fr);
+  gap:14px;align-items:center;
+  padding:12px;border-bottom:1px solid var(--line-soft);
+  cursor:pointer;
+}
+.cm-row:hover{background:color-mix(in srgb,var(--accent) 4%,transparent)}
+.cm-row:last-child{border-bottom:0}
+.cm-row .cm-rank{font-family:var(--mono);font-size:12px;color:var(--ink-3)}
+.cm-skill-name{font-weight:600;font-size:13px;color:var(--ink);line-height:1.3}
+.cm-skill-uploader{
+  font-family:var(--mono);font-size:11px;color:var(--ink-3);
+  margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.cm-version-text{
+  font-family:var(--mono);font-size:11px;color:var(--ink-2);
+  letter-spacing:0.04em;
+}
+.cm-installs-text{
+  font-family:var(--mono);font-size:13px;color:var(--ink);
+  letter-spacing:0.02em;
+}
+.cm-action{display:flex;justify-content:flex-end;gap:6px}
+
+/* Pager ------------------------------------------------- */
+.cm-pager{
+  display:flex;align-items:center;justify-content:center;gap:14px;
+  margin-top:14px;padding-top:14px;
+  font-family:var(--mono);font-size:11px;color:var(--ink-3);
+}
+.cm-pager-btn{
+  appearance:none;background:transparent;border:1px solid var(--line);
+  font-family:var(--mono);font-size:11px;color:var(--ink-2);
+  padding:5px 10px;border-radius:3px;cursor:pointer;
+}
+.cm-pager-btn[disabled]{opacity:0.45;cursor:not-allowed}
+.cm-pager-btn:not([disabled]):hover{color:var(--ink);border-color:var(--ink-3)}
+
+/* Danger button (delete in detail modal) ---------------- */
+.mbtn.danger{
+  color:var(--warn);border-color:var(--warn);
+}
+.mbtn.danger:hover{
+  color:#fff;background:var(--warn);border-color:var(--warn);
+}

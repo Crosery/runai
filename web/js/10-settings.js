@@ -2,6 +2,80 @@
   //  Settings tab — recommend config + providers CRUD
   // ------------------------------------------------------------------
   let lastSettings = null;
+
+  // §1.3 prompt injection toggles — one row per toggleable prompt name
+  // (`TOGGLEABLE_PROMPT_NAMES` in src/core/prompts/mod.rs). We hard-code
+  // the descriptors here because there is no server endpoint that lists
+  // them yet; adding a new toggleable prompt = adding a row here + a
+  // const + a TOGGLEABLE_PROMPT_NAMES entry on the server side.
+  const PROMPT_INJECTION_TOGGLES = [
+    {
+      key: 'recommend_history_prefix',
+      title: '历史 transcript 注入',
+      hint: '把最近若干条 user/assistant 对话喂给路由 LLM，用作"我刚问过什么"的上下文',
+    },
+    {
+      key: 'recommend_already_routed',
+      title: '本 session 已激活技能列表',
+      hint: '告诉路由器本次会话内已经命中过哪些 skill，避免重复推荐',
+    },
+    {
+      key: 'recommend_cwd_prefix',
+      title: '当前 cwd 路径注入',
+      hint: '把 Claude Code 的工作目录路径写进 prompt，帮路由器猜场景',
+    },
+    {
+      key: 'recommend_project_context',
+      title: 'CLAUDE.md 项目上下文',
+      hint: '读 cwd 的 CLAUDE.md（及其 @ 引用）作为长上下文；与"读取 CLAUDE.md"开关共同生效',
+    },
+  ];
+
+  function renderPromptInjectionFlags() {
+    const wrap = document.getElementById('prefs-flags-list');
+    if (!wrap) return;
+    const loggedIn = !!(typeof account !== 'undefined' && account && account.me);
+    const flags = (loggedIn && account.prefs && account.prefs.prompt_injection_flags) || {};
+    if (!loggedIn) {
+      wrap.innerHTML = '<div class="muted prefs-flags-empty">登录后即可调整每个提示词的注入开关。</div>';
+      return;
+    }
+    wrap.innerHTML = PROMPT_INJECTION_TOGGLES.map((t) => {
+      // Default true when missing — matches UserPrefs::prompt_injection_enabled.
+      const on = flags[t.key] === undefined ? true : !!flags[t.key];
+      return `
+        <div class="setting-row" data-pref-flag="${escapeHTML(t.key)}">
+          <div class="setting-meta">
+            <div class="setting-title">${escapeHTML(t.title)} <code class="pref-flag-key">${escapeHTML(t.key)}</code></div>
+            <div class="setting-hint">${escapeHTML(t.hint)}</div>
+          </div>
+          <label class="switch">
+            <input type="checkbox" data-pref-flag-input="${escapeHTML(t.key)}" ${on ? 'checked' : ''}>
+            <span></span>
+          </label>
+        </div>
+      `;
+    }).join('');
+    wrap.querySelectorAll('input[data-pref-flag-input]').forEach((el) => {
+      el.addEventListener('change', () => onPromptInjectionFlagToggle(el));
+    });
+  }
+
+  async function onPromptInjectionFlagToggle(el) {
+    if (!account.me || !account.prefs) return;
+    const key = el.dataset.prefFlagInput;
+    if (!key) return;
+    if (!account.prefs.prompt_injection_flags) {
+      account.prefs.prompt_injection_flags = {};
+    }
+    account.prefs.prompt_injection_flags[key] = !!el.checked;
+    const saved = await savePrefs();
+    if (!saved) {
+      // savePrefs already re-rendered the user section; sync flags too so
+      // the DOM matches DB truth on failure.
+      renderPromptInjectionFlags();
+    }
+  }
   let providerEditingId = null;       // null = adding new; "<id>" = editing
   let provKindValue = 'openai-compat';
   let provKindDdInitialized = false;

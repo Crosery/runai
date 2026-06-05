@@ -7,6 +7,7 @@
   bindSettingsControls();
   bindAccountUI();
   bindMarketUI();
+  bindCommunityUI();
   refreshMe();
   applyRoute();
   startPolling();

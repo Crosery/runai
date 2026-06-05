@@ -104,6 +104,9 @@
     setSwitch('set-read-claude-md', 'read_claude_md', true);
     setSwitch('set-skip-reminder', 'skip_reminder_enabled', false);
     setText('set-skip-reminder-template', 'skip_reminder_template', '');
+    // §1.3 prompt injection toggles — render in lockstep with the rest of
+    // the per-user prefs section so login / logout flips them too.
+    if (typeof renderPromptInjectionFlags === 'function') renderPromptInjectionFlags();
   }
 
   function renderScopeBar() {
