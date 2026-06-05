@@ -39,7 +39,19 @@
 
 ### 1.2 客户端安装 —— server 模板化脚本
 
-**定稿决策**：客户端入口是**脚本**而非 binary。脚本内容由 server 按自身 mode 生成。客户端无 runai binary 装载需求。
+**这里"客户端"指什么场景**：
+
+设想 admin Alice 在自己机器上跑 `runai server --mode team`。同事 Bob **没装 runai binary**，他想用 Alice 的 server。Bob 的所有操作（注册账号、装 hook、上传社区 skill、看市场）都通过 `curl Alice-server/...` 完成。
+
+问题：怎么保证 Bob 拉下来的命令集只包含 team 模式相关功能、不暴露 Alice 服务端的本机管理命令（`scan` / `discover` / `doctor` 等）？
+
+**定稿决策**：客户端入口是**脚本**而非 binary。脚本内容由 server 按自身 mode 现场生成（不是 repo 里那份固定 install.sh 原样发出去）。
+
+- Bob `curl http://alice-server:port/install | bash` → 拉到的是 server 端拼装版本
+- Alice server 是 team 模式 → 脚本含 register / login / hook 装载 / 社区上传 / 库管理
+- Alice server 是 owner 模式 → `/install` 端点直接 404，Bob 拉不到脚本（owner 模式 = 单人自用，外部远程客户端无入场）
+
+也就是"客户端能看到什么、能跑什么"由 server mode 在生成脚本时决定，不靠客户端"主动表现良好"。
 
 - owner 模式 server：`/install` 直接 404，远程客户端无法拉脚本
 - team 模式 server：`/install` 返回当前模式下可用命令的脚本子集
@@ -71,10 +83,16 @@
 - 每个 `.md` 文件加 frontmatter（用处 / 调用方 / 输入变量 / 输出契约）
 - `src/core/prompts/AGENTS.md` 列出所有提示词的索引、每个提示词的"调用方-参数-用法"
 
-**注入开关**：
+**注入开关 / 用户偏好**：
+
+提示词内容固定（编进 binary），不让用户改正文。可改的只是"启用 / 跳过"这一组 per-user boolean。
+
 - 现有 `recommend` 已经有 `enabled` flag。其他提示词逐个补 `enabled` 开关
-- 多用户场景下"是否注入"是**per-user 配置**，落在 `users.prefs_json`
-- server `/recommend` 收到请求后读发起者的 `prefs.prompt_injection_flags`，按开关裁剪
+- 多用户场景下"是否注入"落在 `users.prefs_json.prompt_injection_flags: HashMap<String, bool>`
+- server `/recommend` 收到请求按发起者 uid 读 flags，按开关裁剪
+- 默认值（首次注册）= 全部启用，用户后续按需关
+- dashboard "我的偏好" tab 加一组启用开关列表，一行一条提示词，含名字 + 用处描述 + toggle
+- 改完即时 POST `/api/prefs`，无需重启
 
 **多用户隔离测试**（这块用户特别强调要严测）：
 - 新增 `tests/prompts_multiuser_e2e.rs`：
@@ -107,9 +125,15 @@
 
 **agent 友好接口**：上面所有端点都返回 JSON；不依赖 dashboard，外部 agent 可直接 curl 操作。
 
-**人友好接口**：
-- dashboard 加"社区"tab，复用现有 `.ml-row` 样式
-- "上传" 按钮触发本地 zip 选择 → 走 `/api/community/upload`
+**上传入口按使用者机器分场景**：
+
+| 使用者 | 机器状态 | 入口形态 |
+|---|---|---|
+| server 管理员 | 装了 runai binary 且本机就是 server | dashboard "社区" tab 上传按钮，浏览器选 dir 打包 POST /api/community/upload |
+| 远程用户（Bob） | 无 binary，curl 装过 install 脚本 | install 脚本生成的 bash 命令 `runai-client upload`，扫描 `~/.claude/skills/` 与当前 cwd 下 `.claude/skills/` 项目 skill，TUI 模式靠 fzf/gum 让用户勾选，CLI 模式 `--path <dir> --name <name>` 非交互 |
+| agent | 任一机器 | 直送 tar gz 到 /api/community/upload，自己处理分包，绕过任何 TUI |
+
+remote 客户端 TUI 上传依赖 `fzf` 或 `gum`，脚本检测缺则给安装指引并 fallback 到 CLI 模式（不强求装 TUI 工具）。
 
 **改动位置**：
 - `src/server/community.rs` 新增（按 server 现有按路由族拆分约定）
@@ -132,9 +156,9 @@
 - `src/tui/app/` Market tab 接入社区市场（与 dashboard 数据源一致）
 - 现有 skill 管理 tab 不动
 
-**不在 TUI 做的**：
-- server mode 切换（命令行专用）
-- 社区市场上传（dashboard 专用，因为涉及文件选择）
+**不在 runai 本机 TUI 做的**：
+- server mode 切换 —— 命令行专用，TUI 切换 mode 涉及重启 server，不适合
+- 社区市场上传 —— runai 本机用户上传走 dashboard；**远程客户端**上传走 §1.4 的 install 脚本 bash TUI（fzf/gum），与 runai binary 的 TUI 是两套独立实现
 
 ---
 
@@ -158,6 +182,63 @@
 - 显式从请求拿 owner_uid，**不能从全局状态/上次请求残留**取
 - 单元测试覆盖：两个用户的请求在同一进程并发，prefs 串扰为 0
 - `src/server/AGENTS.md` 加一条：任何 handler 读 prefs 前必须先经过 `current_owner_id`，跳过 = bug
+
+### 2.3 抓包安全 —— 提示词不进网络流、客户端流量加固、抓包探索成本拉高
+
+**核心原则**：`src/core/prompts/*.md` 任何一行内容都不出现在 client ↔ server 之间的 HTTP body 或 header 里。
+
+**威胁模型**：
+
+- T1 client 端用户在自己机器上 mitmproxy / Charles 抓 client ↔ server 流量，目的拿提示词模板、看路由逻辑、试探其他用户 skill
+- T2 同网段中间人被动 sniff client ↔ server 流量
+- T3 自动化 agent 通过 `/openapi.json` `/swagger` `/docs` `/__schema` 等惯用端点反向工程 API 形态
+- T4 通过登录端点暴力枚举账号是否存在
+
+**防护设计**：
+
+1. **提示词永不离开 server 进程**：
+   - 现状已天然满足：`src/core/prompts/*.md` 通过 `include_str!` 编进 binary
+   - hook → `/recommend` 协议里，client 发 `user_prompt`，server 内部调 LLM provider，仅返回路由 decision + SKILL.md 正文
+   - 提示词模板只出现在 server → LLM provider 出向请求里，client ↔ server 流量永远不含
+   - 验证：新增 `tests/prompt_leak_e2e.rs`，跑一组 `/recommend` 请求，dump 所有响应 body + header，grep 任一提示词的指纹字符串必须返回零行
+   - 同步检查：`/api/event/:id` 详情端点不能把 `user_prompt`(已落库) 拼提示词后返回。dashboard 看历史 event 只看用户提交那部分，不还原成完整 LLM input
+
+2. **强制 HTTPS（team 模式）**：
+   - owner 模式可裸 HTTP（127.0.0.1 不出外网）
+   - team 模式 server 启动时校验：若 `--host` 不在 127.0.0.1/::1 且未配 TLS → 直接拒启
+   - 新增 server flag：`--tls-cert <path>` `--tls-key <path>`
+   - 新增 `scripts/runai-gen-tls.sh` 生成本地 CA + server cert + client trust chain，用于自部署 team server quickstart
+   - 改动位置：新增 `src/server/tls.rs`（用 `axum-server` rustls feature 而非 native-tls），`src/cli/mod.rs::Commands::Server` 加两字段，`src/core/server_mode.rs` 校验 `team + non-loopback + no-tls = bail`
+
+3. **客户端证书指纹 pinning**：
+   - install 脚本拉下来时把 server 证书 SHA-256 烧进 `~/.runai-server.json`
+   - `~/.runai-hook.sh` 每次发 `/recommend` 先校验 server cert 指纹，不匹配则拒绝并报错
+   - 防御 T2 中间人换证书攻击
+   - 改动位置：`scripts/runai-client-install.sh` 增 `--pin-fingerprint` 选项；`~/.runai-hook.sh` 改用 `curl --cacert <pinned-cert>` 而非系统信任链
+
+4. **反 agent 探索**：
+   - 不暴露 `/openapi.json` `/swagger` `/swagger-ui` `/docs` `/api-docs` `/__schema` 任一路径
+   - 任何路径不存在统一 404 + 空 body，鉴权失败统一 401 + 空 body，**不靠错误文案区分两者**
+   - dashboard `/api/*` 全部需要 Bearer 或 session cookie，未授权一律 401 + 空 body
+   - GET `/` 渲染 dashboard HTML 不嵌 routes inventory / API endpoint 列表
+   - 改动位置：`src/server/mod.rs` 加全局 fallback handler 返回空 404；逐个 API handler 校验返回值不带任何"路径不存在" / "需要登录"之类的人类可读提示
+
+5. **登录端点抗枚举**：
+   - `/auth/login` 失败统一返回 `401 + {"error":"invalid_credentials"}`，**不区分**"用户不存在"vs"密码错"
+   - 服务端日志可以记真因供 admin 排错，但响应里不含
+   - 改动位置：`src/server/auth.rs` 现有 register/login handler 收口错误返回
+
+6. **速率限制**：
+   - `/auth/login` 单 IP 每分钟 5 次，超返 429 空 body，不带 retry-after 计数细节
+   - `/api/community/upload` 单 user 每小时 10 次
+   - `/skills/get/*` 单 IP 每秒 20 次
+   - 改动位置：新增 `src/server/middleware/rate_limit.rs`（用 `tower-governor` 或自写计数；现有依赖优先），`src/server/mod.rs` 挂中间件
+
+**已知妥协**：
+
+- team 模式 admin 可读 `router_events` 表的历史 `user_prompt`（用户提交给 router 的 prompt 已落库做 dashboard 展示）。这是设计而非 bug。team server 的 README / install 脚本输出里必须明确告知用户："你提交的 prompt 会被 server 落库 N 天用于展示"，让用户在使用前知情
+- LLM provider 一侧抓包属于"信任你选的 LLM 厂商"问题，runai 不解决。文档里建议 team 模式 admin 选支持 zero-retention 的 provider（DeepSeek / Anthropic claim 不落 prompt）
+- 客户端机器本身被攻破后什么都拦不住（拿到 `~/.runai-identity` 的 api_key 就等于该用户），这不在抓包模型里
 
 ---
 
