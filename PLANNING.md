@@ -129,11 +129,13 @@
 
 | 使用者 | 机器状态 | 入口形态 |
 |---|---|---|
-| server 管理员 | 装了 runai binary 且本机就是 server | dashboard "社区" tab 上传按钮，浏览器选 dir 打包 POST /api/community/upload |
+| server 管理员 | 装了 runai binary 且本机就是 server | 命令行 `runai community upload --path <dir> --name <name>` 或 runai TUI Community tab 扫描 + picker |
 | 远程用户（Bob） | 无 binary，curl 装过 install 脚本 | install 脚本生成的 bash 命令 `runai-client upload`，扫描 `~/.claude/skills/` 与当前 cwd 下 `.claude/skills/` 项目 skill，TUI 模式靠 fzf/gum 让用户勾选，CLI 模式 `--path <dir> --name <name>` 非交互 |
 | agent | 任一机器 | 直送 tar gz 到 /api/community/upload，自己处理分包，绕过任何 TUI |
 
 remote 客户端 TUI 上传依赖 `fzf` 或 `gum`，脚本检测缺则给安装指引并 fallback 到 CLI 模式（不强求装 TUI 工具）。
+
+**dashboard 不做上传 UI**：浏览器无法直接打包目录，FormData 上传体验差且重复 CLI/TUI 路径。社区 tab 只渲染浏览 + 安装 + 删除 + 详情；上传走命令行。空池提示文案明确指引用户用 `runai community upload` 或 TUI。
 
 **改动位置**：
 - `src/server/community.rs` 新增（按 server 现有按路由族拆分约定）
@@ -153,12 +155,12 @@ remote 客户端 TUI 上传依赖 `fzf` 或 `gum`，脚本检测缺则给安装�
 
 **TUI 改动范围**：
 - `src/tui/app/` 新增 hook 安装/卸载 panel
-- `src/tui/app/` Market tab 接入社区市场（与 dashboard 数据源一致）
+- `src/tui/app/` Community tab 接入社区市场（与 dashboard 数据源一致）
+- `src/tui/app/` Community tab 加上传 panel：扫描 `~/.claude/skills/` + cwd 下 `.claude/skills/` 列出本机所有 skill，用户用方向键选择 + Enter 上传（复用 `cli::handlers::community::upload` 逻辑）—— 待办，dashboard 上传 UI 已经移除
 - 现有 skill 管理 tab 不动
 
 **不在 runai 本机 TUI 做的**：
 - server mode 切换 —— 命令行专用，TUI 切换 mode 涉及重启 server，不适合
-- 社区市场上传 —— runai 本机用户上传走 dashboard；**远程客户端**上传走 §1.4 的 install 脚本 bash TUI（fzf/gum），与 runai binary 的 TUI 是两套独立实现
 
 ---
 
