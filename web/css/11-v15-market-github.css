@@ -261,16 +261,3 @@
 .confirm-items::-webkit-scrollbar{width:8px}
 .confirm-items::-webkit-scrollbar-thumb{background:var(--line);border-radius:4px}
 .confirm-items::-webkit-scrollbar-track{background:transparent}
-
-/* infinite-scroll "load more" sentinel — shared by Activity + Market.
-   The IntersectionObserver auto-loads the next page when this scrolls into
-   view; it stays clickable as a manual fallback. */
-.load-more{
-  display:block;width:100%;margin:10px 0 4px;padding:11px 14px;
-  border:1px dashed var(--line);border-radius:8px;background:transparent;
-  color:var(--muted);font:inherit;font-size:13px;text-align:center;
-  cursor:pointer;transition:background .15s,color .15s,border-color .15s}
-.load-more:hover{background:var(--line);color:var(--fg)}
-.load-more.done{border-style:solid;border-color:transparent;
-  cursor:default;opacity:.6}
-.load-more.done:hover{background:transparent;color:var(--muted)}

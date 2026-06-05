@@ -33,11 +33,31 @@
       });
     }
     const aw = $('#activity-window');
-    if (aw) initDropdown(aw, (val) => { activityState.hours = val; loadActivity(); });
+    if (aw) initDropdown(aw, (val) => { activityState.hours = val; activityState.offset = 0; loadActivity(); });
     const ah = $('#activity-hit');
-    if (ah) initDropdown(ah, (val) => { activityState.hitOnly = val; loadActivity(); });
-    // prev/next pager retired — the Activity list now streams via infinite
-    // scroll (see ensureActivitySentinel / loadActivityEvents in 04-*.js).
+    if (ah) initDropdown(ah, (val) => { activityState.hitOnly = val; activityState.offset = 0; loadActivity(); });
+    // Pager: reload the page in place WITHOUT the window jumping to the top.
+    // Clearing the fixed-height #activity-list briefly collapses the page
+    // height, which clamps window scroll to 0; capture scrollY before the
+    // reload and restore it after the list refills.
+    const pageActivity = (mutateOffset) => {
+      if (!mutateOffset()) return;
+      const y = window.scrollY;
+      const keep = () => window.scrollTo({ top: y });
+      loadActivity().finally(() => { keep(); requestAnimationFrame(keep); });
+    };
+    const ap = $('#activity-prev');
+    if (ap) ap.addEventListener('click', () => pageActivity(() => {
+      if (activityState.offset <= 0) return false;
+      activityState.offset = Math.max(0, activityState.offset - activityState.limit);
+      return true;
+    }));
+    const an = $('#activity-next');
+    if (an) an.addEventListener('click', () => pageActivity(() => {
+      if (activityState.offset + activityState.limit >= activityState.total) return false;
+      activityState.offset += activityState.limit;
+      return true;
+    }));
 
     // Global dropdown close
     document.addEventListener('click', () => {
