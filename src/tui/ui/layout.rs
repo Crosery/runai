@@ -41,6 +41,9 @@ pub fn render(f: &mut Frame, app: &App) {
         InputMode::Help => render_help(f, app, &t),
         InputMode::RenameGroup => render_rename_dialog(f, app, &t),
         InputMode::ConfirmDelete => render_confirm_delete(f, app, &t),
+        InputMode::CommunityUploadPicker => {
+            super::dialogs::render_community_upload_picker(f, app, &t)
+        }
         _ => {}
     }
 }
@@ -57,6 +60,8 @@ fn render_header(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         i.tab_mcps(),
         i.tab_groups(),
         i.tab_market(),
+        i.tab_community(),
+        i.tab_hooks(),
         i.tab_trash(),
     ];
     let mut tab_spans = Vec::new();
@@ -126,10 +131,13 @@ fn render_header(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
 }
 
 fn render_body(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
+    use super::tabs::{render_community, render_hooks};
     match app.tab {
         Tab::Groups => render_groups(f, app, t, area),
         Tab::Market => render_market(f, app, t, area),
         Tab::Trash => render_trash(f, app, t, area),
+        Tab::Hooks => render_hooks(f, app, t, area),
+        Tab::Community => render_community(f, app, t, area),
         _ => render_resources(f, app, t, area),
     }
 }
@@ -148,6 +156,8 @@ fn render_footer(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
                 Tab::Groups => i.help_normal_groups(),
                 Tab::Market => i.help_normal_market(),
                 Tab::Trash => i.help_normal_trash(),
+                Tab::Hooks => i.help_normal_hooks(),
+                Tab::Community => i.help_normal_community(),
                 _ => i.help_normal_skills(),
             };
             (search_info, help.to_string())

@@ -1,7 +1,8 @@
-use super::super::app::{App, Tab};
+use super::super::app::{App, HookSlot, Tab};
 use super::super::i18n::T;
 use super::super::theme::Theme;
 use super::helpers::heat_bar_line;
+use crate::core::cli_target::CliTarget;
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 
@@ -218,6 +219,187 @@ pub(super) fn render_trash(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         Constraint::Min(10),
     ];
     let table = Table::new(rows, widths)
+        .block(
+            Block::default()
+                .title(Span::styled(title, Style::default().fg(t.text).bold()))
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(t.border)),
+        )
+        .row_highlight_style(Style::default().bg(t.item_selected_bg));
+
+    let mut state = TableState::default();
+    state.select(Some(app.selected));
+    f.render_stateful_widget(table, area, &mut state);
+}
+
+pub(super) fn render_hooks(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
+    let i = T::new(app.lang);
+    let rows: Vec<Row> = CliTarget::ALL
+        .iter()
+        .map(|target| {
+            let slot = app
+                .hook_status
+                .get(target)
+                .copied()
+                .unwrap_or_else(HookSlot::unsupported);
+            let (marker, marker_color, status_text, status_color, note) = if !slot.supported {
+                (
+                    "—",
+                    t.item_disabled,
+                    i.hook_status_unsupported(),
+                    t.text_dim,
+                    i.hook_note_other(),
+                )
+            } else if slot.installed {
+                (
+                    "●",
+                    t.item_enabled,
+                    i.hook_status_installed(),
+                    t.tag_enabled,
+                    i.hook_note_claude(),
+                )
+            } else {
+                (
+                    "○",
+                    t.item_disabled,
+                    i.hook_status_not_installed(),
+                    t.tag_warning,
+                    i.hook_note_claude(),
+                )
+            };
+            let name_line = Line::from(vec![
+                Span::raw(" "),
+                Span::styled(marker, Style::default().fg(marker_color)),
+                Span::raw("  "),
+                Span::styled(
+                    format!("{:8}", target.name()),
+                    Style::default().fg(t.item_name).bold(),
+                ),
+            ]);
+            let status_cell =
+                Line::from(Span::styled(status_text, Style::default().fg(status_color)));
+            let note_cell = Line::from(Span::styled(note, Style::default().fg(t.item_desc)));
+            Row::new(vec![
+                Cell::from(name_line),
+                Cell::from(status_cell),
+                Cell::from(note_cell),
+            ])
+        })
+        .collect();
+
+    let title = format!(" {} ({}) ", i.title_hooks(), CliTarget::ALL.len());
+    let widths = [
+        Constraint::Length(20),
+        Constraint::Length(16),
+        Constraint::Min(10),
+    ];
+    let table = Table::new(rows, widths)
+        .header(
+            Row::new(vec![
+                Cell::from(Span::styled(
+                    format!("  {}", i.hook_col_target()),
+                    Style::default().fg(t.text_dim),
+                )),
+                Cell::from(Span::styled(
+                    i.hook_col_status(),
+                    Style::default().fg(t.text_dim),
+                )),
+                Cell::from(Span::styled(
+                    i.hook_col_note(),
+                    Style::default().fg(t.text_dim),
+                )),
+            ])
+            .height(1),
+        )
+        .block(
+            Block::default()
+                .title(Span::styled(title, Style::default().fg(t.text).bold()))
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(t.border)),
+        )
+        .row_highlight_style(Style::default().bg(t.item_selected_bg));
+
+    let mut state = TableState::default();
+    state.select(Some(app.hook_panel_idx));
+    f.render_stateful_widget(table, area, &mut state);
+}
+
+pub(super) fn render_community(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
+    let i = T::new(app.lang);
+    let visible = app.visible_community();
+
+    let rows: Vec<Row> = visible
+        .iter()
+        .map(|c| {
+            let name_line = Line::from(vec![
+                Span::raw("  "),
+                Span::styled(c.name.clone(), Style::default().fg(t.item_name).bold()),
+            ]);
+            let uploader_display = if c.uploader_username.is_empty() {
+                c.uploader_uid.clone()
+            } else {
+                c.uploader_username.clone()
+            };
+            let uploader_cell = Line::from(Span::styled(
+                uploader_display,
+                Style::default().fg(t.text_highlight),
+            ));
+            let installs_cell = Line::from(Span::styled(
+                format!("{}", c.installs_total),
+                Style::default().fg(t.text_dim),
+            ));
+            let version_cell = Line::from(Span::styled(
+                c.version.clone(),
+                Style::default().fg(t.item_desc),
+            ));
+            Row::new(vec![
+                Cell::from(name_line),
+                Cell::from(uploader_cell),
+                Cell::from(installs_cell),
+                Cell::from(version_cell),
+            ])
+        })
+        .collect();
+
+    let title = if app.community_loading {
+        i.title_community_loading().to_string()
+    } else if !app.community_error.is_empty() {
+        format!(" {} — {} ", i.title_community(), app.community_error)
+    } else {
+        format!(" {} ({}) ", i.title_community(), visible.len())
+    };
+
+    let widths = [
+        Constraint::Length(40),
+        Constraint::Length(20),
+        Constraint::Length(10),
+        Constraint::Min(10),
+    ];
+
+    let table = Table::new(rows, widths)
+        .header(
+            Row::new(vec![
+                Cell::from(Span::styled(
+                    format!("  {}", i.community_col_name()),
+                    Style::default().fg(t.text_dim),
+                )),
+                Cell::from(Span::styled(
+                    i.community_col_uploader(),
+                    Style::default().fg(t.text_dim),
+                )),
+                Cell::from(Span::styled(
+                    i.community_col_installs(),
+                    Style::default().fg(t.text_dim),
+                )),
+                Cell::from(Span::styled(
+                    i.community_col_version(),
+                    Style::default().fg(t.text_dim),
+                )),
+            ])
+            .height(1),
+        )
         .block(
             Block::default()
                 .title(Span::styled(title, Style::default().fg(t.text).bold()))

@@ -22,7 +22,44 @@ impl App {
             }
             InputMode::RenameGroup => self.handle_rename_group_key(key),
             InputMode::ConfirmDelete => self.handle_confirm_delete_key(key),
+            InputMode::CommunityUploadPicker => self.handle_community_upload_picker_key(key),
             InputMode::Normal => self.handle_normal_key(key),
+        }
+    }
+
+    fn handle_community_upload_picker_key(&mut self, key: KeyEvent) {
+        if self.upload_busy {
+            // Block all keys during upload to prevent double-submit.
+            return;
+        }
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.mode = InputMode::Normal;
+                self.upload_message.clear();
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if !self.upload_candidates.is_empty() {
+                    self.upload_idx = (self.upload_idx + 1).min(self.upload_candidates.len() - 1);
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if self.upload_idx > 0 {
+                    self.upload_idx -= 1;
+                }
+            }
+            KeyCode::Char('g') => self.upload_idx = 0,
+            KeyCode::Char('G') => {
+                if !self.upload_candidates.is_empty() {
+                    self.upload_idx = self.upload_candidates.len() - 1;
+                }
+            }
+            KeyCode::Char('r') => self.scan_upload_candidates(),
+            KeyCode::Enter => {
+                self.upload_selected_candidate();
+                // Stay in the picker after success so the user can see the
+                // success message + upload another skill in the same flow.
+            }
+            _ => {}
         }
     }
 
@@ -115,7 +152,7 @@ impl App {
                 if let Some((group_id, group_name, _, _, _)) = self.groups.get(self.group_pick_idx)
                 {
                     let resource_id = match self.tab {
-                        Tab::Groups | Tab::Market => {
+                        Tab::Groups | Tab::Market | Tab::Hooks | Tab::Community | Tab::Trash => {
                             self.mode = InputMode::Normal;
                             return;
                         }

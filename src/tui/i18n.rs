@@ -74,6 +74,85 @@ impl T {
     pub fn tab_trash(&self) -> &'static str {
         self.zh_en("垃圾桶", "Trash")
     }
+    pub fn tab_hooks(&self) -> &'static str {
+        self.zh_en("Hook", "Hooks")
+    }
+    pub fn tab_community(&self) -> &'static str {
+        self.zh_en("社区", "Community")
+    }
+
+    // ── Hooks panel ──
+    pub fn title_hooks(&self) -> &'static str {
+        self.zh_en(" Hook 安装 ", " Hook Install ")
+    }
+    pub fn help_normal_hooks(&self) -> &'static str {
+        self.zh_en(
+            "j/k ↕  H/L 切换  SPACE/ENTER 安装/卸载  t 主题  ? 帮助  q 退出",
+            "j/k ↕  H/L tab  SPACE/ENTER install/uninstall  t theme  ? help  q quit",
+        )
+    }
+    pub fn hook_col_target(&self) -> &'static str {
+        self.zh_en("CLI", "CLI")
+    }
+    pub fn hook_col_status(&self) -> &'static str {
+        self.zh_en("状态", "Status")
+    }
+    pub fn hook_col_note(&self) -> &'static str {
+        self.zh_en("说明", "Note")
+    }
+    pub fn hook_status_installed(&self) -> &'static str {
+        self.zh_en("已安装", "installed")
+    }
+    pub fn hook_status_not_installed(&self) -> &'static str {
+        self.zh_en("未安装", "not installed")
+    }
+    pub fn hook_status_unsupported(&self) -> &'static str {
+        self.zh_en("不支持", "unsupported")
+    }
+    pub fn hook_note_claude(&self) -> &'static str {
+        self.zh_en(
+            "UserPromptSubmit 路由 hook + SessionStart 自动 enrich",
+            "UserPromptSubmit router hook + SessionStart auto-enrich",
+        )
+    }
+    pub fn hook_note_other(&self) -> &'static str {
+        self.zh_en(
+            "尚未对接 runai router（仅 Claude 已实现）",
+            "no router hook contract yet (Claude only today)",
+        )
+    }
+
+    // ── Community tab ──
+    pub fn title_community(&self) -> &'static str {
+        self.zh_en(" 社区市场 ", " Community Market ")
+    }
+    pub fn title_community_loading(&self) -> &'static str {
+        self.zh_en(" 社区市场 — 加载中 ", " Community Market — Loading ")
+    }
+    pub fn help_normal_community(&self) -> &'static str {
+        self.zh_en(
+            "j/k ↕  H/L 切换  u 上传  / 搜索  t 主题  ? 帮助  q 退出",
+            "j/k ↕  H/L tab  u upload  / search  t theme  ? help  q quit",
+        )
+    }
+    pub fn community_col_name(&self) -> &'static str {
+        self.zh_en("名称", "Name")
+    }
+    pub fn community_col_uploader(&self) -> &'static str {
+        self.zh_en("作者", "Uploader")
+    }
+    pub fn community_col_installs(&self) -> &'static str {
+        self.zh_en("安装数", "Installs")
+    }
+    pub fn community_col_version(&self) -> &'static str {
+        self.zh_en("版本", "Version")
+    }
+    pub fn community_empty(&self) -> &'static str {
+        self.zh_en(
+            "  (空) — 社区市场暂无 skill",
+            "  (empty) — no skills in the community market yet",
+        )
+    }
 
     // ── Filter modes ──
     pub fn filter_all(&self) -> &'static str {

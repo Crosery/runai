@@ -13,11 +13,21 @@ pub enum Tab {
     Mcps,
     Groups,
     Market,
+    Community,
+    Hooks,
     Trash,
 }
 
 impl Tab {
-    pub const ALL: &[Tab] = &[Tab::Skills, Tab::Mcps, Tab::Groups, Tab::Market, Tab::Trash];
+    pub const ALL: &[Tab] = &[
+        Tab::Skills,
+        Tab::Mcps,
+        Tab::Groups,
+        Tab::Market,
+        Tab::Community,
+        Tab::Hooks,
+        Tab::Trash,
+    ];
 
     pub fn label(&self) -> &'static str {
         match self {
@@ -25,6 +35,8 @@ impl Tab {
             Tab::Mcps => "MCPs",
             Tab::Groups => "Groups",
             Tab::Market => "Market",
+            Tab::Community => "Community",
+            Tab::Hooks => "Hooks",
             Tab::Trash => "Trash",
         }
     }
@@ -76,6 +88,8 @@ pub enum InputMode {
     RenameGroup,
     /// Confirm a pending destructive delete/remove action
     ConfirmDelete,
+    /// Community upload picker: shows scanned skill candidates, user picks one + Enter uploads
+    CommunityUploadPicker,
 }
 
 #[derive(Clone, PartialEq)]
@@ -155,6 +169,110 @@ pub struct App {
     pub market_rxs: HashMap<String, mpsc::Receiver<Result<Vec<MarketSkill>, String>>>,
     /// Sources currently being fetched
     pub market_fetching: std::collections::HashSet<String>,
+    // ── Hooks panel state (PLANNING §1.5) ──
+    /// Selected row inside the Hooks tab (0..CliTarget::ALL.len()).
+    pub hook_panel_idx: usize,
+    /// Per-CLI hook install status snapshot, populated by reload().
+    /// True = a `runai recommend` hook entry is present in that target's
+    /// settings.json. Only Claude has a real hook today; the other three
+    /// rows render as "unsupported" but stay in the table so the panel is
+    /// future-proof when more CLIs get a router hook contract.
+    pub hook_status: HashMap<CliTarget, HookSlot>,
+    // ── Community market tab state (PLANNING §1.5) ──
+    /// In-memory cache of `/api/community/list` result.
+    pub community_skills: Vec<CommunitySkill>,
+    /// True while a fetch is in flight.
+    pub community_loading: bool,
+    /// Last fetch error string (empty on success or before first fetch).
+    pub community_error: String,
+    /// Cursor into `visible_community()` (search-filtered).
+    pub community_idx: usize,
+    // ── Community upload picker (PLANNING §1.5 待办) ──
+    /// Local skill candidates scanned from `~/.claude/skills/` + cwd `.claude/skills/`.
+    pub upload_candidates: Vec<UploadCandidate>,
+    /// Cursor into `upload_candidates`.
+    pub upload_idx: usize,
+    /// True while a single upload is in flight (blocks Enter to prevent double-fire).
+    pub upload_busy: bool,
+    /// Last upload error/success string; rendered in the picker footer.
+    pub upload_message: String,
+}
+
+/// One skill candidate discoverable for community upload.
+#[derive(Debug, Clone)]
+pub struct UploadCandidate {
+    /// Absolute path to the skill directory (must contain SKILL.md).
+    pub path: PathBuf,
+    /// Skill name (defaults to dir basename, displayed + sent to /api/community/upload).
+    pub name: String,
+    /// Where this candidate came from. Used for the picker label so the user
+    /// sees "USER" vs "PROJECT" instead of having to read the full path.
+    pub source: UploadSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UploadSource {
+    /// `~/.claude/skills/<name>/`
+    ClaudeUser,
+    /// `<cwd>/.claude/skills/<name>/` — project-local skill
+    ProjectCwd,
+}
+
+impl UploadSource {
+    pub fn short_label(&self) -> &'static str {
+        match self {
+            UploadSource::ClaudeUser => "USER",
+            UploadSource::ProjectCwd => "PROJECT",
+        }
+    }
+}
+
+/// Hook-install status row for a single CLI target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HookSlot {
+    /// True when this CLI exposes a router-hook contract runai can manage.
+    /// Today only `Claude` is supported. Other CLIs render as a placeholder
+    /// row so the user sees the full per-CLI matrix.
+    pub supported: bool,
+    /// Hook currently installed for that target. Meaningful only when
+    /// `supported`; ignored otherwise.
+    pub installed: bool,
+}
+
+impl HookSlot {
+    pub fn unsupported() -> Self {
+        Self {
+            supported: false,
+            installed: false,
+        }
+    }
+    pub fn supported(installed: bool) -> Self {
+        Self {
+            supported: true,
+            installed,
+        }
+    }
+}
+
+/// One row from the team-mode `/api/community/list` response.
+///
+/// Mirrors the server `CommunitySkillJson` shape (server::community.rs); we
+/// keep the fields we render and discard the rest. Decode is permissive
+/// (`#[serde(default)]`) so a server adding new fields doesn't break the
+/// TUI mid-version.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct CommunitySkill {
+    #[serde(default)]
+    pub uploader_uid: String,
+    #[serde(default)]
+    pub uploader_username: String,
+    pub name: String,
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub installs_total: u64,
+    #[serde(default)]
+    pub created_at: i64,
 }
 
 pub struct FirstLaunchInfo {

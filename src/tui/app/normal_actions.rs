@@ -4,6 +4,19 @@ use crossterm::event::{KeyCode, KeyEvent};
 
 impl App {
     pub(super) fn handle_normal_key(&mut self, key: KeyEvent) {
+        // Hooks tab owns its own key grammar — let it consume the event
+        // before the default skill/mcp/list keymap below kicks in.
+        if self.tab == Tab::Hooks && self.handle_hooks_key(key) {
+            return;
+        }
+        // Community tab: 'u' opens the upload picker (scan + select + upload).
+        // The picker itself runs in InputMode::CommunityUploadPicker so its
+        // key handler lives in keybindings.rs alongside the other overlay handlers.
+        if self.tab == Tab::Community && matches!(key.code, KeyCode::Char('u')) {
+            self.scan_upload_candidates();
+            self.mode = InputMode::CommunityUploadPicker;
+            return;
+        }
         match key.code {
             // Navigation
             KeyCode::Char('j') | KeyCode::Down => {
@@ -227,7 +240,7 @@ impl App {
                     self.reload();
                 }
             }
-            Tab::Market | Tab::Trash => {}
+            Tab::Market | Tab::Trash | Tab::Hooks | Tab::Community => {}
         }
     }
 }

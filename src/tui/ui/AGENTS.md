@@ -19,7 +19,7 @@ Pure rendering. Takes `&App` + `&mut Frame`, draws the current tab, modal dialog
 |---|---|---|
 | `mod.rs` | re-exports only, no logic | `pub use layout::render;` |
 | `layout.rs` | frame entry + chrome + tab dispatch | `render` (pub entry), `render_header`, `render_body`, `render_footer` |
-| `tabs.rs` | per-tab body renders | `render_resources` (Skills + MCPs), `render_groups`, `render_trash`, `render_market` |
+| `tabs.rs` | per-tab body renders | `render_resources` (Skills + MCPs), `render_groups`, `render_trash`, `render_market`, `render_hooks` (PLANNING §1.5 — 4-row CLI hook matrix; cursor lives in `app.hook_panel_idx`, not `app.selected`), `render_community` (PLANNING §1.5 — community feed loaded by `App::reload_community`) |
 | `dialogs.rs` | modal/overlay dialogs | `render_create_dialog`, `render_group_picker`, `render_install_dialog`, `render_group_detail`, `render_pick_skill`, `render_source_manager`, `render_add_source_dialog`, `render_rename_dialog`, `render_help` |
 | `first_launch.rs` | first-launch welcome / scanning / scan-done steps | `render_first_launch` |
 | `confirm.rs` | delete-confirmation modal | `render_confirm_delete` |

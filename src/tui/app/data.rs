@@ -44,7 +44,7 @@ impl App {
         let kind_filter = match self.tab {
             Tab::Skills => Some(crate::core::resource::ResourceKind::Skill),
             Tab::Mcps => Some(crate::core::resource::ResourceKind::Mcp),
-            Tab::Groups | Tab::Market | Tab::Trash => None,
+            Tab::Groups | Tab::Market | Tab::Trash | Tab::Hooks | Tab::Community => None,
         };
 
         self.items = self
@@ -95,6 +95,14 @@ impl App {
 
         if self.selected >= self.visible_count() && self.visible_count() > 0 {
             self.selected = self.visible_count() - 1;
+        }
+
+        // Tab-specific lazy loads: keep these last so the cheap shared
+        // refresh above always runs even on Hooks / Community tabs.
+        match self.tab {
+            Tab::Hooks => self.reload_hook_status(),
+            Tab::Community => self.reload_community(),
+            _ => {}
         }
     }
 

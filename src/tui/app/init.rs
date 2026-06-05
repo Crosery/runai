@@ -1,4 +1,4 @@
-use super::model::{App, FilterMode, InputMode, Tab};
+use super::model::{App, CommunitySkill, FilterMode, HookSlot, InputMode, Tab};
 use crate::core::cli_target::CliTarget;
 use crate::core::manager::SkillManager;
 use crate::core::market::{self, MarketSkill, SourceEntry};
@@ -50,6 +50,16 @@ impl App {
             market_cache: HashMap::new(),
             market_rxs: HashMap::new(),
             market_fetching: std::collections::HashSet::new(),
+            hook_panel_idx: 0,
+            hook_status: initial_hook_status(),
+            community_skills: Vec::new(),
+            community_loading: false,
+            community_error: String::new(),
+            community_idx: 0,
+            upload_candidates: Vec::new(),
+            upload_idx: 0,
+            upload_busy: false,
+            upload_message: String::new(),
         }
     }
 
@@ -134,6 +144,8 @@ impl App {
             Tab::Groups => self.visible_groups().len(),
             Tab::Market => self.visible_market().len(),
             Tab::Trash => self.visible_trash().len(),
+            Tab::Hooks => CliTarget::ALL.len(),
+            Tab::Community => self.visible_community().len(),
             _ => self.visible_items().len(),
         }
     }
@@ -160,4 +172,29 @@ impl App {
             })
             .collect()
     }
+
+    /// Search-filtered community feed for the Community tab.
+    pub fn visible_community(&self) -> Vec<&CommunitySkill> {
+        let q = self.search.to_lowercase();
+        self.community_skills
+            .iter()
+            .filter(|c| {
+                q.is_empty()
+                    || c.name.to_lowercase().contains(&q)
+                    || c.uploader_username.to_lowercase().contains(&q)
+                    || c.uploader_uid.to_lowercase().contains(&q)
+            })
+            .collect()
+    }
+}
+
+/// Build the initial unsupported-by-default hook status map. `reload()`
+/// overwrites Claude with the live filesystem snapshot on every Hooks-tab
+/// activation. The three non-Claude rows stay `HookSlot::unsupported`.
+fn initial_hook_status() -> HashMap<CliTarget, HookSlot> {
+    let mut m = HashMap::new();
+    for t in CliTarget::ALL {
+        m.insert(*t, HookSlot::unsupported());
+    }
+    m
 }

@@ -261,6 +261,103 @@ pub(super) fn render_pick_skill(f: &mut Frame, app: &App, t: &Theme) {
     );
 }
 
+/// Community upload picker overlay (PLANNING §1.5).
+///
+/// Lists local skill candidates scanned by `App::scan_upload_candidates`
+/// (`~/.claude/skills/` + cwd `.claude/skills/`). User uses j/k or arrows
+/// to move, Enter to upload, Esc/q to cancel, r to rescan. Footer shows
+/// the last upload message (success or error). When `upload_busy` is
+/// true the picker shows a "uploading …" line and all keys are ignored
+/// (see `handle_community_upload_picker_key`).
+pub(super) fn render_community_upload_picker(f: &mut Frame, app: &App, t: &Theme) {
+    let area = centered_rect(60, 70, f.area());
+    f.render_widget(Clear, area);
+
+    let title = format!(
+        " Upload skill to community — {} candidate(s) ",
+        app.upload_candidates.len()
+    );
+    let block = Block::default()
+        .title(Span::styled(title, Style::default().fg(t.brand).bold()))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(t.text_highlight));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let chunks = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(0),
+        Constraint::Length(1),
+        Constraint::Length(2),
+    ])
+    .split(inner);
+
+    let header = Line::from(Span::styled(
+        "  Scan: ~/.claude/skills + cwd/.claude/skills",
+        Style::default().fg(t.text_dim),
+    ));
+    f.render_widget(Paragraph::new(header), chunks[0]);
+
+    if app.upload_candidates.is_empty() {
+        let empty = Paragraph::new(Line::from(Span::styled(
+            "  no candidates found — create a skill dir with a SKILL.md first",
+            Style::default().fg(t.text_dim),
+        )));
+        f.render_widget(empty, chunks[1]);
+    } else {
+        let items: Vec<ListItem> = app
+            .upload_candidates
+            .iter()
+            .map(|c| {
+                let line = Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(
+                        format!("[{:>7}]", c.source.short_label()),
+                        Style::default().fg(t.text_dim),
+                    ),
+                    Span::raw(" "),
+                    Span::styled(&c.name, Style::default().fg(t.item_name).bold()),
+                ]);
+                ListItem::new(line)
+            })
+            .collect();
+
+        let list = List::new(items)
+            .highlight_style(Style::default().bg(t.item_selected_bg))
+            .highlight_symbol(" ▸ ");
+
+        let mut state = ListState::default();
+        state.select(Some(app.upload_idx));
+        f.render_stateful_widget(list, chunks[1], &mut state);
+    }
+
+    let msg_style = if app.upload_busy {
+        Style::default().fg(t.text_highlight).bold()
+    } else if app.upload_message.starts_with("upload failed") {
+        Style::default().fg(t.tag_warning)
+    } else {
+        Style::default().fg(t.text_dim)
+    };
+    let msg = Paragraph::new(Line::from(Span::styled(
+        format!("  {}", app.upload_message),
+        msg_style,
+    )));
+    f.render_widget(msg, chunks[2]);
+
+    let help = Line::from(vec![
+        Span::styled("  j/k", Style::default().fg(t.text_highlight)),
+        Span::styled(" move  ", Style::default().fg(t.text_dim)),
+        Span::styled("Enter", Style::default().fg(t.text_highlight)),
+        Span::styled(" upload  ", Style::default().fg(t.text_dim)),
+        Span::styled("r", Style::default().fg(t.text_highlight)),
+        Span::styled(" rescan  ", Style::default().fg(t.text_dim)),
+        Span::styled("Esc/q", Style::default().fg(t.text_highlight)),
+        Span::styled(" close", Style::default().fg(t.text_dim)),
+    ]);
+    f.render_widget(Paragraph::new(help), chunks[3]);
+}
+
 pub(super) fn render_source_manager(f: &mut Frame, app: &App, t: &Theme) {
     let i = T::new(app.lang);
     let area = centered_rect(60, 60, f.area());
