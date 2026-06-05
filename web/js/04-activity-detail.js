@@ -6,87 +6,160 @@
     hitOnly: '',
     filter: '',
     limit: 100,
-    offset: 0,
+    offset: 0,      // how many rows already loaded (next page starts here)
     total: 0,
+    loading: false,
+    done: false,
   };
 
-  async function loadActivity() {
+  // Build + append one batch of event rows to the list (no clearing — this is
+  // what keeps infinite scroll from resetting the scroll position). Returns the
+  // number of rows actually appended after the client-side text filter.
+  function appendActivityRows(events) {
+    const list = $('#activity-list');
+    const f = activityState.filter.toLowerCase();
+    const rows = events.filter((e) => {
+      if (!activityState.filter) return true;
+      const skill = ((e.chosen && e.chosen[0]) || '').toLowerCase();
+      const prompt = (e.user_prompt || '').toLowerCase();
+      const model = (e.model || '').toLowerCase();
+      return skill.includes(f) || prompt.includes(f) || model.includes(f);
+    });
+    for (const e of rows) {
+      const row = document.createElement('div');
+      row.className = 'recent-row';
+      row.dataset.id = e.id ?? '';
+      const chosenArr = Array.isArray(e.chosen) ? e.chosen : [];
+      const modeChar = (e.mode || '').toLowerCase().startsWith('e') ? 'e' : 'c';
+      const modeText = (e.mode || '').toLowerCase();
+      const okErr = e.status === 'ok' ? 'ok' : 'err';
+      const okText = e.status === 'ok' ? 'ok' : escapeHTML(e.status || 'err');
+      const promptShort = e.user_prompt ? e.user_prompt.slice(0, 140) : '';
+      const skillChips = chosenArr.length
+        ? chosenArr.map((s) => `<span class="skill-chip">${escapeHTML(s)}</span>`).join('')
+        : '<span class="nm-empty">(no skill)</span>';
+      const promptLine = promptShort
+        ? `<div class="prompt-preview">${escapeHTML(promptShort)}</div>`
+        : '';
+      const modelText = e.model ? escapeHTML(e.model) : '—';
+      row.innerHTML = `
+        <div class="ts">${fmtTime(e.ts)}</div>
+        <div class="nm">
+          <div class="skill-chips">${skillChips}</div>
+          ${promptLine}
+        </div>
+        <div class="mode ${modeChar}">${escapeHTML(modeText || '—')}</div>
+        <div class="model">${modelText}</div>
+        <div class="dur">${escapeHTML(fmtMsDur(e.latency_ms))}</div>
+        <div class="tok">${fmtTok(e.prompt_tokens)} tok</div>
+        <div class="st ${okErr}">${okText}</div>
+      `;
+      row.addEventListener('click', () => openDetail(e.id));
+      list.appendChild(row);
+    }
+    return rows.length;
+  }
+
+  // Fetch one page of events. fresh=true resets to the top (filter/window
+  // change); otherwise it APPENDS the next page (infinite scroll), never
+  // clearing what's on screen, so the scroll position is preserved.
+  async function loadActivityEvents(fresh) {
+    if (activityState.loading) return;
+    if (!fresh && activityState.done) return;
+    activityState.loading = true;
+    if (fresh) {
+      activityState.offset = 0;
+      activityState.done = false;
+      $('#activity-list').innerHTML = '';
+    }
+    updateActivityMore();
     const qs = new URLSearchParams();
     if (activityState.hours) qs.set('hours', activityState.hours);
     qs.set('limit', activityState.limit);
     qs.set('offset', activityState.offset);
     if (activityState.hitOnly) qs.set('hit_only', '1');
-
-    // chart
-    try {
-      const buckets = activityState.hours === '1' ? 12 : activityState.hours === '24' ? 48 : activityState.hours === '168' ? 56 : 60;
-      const tq = new URLSearchParams();
-      tq.set('hours', activityState.hours || '24');
-      tq.set('buckets', buckets);
-      const tres = await fetch(`/api/timeline?${tq.toString()}`);
-      if (tres.ok) {
-        const td = await tres.json();
-        drawTimelineInto('#activity-chart', td);
-      }
-    } catch (_) {}
-
-    // events
     try {
       const res = await fetch(`/api/events?${qs.toString()}`);
-      if (!res.ok) return;
-      const data = await res.json();
-      activityState.total = data.total ?? 0;
-      $('#activity-count').textContent = fmtInt(activityState.total);
-      const list = $('#activity-list');
-      list.innerHTML = '';
-      const rows = (data.events || data.rows || []).filter((e) => {
-        if (!activityState.filter) return true;
-        const f = activityState.filter.toLowerCase();
-        const skill = ((e.chosen && e.chosen[0]) || '').toLowerCase();
-        const prompt = (e.user_prompt || '').toLowerCase();
-        const model = (e.model || '').toLowerCase();
-        return skill.includes(f) || prompt.includes(f) || model.includes(f);
-      });
-      if (rows.length === 0) {
-        list.innerHTML = '<div class="stream-empty muted">这个区间没有事件</div>';
-      } else {
-        for (const e of rows) {
-          const row = document.createElement('div');
-          row.className = 'recent-row';
-          row.dataset.id = e.id ?? '';
-          const chosenArr = Array.isArray(e.chosen) ? e.chosen : [];
-          const modeChar = (e.mode || '').toLowerCase().startsWith('e') ? 'e' : 'c';
-          const modeText = (e.mode || '').toLowerCase();
-          const okErr = e.status === 'ok' ? 'ok' : 'err';
-          const okText = e.status === 'ok' ? 'ok' : escapeHTML(e.status || 'err');
-          const promptShort = e.user_prompt ? e.user_prompt.slice(0, 140) : '';
-          const skillChips = chosenArr.length
-            ? chosenArr.map((s) => `<span class="skill-chip">${escapeHTML(s)}</span>`).join('')
-            : '<span class="nm-empty">(no skill)</span>';
-          const promptLine = promptShort
-            ? `<div class="prompt-preview">${escapeHTML(promptShort)}</div>`
-            : '';
-          const modelText = e.model ? escapeHTML(e.model) : '—';
-          row.innerHTML = `
-            <div class="ts">${fmtTime(e.ts)}</div>
-            <div class="nm">
-              <div class="skill-chips">${skillChips}</div>
-              ${promptLine}
-            </div>
-            <div class="mode ${modeChar}">${escapeHTML(modeText || '—')}</div>
-            <div class="model">${modelText}</div>
-            <div class="dur">${escapeHTML(fmtMsDur(e.latency_ms))}</div>
-            <div class="tok">${fmtTok(e.prompt_tokens)} tok</div>
-            <div class="st ${okErr}">${okText}</div>
-          `;
-          row.addEventListener('click', () => openDetail(e.id));
-          list.appendChild(row);
+      if (res.ok) {
+        const data = await res.json();
+        activityState.total = data.total ?? 0;
+        $('#activity-count').textContent = fmtInt(activityState.total);
+        const evs = data.events || data.rows || [];
+        appendActivityRows(evs);
+        activityState.offset += evs.length;
+        activityState.done = evs.length === 0 || activityState.offset >= activityState.total;
+        const list = $('#activity-list');
+        if (fresh && list.children.length === 0) {
+          list.innerHTML = '<div class="stream-empty muted">这个区间没有事件</div>';
         }
       }
-      const start = activityState.offset + 1;
-      const end = Math.min(activityState.offset + activityState.limit, activityState.total);
-      $('#activity-page').textContent = `${start} - ${end} / ${fmtInt(activityState.total)}`;
     } catch (_) {}
+    activityState.loading = false;
+    updateActivityMore();
+  }
+
+  // The infinite-scroll sentinel: a row at the bottom of the list. It auto-loads
+  // the next page when it scrolls into view, and is also clickable as a fallback.
+  let activityObserver = null;
+  function ensureActivitySentinel() {
+    let more = $('#activity-more');
+    if (!more) {
+      const host = $('#activity-pager') || $('#activity-list')?.parentElement;
+      if (!host) return;
+      // retire the old prev/next pager — infinite scroll replaces it
+      $('#activity-prev')?.setAttribute('hidden', '');
+      $('#activity-next')?.setAttribute('hidden', '');
+      $('#activity-page')?.setAttribute('hidden', '');
+      more = document.createElement('button');
+      more.type = 'button';
+      more.id = 'activity-more';
+      more.className = 'load-more';
+      more.addEventListener('click', () => loadActivityEvents(false));
+      host.appendChild(more);
+    }
+    if (!activityObserver) {
+      activityObserver = new IntersectionObserver((entries) => {
+        if (entries.some((en) => en.isIntersecting)) loadActivityEvents(false);
+      }, { rootMargin: '400px' });
+      activityObserver.observe(more);
+    }
+  }
+
+  function updateActivityMore() {
+    const more = $('#activity-more');
+    if (!more) return;
+    if (activityState.done) {
+      more.textContent = activityState.total > 0
+        ? `已全部加载 · 共 ${fmtInt(activityState.total)} 条`
+        : '';
+      more.classList.add('done');
+    } else if (activityState.loading) {
+      more.textContent = '加载中 …';
+      more.classList.remove('done');
+    } else {
+      more.textContent = `加载更多 · 已显示 ${fmtInt(activityState.offset)} / ${fmtInt(activityState.total)}`;
+      more.classList.remove('done');
+    }
+  }
+
+  function loadActivityChart() {
+    const buckets = activityState.hours === '1' ? 12 : activityState.hours === '24' ? 48 : activityState.hours === '168' ? 56 : 60;
+    const tq = new URLSearchParams();
+    tq.set('hours', activityState.hours || '24');
+    tq.set('buckets', buckets);
+    fetch(`/api/timeline?${tq.toString()}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((td) => { if (td) drawTimelineInto('#activity-chart', td); })
+      .catch(() => {});
+  }
+
+  // Public entry: fresh reload of the Activity tab (open / filter / window
+  // change). Redraws the chart and resets the event list to the first page;
+  // subsequent pages stream in via the infinite-scroll sentinel.
+  async function loadActivity() {
+    ensureActivitySentinel();
+    loadActivityChart();
+    await loadActivityEvents(true);
   }
 
   // 通用 timeline 画图 helper — 兼容 {points:[]} / {buckets:[]} / {rows:[]} / array

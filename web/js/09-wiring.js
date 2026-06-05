@@ -33,21 +33,11 @@
       });
     }
     const aw = $('#activity-window');
-    if (aw) initDropdown(aw, (val) => { activityState.hours = val; activityState.offset = 0; loadActivity(); });
+    if (aw) initDropdown(aw, (val) => { activityState.hours = val; loadActivity(); });
     const ah = $('#activity-hit');
-    if (ah) initDropdown(ah, (val) => { activityState.hitOnly = val; activityState.offset = 0; loadActivity(); });
-    const ap = $('#activity-prev');
-    if (ap) ap.addEventListener('click', () => {
-      activityState.offset = Math.max(0, activityState.offset - activityState.limit);
-      loadActivity();
-    });
-    const an = $('#activity-next');
-    if (an) an.addEventListener('click', () => {
-      if (activityState.offset + activityState.limit < activityState.total) {
-        activityState.offset += activityState.limit;
-        loadActivity();
-      }
-    });
+    if (ah) initDropdown(ah, (val) => { activityState.hitOnly = val; loadActivity(); });
+    // prev/next pager retired — the Activity list now streams via infinite
+    // scroll (see ensureActivitySentinel / loadActivityEvents in 04-*.js).
 
     // Global dropdown close
     document.addEventListener('click', () => {
