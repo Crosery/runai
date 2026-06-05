@@ -1,3 +1,4 @@
+<!-- prompt: hook_output | callers: recommend::hook_output::render_hook_output | vars: {MODE},{REASONING_BLOCK},{CANDIDATES_BLOCK},{ACTIVATION_DIRECTIVE},{SKIP_REMINDER_BLOCK},{SERVER_URL},{USER_HEADER},{SESSION_HISTORY_BLOCK},{FEEDBACK_PROTOCOL_BLOCK} -->
 runai 推荐 (mode={MODE})
 
 {REASONING_BLOCK}候选：

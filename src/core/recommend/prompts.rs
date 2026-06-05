@@ -5,10 +5,10 @@
 //! summarisation/feedback user messages. The router's `recommend_system.md`
 //! system prompt is also re-exported from here for the LLM call layer.
 
-// All router prompts and hook output templates live in src/core/prompts/ so
-// they are not scattered through the code. Edit those files to retune wording;
-// the placeholders below are substituted with str::replace at runtime.
-pub(super) const SYSTEM_PROMPT_TEMPLATE: &str = include_str!("../prompts/recommend_system.md");
+// All router prompts and hook output templates live in src/core/prompts/ and
+// are exposed as `PROMPT_<NAME>` consts via the centralised registry
+// (`crate::core::prompts`). Edit the .md files to retune wording.
+pub(super) const SYSTEM_PROMPT_TEMPLATE: &str = crate::core::prompts::PROMPT_RECOMMEND_SYSTEM;
 
 /// The hard language directive injected into every enrich / feedback prompt.
 ///

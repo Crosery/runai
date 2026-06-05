@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-const PROJECT_CONTEXT_TEMPLATE: &str = include_str!("../prompts/recommend_project_context.md");
+const PROJECT_CONTEXT_TEMPLATE: &str = crate::core::prompts::PROMPT_RECOMMEND_PROJECT_CONTEXT;
 
 /// Read `<cwd>/CLAUDE.md` and any files it `@`-references, trim each to
 /// `PER_FILE_LIMIT` chars, and wrap in the PROJECT_CONTEXT template.

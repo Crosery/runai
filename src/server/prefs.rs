@@ -314,21 +314,132 @@ pub(super) async fn api_get_prefs(
     Ok(Json(prefs))
 }
 
-/// POST /api/prefs — replace current user prefs (full object).
+/// POST /api/prefs — update current user prefs.
+///
+/// Accepts either a full `UserPrefs` JSON object (replaces every field) or a
+/// partial JSON object (each missing top-level key keeps its previous
+/// stored value). `prompt_injection_flags` partial updates merge per-key
+/// rather than replace the whole map — sending
+/// `{"prompt_injection_flags":{"recommend_history_prefix":false}}` flips
+/// just that one toggle and leaves every other toggle untouched. Pass an
+/// explicit `null` value to drop a flag (reverts the toggle to its default
+/// = enabled).
 pub(super) async fn api_post_prefs(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(new_prefs): Json<UserPrefs>,
+    Json(patch): Json<serde_json::Value>,
 ) -> Result<Json<UserPrefs>, ApiError> {
     let prefs = tokio::task::spawn_blocking(move || -> Result<UserPrefs, ApiError> {
         let db = state.db().map_err(ApiError::Internal)?;
         let u = require_user(&headers, &db)?;
-        let json = new_prefs.to_json_str();
+        let mut current_value: serde_json::Value =
+            serde_json::from_str(&u.prefs_json).unwrap_or_else(|_| serde_json::json!({}));
+        merge_prefs_patch(&mut current_value, patch);
+        let merged_prefs = UserPrefs::from_json_str(&current_value.to_string());
+        let json = merged_prefs.to_json_str();
         db.update_user_prefs(&u.user_id, &json)
             .map_err(ApiError::Internal)?;
-        Ok(new_prefs)
+        Ok(merged_prefs)
     })
     .await
     .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))??;
     Ok(Json(prefs))
+}
+
+/// Merge `patch` into `current` with the partial-prefs rules:
+/// - Every other top-level key in `patch` overwrites the same key in `current`.
+/// - `prompt_injection_flags` is merged per-key (sub-object) instead of
+///   replaced wholesale — that's the natural shape for a UI that flips a
+///   single toggle. Inside the sub-object, a JSON `null` removes the key
+///   (revert-to-default), any other value sets it. Non-object patches for
+///   the flags field still replace the whole map (back-compat with a full
+///   `UserPrefs` round-trip).
+fn merge_prefs_patch(current: &mut serde_json::Value, patch: serde_json::Value) {
+    use serde_json::Value;
+    let Value::Object(patch_obj) = patch else {
+        // Non-object patch is a hard replace (matches legacy behavior).
+        *current = patch;
+        return;
+    };
+    if !current.is_object() {
+        *current = serde_json::json!({});
+    }
+    let Value::Object(current_obj) = current else {
+        return;
+    };
+    for (key, value) in patch_obj {
+        if key == "prompt_injection_flags" {
+            if let Value::Object(flag_patch) = value {
+                let existing = current_obj
+                    .entry("prompt_injection_flags".to_string())
+                    .or_insert_with(|| serde_json::json!({}));
+                if !existing.is_object() {
+                    *existing = serde_json::json!({});
+                }
+                let Value::Object(existing_obj) = existing else {
+                    continue;
+                };
+                for (flag_key, flag_value) in flag_patch {
+                    if flag_value.is_null() {
+                        existing_obj.remove(&flag_key);
+                    } else {
+                        existing_obj.insert(flag_key, flag_value);
+                    }
+                }
+            } else {
+                current_obj.insert(key, value);
+            }
+        } else {
+            current_obj.insert(key, value);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn merge_keeps_unspecified_fields() {
+        let mut current = json!({
+            "recommend_enabled": true,
+            "read_claude_md": true,
+        });
+        merge_prefs_patch(&mut current, json!({"recommend_enabled": false}));
+        assert_eq!(current["recommend_enabled"], json!(false));
+        assert_eq!(current["read_claude_md"], json!(true));
+    }
+
+    #[test]
+    fn merge_flips_one_prompt_flag_without_clobbering_siblings() {
+        let mut current = json!({
+            "prompt_injection_flags": {
+                "recommend_history_prefix": true,
+                "recommend_cwd_prefix": true,
+            }
+        });
+        merge_prefs_patch(
+            &mut current,
+            json!({"prompt_injection_flags": {"recommend_history_prefix": false}}),
+        );
+        let flags = &current["prompt_injection_flags"];
+        assert_eq!(flags["recommend_history_prefix"], json!(false));
+        assert_eq!(flags["recommend_cwd_prefix"], json!(true));
+    }
+
+    #[test]
+    fn merge_null_inside_flags_drops_the_key() {
+        let mut current = json!({
+            "prompt_injection_flags": {
+                "recommend_history_prefix": false,
+            }
+        });
+        merge_prefs_patch(
+            &mut current,
+            json!({"prompt_injection_flags": {"recommend_history_prefix": null}}),
+        );
+        let flags = current["prompt_injection_flags"].as_object().unwrap();
+        assert!(flags.is_empty());
+    }
 }

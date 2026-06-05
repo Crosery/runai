@@ -51,13 +51,13 @@ const BM25_MIN_QUERY_TERMS: usize = 1;
 /// optimisation, not a correctness gate.
 const BM25_MIN_POSITIVE_HITS: usize = 5;
 
-// All router prompts and hook output templates live in src/core/prompts/ so
-// they are not scattered through the code. Edit those files to retune wording;
-// the placeholders below are substituted with str::replace at runtime.
-const USER_MSG_TEMPLATE: &str = include_str!("../prompts/recommend_user.md");
-const HISTORY_PREFIX_TEMPLATE: &str = include_str!("../prompts/recommend_history_prefix.md");
-const ALREADY_ROUTED_TEMPLATE: &str = include_str!("../prompts/recommend_already_routed.md");
-const CWD_PREFIX_TEMPLATE: &str = include_str!("../prompts/recommend_cwd_prefix.md");
+// All router prompts and hook output templates live in src/core/prompts/ and
+// are exposed as `PROMPT_<NAME>` consts via the centralised registry
+// (`crate::core::prompts`). Edit the .md files to retune wording.
+const USER_MSG_TEMPLATE: &str = crate::core::prompts::PROMPT_RECOMMEND_USER;
+const HISTORY_PREFIX_TEMPLATE: &str = crate::core::prompts::PROMPT_RECOMMEND_HISTORY_PREFIX;
+const ALREADY_ROUTED_TEMPLATE: &str = crate::core::prompts::PROMPT_RECOMMEND_ALREADY_ROUTED;
+const CWD_PREFIX_TEMPLATE: &str = crate::core::prompts::PROMPT_RECOMMEND_CWD_PREFIX;
 
 /// Mode tag returned by the router on the first line of its output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -145,19 +145,29 @@ pub fn recommend_for_user(
     user_id: Option<&str>,
 ) -> Result<RouterDecision> {
     let mut cfg = RecommendConfig::load(mgr.paths())?;
-    // v15 multi-user: when an authenticated user is on the request, their
-    // per-user UserPrefs override the matching fields on the global cfg.
-    // This makes hook behavior (enabled / claude.md injection / skip
-    // reminder) per-account instead of per-server.
-    if let Some(uid) = user_id {
-        if let Ok(Some(user)) = mgr.db().find_user_by_id(uid) {
-            let p = crate::core::prefs::UserPrefs::from_json_str(&user.prefs_json);
-            cfg.enabled = cfg.enabled && p.recommend_enabled;
-            cfg.read_claude_md = p.read_claude_md;
-            cfg.skip_reminder_enabled = p.skip_reminder_enabled;
-            if !p.skip_reminder_template.is_empty() {
-                cfg.skip_reminder_template = p.skip_reminder_template;
-            }
+    // v15 multi-user + PLANNING §1.3 prompt injection toggles. When an
+    // authenticated user is on the request, their per-user UserPrefs
+    // override the matching fields on the global cfg AND drive the
+    // per-request prompt-injection gating below. When `user_id` is None
+    // (unauthenticated / legacy CLI hook) the prefs are the default value
+    // = every prompt enabled, ensuring the unauthenticated path NEVER
+    // reads another account's prefs.
+    let user_prefs: crate::core::prefs::UserPrefs = match user_id {
+        Some(uid) => mgr
+            .db()
+            .find_user_by_id(uid)
+            .ok()
+            .flatten()
+            .map(|u| crate::core::prefs::UserPrefs::from_json_str(&u.prefs_json))
+            .unwrap_or_default(),
+        None => crate::core::prefs::UserPrefs::default(),
+    };
+    if user_id.is_some() {
+        cfg.enabled = cfg.enabled && user_prefs.recommend_enabled;
+        cfg.read_claude_md = user_prefs.read_claude_md;
+        cfg.skip_reminder_enabled = user_prefs.skip_reminder_enabled;
+        if !user_prefs.skip_reminder_template.is_empty() {
+            cfg.skip_reminder_template = user_prefs.skip_reminder_template.clone();
         }
     }
     if !cfg.enabled {
@@ -480,27 +490,45 @@ pub fn recommend_for_user(
         .collect::<Vec<_>>()
         .join("\n");
 
-    let history = transcript_path
-        .map(|p| recent_transcript_messages(p, 6))
-        .unwrap_or_default();
+    // PLANNING §1.3: per-user injection flags strip optional blocks BEFORE
+    // they're substituted into USER_MSG_TEMPLATE. Each block is dropped to
+    // the empty string when its toggle is off; the USER_MSG_TEMPLATE then
+    // renders without that section just as if there had been no signal
+    // (history empty / no cwd / no already_routed). Defaults to true when
+    // the key is missing, so legacy / unauthenticated callers behave as
+    // they did before §1.3 landed.
+    let inject_history = user_prefs.prompt_injection_enabled("recommend_history_prefix");
+    let inject_already_routed = user_prefs.prompt_injection_enabled("recommend_already_routed");
+    let inject_cwd = user_prefs.prompt_injection_enabled("recommend_cwd_prefix");
+    let inject_project_context = user_prefs.prompt_injection_enabled("recommend_project_context");
+
+    let history = if inject_history {
+        transcript_path
+            .map(|p| recent_transcript_messages(p, 6))
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
     let history_block = if history.is_empty() {
         String::new()
     } else {
         HISTORY_PREFIX_TEMPLATE.replace("{HISTORY}", &history)
     };
 
-    let already_routed_block = if already_routed.is_empty() {
+    let already_routed_block = if !inject_already_routed || already_routed.is_empty() {
         String::new()
     } else {
         ALREADY_ROUTED_TEMPLATE.replace("{ALREADY_ROUTED}", &already_routed.join(", "))
     };
 
     let cwd_block = match cwd {
-        Some(c) if !c.is_empty() => CWD_PREFIX_TEMPLATE.replace("{CWD}", c),
+        Some(c) if !c.is_empty() && inject_cwd => CWD_PREFIX_TEMPLATE.replace("{CWD}", c),
         _ => String::new(),
     };
     let project_context_block = match cwd {
-        Some(c) if !c.is_empty() && cfg.read_claude_md => read_project_context(Path::new(c)),
+        Some(c) if !c.is_empty() && cfg.read_claude_md && inject_project_context => {
+            read_project_context(Path::new(c))
+        }
         _ => String::new(),
     };
 

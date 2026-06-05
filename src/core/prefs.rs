@@ -9,6 +9,7 @@
 //! old prefs blob, and dropping one is a no-op for unknown keys.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// How the recommender hook integrates with the existing skill set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,6 +71,25 @@ pub struct UserPrefs {
     /// server's `skip_reminder_template` config.
     #[serde(default)]
     pub skip_reminder_template: String,
+    /// Per-user injection toggles for centralised prompt templates (PLANNING
+    /// §1.3). Map key is the canonical prompt name as listed in
+    /// `crate::core::prompts::PROMPT_NAMES`; value is whether the prompt is
+    /// injected for this user. Missing key = true (fresh accounts get every
+    /// prompt). Only names in `TOGGLEABLE_PROMPT_NAMES` actually gate
+    /// anything at runtime — values for the others are stored but ignored.
+    #[serde(default)]
+    pub prompt_injection_flags: HashMap<String, bool>,
+}
+
+impl UserPrefs {
+    /// Look up the per-user injection flag for `prompt_name`. Defaults to
+    /// `true` when the key is missing — fresh accounts get every prompt.
+    pub fn prompt_injection_enabled(&self, prompt_name: &str) -> bool {
+        self.prompt_injection_flags
+            .get(prompt_name)
+            .copied()
+            .unwrap_or(true)
+    }
 }
 
 fn default_true() -> bool {
@@ -101,6 +121,7 @@ impl Default for UserPrefs {
             read_claude_md: default_true(),
             skip_reminder_enabled: false,
             skip_reminder_template: String::new(),
+            prompt_injection_flags: HashMap::new(),
         }
     }
 }
@@ -176,6 +197,9 @@ mod tests {
 
     #[test]
     fn test_roundtrip() {
+        let mut flags = HashMap::new();
+        flags.insert("recommend_history_prefix".to_string(), false);
+        flags.insert("recommend_cwd_prefix".to_string(), true);
         let p = UserPrefs {
             show_tradeoff: false,
             show_session_history: true,
@@ -187,10 +211,46 @@ mod tests {
             read_claude_md: false,
             skip_reminder_enabled: true,
             skip_reminder_template: "use sparingly".into(),
+            prompt_injection_flags: flags,
         };
         let json = p.to_json_str();
         let back = UserPrefs::from_json_str(&json);
         assert_eq!(p, back);
+    }
+
+    #[test]
+    fn test_prompt_injection_flag_defaults_true_when_missing() {
+        let p = UserPrefs::default();
+        // Empty map → every prompt is on.
+        assert!(p.prompt_injection_enabled("recommend_history_prefix"));
+        assert!(p.prompt_injection_enabled("recommend_cwd_prefix"));
+        // Unknown key also defaults true — fresh accounts never have to
+        // know the canonical name list.
+        assert!(p.prompt_injection_enabled("not_a_real_prompt"));
+    }
+
+    #[test]
+    fn test_prompt_injection_flag_explicit_false() {
+        let mut flags = HashMap::new();
+        flags.insert("recommend_history_prefix".to_string(), false);
+        let p = UserPrefs {
+            prompt_injection_flags: flags,
+            ..UserPrefs::default()
+        };
+        assert!(!p.prompt_injection_enabled("recommend_history_prefix"));
+        // Sibling flags untouched.
+        assert!(p.prompt_injection_enabled("recommend_cwd_prefix"));
+    }
+
+    #[test]
+    fn test_partial_json_round_trips_prompt_injection_flags() {
+        let p = UserPrefs::from_json_str(
+            r#"{"prompt_injection_flags":{"recommend_history_prefix":false}}"#,
+        );
+        assert!(!p.prompt_injection_enabled("recommend_history_prefix"));
+        // Other defaults still hold.
+        assert!(p.recommend_enabled);
+        assert!(p.read_claude_md);
     }
 
     #[test]

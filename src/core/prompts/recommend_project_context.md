@@ -1,3 +1,4 @@
+<!-- prompt: recommend_project_context | callers: recommend::project_context::read_project_context | vars: {PROJECT_DOCS} | toggle: prompt_injection_flags.recommend_project_context (also gated by read_claude_md) -->
 当前项目背景（从 cwd/CLAUDE.md 及其 @ 引用的文件读取，告诉你这个项目是什么、用什么工具、有哪些专属命令）：
 
 {PROJECT_DOCS}

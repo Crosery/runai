@@ -1,3 +1,4 @@
+<!-- prompt: recommend_user | callers: recommend::router::recommend_for_user | vars: {USER_PROMPT},{CWD_BLOCK},{PROJECT_CONTEXT_BLOCK},{HISTORY_BLOCK},{ALREADY_ROUTED_BLOCK},{CANDIDATE_LISTING},{TOP_K} -->
 ## 用户当前 prompt (最高优先级，必须先看这段判断意图)
 
 ```

@@ -8,7 +8,7 @@
 
 use super::router::{RouterDecision, RouterMode};
 
-const HOOK_OUTPUT_TEMPLATE: &str = include_str!("../prompts/hook_output.md");
+const HOOK_OUTPUT_TEMPLATE: &str = crate::core::prompts::PROMPT_HOOK_OUTPUT;
 
 /// Format the router decision as the `UserPromptSubmit` hook stdout. Single
 /// unified template (`hook_output.md`) that renders **exactly one**
