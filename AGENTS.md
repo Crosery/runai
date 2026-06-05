@@ -3,6 +3,10 @@
 > **Single source of truth for any AI assistant** (Claude Code / Codex / Gemini CLI / OpenCode / Cursor / …).
 > Human-readable docs live in [README.md](README.md) and [README_zh.md](README_zh.md) — do not duplicate that content here. This file is for agents.
 
+**未实施但已对齐的工作方向，看 [PLANNING.md](PLANNING.md)** —— install 模式、提示词集中化、社区市场、强测试约束等条目都在那里。任何方向开工前先读对应章节，避免重新设计已定稿方案。本文件 @-import 它，所以 Claude Code 启动时自动加载。
+
+@PLANNING.md
+
 ---
 
 ## 安全契约 / Safety Contract（读到这里，先停下来）
