@@ -1,19 +1,82 @@
 # runai client install — Windows / PowerShell.
 #
+# This file is a TEMPLATE — the server hydrates it per request:
+#   - `{SERVER_URL}` is substituted with the URL the request came in on.
+#   - Sections wrapped in `# === RUNAI_SECTION:owner-only ... ===` are
+#     stripped when the server is in `team` mode.
+#   - Sections wrapped in `# === RUNAI_SECTION:team-only ... ===` are
+#     stripped when the server is in `owner` mode.
+#   - The server returns the assembled script body; in `owner` mode the
+#     /install.ps1 endpoint returns 404 instead.
+# See src/server/install.rs::render_install_script for the renderer.
+#
 # Usage:
 #   irm http://<SERVER>:<PORT>/install.ps1 | iex
 #
-# Mirror of scripts/runai-client-install.sh: writes
-# %USERPROFILE%\.runai-hook.ps1 (a tiny stdin-pipe wrapper around
-# Invoke-RestMethod), then patches %USERPROFILE%\.claude\settings.json
-# UserPromptSubmit to call it. Backs up the prior settings.json to
-# .runai-bak. Idempotent — re-running the installer doesn't stack hooks.
+# Non-interactive (agent / CI):
+#   $env:RUNAI_USERNAME = "alice"
+#   $env:RUNAI_PASSWORD = "hunter2"
+#   irm http://<SERVER>:<PORT>/install.ps1 | iex
+#
+# Subcommand flags (set as environment variables since `iex` swallows argv):
+#   $env:RUNAI_PHASE = "register-only" | "login-only" | "hook-only"
+#   $env:RUNAI_HELP  = "1"   # print help and exit
 
 # {SERVER_URL} is substituted by the server at request time.
 $ServerUrl = "{SERVER_URL}"
 $IdentityPath = "$env:USERPROFILE\.runai-identity"
 $HookPath = "$env:USERPROFILE\.runai-hook.ps1"
 $SettingsPath = "$env:USERPROFILE\.claude\settings.json"
+
+# Phase selection. Defaults: run everything.
+$DoAuth = $true
+$DoHook = $true
+$DoSettings = $true
+$LoginOnly = $false
+
+function Print-RunaiHelp {
+    Write-Host @"
+runai client install (Windows / PowerShell) — TTY + non-interactive installer.
+
+Usage:
+  irm http://<SERVER>:<PORT>/install.ps1 | iex
+
+Non-interactive:
+  `$env:RUNAI_USERNAME = "alice"
+  `$env:RUNAI_PASSWORD = "hunter2"
+  irm http://<SERVER>:<PORT>/install.ps1 | iex
+
+Environment variables:
+  RUNAI_USERNAME   Username for register / login.
+  RUNAI_PASSWORD   Password for register / login.
+  RUNAI_PHASE      One of:
+                     register-only  identity phase only (auto-register on 401)
+                     login-only     identity phase only, no auto-register
+                     hook-only      skip identity, install hook + settings only
+  RUNAI_HELP       Set to 1 to print this message and exit.
+
+Exit codes:
+  0  success
+  1  missing required input, auth failed, or settings.json patch failed
+"@
+}
+
+if ($env:RUNAI_HELP -eq "1") {
+    Print-RunaiHelp
+    return
+}
+
+switch ($env:RUNAI_PHASE) {
+    "register-only" { $DoAuth = $true;  $DoHook = $false; $DoSettings = $false; $LoginOnly = $false }
+    "login-only"    { $DoAuth = $true;  $DoHook = $false; $DoSettings = $false; $LoginOnly = $true  }
+    "hook-only"     { $DoAuth = $false; $DoHook = $true;  $DoSettings = $true  }
+    $null           { }  # default = all phases
+    ""              { }
+    default {
+        Write-Error "runai-install: unknown RUNAI_PHASE '$($env:RUNAI_PHASE)' — see RUNAI_HELP=1"
+        exit 1
+    }
+}
 
 if ($ServerUrl -eq ("{" + "SERVER_URL" + "}") -or [string]::IsNullOrEmpty($ServerUrl)) {
     Write-Error "SERVER_URL placeholder not substituted. Pipe this through the runai server's /install.ps1 endpoint."
@@ -40,13 +103,26 @@ Write-Dim ("  config   $SettingsPath")
 Write-Hr
 Write-Host ""
 
-# 0) Account setup. Prompt for username + password unless a valid
-# ~/.runai-identity already exists. Tries login first, falls back to
-# register on 401. Persists the returned api_key at mode-restricted
-# %USERPROFILE%\.runai-identity (NTFS permissions handled by default
-# user profile ACL; we don't try to tighten further since the same
-# file is written by every per-user install).
+# === RUNAI_SECTION:owner-only START ===
+# Reserved scaffold: this block is delivered ONLY when the server is in
+# owner mode. Owner mode currently returns 404 for /install.ps1 entirely
+# (single-user self-serve has no remote client surface), so this section
+# stays empty by design — kept here so the template grammar is symmetric.
+# === RUNAI_SECTION:owner-only END ===
+
+# === RUNAI_SECTION:team-only START ===
+# Everything below is the team-mode client surface: register / login,
+# write identity, install hook wrapper, patch Claude Code settings.json.
+# The server strips this whole block before serving the script if it is
+# ever run in owner mode (currently unreachable: owner mode returns 404
+# at the route level — see PLANNING.md §1.2).
+
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+
+# 1) Account setup. Prompt for username + password unless a valid
+# ~/.runai-identity already exists or env vars are supplied. Tries login
+# first, falls back to register on 401 (unless --login-only). Persists
+# api_key at %USERPROFILE%\.runai-identity.
 $haveIdentity = $false
 if (Test-Path $IdentityPath) {
     try {
@@ -55,64 +131,96 @@ if (Test-Path $IdentityPath) {
     } catch { }
 }
 
-Write-Step "1/4" "account setup"
-if ($haveIdentity) {
-    Write-Ok "found existing identity, reusing stored api_key"
-    Write-Dim ("  (remove $IdentityPath to switch user)")
-    Write-Host ""
-} else {
-    Write-Dim ("  new device - register or sign in to $ServerUrl")
-    $RunaiUsername = Read-Host "  username"
-    if ([string]::IsNullOrWhiteSpace($RunaiUsername)) {
-        Write-Fail2 "username cannot be empty"
-        exit 1
-    }
-    $RunaiPasswordSecure = Read-Host "  password" -AsSecureString
-    $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($RunaiPasswordSecure)
-    $RunaiPassword = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
-    [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) | Out-Null
-    if ([string]::IsNullOrEmpty($RunaiPassword)) {
-        Write-Fail2 "password cannot be empty"
-        exit 1
-    }
+if ($DoAuth) {
+    Write-Step "1/3" "account setup"
+    if ($haveIdentity) {
+        Write-Ok "found existing identity, reusing stored api_key"
+        Write-Dim ("  (remove $IdentityPath to switch user)")
+        Write-Host ""
+    } else {
+        Write-Dim ("  new device - register or sign in to $ServerUrl")
 
-    $authBody = @{ username = $RunaiUsername; password = $RunaiPassword } | ConvertTo-Json -Compress
-    $resp = $null
-    Write-Warn2 "trying sign-in as $RunaiUsername"
-    try {
-        $resp = Invoke-RestMethod -Method Post -Uri "$ServerUrl/auth/login" `
-            -ContentType "application/json; charset=utf-8" -Body $authBody
-        Write-Ok "signed in as $RunaiUsername"
-    } catch {
-        Write-Warn2 "user does not exist, registering"
-        try {
-            $resp = Invoke-RestMethod -Method Post -Uri "$ServerUrl/users/register" `
-                -ContentType "application/json; charset=utf-8" -Body $authBody
-            Write-Ok "registered $RunaiUsername"
-        } catch {
-            Write-Fail2 "auth failed: $($_.Exception.Message)"
+        # Username: env first, then TTY prompt. Env wins so RUNAI_USERNAME=x
+        # works in non-interactive (agent / CI) contexts.
+        if ([string]::IsNullOrWhiteSpace($env:RUNAI_USERNAME)) {
+            $RunaiUsername = Read-Host "  username"
+        } else {
+            $RunaiUsername = $env:RUNAI_USERNAME
+            Write-Ok "using RUNAI_USERNAME from env"
+        }
+        if ([string]::IsNullOrWhiteSpace($RunaiUsername)) {
+            Write-Fail2 "username cannot be empty (set `$env:RUNAI_USERNAME or answer the prompt)"
             exit 1
         }
-    }
 
-    $identity = [PSCustomObject]@{
-        version  = 1
-        server   = $ServerUrl
-        user_id  = $resp.user_id
-        username = $resp.username
-        api_key  = $resp.api_key
-        is_admin = [bool]$resp.is_admin
+        if ([string]::IsNullOrEmpty($env:RUNAI_PASSWORD)) {
+            $RunaiPasswordSecure = Read-Host "  password" -AsSecureString
+            $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($RunaiPasswordSecure)
+            $RunaiPassword = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
+            [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) | Out-Null
+        } else {
+            $RunaiPassword = $env:RUNAI_PASSWORD
+            Write-Ok "using RUNAI_PASSWORD from env"
+        }
+        if ([string]::IsNullOrEmpty($RunaiPassword)) {
+            Write-Fail2 "password cannot be empty (set `$env:RUNAI_PASSWORD or answer the prompt)"
+            exit 1
+        }
+
+        $authBody = @{ username = $RunaiUsername; password = $RunaiPassword } | ConvertTo-Json -Compress
+        $resp = $null
+        Write-Warn2 "trying sign-in as $RunaiUsername"
+        $loginFailed = $false
+        try {
+            $resp = Invoke-RestMethod -Method Post -Uri "$ServerUrl/auth/login" `
+                -ContentType "application/json; charset=utf-8" -Body $authBody
+            Write-Ok "signed in as $RunaiUsername"
+        } catch {
+            $loginFailed = $true
+        }
+        if ($loginFailed) {
+            if ($LoginOnly) {
+                Write-Fail2 "sign-in failed and RUNAI_PHASE=login-only is set"
+                exit 1
+            }
+            Write-Warn2 "user does not exist, registering"
+            try {
+                $resp = Invoke-RestMethod -Method Post -Uri "$ServerUrl/users/register" `
+                    -ContentType "application/json; charset=utf-8" -Body $authBody
+                Write-Ok "registered $RunaiUsername"
+            } catch {
+                Write-Fail2 "auth failed: $($_.Exception.Message)"
+                exit 1
+            }
+        }
+
+        $identity = [PSCustomObject]@{
+            version  = 1
+            server   = $ServerUrl
+            user_id  = $resp.user_id
+            username = $resp.username
+            api_key  = $resp.api_key
+            is_admin = [bool]$resp.is_admin
+        }
+        [System.IO.File]::WriteAllText($IdentityPath, ($identity | ConvertTo-Json), $utf8NoBom)
+        Write-Ok ("wrote " + $IdentityPath)
+        $haveIdentity = $true
     }
-    [System.IO.File]::WriteAllText($IdentityPath, ($identity | ConvertTo-Json), $utf8NoBom)
-    Write-Ok ("wrote " + $IdentityPath)
+    Write-Host ""
 }
-Write-Host ""
 
-# 1) Write the hook wrapper. Reads Claude Code's hook JSON from stdin,
+# 2) Write the hook wrapper. Reads Claude Code's hook JSON from stdin,
 #    forwards to the server with X-Runai-User header, prints server
 #    response on stdout. 30s timeout + silent failure so a slow /
 #    unreachable server never blocks the user's Claude Code prompt.
-$hookBody = @"
+if ($DoHook) {
+    # --hook-only safety: refuse to write a hook if there's no identity
+    # to back it.
+    if (-not $DoAuth -and -not $haveIdentity) {
+        Write-Fail2 "RUNAI_PHASE=hook-only requires an existing $IdentityPath; run without RUNAI_PHASE first"
+        exit 1
+    }
+    $hookBody = @"
 # Auto-generated by runai-client-install.ps1. Overwritten on reinstall.
 # Force UTF-8 on stdin / stdout / Invoke-RestMethod body — the Claude Code
 # hook protocol uses UTF-8 JSON, but PowerShell defaults to the Windows
@@ -169,93 +277,95 @@ try {
     # Silent fail: do not block Claude Code prompt on server hiccups.
 }
 "@
-# Write hook script as UTF-8 NO BOM. PowerShell 5.1's `-Encoding utf8`
-# writes a BOM, which breaks the `#requires` / shebang convention and
-# can confuse some shells; PS Core's `utf8NoBOM` isn't available on 5.1.
-# Use raw .NET writer for portability across PS 5.1 and 7+.
-$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-Write-Step "2/4" "install hook wrapper"
-[System.IO.File]::WriteAllText($HookPath, $hookBody, $utf8NoBom)
-Write-Ok ("wrote " + $HookPath)
-Write-Host ""
-
-Write-Step "3/4" "patch Claude Code settings"
-$claudeDir = Split-Path $SettingsPath
-if (-not (Test-Path $claudeDir)) {
-    New-Item -ItemType Directory -Path $claudeDir -Force | Out-Null
+    # Write hook script as UTF-8 NO BOM. PowerShell 5.1's `-Encoding utf8`
+    # writes a BOM, which breaks the `#requires` / shebang convention and
+    # can confuse some shells; PS Core's `utf8NoBOM` isn't available on 5.1.
+    # Use raw .NET writer for portability across PS 5.1 and 7+.
+    Write-Step "2/3" "install hook wrapper"
+    [System.IO.File]::WriteAllText($HookPath, $hookBody, $utf8NoBom)
+    Write-Ok ("wrote " + $HookPath)
+    Write-Host ""
 }
-if (Test-Path $SettingsPath) {
-    Copy-Item $SettingsPath "$SettingsPath.runai-bak" -Force
-    Write-Ok ("backed up to " + $SettingsPath + ".runai-bak")
-    $raw = Get-Content $SettingsPath -Raw
-    if ([string]::IsNullOrWhiteSpace($raw)) { $raw = "{}" }
-    try {
-        $parsed = $raw | ConvertFrom-Json
-    } catch {
-        Write-Warning "settings.json was not valid JSON, replacing with empty object"
+
+if ($DoSettings) {
+    Write-Step "3/3" "patch Claude Code settings"
+    $claudeDir = Split-Path $SettingsPath
+    if (-not (Test-Path $claudeDir)) {
+        New-Item -ItemType Directory -Path $claudeDir -Force | Out-Null
+    }
+    if (Test-Path $SettingsPath) {
+        Copy-Item $SettingsPath "$SettingsPath.runai-bak" -Force
+        Write-Ok ("backed up to " + $SettingsPath + ".runai-bak")
+        $raw = Get-Content $SettingsPath -Raw
+        if ([string]::IsNullOrWhiteSpace($raw)) { $raw = "{}" }
+        try {
+            $parsed = $raw | ConvertFrom-Json
+        } catch {
+            Write-Warning "settings.json was not valid JSON, replacing with empty object"
+            $parsed = New-Object PSObject
+        }
+    } else {
         $parsed = New-Object PSObject
     }
-} else {
-    $parsed = New-Object PSObject
-}
 
-# Recursively convert PSCustomObject -> nested hashtable so we can mutate
-# arrays / add keys without PSCustomObject quirks.
-function ConvertTo-RunaiHashtable($obj) {
-    if ($null -eq $obj) { return $null }
-    if ($obj -is [PSCustomObject]) {
-        $h = @{}
-        foreach ($p in $obj.PSObject.Properties) {
-            $h[$p.Name] = ConvertTo-RunaiHashtable $p.Value
+    # Recursively convert PSCustomObject -> nested hashtable so we can mutate
+    # arrays / add keys without PSCustomObject quirks.
+    function ConvertTo-RunaiHashtable($obj) {
+        if ($null -eq $obj) { return $null }
+        if ($obj -is [PSCustomObject]) {
+            $h = @{}
+            foreach ($p in $obj.PSObject.Properties) {
+                $h[$p.Name] = ConvertTo-RunaiHashtable $p.Value
+            }
+            return $h
         }
-        return $h
-    }
-    if ($obj -is [System.Collections.IEnumerable] -and -not ($obj -is [string])) {
-        $arr = @()
-        foreach ($item in $obj) { $arr += ,(ConvertTo-RunaiHashtable $item) }
-        return ,$arr
-    }
-    return $obj
-}
-
-$data = ConvertTo-RunaiHashtable $parsed
-if ($null -eq $data -or -not ($data -is [hashtable])) { $data = @{} }
-if (-not $data.ContainsKey('hooks')) { $data.hooks = @{} }
-if (-not $data.hooks.ContainsKey('UserPromptSubmit')) { $data.hooks.UserPromptSubmit = @() }
-
-# Claude Code on Windows invokes hook commands via cmd.exe by default.
-# Wrap with `chcp 65001 >NUL & powershell ...` to switch the console
-# codepage to UTF-8 BEFORE PowerShell takes stdin — without it the JSON
-# from Claude Code is already munged through CP936/CP1252 by the time
-# our hook script runs, no in-script encoding override can recover the
-# original bytes. `chcp 65001` is the well-known Windows-UTF-8 idiom.
-$hookCmd = "chcp 65001 >NUL & powershell -NoProfile -ExecutionPolicy Bypass -File `"$HookPath`""
-
-# Idempotent: skip if our exact command is already present.
-$already = $false
-foreach ($g in $data.hooks.UserPromptSubmit) {
-    if ($null -ne $g -and $g.ContainsKey('hooks')) {
-        foreach ($h in @($g.hooks)) {
-            if ($null -ne $h -and $h.command -eq $hookCmd) { $already = $true; break }
+        if ($obj -is [System.Collections.IEnumerable] -and -not ($obj -is [string])) {
+            $arr = @()
+            foreach ($item in $obj) { $arr += ,(ConvertTo-RunaiHashtable $item) }
+            return ,$arr
         }
+        return $obj
     }
-    if ($already) { break }
+
+    $data = ConvertTo-RunaiHashtable $parsed
+    if ($null -eq $data -or -not ($data -is [hashtable])) { $data = @{} }
+    if (-not $data.ContainsKey('hooks')) { $data.hooks = @{} }
+    if (-not $data.hooks.ContainsKey('UserPromptSubmit')) { $data.hooks.UserPromptSubmit = @() }
+
+    # Claude Code on Windows invokes hook commands via cmd.exe by default.
+    # Wrap with `chcp 65001 >NUL & powershell ...` to switch the console
+    # codepage to UTF-8 BEFORE PowerShell takes stdin — without it the JSON
+    # from Claude Code is already munged through CP936/CP1252 by the time
+    # our hook script runs, no in-script encoding override can recover the
+    # original bytes. `chcp 65001` is the well-known Windows-UTF-8 idiom.
+    $hookCmd = "chcp 65001 >NUL & powershell -NoProfile -ExecutionPolicy Bypass -File `"$HookPath`""
+
+    # Idempotent: skip if our exact command is already present.
+    $already = $false
+    foreach ($g in $data.hooks.UserPromptSubmit) {
+        if ($null -ne $g -and $g.ContainsKey('hooks')) {
+            foreach ($h in @($g.hooks)) {
+                if ($null -ne $h -and $h.command -eq $hookCmd) { $already = $true; break }
+            }
+        }
+        if ($already) { break }
+    }
+
+    if (-not $already) {
+        $newGroup = @{ hooks = @(@{ type = "command"; command = $hookCmd }) }
+        $data.hooks.UserPromptSubmit = @($data.hooks.UserPromptSubmit + $newGroup)
+        Write-Ok "patched UserPromptSubmit hook"
+    } else {
+        Write-Ok "hook already present (no-op)"
+    }
+
+    # settings.json also UTF-8 no BOM — Claude Code parses it with UTF-8 by
+    # default and a BOM trips some JSON readers.
+    [System.IO.File]::WriteAllText($SettingsPath, ($data | ConvertTo-Json -Depth 20), $utf8NoBom)
+    Write-Host ""
 }
+# === RUNAI_SECTION:team-only END ===
 
-if (-not $already) {
-    $newGroup = @{ hooks = @(@{ type = "command"; command = $hookCmd }) }
-    $data.hooks.UserPromptSubmit = @($data.hooks.UserPromptSubmit + $newGroup)
-    Write-Ok "patched UserPromptSubmit hook"
-} else {
-    Write-Ok "hook already present (no-op)"
-}
-
-# settings.json also UTF-8 no BOM — Claude Code parses it with UTF-8 by
-# default and a BOM trips some JSON readers.
-[System.IO.File]::WriteAllText($SettingsPath, ($data | ConvertTo-Json -Depth 20), $utf8NoBom)
-Write-Host ""
-
-Write-Step "4/4" "done"
 Write-Hr
 Write-Host ("  `e[38;5;114m`e[1mall set.`e[0m  open a `e[1mnew`e[0m Claude Code session and your prompts")
 Write-Host ("  will route through `e[38;5;81m$ServerUrl`e[0m")
