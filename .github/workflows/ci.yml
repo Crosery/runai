@@ -24,6 +24,8 @@ jobs:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ runner.os != 'Windows' }}
 
       - name: Check formatting
         run: cargo fmt --check
