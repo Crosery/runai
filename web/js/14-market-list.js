@@ -32,7 +32,13 @@
     const empty = $('#market-empty');
     const count = $('#market-count');
     if (!grid) return;
-    grid.innerHTML = '<div class="muted" style="padding:18px">加载中 …</div>';
+    // Only show the placeholder on the very first load. During pagination /
+    // sort / filter changes the previous rows stay mounted — replacing them
+    // with a single "加载中" line collapses .ml-rows-wrap toward its 320px
+    // min-height, then re-expands when data arrives, which is the flicker.
+    if (marketState.items.length === 0) {
+      grid.innerHTML = '<div class="muted" style="padding:18px">加载中 …</div>';
+    }
     try {
       const params = new URLSearchParams({
         sort: marketSortParam(),
