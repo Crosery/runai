@@ -196,4 +196,10 @@ runai doctor                          # 健康检查；`--fix` 清理 dangling s
 
 ## 许可证
 
-MIT
+[CC BY-NC-SA 4.0](LICENSE) —— 知识共享 署名-非商业性使用-相同方式共享 4.0 国际许可协议。
+
+- **禁止商用** —— 不得将本项目或其衍生作品用于任何商业目的。
+- **相同方式共享** —— 基于本项目的修改、衍生作品必须以相同协议开源。
+- **署名** —— 必须保留原作者署名并链接回本仓库。
+
+许可证全文：[creativecommons.org/licenses/by-nc-sa/4.0/deed.zh-hans](https://creativecommons.org/licenses/by-nc-sa/4.0/deed.zh-hans)。
