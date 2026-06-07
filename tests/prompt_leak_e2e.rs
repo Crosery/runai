@@ -179,9 +179,15 @@ fn http_client() -> reqwest::blocking::Client {
 /// path — keeps the contract grep-able from outside cargo.
 fn load_fingerprints() -> Vec<String> {
     let path = "/tmp/prompt-fingerprints.txt";
-    let raw = std::fs::read_to_string(path).unwrap_or_else(|e| {
-        panic!("fingerprint file missing at {path}: {e} — run the P3 fingerprint generator first")
-    });
+    // Self-bootstrap: if missing (fresh checkout / cleared /tmp), derive
+    // from `src/core/prompts/*.md`. Keeps test self-contained — no
+    // out-of-band generator required.
+    if std::fs::metadata(path).is_err() {
+        let generated = derive_fingerprints_from_prompt_md();
+        let _ = std::fs::write(path, generated.join("\n"));
+    }
+    let raw = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("fingerprint file unreadable at {path}: {e}"));
     let lines: Vec<String> = raw
         .lines()
         .map(str::trim)
@@ -193,6 +199,47 @@ fn load_fingerprints() -> Vec<String> {
         "fingerprint file at {path} is empty — at least one substring is required"
     );
     lines
+}
+
+/// Walk `src/core/prompts/*.md` and pick the first content line of each
+/// template (skipping the HTML-comment frontmatter). Each picked line
+/// becomes one fingerprint substring (capped 60 chars). Workspace path
+/// is resolved from `CARGO_MANIFEST_DIR`.
+fn derive_fingerprints_from_prompt_md() -> Vec<String> {
+    let root = env!("CARGO_MANIFEST_DIR");
+    let dir = std::path::Path::new(root).join("src/core/prompts");
+    let mut out = Vec::new();
+    let entries = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("cannot read prompt dir {}: {e}", dir.display()));
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if name == "AGENTS.md" || name == "CLAUDE.md" || !name.ends_with(".md") {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        for line in body.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with("<!--") {
+                continue;
+            }
+            let snippet: String = trimmed.chars().take(60).collect();
+            if snippet.len() >= 8 {
+                out.push(snippet);
+            }
+            break;
+        }
+    }
+    assert!(
+        !out.is_empty(),
+        "no fingerprint candidates derived from {}",
+        dir.display()
+    );
+    out
 }
 
 // ─── the test ──────────────────────────────────────────────────────────────
