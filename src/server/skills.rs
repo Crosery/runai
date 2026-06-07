@@ -49,7 +49,15 @@ pub(super) async fn api_skills(
     // Phase D: scope the skill list per request owner so a remote user
     // sees public-pool skills plus their own private ones, not other
     // users' privates. Admin (`is_admin`) sees everything via "*".
-    let me = current_user(&headers, &db).ok().flatten();
+    //
+    // PLANNING §2.3 item 5 — once any user exists (or any router_event
+    // exists, via `private_data_locked`), anonymous reads are 401; the
+    // first-run compat carve-out only applies to truly cold servers.
+    let me = if super::state::private_data_locked(&db) {
+        Some(super::state::require_user(&headers, &db)?)
+    } else {
+        current_user(&headers, &db).ok().flatten()
+    };
     let owner_scope: Option<String> = match &me {
         Some(u) if u.is_admin => Some("*".into()),
         Some(u) => Some(u.user_id.clone()),
@@ -121,7 +129,14 @@ pub(super) async fn api_skill_detail(
     let db = state.db()?;
     // Phase D: owner-aware lookup. Private rows win over public ones of
     // the same name for the current user; admin sees first private match.
-    let me = current_user(&headers, &db).ok().flatten();
+    //
+    // PLANNING §2.3 item 5 — same compat carve-out as api_skills:
+    // cold server allows anonymous, otherwise require_user.
+    let me = if super::state::private_data_locked(&db) {
+        Some(super::state::require_user(&headers, &db)?)
+    } else {
+        current_user(&headers, &db).ok().flatten()
+    };
     let owner_scope: Option<String> = match &me {
         Some(u) if u.is_admin => Some("*".into()),
         Some(u) => Some(u.user_id.clone()),

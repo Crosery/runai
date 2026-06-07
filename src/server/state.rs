@@ -135,13 +135,42 @@ pub(super) fn require_admin(headers: &HeaderMap, db: &Database) -> Result<User, 
     Ok(u)
 }
 
+/// True when this server already holds user-identifiable telemetry
+/// (any registered user OR any router_event row). The "first-run"
+/// compat carve-out that lets `users` table be empty must NOT let an
+/// already-populated router_events table leak to anonymous callers —
+/// that's how PLANNING §2.3 item 5 "log in is uniform" gets bypassed
+/// when an owner-mode server has been running and accumulating events
+/// without ever registering a user.
+pub(super) fn private_data_locked(db: &Database) -> bool {
+    if db
+        .list_users()
+        .map_err(|_| ())
+        .map(|u| !u.is_empty())
+        .unwrap_or(true)
+    {
+        return true;
+    }
+    if db
+        .router_events_count_filtered(None, None, false, None)
+        .map_err(|_| ())
+        .map(|n| n > 0)
+        .unwrap_or(true)
+    {
+        return true;
+    }
+    false
+}
+
 /// Resolve "which user_id should we filter activity by". Returns
 /// `Some(uid)` to scope SQL to that user, `None` for global view.
 ///
 /// Industry-standard tenant isolation (Linear / Stripe / GitHub dashboards
 /// all follow the same pattern):
-///   - **No auth → 401.** Activity / events / summary are private telemetry;
-///     anonymous reads are rejected.
+///   - **No auth → 401** when this server already holds any user or any
+///     router_event (compat closed; first-run carve-out removed for hot
+///     servers — see `private_data_locked`). Activity / events / summary
+///     are private telemetry; anonymous reads are rejected.
 ///   - **Non-admin → forced own scope.** Even if `?user=` is passed,
 ///     anything other than their own uid is 403. Default scope is their
 ///     own uid, no opt-out.
@@ -159,11 +188,10 @@ pub(super) fn resolve_view_user(
     db: &Database,
     requested: Option<&str>,
 ) -> Result<Option<String>, ApiError> {
-    // Compat carve-out: when the users table is literally empty (no one
-    // has registered yet), allow anonymous read so the very first visit
-    // to the dashboard isn't a 401 wall. The moment any user is created,
-    // auth becomes mandatory.
-    if db.list_users().map_err(ApiError::Internal)?.is_empty() {
+    // Compat carve-out: only when the server is *cold* (no users AND no
+    // telemetry rows). A previously owner-mode server with accumulated
+    // history must require auth — that's the load-bearing gate.
+    if !private_data_locked(db) {
         return Ok(None);
     }
     let me = require_user(headers, db)?;
