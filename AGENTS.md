@@ -3,6 +3,16 @@
 > **Single source of truth for any AI assistant** (Claude Code / Codex / Gemini CLI / OpenCode / Cursor / …).
 > Human-readable docs live in [README.md](README.md) and [README_zh.md](README_zh.md) — do not duplicate that content here. This file is for agents.
 
+## 铁律 - 不准擅自定版本号
+
+AI 不主动建议、不写、不引用任何版本号、release 名、milestone 名 — 不论形态（语义化版本、字母 + 数字代号、自造批次别名都算）。**版本决策只有 Crosery 本人能定。**
+
+适用于：文档（PLANNING.md / README.md / AGENTS.md / 注释 / commit message）、分支名（不准把版本号写进分支前缀）、workflow / script / meta 字段、任何对外可见的产出。
+
+不准用版本号区分批次时，用**章节号**（PLANNING §1.x）或**功能名**（feat/community-market / feat/server-mode-flag）。
+
+历史事件：2026-06-07 擅自把 PLANNING §1.x 实施 commit 拆到带版本号前缀的分支 + 在 commit message 和 PLANNING.md 多处写版本号，被指越权。
+
 **未实施但已对齐的工作方向，看 [PLANNING.md](PLANNING.md)** —— install 模式、提示词集中化、社区市场、强测试约束等条目都在那里。任何方向开工前先读对应章节，避免重新设计已定稿方案。本文件 @-import 它，所以 Claude Code 启动时自动加载。
 
 @PLANNING.md
@@ -117,7 +127,7 @@ runai 在用户 home 里直接读写：
 | Release-worthy fix or feature | Bump `Cargo.toml` version, tag `vX.Y.Z`, let `.github/workflows/release.yml` build artifacts |
 | CI / build / release workflows | Add a note under "Build & CI" below |
 
-**Version cadence**: patch for bug fixes, minor for features, no major bumps until v1.0. Commit messages follow conventional commits (see `git log --oneline`).
+**Version cadence**: 维护者 Crosery 拍版本号。AI 不主动建议版本号，不在 commit/分支/文档里写任何形态的版本术语 — 见顶部铁律。
 
 ---
 
@@ -195,17 +205,17 @@ Small `mod.rs` wiring files without substance are not separately documented; the
 
 ---
 
-## Multi-user (v15)
+## Multi-user (schema v15+)
 
-V1.0 scope (v0.11.0-beta.5 onward) — login + per-user library + per-user prefs + per-user physical skill isolation. No podman sandbox.
+当前 schema v15 起 multi-user 范围：login + per-user library + per-user prefs + per-user physical skill isolation。无 podman sandbox。
 
 - **Schema v15 tables**: `users` (user_id PK, username UNIQUE, argon2 password_hash, sha256 api_key_hash, is_admin, disabled, prefs_json), `user_skill_library` (user_id, skill_name, added_at). `resources` gains `owner_user_id TEXT NULL`. `router_events` gains `user_id TEXT NULL`.
 - **Auth flow**: client install scripts (`scripts/runai-client-install.sh` and `.ps1`) interactively prompt for username + password, hit `POST /auth/login` first then fall back to `POST /users/register`, persist returned `api_key` at `~/.runai-identity` mode-600. The Claude Code hook wrapper (`~/.runai-hook.sh` / `.ps1`) reads the file at runtime and sends `Authorization: Bearer <key>` on every `/recommend` call.
-- **First user is auto-promoted to admin** at `/users/register` time (no `admin bootstrap` CLI in V1; SQL `UPDATE users SET is_admin=1 WHERE username='X'` is the fallback for promoting later users).
+- **First user is auto-promoted to admin** at `/users/register` time（暂无 `admin bootstrap` CLI；SQL `UPDATE users SET is_admin=1 WHERE username='X'` 是后续用户提升 admin 的兜底）.
 - **Library semantics**: pre-fills top-30 public skills (by global `usage_count`) on registration so `/recommend` isn't empty for fresh accounts. UI exposes batch add/remove/clear, "fill top N", "import from usage" (= every skill the user's own router_events ever chose). The "我的库" scope filter in the Skills tab is purely client-side; server-side `/recommend` filtering uses `prefs.allow_public_recommend`:
   - `false` (default): candidate set = `user_skill_library` ∪ user-owned private skills
   - `true`: candidate set = all public skills ∪ user-owned private skills
-- **Compat window**: requests without Bearer keep working (recommend filtering bypassed, router_events.user_id stays NULL). Existing 5+ external clients keep functioning while users gradually re-install with credentials. The server does NOT enforce auth on `/recommend` or `/skills/get/{name}` in V1 — only `/api/me` / `/api/prefs` / `/api/skills/library*` (per-user resources) return 401 without credentials.
+- **Compat window**: requests without Bearer keep working (recommend filtering bypassed, router_events.user_id stays NULL). Existing 5+ external clients keep functioning while users gradually re-install with credentials. The server does NOT enforce auth on `/recommend` or `/skills/get/{name}` 当前 — only `/api/me` / `/api/prefs` / `/api/skills/library*` (per-user resources) return 401 without credentials.
 - **Frontend (web/*)**: account pill in topbar (login button → modal; logged-in shows `username (admin)` + logout `×`). Settings tab has a new "我的偏好" section gated on login with `allow_public_recommend` toggle. Skills tab has a scope bar (全部 / 我的库 / 仅公共) + bulk actions + quick-fill / import / clear buttons. All operations route through `api()` wrapper which uses `credentials: 'same-origin'` so the `runai_session` cookie minted on login carries automatically.
 - **Login rotates the api_key**: every successful `/auth/login` mints a fresh `rnai_live_...` and replaces `api_key_hash`. The password is the source of truth; previously-installed clients that haven't re-logged-in since lose access. Run the install script again to refresh the local `~/.runai-identity`.
 
