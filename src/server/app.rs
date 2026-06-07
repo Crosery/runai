@@ -37,7 +37,7 @@ use super::market_github::{api_install_github, api_parse_github};
 use super::market_preview::{api_market_preview, api_market_preview_files};
 use super::prefs::{
     api_activate_provider, api_delete_provider, api_get_prefs, api_get_settings, api_post_prefs,
-    api_post_settings, api_upsert_provider,
+    api_post_settings, api_test_provider, api_upsert_provider,
 };
 use super::recommend::{handle_feedback, handle_recommend};
 use super::skills::{
@@ -200,6 +200,7 @@ pub async fn serve_with(
         .route("/api/providers", post(api_upsert_provider))
         .route("/api/providers/{id}", delete(api_delete_provider))
         .route("/api/providers/{id}/activate", post(api_activate_provider))
+        .route("/api/providers/{id}/test", post(api_test_provider))
         // v15 admin: per-user management (list / promote / disable)
         .route("/api/admin/users", get(api_admin_users_list))
         .route(

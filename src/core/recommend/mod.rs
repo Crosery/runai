@@ -34,6 +34,7 @@ pub use hook_output::{
     bootstrap_guide, format_for_hook, format_for_hook_full, format_for_hook_with_session,
 };
 pub use lang_validation::{find_language_mismatched_skills, summary_matches_lang};
+pub use llm_call::{ProviderTestResult, test_provider_request};
 pub use router::{
     RecommendedSkill, RouterDecision, RouterMode, RouterTurn, recommend, recommend_for_user,
 };

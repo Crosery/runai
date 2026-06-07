@@ -698,7 +698,19 @@
           </div>
 
           <div class="settings-section admin-block">
+            <div class="label">路由总闸门 <span class="helper" id="set-global-enabled-hint">—</span></div>
+            <div class="setting-row">
+              <div class="setting-meta">
+                <div class="setting-title">全局启用 recommend</div>
+                <div class="setting-hint">关闭后所有账号的 UserPromptSubmit hook 都不会请求模型；每个账号仍可在 Settings 里单独关闭自己的 recommend</div>
+              </div>
+              <label class="switch"><input type="checkbox" id="set-global-enabled"><span></span></label>
+            </div>
+          </div>
+
+          <div class="settings-section admin-block">
             <div class="label">运营商 <span class="helper">当前 active <em id="set-active-label">—</em></span></div>
+            <div class="provider-status muted" id="provider-status" hidden></div>
             <div class="providers-list" id="providers-list"></div>
             <button type="button" class="btn provider-add-btn" id="provider-add-btn">+ 添加运营商</button>
           </div>
