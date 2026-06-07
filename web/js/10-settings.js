@@ -79,6 +79,30 @@
   let providerEditingId = null;       // null = adding new; "<id>" = editing
   let provKindValue = 'openai-compat';
   let provKindDdInitialized = false;
+  const providerTestState = new Map();
+  const providerBusyIds = new Set();
+
+  function setProviderStatus(message, kind = 'muted') {
+    const el = document.getElementById('provider-status');
+    if (!el) return;
+    el.textContent = message || '';
+    el.className = `provider-status ${kind}`;
+    el.hidden = !message;
+  }
+
+  function setProviderRowBusy(id, busy) {
+    if (busy) providerBusyIds.add(id);
+    else providerBusyIds.delete(id);
+    document.querySelectorAll('button[data-id]').forEach((b) => {
+      if (b.dataset.id !== id) return;
+      if (b.classList.contains('prov-test') || b.classList.contains('prov-edit') || b.classList.contains('prov-del')) {
+        b.disabled = busy;
+      }
+    });
+    document.querySelectorAll('input[name="active-provider"]').forEach((radio) => {
+      if (radio.value === id) radio.disabled = busy;
+    });
+  }
 
   function setProviderKindDropdown(value) {
     provKindValue = value;
@@ -102,25 +126,28 @@
 
   async function loadSettings() {
     try {
-      const res = await fetch('/api/settings');
-      if (!res.ok) return;
-      const data = await res.json();
+      const data = await api('GET', '/api/settings');
       lastSettings = data;
       renderSettings(data);
-    } catch (_) {}
+    } catch (e) {
+      setProviderStatus(`加载设置失败：${e.message}`, 'error');
+    }
   }
 
   function renderSettings(data) {
-    $('#set-enabled').checked = !!data.enabled;
-    $('#set-read-claude-md').checked = !!data.read_claude_md;
-    $('#set-skip-reminder').checked = !!data.skip_reminder_enabled;
-    $('#set-skip-reminder-template').value = data.skip_reminder_template || '';
-    $('#set-skip-reminder-template').disabled = !data.skip_reminder_enabled;
+    const globalEnabled = $('#set-global-enabled');
+    if (globalEnabled) globalEnabled.checked = !!data.enabled;
     const activeLabel = (data.providers || [])
       .find((p) => p.id === data.active_provider_id);
     $('#set-active-label').textContent = activeLabel
       ? `${activeLabel.label} · ${activeLabel.model}`
-      : '(未选择)';
+      : '未选择';
+    const globalHint = $('#set-global-enabled-hint');
+    if (globalHint) {
+      globalHint.textContent = data.enabled
+        ? '全局已开启；当前账号还需在 Settings 里开启自己的 recommend'
+        : '全局已关闭；所有账号的 recommend 都不会请求模型';
+    }
     renderProvidersList(data);
   }
 
@@ -134,9 +161,15 @@
     for (const p of data.providers) {
       const row = document.createElement('div');
       row.className = 'provider-row' + (p.id === data.active_provider_id ? ' active' : '');
+      const lastTest = providerTestState.get(p.id);
+      let testHtml = '<span class="prov-test-state muted">未测试</span>';
+      if (lastTest) {
+        const klass = lastTest.ok ? 'ok' : 'error';
+        testHtml = `<span class="prov-test-state ${klass}">${escapeHTML(lastTest.label)}</span>`;
+      }
       row.innerHTML = `
         <div class="prov-pick">
-          <label class="radio">
+          <label class="radio" title="设为 active provider">
             <input type="radio" name="active-provider" value="${escapeHTML(p.id)}"
                    ${p.id === data.active_provider_id ? 'checked' : ''}>
             <span></span>
@@ -146,19 +179,25 @@
           <div class="prov-label">${escapeHTML(p.label || p.id)}</div>
           <div class="prov-meta"><span class="kind">${escapeHTML(p.kind)}</span> · ${escapeHTML(p.model || '')}</div>
           <div class="prov-base">${escapeHTML(p.base_url || '')}</div>
+          <div class="prov-test-line">${testHtml}</div>
         </div>
         <div class="prov-keystate">
-          ${p.has_api_key ? '<span class="key-set">key 已配置</span>' : '<span class="key-empty">无 key</span>'}
+          ${p.kind === 'claude-cli' ? '<span class="key-set">无需 key</span>' : (p.has_api_key ? '<span class="key-set">key 已配置</span>' : '<span class="key-empty">无 key</span>')}
         </div>
         <div class="prov-actions">
+          <button type="button" class="btn prov-test" data-id="${escapeHTML(p.id)}">测试</button>
           <button type="button" class="btn prov-edit" data-id="${escapeHTML(p.id)}">编辑</button>
           <button type="button" class="btn prov-del" data-id="${escapeHTML(p.id)}">删除</button>
         </div>
       `;
       wrap.appendChild(row);
+      if (providerBusyIds.has(p.id)) setProviderRowBusy(p.id, true);
     }
     wrap.querySelectorAll('input[name="active-provider"]').forEach((el) => {
       el.addEventListener('change', () => activateProvider(el.value));
+    });
+    wrap.querySelectorAll('.prov-test').forEach((b) => {
+      b.addEventListener('click', () => testProvider(b.dataset.id));
     });
     wrap.querySelectorAll('.prov-edit').forEach((b) => {
       b.addEventListener('click', () => openProviderForm(b.dataset.id));
@@ -170,37 +209,76 @@
 
   async function patchSettings(patch) {
     try {
-      const res = await fetch('/api/settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(patch),
-      });
-      if (!res.ok) return;
-      const data = await res.json();
+      const data = await api('POST', '/api/settings', patch);
       lastSettings = data;
       renderSettings(data);
-    } catch (_) {}
+      setProviderStatus('全局设置已保存', 'ok');
+    } catch (e) {
+      setProviderStatus(`保存全局设置失败：${e.message}`, 'error');
+    }
   }
 
   async function activateProvider(id) {
+    if (!id) return;
+    setProviderRowBusy(id, true);
+    setProviderStatus(`正在切换 active provider：${id}`, 'muted');
     try {
-      const res = await fetch(`/api/providers/${encodeURIComponent(id)}/activate`, { method: 'POST' });
-      if (!res.ok) return;
-      const data = await res.json();
+      const data = await api('POST', `/api/providers/${encodeURIComponent(id)}/activate`);
       lastSettings = data;
       renderSettings(data);
-    } catch (_) {}
+      setProviderStatus(`已切换 active provider：${id}`, 'ok');
+    } catch (e) {
+      setProviderStatus(`切换失败：${e.message}`, 'error');
+      renderSettings(lastSettings || { providers: [] });
+    }
+  }
+
+  async function testProvider(id) {
+    if (!id) return;
+    setProviderRowBusy(id, true);
+    providerTestState.set(id, { ok: true, label: '测试中 …' });
+    renderSettings(lastSettings || { providers: [] });
+    setProviderStatus(`正在请求模型：${id}`, 'muted');
+    try {
+      const data = await api('POST', `/api/providers/${encodeURIComponent(id)}/test`);
+      if (data.ok) {
+        const reply = data.reply ? ` · ${data.reply.slice(0, 80)}` : '';
+        providerTestState.set(id, { ok: true, label: `可请求 · ${fmtMsDur(data.latency_ms)}${reply}` });
+        setProviderStatus(`模型请求成功：${data.model} · ${fmtMsDur(data.latency_ms)}`, 'ok');
+      } else {
+        const msg = data.error || 'unknown error';
+        providerTestState.set(id, { ok: false, label: `不可用 · ${msg.slice(0, 140)}` });
+        setProviderStatus(`模型请求失败：${msg}`, 'error');
+      }
+    } catch (e) {
+      providerTestState.set(id, { ok: false, label: `测试接口失败 · ${e.message}` });
+      setProviderStatus(`测试接口失败：${e.message}`, 'error');
+    } finally {
+      setProviderRowBusy(id, false);
+      renderSettings(lastSettings || { providers: [] });
+    }
   }
 
   async function deleteProvider(id) {
-    if (!confirm(`删除运营商 "${id}" ？此操作只清除 runai 配置，不影响远程账号。`)) return;
+    const ok = await showConfirm({
+      title: '删除运营商',
+      body: `删除运营商 ${id}？此操作只清除 runai 配置，不影响远程账号。`,
+      ok: '删除',
+      cancel: '取消',
+      danger: true,
+    });
+    if (!ok) return;
+    setProviderRowBusy(id, true);
     try {
-      const res = await fetch(`/api/providers/${encodeURIComponent(id)}`, { method: 'DELETE' });
-      if (!res.ok) return;
-      const data = await res.json();
+      const data = await api('DELETE', `/api/providers/${encodeURIComponent(id)}`);
+      providerTestState.delete(id);
       lastSettings = data;
       renderSettings(data);
-    } catch (_) {}
+      setProviderStatus(`已删除 provider：${id}`, 'ok');
+    } catch (e) {
+      setProviderStatus(`删除失败：${e.message}`, 'error');
+      setProviderRowBusy(id, false);
+    }
   }
 
   function openProviderForm(id) {
@@ -254,22 +332,14 @@
       api_key: $('#prov-api-key').value,    // empty = preserve existing
     };
     try {
-      const res = await fetch('/api/providers', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        alert(`保存失败：${err.error || res.status}`);
-        return;
-      }
-      const data = await res.json();
+      const data = await api('POST', '/api/providers', body);
+      providerTestState.delete(id);
       lastSettings = data;
       renderSettings(data);
       closeProviderForm();
+      setProviderStatus(`Provider 已保存：${id}`, 'ok');
     } catch (e) {
-      alert(`保存失败：${e}`);
+      setProviderStatus(`保存失败：${e.message || e}`, 'error');
     }
   }
 
@@ -292,6 +362,10 @@
     wirePref('set-read-claude-md', 'read_claude_md', 'checkbox');
     wirePref('set-skip-reminder', 'skip_reminder_enabled', 'checkbox');
     wirePref('set-skip-reminder-template', 'skip_reminder_template', 'textarea');
+    const globalEnabled = document.getElementById('set-global-enabled');
+    if (globalEnabled) {
+      globalEnabled.addEventListener('change', () => patchSettings({ enabled: globalEnabled.checked }));
+    }
     const addBtn = document.getElementById('provider-add-btn');
     if (addBtn) addBtn.addEventListener('click', () => openProviderForm(null));
     const saveBtn = document.getElementById('provider-save-btn');

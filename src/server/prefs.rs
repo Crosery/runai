@@ -12,7 +12,7 @@ use axum::{
     http::HeaderMap,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 
 use crate::core::paths::AppPaths;
 use crate::core::prefs::UserPrefs;
@@ -43,6 +43,16 @@ pub(super) struct SettingsView {
     skip_reminder_enabled: bool,
     skip_reminder_template: String,
     providers: Vec<ProviderView>,
+}
+
+#[derive(Serialize)]
+pub(super) struct ProviderTestView {
+    ok: bool,
+    provider_id: String,
+    model: String,
+    latency_ms: i64,
+    reply: String,
+    error: Option<String>,
 }
 
 fn provider_kind_str(k: recommend::Provider) -> &'static str {
@@ -155,10 +165,10 @@ pub(super) async fn api_post_settings(
         if let Some(v) = patch.top_k {
             cfg.top_k = v;
         }
-        if let Some(v) = patch.session_mode {
-            if let Some(m) = session_mode_from_str(&v) {
-                cfg.session_mode = m;
-            }
+        if let Some(v) = patch.session_mode
+            && let Some(m) = session_mode_from_str(&v)
+        {
+            cfg.session_mode = m;
         }
         if let Some(v) = patch.session_history_limit {
             cfg.session_history_limit = v;
@@ -293,6 +303,49 @@ pub(super) async fn api_activate_provider(
         }
         cfg.save(&paths).map_err(ApiError::Internal)?;
         Ok(render_settings(&cfg))
+    })
+    .await
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?
+    .map(Json)
+}
+
+pub(super) async fn api_test_provider(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<ProviderTestView>, ApiError> {
+    tokio::task::spawn_blocking(move || -> Result<ProviderTestView, ApiError> {
+        let db = state.db().map_err(ApiError::Internal)?;
+        if !db.list_users().map_err(ApiError::Internal)?.is_empty() {
+            require_admin(&headers, &db)?;
+        }
+        let paths = AppPaths::default_path();
+        let mut cfg = recommend::RecommendConfig::load(&paths).unwrap_or_default();
+        if !cfg.activate_provider(&id) {
+            return Err(ApiError::BadRequest(format!("provider not found: {id}")));
+        }
+        let started = Instant::now();
+        let result = recommend::test_provider_request(&cfg);
+        let latency_ms = started.elapsed().as_millis() as i64;
+        let view = match result {
+            Ok(ok) => ProviderTestView {
+                ok: true,
+                provider_id: id,
+                model: cfg.model,
+                latency_ms,
+                reply: ok.reply,
+                error: None,
+            },
+            Err(e) => ProviderTestView {
+                ok: false,
+                provider_id: id,
+                model: cfg.model,
+                latency_ms,
+                reply: String::new(),
+                error: Some(e.to_string()),
+            },
+        };
+        Ok(view)
     })
     .await
     .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?

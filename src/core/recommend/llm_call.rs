@@ -7,10 +7,45 @@
 //! captures per-provider token usage for telemetry.
 
 use anyhow::{Context, Result, bail};
+use std::time::{Duration, Instant};
 
 use super::config::{Provider, RecommendConfig};
 use super::prompts::SYSTEM_PROMPT_TEMPLATE;
 use super::router::RouterTurn;
+
+const PROVIDER_TEST_PROMPT: &str = "Reply with exactly OK.";
+const PROVIDER_TEST_TIMEOUT: Duration = Duration::from_secs(8);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderTestResult {
+    pub reply: String,
+}
+
+/// Send a tiny real request through the configured provider/model.
+///
+/// The dashboard Admin pane uses this as a connectivity check. It proves the
+/// selected model can answer through the same transport family the router uses,
+/// without running the full skill-selection prompt.
+pub fn test_provider_request(cfg: &RecommendConfig) -> Result<ProviderTestResult> {
+    if cfg.model.trim().is_empty() {
+        bail!("model is required");
+    }
+    match cfg.provider {
+        Provider::OpenaiCompat => {
+            let api_key = cfg
+                .effective_api_key()
+                .context("api_key not configured for provider test")?;
+            test_openai_compat(cfg, &api_key)
+        }
+        Provider::Anthropic => {
+            let api_key = cfg
+                .effective_api_key()
+                .context("api_key not configured for provider test")?;
+            test_anthropic(cfg, &api_key)
+        }
+        Provider::ClaudeCli => test_claude_cli(cfg),
+    }
+}
 
 #[derive(Debug, Default, Clone)]
 pub(super) struct RouterCallStats {
@@ -40,17 +75,15 @@ pub(super) fn call_summary_llm(
     Ok(raw)
 }
 
-/// Run the router via `claude -p --model <model>`. Uses the user's Claude
-/// Code session (cookies + Max plan quota), no API key. Slower than direct
-/// API because every spawn boots Claude Code's full system prompt.
-pub(super) fn call_claude_cli(
+fn claude_cli_json(
     cfg: &RecommendConfig,
-    user_msg: &str,
-) -> Result<(String, RouterCallStats)> {
+    prompt: &str,
+    timeout: Option<Duration>,
+) -> Result<serde_json::Value> {
     use std::io::Write;
     use std::process::{Command, Stdio};
+    use std::thread;
 
-    let combined = format!("{SYSTEM_PROMPT_TEMPLATE}\n\n{user_msg}");
     let mut child = Command::new("claude")
         .arg("-p")
         .arg("--model")
@@ -66,10 +99,29 @@ pub(super) fn call_claude_cli(
 
     if let Some(stdin) = child.stdin.as_mut() {
         stdin
-            .write_all(combined.as_bytes())
+            .write_all(prompt.as_bytes())
             .context("write prompt to claude stdin")?;
     }
-    let out = child.wait_with_output().context("wait for claude")?;
+    drop(child.stdin.take());
+
+    let out = if let Some(limit) = timeout {
+        let started = Instant::now();
+        loop {
+            match child.try_wait().context("poll claude")? {
+                Some(_status) => {
+                    break child.wait_with_output().context("collect claude output")?;
+                }
+                None if started.elapsed() >= limit => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    bail!("claude provider test timed out after {}s", limit.as_secs());
+                }
+                None => thread::sleep(Duration::from_millis(50)),
+            }
+        }
+    } else {
+        child.wait_with_output().context("wait for claude")?
+    };
     if !out.status.success() {
         bail!(
             "claude exited {}: {}",
@@ -77,12 +129,23 @@ pub(super) fn call_claude_cli(
             String::from_utf8_lossy(&out.stderr)
         );
     }
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|e| {
+    serde_json::from_slice(&out.stdout).map_err(|e| {
         anyhow::anyhow!(
             "decode claude json: {e}; first 200 bytes: {:?}",
             String::from_utf8_lossy(&out.stdout[..out.stdout.len().min(200)])
         )
-    })?;
+    })
+}
+
+/// Run the router via `claude -p --model <model>`. Uses the user's Claude
+/// Code session (cookies + Max plan quota), no API key. Slower than direct
+/// API because every spawn boots Claude Code's full system prompt.
+pub(super) fn call_claude_cli(
+    cfg: &RecommendConfig,
+    user_msg: &str,
+) -> Result<(String, RouterCallStats)> {
+    let combined = format!("{SYSTEM_PROMPT_TEMPLATE}\n\n{user_msg}");
+    let v = claude_cli_json(cfg, &combined, None)?;
     let content = v["result"].as_str().unwrap_or_default();
     if std::env::var("RUNAI_RECOMMEND_DEBUG").is_ok() {
         eprintln!(
@@ -114,6 +177,91 @@ pub(super) fn call_claude_cli(
         cache_miss_tokens: cache_create,
     };
     Ok((content.to_string(), stats))
+}
+
+fn test_claude_cli(cfg: &RecommendConfig) -> Result<ProviderTestResult> {
+    let v = claude_cli_json(cfg, PROVIDER_TEST_PROMPT, Some(PROVIDER_TEST_TIMEOUT))?;
+    Ok(ProviderTestResult {
+        reply: v["result"].as_str().unwrap_or_default().trim().to_string(),
+    })
+}
+
+fn test_openai_compat(cfg: &RecommendConfig, api_key: &str) -> Result<ProviderTestResult> {
+    let url = format!("{}/chat/completions", cfg.base_url.trim_end_matches('/'));
+    let body = serde_json::json!({
+        "model": cfg.model,
+        "messages": [
+            {"role": "user", "content": PROVIDER_TEST_PROMPT}
+        ],
+        "stream": false,
+        "max_tokens": 8,
+        "thinking": {"type": "disabled"},
+    });
+    let resp = reqwest::blocking::Client::builder()
+        .timeout(PROVIDER_TEST_TIMEOUT)
+        .build()?
+        .post(&url)
+        .bearer_auth(api_key)
+        .json(&body)
+        .send()
+        .with_context(|| format!("POST {url}"))?;
+    if !resp.status().is_success() {
+        bail!(
+            "provider test HTTP {}: {}",
+            resp.status(),
+            resp.text().unwrap_or_default()
+        );
+    }
+    let raw = resp.text().context("read provider test body")?;
+    let trimmed = raw.trim();
+    let v: serde_json::Value = serde_json::from_str(trimmed).map_err(|e| {
+        anyhow::anyhow!(
+            "decode provider test json: {e}; first 200 bytes: {:?}",
+            &trimmed.chars().take(200).collect::<String>()
+        )
+    })?;
+    Ok(ProviderTestResult {
+        reply: v["choices"][0]["message"]["content"]
+            .as_str()
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
+    })
+}
+
+fn test_anthropic(cfg: &RecommendConfig, api_key: &str) -> Result<ProviderTestResult> {
+    let url = format!("{}/v1/messages", cfg.base_url.trim_end_matches('/'));
+    let body = serde_json::json!({
+        "model": cfg.model,
+        "max_tokens": 8,
+        "messages": [
+            {"role": "user", "content": PROVIDER_TEST_PROMPT}
+        ],
+    });
+    let resp = reqwest::blocking::Client::builder()
+        .timeout(PROVIDER_TEST_TIMEOUT)
+        .build()?
+        .post(&url)
+        .header("x-api-key", api_key)
+        .header("anthropic-version", "2023-06-01")
+        .json(&body)
+        .send()
+        .with_context(|| format!("POST {url}"))?;
+    if !resp.status().is_success() {
+        bail!(
+            "provider test HTTP {}: {}",
+            resp.status(),
+            resp.text().unwrap_or_default()
+        );
+    }
+    let v: serde_json::Value = resp.json().context("decode provider test json")?;
+    Ok(ProviderTestResult {
+        reply: v["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
+    })
 }
 
 fn parse_openai_usage(v: &serde_json::Value) -> RouterCallStats {

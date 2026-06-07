@@ -63,7 +63,7 @@
 .provider-empty{padding:18px 0;font-family:var(--mono);font-size:12px;letter-spacing:0.04em}
 .provider-row{
   display:grid;
-  grid-template-columns:42px 1fr 110px 160px;
+  grid-template-columns:42px 1fr 110px 220px;
   gap:18px;align-items:center;
   padding:14px 0;
   border-bottom:1px solid var(--line-soft);
@@ -103,6 +103,26 @@
   margin-top:2px;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
 }
+.prov-test-line{
+  font-family:var(--mono);font-size:11px;line-height:1.45;
+  margin-top:4px;min-height:16px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.prov-test-state.ok{color:var(--accent-2)}
+.prov-test-state.error{color:var(--err)}
+.prov-test-state.muted{color:var(--ink-3)}
+
+.provider-status{
+  margin:8px 0 4px;
+  padding:8px 10px;
+  border-left:2px solid var(--line);
+  font-family:var(--mono);font-size:11px;line-height:1.45;
+  color:var(--ink-3);background:transparent;
+  overflow-wrap:anywhere;
+}
+.provider-status.ok{border-left-color:var(--accent-2);color:var(--accent-2)}
+.provider-status.error{border-left-color:var(--err);color:var(--err)}
+.provider-status.muted{border-left-color:var(--line);color:var(--ink-3)}
 
 .prov-keystate{
   font-family:var(--mono);font-size:11px;letter-spacing:0.08em;
@@ -111,8 +131,9 @@
 .prov-keystate .key-set{color:var(--accent-2)}
 .prov-keystate .key-empty{color:var(--warn)}
 
-.prov-actions{display:flex;gap:8px;justify-content:flex-end}
-.prov-actions .btn{margin:0 0 0 4px;font-size:10px;padding:5px 0}
+.prov-actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
+.prov-actions .btn{margin:0 0 0 4px;font-size:10px;padding:5px 0;min-width:44px}
+.prov-actions .btn:disabled{opacity:0.55;cursor:wait}
 
 .provider-add-btn{margin-top:14px;font-size:11px}
 
@@ -156,6 +177,9 @@
 /* responsive */
 @media (max-width:880px){
   .body-wrap{grid-template-columns:1fr}
+  .provider-row{grid-template-columns:34px 1fr;gap:10px 14px}
+  .provider-row .prov-keystate{grid-column:2}
+  .provider-row .prov-actions{grid-column:2;justify-content:flex-start}
   aside.side{display:none}
   main.main{padding:24px}
   .hero-grid{grid-template-columns:1fr;gap:48px}
