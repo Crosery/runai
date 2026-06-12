@@ -20,7 +20,7 @@
 
 #![cfg(not(target_os = "windows"))]
 
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::TcpListener;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -35,6 +35,8 @@ fn runai_cmd() -> Command {
     Command::cargo_bin("runai").expect("runai binary built by cargo test")
 }
 
+static SERVER_START_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn free_port() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").expect("ephemeral bind");
     let port = listener.local_addr().expect("local_addr").port();
@@ -42,11 +44,20 @@ fn free_port() -> u16 {
     port
 }
 
-fn wait_for_port(port: u16, timeout: Duration) -> bool {
-    let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+fn wait_for_dashboard(port: u16, timeout: Duration) -> bool {
+    let url = format!("http://127.0.0.1:{port}/");
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_millis(300))
+        .build()
+        .expect("reqwest readiness client");
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
-        if TcpStream::connect_timeout(&addr, Duration::from_millis(100)).is_ok() {
+        if client
+            .get(&url)
+            .send()
+            .map(|resp| resp.status().is_success())
+            .unwrap_or(false)
+        {
             return true;
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -76,6 +87,9 @@ impl Drop for ServerGuard {
 fn spawn_server(home: TempDir, port: u16, mode: &str) -> ServerGuard {
     std::fs::create_dir_all(home.path().join(".runai/skills")).expect("pre-create .runai/skills");
 
+    let _start_guard = SERVER_START_LOCK
+        .lock()
+        .expect("install_script_e2e server start lock poisoned");
     let mut cmd = runai_cmd();
     cmd.arg("server")
         .arg("--host")
@@ -91,18 +105,24 @@ fn spawn_server(home: TempDir, port: u16, mode: &str) -> ServerGuard {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let child = cmd.spawn().expect("spawn runai server");
+    let mut child = cmd.spawn().expect("spawn runai server");
 
-    let guard = ServerGuard {
+    if !wait_for_dashboard(port, Duration::from_secs(15)) {
+        let _ = child.kill();
+        let output = child
+            .wait_with_output()
+            .expect("collect failed runai server output");
+        panic!(
+            "runai server did not answer HTTP readiness at 127.0.0.1:{port} (mode={mode}) within 15s\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    ServerGuard {
         child,
         _home: home,
         port,
-    };
-    assert!(
-        wait_for_port(port, Duration::from_secs(8)),
-        "runai server did not bind 127.0.0.1:{port} (mode={mode}) within 8s"
-    );
-    guard
+    }
 }
 
 fn http_client() -> reqwest::blocking::Client {
@@ -124,10 +144,10 @@ fn make_home() -> TempDir {
 fn rewrite_server_url(body: &str, new_url: &str) -> String {
     body.lines()
         .map(|line| {
-            if let Some(rest) = line.trim_start().strip_prefix("SERVER_URL=\"") {
-                if rest.ends_with('"') {
-                    return format!("SERVER_URL=\"{new_url}\"");
-                }
+            if let Some(rest) = line.trim_start().strip_prefix("SERVER_URL=\"")
+                && rest.ends_with('"')
+            {
+                return format!("SERVER_URL=\"{new_url}\"");
             }
             line.to_string()
         })
@@ -144,6 +164,105 @@ fn write_test_skill(home_path: &Path, name: &str) {
         format!("---\nname: {name}\ndescription: test skill\n---\n\n# {name}\n"),
     )
     .unwrap();
+}
+
+fn rendered_install_script(server: &ServerGuard) -> String {
+    let client = http_client();
+    let script_body = client
+        .get(format!("{}/install", server.base_url()))
+        .send()
+        .expect("GET /install")
+        .text()
+        .expect("install body");
+    rewrite_server_url(&script_body, &server.base_url())
+}
+
+fn run_install_script(
+    script_body: &str,
+    client_home: &Path,
+    username: Option<&str>,
+    password: Option<&str>,
+) -> std::process::Output {
+    run_install_script_with_args(script_body, client_home, username, password, &[])
+}
+
+fn run_install_script_with_args(
+    script_body: &str,
+    client_home: &Path,
+    username: Option<&str>,
+    password: Option<&str>,
+    args: &[&str],
+) -> std::process::Output {
+    let script_dir = tempfile::tempdir().expect("script tempdir");
+    let script_path = script_dir.path().join("install.sh");
+    std::fs::write(&script_path, script_body).expect("write rendered install.sh");
+
+    let mut cmd = Command::new("bash");
+    cmd.arg(script_path.as_os_str())
+        .args(args)
+        .env("HOME", client_home)
+        .env("RUNAI_NO_AUTOSPAWN", "1")
+        .env_remove("RUNE_DATA_DIR")
+        .env_remove("SKILL_MANAGER_DATA_DIR")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(username) = username {
+        cmd.env("RUNAI_USERNAME", username);
+    }
+    if let Some(password) = password {
+        cmd.env("RUNAI_PASSWORD", password);
+    }
+    cmd.output().expect("run rendered install.sh")
+}
+
+fn fetch_uninstall_script(server: &ServerGuard) -> String {
+    http_client()
+        .get(format!("{}/uninstall", server.base_url()))
+        .send()
+        .expect("GET /uninstall")
+        .text()
+        .expect("uninstall body")
+}
+
+fn run_uninstall_script(script_body: &str, client_home: &Path) -> std::process::Output {
+    let script_dir = tempfile::tempdir().expect("uninstall script tempdir");
+    let script_path = script_dir.path().join("uninstall.sh");
+    std::fs::write(&script_path, script_body).expect("write uninstall.sh");
+
+    Command::new("bash")
+        .arg(script_path.as_os_str())
+        .env("HOME", client_home)
+        .env("RUNAI_NO_AUTOSPAWN", "1")
+        .env_remove("RUNE_DATA_DIR")
+        .env_remove("SKILL_MANAGER_DATA_DIR")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("run uninstall.sh")
+}
+
+fn settings_hook_commands(path: &Path) -> Vec<String> {
+    let raw = std::fs::read_to_string(path).expect("read settings.json");
+    let json: serde_json::Value = serde_json::from_str(&raw).expect("settings.json is valid JSON");
+    json.pointer("/hooks/UserPromptSubmit")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .flat_map(|group| {
+            group
+                .get("hooks")
+                .and_then(|hooks| hooks.as_array())
+                .into_iter()
+                .flatten()
+        })
+        .filter_map(|hook| {
+            hook.get("command")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        })
+        .collect()
 }
 
 // ─── tests ──────────────────────────────────────────────────────────────────
@@ -242,6 +361,61 @@ fn team_mode_install_script_excludes_binary_management_commands() {
     );
 }
 
+/// Regression for the documented user command:
+/// `curl -fsSL http://<server>/install | bash`.
+///
+/// In this shape bash's stdin is the installer pipe, not an interactive
+/// terminal. A new device with no env credentials must fail with actionable
+/// text and must drain the remaining script bytes so curl does not surface
+/// `(23) Failure writing output to destination`.
+#[test]
+fn curl_pipe_new_device_without_credentials_fails_without_broken_pipe_noise() {
+    let home = make_home();
+    let port = free_port();
+    let server = spawn_server(home, port, "team");
+    let client_home = tempfile::tempdir().expect("client HOME tempdir");
+
+    let output = Command::new("bash")
+        .arg("-c")
+        .arg(format!(
+            "curl --limit-rate 1024 -fsSL {}/install | bash",
+            server.base_url()
+        ))
+        .env("HOME", client_home.path())
+        .env("RUNAI_NO_AUTOSPAWN", "1")
+        .env_remove("RUNAI_USERNAME")
+        .env_remove("RUNAI_PASSWORD")
+        .env_remove("RUNE_DATA_DIR")
+        .env_remove("SKILL_MANAGER_DATA_DIR")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("run curl | bash installer");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "new-device curl pipe without credentials should fail, not silently install:\nstdout=\n{stdout}\nstderr=\n{stderr}"
+    );
+    assert!(
+        stderr.contains("stdin is the installer pipe") || stderr.contains("run non-interactively"),
+        "failure should explain how to run non-interactively:\nstdout=\n{stdout}\nstderr=\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("curl: (23)") && !stdout.contains("curl: (23)"),
+        "installer must drain stdin before exiting so curl does not report broken pipe:\nstdout=\n{stdout}\nstderr=\n{stderr}"
+    );
+    assert!(
+        !client_home.path().join(".runai-identity").exists(),
+        "failed curl-pipe install must not create identity"
+    );
+    assert!(
+        !client_home.path().join(".runai-hook.sh").exists(),
+        "failed curl-pipe install must not create hook"
+    );
+}
+
 /// PLANNING §1.2 (c): non-interactive flow — env vars supplant TTY prompts.
 /// Run the rendered script in a SEPARATE tempdir HOME so the host's real
 /// `~/.runai-identity` / `~/.claude/settings.json` are NEVER touched.
@@ -277,33 +451,16 @@ fn non_interactive_install_registers_user_via_env_vars() {
         "test rewrite_server_url failed: script body did not contain expected loopback URL",
     );
 
-    // Persist to a temp file and run under a fully isolated HOME so this
-    // test cannot mutate the developer's real `~/.runai-identity` or
-    // `~/.claude/settings.json`.
-    let script_dir = tempfile::tempdir().expect("script tempdir");
-    let script_path = script_dir.path().join("install.sh");
-    std::fs::write(&script_path, script_body).expect("write rendered install.sh");
-
     let client_home = tempfile::tempdir().expect("client HOME tempdir");
     let username = format!("e2e-{}", std::process::id());
     let password = "correct-horse-battery-staple";
 
-    let output = Command::new("bash")
-        .arg(script_path.as_os_str())
-        .env("HOME", client_home.path())
-        .env("RUNAI_USERNAME", &username)
-        .env("RUNAI_PASSWORD", password)
-        // Block any stray attempt to spawn another runai dashboard from a
-        // hook invocation — the script itself doesn't spawn anything, but
-        // belt-and-braces against any subprocess that might.
-        .env("RUNAI_NO_AUTOSPAWN", "1")
-        .env_remove("RUNE_DATA_DIR")
-        .env_remove("SKILL_MANAGER_DATA_DIR")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("run rendered install.sh");
+    let output = run_install_script(
+        &script_body,
+        client_home.path(),
+        Some(&username),
+        Some(password),
+    );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -346,6 +503,32 @@ fn non_interactive_install_registers_user_via_env_vars() {
         Some(true),
     );
 
+    assert!(
+        stdout.contains("install complete"),
+        "installer should print an install-complete summary; stdout=\n{stdout}"
+    );
+    assert_eq!(
+        stdout.lines().last(),
+        Some("install complete"),
+        "final installer line must be machine-parseable; stdout=\n{stdout}"
+    );
+    for field in [
+        "account", "password", "api_key", "server", "identity", "hook", "config", "client",
+    ] {
+        assert!(
+            stdout.contains(field),
+            "installer summary missing {field}; stdout=\n{stdout}"
+        );
+    }
+    assert!(
+        !stdout.contains(&format!("api_key   {api_key}")),
+        "installer leaked raw api_key in stdout"
+    );
+    assert!(
+        !stdout.contains(password),
+        "installer leaked plaintext password in stdout"
+    );
+
     // Hook + settings should have been wired up too (this proves the
     // default phase ran all three steps).
     let hook_path = client_home.path().join(".runai-hook.sh");
@@ -382,6 +565,315 @@ fn non_interactive_install_registers_user_via_env_vars() {
     assert_eq!(
         me_json.get("username").and_then(|v| v.as_str()),
         Some(username.as_str())
+    );
+}
+
+#[test]
+fn existing_identity_must_verify_with_server_before_prompt_skip() {
+    let server_home = make_home();
+    let port = free_port();
+    let server = spawn_server(server_home, port, "team");
+    let script_body = rendered_install_script(&server);
+
+    let client_home = tempfile::tempdir().expect("client HOME tempdir");
+    let username = format!("reuse-{}", std::process::id());
+    let password = "reuse-password";
+
+    let first = run_install_script(
+        &script_body,
+        client_home.path(),
+        Some(&username),
+        Some(password),
+    );
+    assert!(
+        first.status.success(),
+        "initial install failed:\nstdout=\n{}\nstderr=\n{}",
+        String::from_utf8_lossy(&first.stdout),
+        String::from_utf8_lossy(&first.stderr)
+    );
+
+    let reused = run_install_script(&script_body, client_home.path(), None, None);
+    let reused_stdout = String::from_utf8_lossy(&reused.stdout);
+    let reused_stderr = String::from_utf8_lossy(&reused.stderr);
+    assert!(
+        reused.status.success(),
+        "valid identity should skip prompts after /api/me verification:\nstdout=\n{reused_stdout}\nstderr=\n{reused_stderr}"
+    );
+    assert!(
+        reused_stdout.contains("server accepted stored api_key"),
+        "second install should report server-side identity verification; stdout=\n{reused_stdout}"
+    );
+
+    let identity_path = client_home.path().join(".runai-identity");
+    let mut identity_json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&identity_path).expect("read identity"))
+            .expect("identity json");
+    identity_json["api_key"] = serde_json::Value::String("rnai_live_stale_key".into());
+    std::fs::write(
+        &identity_path,
+        serde_json::to_string_pretty(&identity_json).unwrap(),
+    )
+    .expect("write stale identity");
+
+    let stale = run_install_script(&script_body, client_home.path(), None, None);
+    let stale_stdout = String::from_utf8_lossy(&stale.stdout);
+    let stale_stderr = String::from_utf8_lossy(&stale.stderr);
+    assert!(
+        !stale.status.success(),
+        "stale identity must fail instead of silently skipping auth; stdout=\n{stale_stdout}\nstderr=\n{stale_stderr}"
+    );
+    assert!(
+        stale_stderr.contains("existing identity was rejected"),
+        "stale identity should explain the server rejection; stderr=\n{stale_stderr}"
+    );
+}
+
+#[test]
+fn hook_only_refreshes_server_pin_before_writing_hook_surface() {
+    let server_home = make_home();
+    let port = free_port();
+    let server = spawn_server(server_home, port, "team");
+    let script_body = rendered_install_script(&server);
+
+    let client_home = tempfile::tempdir().expect("client HOME tempdir");
+    let username = format!("hook-only-{}", std::process::id());
+    let password = "hook-only-password";
+
+    let first = run_install_script(
+        &script_body,
+        client_home.path(),
+        Some(&username),
+        Some(password),
+    );
+    assert!(
+        first.status.success(),
+        "initial install failed:\nstdout=\n{}\nstderr=\n{}",
+        String::from_utf8_lossy(&first.stdout),
+        String::from_utf8_lossy(&first.stderr)
+    );
+
+    let pin_path = client_home.path().join(".runai-server.json");
+    std::fs::remove_file(&pin_path).expect("remove pin before hook-only reinstall");
+    let hook_path = client_home.path().join(".runai-hook.sh");
+    std::fs::remove_file(&hook_path).expect("remove hook before hook-only reinstall");
+
+    let hook_only = run_install_script_with_args(
+        &script_body,
+        client_home.path(),
+        None,
+        None,
+        &["--hook-only"],
+    );
+    let stdout = String::from_utf8_lossy(&hook_only.stdout);
+    let stderr = String::from_utf8_lossy(&hook_only.stderr);
+    assert!(
+        hook_only.status.success(),
+        "--hook-only should refresh pin and reinstall hook when identity exists:\nstdout=\n{stdout}\nstderr=\n{stderr}"
+    );
+    assert!(
+        pin_path.exists(),
+        "--hook-only must recreate .runai-server.json before writing HTTPS-gated clients"
+    );
+    let pin_json: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&pin_path).expect("read refreshed server pin"),
+    )
+    .expect("server pin json");
+    assert_eq!(
+        pin_json.get("scheme").and_then(|v| v.as_str()),
+        Some("http"),
+        "HTTP install should record explicit no-pin scheme"
+    );
+    assert!(
+        hook_path.exists(),
+        "--hook-only should still write the hook after refreshing pin"
+    );
+}
+
+/// Full bash client lifecycle: first install creates the hook, settings entry,
+/// companion CLI, server pin, identity, and remote MCP; second install reuses
+/// the verified identity without prompting; uninstall removes only runai-owned
+/// surfaces and keeps unrelated hooks/MCPs plus the identity.
+#[test]
+fn install_second_run_and_uninstall_round_trip_preserves_unrelated_config() {
+    let server_home = make_home();
+    let port = free_port();
+    let server = spawn_server(server_home, port, "team");
+    let loopback_url = server.base_url();
+
+    // Render the install script and point it back at the loopback bind.
+    let script_body = rendered_install_script(&server);
+
+    let client_home = tempfile::tempdir().expect("client HOME tempdir");
+
+    let settings_path = client_home.path().join(".claude/settings.json");
+    std::fs::create_dir_all(settings_path.parent().unwrap()).expect("create .claude dir");
+    std::fs::write(
+        &settings_path,
+        r#"{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"echo unrelated"}]}]},"theme":"dark"}"#,
+    )
+    .expect("seed settings.json");
+
+    // Pre-seed ~/.claude.json with an unrelated MCP server so we can prove
+    // the install/uninstall touch ONLY the runai-client entry.
+    let claude_json_path = client_home.path().join(".claude.json");
+    std::fs::write(
+        &claude_json_path,
+        r#"{"mcpServers":{"other-mcp":{"command":"other","args":["x"]}},"someTopLevel":42}"#,
+    )
+    .expect("seed .claude.json");
+
+    let username = format!("mcp-{}", std::process::id());
+    let password = "mcp-leg-password";
+    let output = run_install_script(
+        &script_body,
+        client_home.path(),
+        Some(&username),
+        Some(password),
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "install.sh failed:\nstdout=\n{stdout}\nstderr=\n{stderr}"
+    );
+
+    // The api_key the server minted (used to assert the Bearer header value).
+    let identity_raw =
+        std::fs::read_to_string(client_home.path().join(".runai-identity")).expect("read identity");
+    let api_key = serde_json::from_str::<serde_json::Value>(&identity_raw)
+        .ok()
+        .and_then(|v| v.get("api_key").and_then(|k| k.as_str()).map(String::from))
+        .unwrap_or_default();
+    assert!(api_key.starts_with("rnai_"), "expected minted api_key");
+    assert!(
+        client_home.path().join(".runai-server.json").is_file(),
+        "install should write the server pin file that uninstall later cleans"
+    );
+    assert!(
+        client_home.path().join(".runai-hook.sh").is_file(),
+        "install should write hook script"
+    );
+    assert!(
+        client_home.path().join(".local/bin/runai-client").is_file(),
+        "install should write companion runai-client script"
+    );
+    let hook_commands = settings_hook_commands(&settings_path);
+    assert!(
+        hook_commands.iter().any(|cmd| cmd == "echo unrelated"),
+        "install must preserve unrelated UserPromptSubmit hook; commands={hook_commands:?}"
+    );
+    assert!(
+        hook_commands
+            .iter()
+            .any(|cmd| cmd.ends_with(".runai-hook.sh")),
+        "install must add runai hook to settings; commands={hook_commands:?}"
+    );
+
+    // ── after install: runai-client MCP present + correct shape ──
+    let claude_json: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&claude_json_path).expect("read .claude.json after install"),
+    )
+    .expect(".claude.json must remain valid JSON after install");
+
+    // Pre-existing entry + top-level key preserved.
+    assert!(
+        claude_json["mcpServers"]["other-mcp"].is_object(),
+        "install must not clobber pre-existing mcpServers entries: {claude_json}"
+    );
+    assert_eq!(
+        claude_json["someTopLevel"], 42,
+        "install must not drop unrelated top-level keys"
+    );
+
+    let entry = &claude_json["mcpServers"]["runai-client"];
+    assert!(
+        entry.is_object(),
+        "install must add mcpServers.runai-client; got {claude_json}"
+    );
+    assert_eq!(
+        entry["type"], "http",
+        "remote MCP must be declared as an http transport: {entry}"
+    );
+    let url = entry["url"].as_str().unwrap_or_default();
+    assert_eq!(
+        url,
+        format!("{loopback_url}/mcp"),
+        "remote MCP url must point at <SERVER_URL>/mcp"
+    );
+    assert_eq!(
+        entry["headers"]["Authorization"],
+        serde_json::Value::String(format!("Bearer {api_key}")),
+        "remote MCP must carry Authorization: Bearer <api_key>"
+    );
+
+    let second = run_install_script(&script_body, client_home.path(), None, None);
+    let second_stdout = String::from_utf8_lossy(&second.stdout);
+    let second_stderr = String::from_utf8_lossy(&second.stderr);
+    assert!(
+        second.status.success(),
+        "second install should reuse the verified identity without credentials:\nstdout=\n{second_stdout}\nstderr=\n{second_stderr}"
+    );
+    assert!(
+        second_stdout.contains("server accepted stored api_key"),
+        "second install should report verified identity reuse; stdout=\n{second_stdout}"
+    );
+    let hook_commands_after_second = settings_hook_commands(&settings_path);
+    let runai_hook_count = hook_commands_after_second
+        .iter()
+        .filter(|cmd| cmd.ends_with(".runai-hook.sh"))
+        .count();
+    assert_eq!(
+        runai_hook_count, 1,
+        "second install must not duplicate hook entries; commands={hook_commands_after_second:?}"
+    );
+
+    // ── uninstall: remove runai-client, keep other-mcp ──
+    let uninstall_body = fetch_uninstall_script(&server);
+    let un_out = run_uninstall_script(&uninstall_body, client_home.path());
+    assert!(
+        un_out.status.success(),
+        "uninstall.sh failed:\nstdout=\n{}\nstderr=\n{}",
+        String::from_utf8_lossy(&un_out.stdout),
+        String::from_utf8_lossy(&un_out.stderr),
+    );
+
+    let claude_after: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&claude_json_path).expect("read .claude.json after uninstall"),
+    )
+    .expect(".claude.json must remain valid JSON after uninstall");
+    assert!(
+        claude_after["mcpServers"]["runai-client"].is_null(),
+        "uninstall must remove mcpServers.runai-client; got {claude_after}"
+    );
+    assert!(
+        claude_after["mcpServers"]["other-mcp"].is_object(),
+        "uninstall must keep unrelated mcpServers entries; got {claude_after}"
+    );
+    assert_eq!(
+        claude_after["someTopLevel"], 42,
+        "uninstall must not drop unrelated top-level keys"
+    );
+    assert!(
+        !client_home.path().join(".runai-server.json").exists(),
+        "uninstall must remove installer-generated server fingerprint pin"
+    );
+    assert!(
+        !client_home.path().join(".runai-hook.sh").exists(),
+        "uninstall must remove hook script"
+    );
+    assert!(
+        !client_home.path().join(".local/bin/runai-client").exists(),
+        "uninstall must remove companion runai-client script"
+    );
+    let hook_commands_after_uninstall = settings_hook_commands(&settings_path);
+    assert_eq!(
+        hook_commands_after_uninstall,
+        vec!["echo unrelated".to_string()],
+        "uninstall must remove only runai hook and keep unrelated hook"
+    );
+    assert!(
+        client_home.path().join(".runai-identity").is_file(),
+        "uninstall keeps identity for explicit account lifecycle, not hook cleanup"
     );
 }
 

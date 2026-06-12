@@ -27,27 +27,50 @@
 #                     ~/.runai-identity); skip hook and settings patch.
 #   --login-only      sign in only; do NOT auto-register on 401.
 #   --hook-only       skip auth; require an existing ~/.runai-identity;
-#                     write ~/.runai-hook.sh and patch settings.json.
+#                     refresh ~/.runai-server.json, write ~/.runai-hook.sh,
+#                     and patch settings.json.
 #   --help, -h        print this help and exit.
 #
 # What this does (default, all phases):
 #   1) Resolve credentials (env > prompt). Try POST /auth/login, fall back
 #      to POST /users/register on 401. Write returned api_key into
 #      ~/.runai-identity (mode 600).
-#   2) Write ~/.runai-hook.sh — bash wrapper that curls /recommend with
+#   2) Write ~/.runai-server.json — server scheme + TLS fingerprint pin.
+#   3) Write ~/.runai-hook.sh — bash wrapper that curls /recommend with
 #      Authorization: Bearer <key from ~/.runai-identity>.
-#   3) Patch ~/.claude/settings.json so UserPromptSubmit calls the hook.
+#   4) Patch ~/.claude/settings.json so UserPromptSubmit calls the hook.
 #      Original settings.json is backed up to .runai-bak first.
+#   5) Register the runai-client remote HTTP MCP in ~/.claude.json under
+#      mcpServers (type:http, url:<SERVER_URL>/mcp, Authorization: Bearer
+#      <api_key>). Original ~/.claude.json is backed up to .runai-bak first;
+#      existing mcpServers entries + top-level keys are preserved. This is
+#      the MCP leg of the "runai-client 三件套" (hook + cli + mcp).
 #
 # What this does NOT do:
-#   - Install any binary.
-#   - Modify anything outside ~/.runai-identity, ~/.runai-hook.sh,
-#     and ~/.claude/settings.json.
+#   - Install the local runai binary; the companion runai-client is just a
+#     script that talks to this server.
+#   - Modify anything outside ~/.runai-identity, ~/.runai-server.json,
+#     ~/.runai-hook.sh, ~/.claude/settings.json, ~/.claude.json, and
+#     ~/.local/bin/runai-client.
 #   - Touch your existing hooks — runai's entry is appended, others kept.
+#   - Touch unrelated mcpServers entries — only runai-client is added.
 #
 # Uninstall: curl -fsSL http://<SERVER>:<PORT>/uninstall | bash
 
 set -euo pipefail
+
+drain_stdin_before_exit() {
+  # When invoked as `curl ... | bash`, exiting while curl is still writing
+  # the script closes the pipe and surfaces curl (23). Drain the remaining
+  # script bytes first so user-facing failures stay readable.
+  if [ ! -t 0 ]; then
+    cat >/dev/null 2>/dev/null || true
+  fi
+}
+runai_exit_trap() {
+  drain_stdin_before_exit
+}
+trap runai_exit_trap EXIT
 
 # {SERVER_URL} is substituted by the server at request time.
 SERVER_URL="{SERVER_URL}"
@@ -79,8 +102,9 @@ Phase flags (mutually exclusive; default runs all three):
   --login-only      Identity phase only, no auto-register: fail if the
                     account does not already exist.
   --hook-only       Skip identity phase entirely; install hook script
-                    and patch ~/.claude/settings.json. Requires an
-                    existing ~/.runai-identity.
+                    and patch ~/.claude/settings.json; refreshes the
+                    server fingerprint pin. Requires an existing
+                    ~/.runai-identity with api_key.
   --help, -h        Print this and exit.
 
 Environment variables (substitute for TTY prompts):
@@ -122,6 +146,7 @@ while [[ $# -gt 0 ]]; do
     *)
       echo "runai-install: unknown argument: $1" >&2
       echo "run with --help for usage." >&2
+      drain_stdin_before_exit
       exit 1
       ;;
   esac
@@ -130,7 +155,22 @@ done
 if [[ "$SERVER_URL" == "{""SERVER_URL""}" || -z "$SERVER_URL" ]]; then
   echo "runai-install: SERVER_URL placeholder was not substituted." >&2
   echo "did you curl this script directly from the runai server's /install endpoint?" >&2
+  drain_stdin_before_exit
   exit 1
+fi
+
+# TLS: a runai team server speaks HTTPS with a self-signed cert. Security
+# comes from fingerprint pinning (~/.runai-server.json + the hook re-checks
+# /api/tls/fingerprint on every prompt), NOT from CA-chain validation — so
+# every request to the server skips CA verification with --insecure and lets
+# the pin be the MITM gate. On a plain-HTTP server CURL_TLS stays empty.
+# Scalar (not array) on purpose: macOS ships bash 3.2 where "${arr[@]}" on
+# an empty array under `set -u` is an "unbound variable" error. An empty
+# scalar expands cleanly; --insecure is a single token so the intentional
+# unquoted $CURL_TLS below word-splits to one flag or to nothing.
+CURL_TLS=""
+if [[ "$SERVER_URL" == https://* ]]; then
+  CURL_TLS="--insecure"
 fi
 
 # ANSI styling. Only emit codes when stdout is a real TTY; piped output
@@ -166,8 +206,109 @@ warn() {
 fail() {
   printf "  ${C4}[!!]${R} %s\n" "$1" >&2
 }
+die() {
+  fail "$1"
+  drain_stdin_before_exit
+  exit 1
+}
 hr() {
   printf "${C1}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${R}\n"
+}
+prompt_from_tty() {
+  local __var="$1"
+  local __label="$2"
+  local __silent="${3:-0}"
+  if ! { : </dev/tty >/dev/tty; } 2>/dev/null; then
+    printf "  ${D}run non-interactively instead:${R} RUNAI_USERNAME=<username> RUNAI_PASSWORD=<password> bash <(curl -fsSL %s/install)\n" "$SERVER_URL" >&2
+    die "$__label cannot be read interactively because stdin is the installer pipe"
+  fi
+  printf "  ${B}%s${R}  " "$__label" >/dev/tty
+  if [[ "$__silent" -eq 1 ]]; then
+    IFS= read -rs "$__var" </dev/tty
+    printf "\n" >/dev/tty
+  else
+    IFS= read -r "$__var" </dev/tty
+  fi
+}
+json_get() {
+  python3 -c "
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        print(json.load(f).get(sys.argv[2], '') or '')
+except Exception:
+    print('')
+" "$1" "$2" 2>/dev/null || true
+}
+verify_identity_with_server() {
+  local key user id http body me_user me_id
+  key=$(json_get "$IDENTITY_PATH" api_key)
+  user=$(json_get "$IDENTITY_PATH" username)
+  id=$(json_get "$IDENTITY_PATH" user_id)
+  [[ -n "$key" ]] || return 1
+  body=$(mktemp)
+  http=$(curl -sS $CURL_TLS -o "$body" -w '%{http_code}' \
+    -H "Authorization: Bearer $key" \
+    "$SERVER_URL/api/me" 2>/dev/null || echo 000)
+  if [[ "$http" != "200" ]]; then
+    rm -f "$body"
+    return 1
+  fi
+  me_user=$(json_get "$body" username)
+  me_id=$(json_get "$body" user_id)
+  rm -f "$body"
+  [[ -n "$me_user" && "$me_user" == "$user" && -n "$me_id" && "$me_id" == "$id" ]]
+}
+pin_server_fingerprint() {
+  # PLANNING §2.3 item 3 — pin the server's leaf-cert SHA-256 if the
+  # server speaks TLS. The fingerprint endpoint is always reachable; over
+  # an HTTPS scheme it forces us through the TLS handshake first, which
+  # is exactly the MITM-detection moment we care about.
+  #
+  # Behavior:
+  #   - HTTPS server: fetch /api/tls/fingerprint, persist
+  #     {"server","fingerprint","scheme":"https"} into ~/.runai-server.json,
+  #     and the hook / companion CLI refuse to talk to a server whose cert
+  #     doesn't match this fingerprint.
+  #   - HTTP server: write {"scheme":"http"} (no fingerprint to pin), and
+  #     the hook / companion CLI talk to plain HTTP. Documented compromise
+  #     so loopback / owner-mode setups don't need TLS to function.
+  if [[ "$SERVER_URL" == https://* ]]; then
+    warn "fetching server cert fingerprint for pinning"
+    FP_HTTP=$(curl -sS $CURL_TLS -o /tmp/runai-fp-resp.$$ -w '%{http_code}' \
+      "$SERVER_URL/api/tls/fingerprint" 2>/dev/null || echo 000)
+    if [[ "$FP_HTTP" == "200" ]]; then
+      FINGERPRINT=$(python3 -c "
+import json, sys
+try:
+  print(json.load(open('/tmp/runai-fp-resp.$$')).get('fingerprint', ''))
+except Exception:
+  print('')" 2>/dev/null || true)
+      if [[ -z "$FINGERPRINT" ]]; then
+        rm -f /tmp/runai-fp-resp.$$
+        die "server returned 200 but no fingerprint field — refusing to pin a blank"
+      fi
+      python3 -c "
+import json
+out = {'version': 1, 'server': '$SERVER_URL', 'scheme': 'https', 'fingerprint': '$FINGERPRINT'}
+print(json.dumps(out, indent=2))" > "$SERVER_PIN_PATH"
+      chmod 600 "$SERVER_PIN_PATH"
+      ok "pinned server fingerprint ${D}(${FINGERPRINT:0:16}..)${R}"
+    else
+      rm -f /tmp/runai-fp-resp.$$
+      die "could not fetch /api/tls/fingerprint (HTTP $FP_HTTP); aborting before any client config goes out"
+    fi
+    rm -f /tmp/runai-fp-resp.$$
+  else
+    # HTTP server — no fingerprint to pin. Record the scheme so the hook
+    # knows not to enforce pinning.
+    python3 -c "
+import json
+out = {'version': 1, 'server': '$SERVER_URL', 'scheme': 'http', 'fingerprint': None}
+print(json.dumps(out, indent=2))" > "$SERVER_PIN_PATH"
+    chmod 600 "$SERVER_PIN_PATH"
+    warn "server is HTTP — no fingerprint pinning possible"
+  fi
 }
 
 printf "\n"
@@ -204,34 +345,39 @@ printf "\n"
 if [[ "$DO_AUTH" -eq 1 ]]; then
   step "1/3" "account setup"
   if [[ -f "$IDENTITY_PATH" ]] && grep -q '"api_key"' "$IDENTITY_PATH" 2>/dev/null; then
-    ok "found existing identity, reusing stored api_key"
-    printf "  ${D}(rm %s to switch user)${R}\n\n" "$IDENTITY_PATH"
+    if verify_identity_with_server; then
+      ok "found existing identity, server accepted stored api_key"
+      printf "  ${D}(rm %s to switch user)${R}\n\n" "$IDENTITY_PATH"
+    else
+      fail "existing identity was rejected by $SERVER_URL"
+      printf "  ${D}run again with --login-only, or remove %s to register/sign in fresh${R}\n" "$IDENTITY_PATH" >&2
+      exit 1
+    fi
   else
     printf "  ${D}new device — register or sign in to %s${R}\n" "$SERVER_URL"
 
     # Username: env first, then TTY prompt. Env wins so RUNAI_USERNAME=x
     # works in CI / agent contexts where there is no terminal.
     if [[ -z "${RUNAI_USERNAME:-}" ]]; then
-      printf "  ${B}username${R}  "
-      read -r RUNAI_USERNAME
+      prompt_from_tty RUNAI_USERNAME "username" 0
     else
       ok "using RUNAI_USERNAME from env"
     fi
     if [[ -z "${RUNAI_USERNAME// /}" ]]; then
       fail "username cannot be empty (set RUNAI_USERNAME or answer the prompt)"
+      drain_stdin_before_exit
       exit 1
     fi
 
     # Password: same dual-mode resolution.
     if [[ -z "${RUNAI_PASSWORD:-}" ]]; then
-      printf "  ${B}password${R}  "
-      read -rs RUNAI_PASSWORD
-      printf "\n"
+      prompt_from_tty RUNAI_PASSWORD "password" 1
     else
       ok "using RUNAI_PASSWORD from env"
     fi
     if [[ -z "$RUNAI_PASSWORD" ]]; then
       fail "password cannot be empty (set RUNAI_PASSWORD or answer the prompt)"
+      drain_stdin_before_exit
       exit 1
     fi
 
@@ -241,7 +387,7 @@ if [[ "$DO_AUTH" -eq 1 ]]; then
 
     # Try login first. Any HTTP 2xx → logged in. Otherwise fall through to register.
     warn "trying sign-in as ${B}${RUNAI_USERNAME}${R}"
-    LOGIN_HTTP=$(curl -s -o /tmp/runai-login-resp.$$ -w '%{http_code}' \
+    LOGIN_HTTP=$(curl -s $CURL_TLS -o /tmp/runai-login-resp.$$ -w '%{http_code}' \
       -X POST "$SERVER_URL/auth/login" \
       -H 'Content-Type: application/json' \
       -d "$AUTH_BODY" || echo 000)
@@ -254,7 +400,7 @@ if [[ "$DO_AUTH" -eq 1 ]]; then
       exit 1
     else
       warn "user does not exist, registering"
-      REG_HTTP=$(curl -s -o /tmp/runai-reg-resp.$$ -w '%{http_code}' \
+      REG_HTTP=$(curl -s $CURL_TLS -o /tmp/runai-reg-resp.$$ -w '%{http_code}' \
         -X POST "$SERVER_URL/users/register" \
         -H 'Content-Type: application/json' \
         -d "$AUTH_BODY" || echo 000)
@@ -298,72 +444,25 @@ print(json.dumps(d, indent=2))" > "$IDENTITY_PATH"
     ok "wrote ${D}${IDENTITY_PATH}${R} ${D}(mode 600)${R}"
   fi
   printf "\n"
+fi
 
-  # PLANNING §2.3 item 3 — pin the server's leaf-cert SHA-256 if the
-  # server speaks TLS. The fingerprint endpoint is always reachable; over
-  # an HTTPS scheme it forces us through the TLS handshake first, which
-  # is exactly the MITM-detection moment we care about.
-  #
-  # Behavior:
-  #   - HTTPS server: fetch /api/tls/fingerprint, persist
-  #     {"server","fingerprint","scheme":"https"} into ~/.runai-server.json,
-  #     and the hook will refuse to talk to a server whose cert doesn't
-  #     match this fingerprint.
-  #   - HTTP server: write {"scheme":"http"} (no fingerprint to pin), and
-  #     the hook talks to plain HTTP. Documented compromise so loopback /
-  #     owner-mode setups don't need TLS to function.
-  if [[ "$SERVER_URL" == https://* ]]; then
-    warn "fetching server cert fingerprint for pinning"
-    FP_HTTP=$(curl -sS -o /tmp/runai-fp-resp.$$ -w '%{http_code}' \
-      "$SERVER_URL/api/tls/fingerprint" 2>/dev/null || echo 000)
-    if [[ "$FP_HTTP" == "200" ]]; then
-      FINGERPRINT=$(python3 -c "
-import json, sys
-try:
-  print(json.load(open('/tmp/runai-fp-resp.$$')).get('fingerprint', ''))
-except Exception:
-  print('')" 2>/dev/null || true)
-      if [[ -z "$FINGERPRINT" ]]; then
-        fail "server returned 200 but no fingerprint field — refusing to pin a blank"
-        rm -f /tmp/runai-fp-resp.$$
-        exit 1
-      fi
-      python3 -c "
-import json
-out = {'version': 1, 'server': '$SERVER_URL', 'scheme': 'https', 'fingerprint': '$FINGERPRINT'}
-print(json.dumps(out, indent=2))" > "$SERVER_PIN_PATH"
-      chmod 600 "$SERVER_PIN_PATH"
-      ok "pinned server fingerprint ${D}(${FINGERPRINT:0:16}…)${R}"
-    else
-      fail "could not fetch /api/tls/fingerprint (HTTP $FP_HTTP); aborting before any client config goes out"
-      rm -f /tmp/runai-fp-resp.$$
-      exit 1
-    fi
-    rm -f /tmp/runai-fp-resp.$$
-  else
-    # HTTP server — no fingerprint to pin. Record the scheme so the hook
-    # knows not to enforce pinning. PLANNING §2.3 item 2 only mandates
-    # TLS for team + non-loopback; owner / loopback can still legitimately
-    # speak HTTP.
-    python3 -c "
-import json
-out = {'version': 1, 'server': '$SERVER_URL', 'scheme': 'http', 'fingerprint': None}
-print(json.dumps(out, indent=2))" > "$SERVER_PIN_PATH"
-    chmod 600 "$SERVER_PIN_PATH"
-    warn "server is HTTP — no fingerprint pinning possible"
+if [[ "$DO_HOOK" -eq 1 && "$DO_AUTH" -eq 0 ]]; then
+  # --hook-only safety: refuse before writing any config if there's no
+  # identity to back it. Without an api_key the hook would silently drop
+  # requests into the legacy unauth compat lane, which is not what
+  # --hook-only callers want.
+  if [[ ! -f "$IDENTITY_PATH" ]] || ! grep -q '"api_key"' "$IDENTITY_PATH" 2>/dev/null; then
+    fail "--hook-only requires an existing $IDENTITY_PATH with api_key; run without --hook-only first"
+    exit 1
   fi
+fi
+
+if [[ "$DO_AUTH" -eq 1 || "$DO_HOOK" -eq 1 ]]; then
+  pin_server_fingerprint
   printf "\n"
 fi
 
 if [[ "$DO_HOOK" -eq 1 ]]; then
-  # --hook-only safety: refuse to write a hook if there's no identity to
-  # back it. Without an api_key the hook would silently drop requests
-  # into the legacy unauth compat lane, which is not what --hook-only
-  # callers want.
-  if [[ "$DO_AUTH" -eq 0 && ! -f "$IDENTITY_PATH" ]]; then
-    fail "--hook-only requires an existing $IDENTITY_PATH; run without --hook-only first"
-    exit 1
-  fi
   step "2/3" "install hook wrapper"
   # Reads api_key from ~/.runai-identity at
   #    runtime so the hook keeps working even if the identity gets rotated.
@@ -377,16 +476,26 @@ if [[ "$DO_HOOK" -eq 1 ]]; then
 # PLANNING.md §2.3 item 3 — server fingerprint pinning.
 #
 # This wrapper reads ~/.runai-server.json on every invocation and:
-#   - if scheme=https + fingerprint set → curl with `--cacert /dev/null` is
-#     no good (the cert is self-signed), so we curl normally but ALSO
-#     fetch /api/tls/fingerprint over the wire and refuse to send the
-#     prompt body if it doesn't match the pinned value. The fingerprint
-#     check is the actual MITM gate; the TLS handshake is just what makes
-#     an attacker have to forge a matching cert in the first place.
+#   - if scheme=https + fingerprint set → the server's cert is self-signed,
+#     so curl can't validate it against a CA chain. We pass --insecure to
+#     complete the handshake, then fetch /api/tls/fingerprint and refuse to
+#     send the prompt body unless it matches the pinned value. The
+#     fingerprint check is the actual MITM gate; --insecure only skips the
+#     CA-chain step that a self-signed cert can never satisfy. An attacker
+#     still has to forge a cert whose fingerprint matches the pin — which
+#     needs the server's private key.
 #   - if scheme=http → no pinning is possible; behave like the legacy hook.
 RUNAI_SERVER="__SERVER_URL__"
 RUNAI_IDENTITY="$HOME/.runai-identity"
 RUNAI_SERVER_PIN="$HOME/.runai-server.json"
+
+# Self-signed HTTPS → skip CA validation (--insecure); the fingerprint pin
+# below is the real gate. Plain HTTP → CURL_TLS stays empty. Scalar, not
+# array: bash 3.2 (macOS) errors on an empty array under `set -u`.
+CURL_TLS=""
+if [[ "$RUNAI_SERVER" == https://* ]]; then
+  CURL_TLS="--insecure"
+fi
 
 # Best-effort: extract api_key from ~/.runai-identity. We don't fail the
 # hook on a missing file — anonymous calls still work in compat mode.
@@ -407,8 +516,8 @@ if [[ -n "$RUNAI_API_KEY" ]]; then
   AUTH_HEADER=(-H "Authorization: Bearer $RUNAI_API_KEY")
 fi
 
-# Read the pinned fingerprint (if any). Empty FP_PIN → HTTP scheme or no
-# pin file → skip pinning. Non-empty FP_PIN → verify server cert matches.
+# Read the pinned fingerprint. Plain HTTP skips pinning; HTTPS requires a
+# usable pin and fails closed if the pin file is missing or malformed.
 FP_PIN=""
 PIN_SCHEME=""
 if [[ -r "$RUNAI_SERVER_PIN" ]]; then
@@ -422,12 +531,15 @@ except Exception:
 " 2>/dev/null || true)
 fi
 
-# Pinning gate: only enforce when both scheme=https AND a fingerprint
-# was written at install time. Failure here is fatal — exit non-zero so
-# Claude Code surfaces the failure instead of silently routing the user's
-# prompt through whatever cert a MITM presented.
-if [[ "$PIN_SCHEME" == "https" && -n "$FP_PIN" ]]; then
-  FP_LIVE=$(curl -fsS --max-time 5 "$RUNAI_SERVER/api/tls/fingerprint" 2>/dev/null \
+# Pinning gate: HTTPS failures are fatal — exit non-zero so Claude Code
+# surfaces the failure instead of silently routing the user's prompt
+# through whatever cert a MITM presented.
+if [[ "$RUNAI_SERVER" == https://* ]]; then
+  if [[ "$PIN_SCHEME" != "https" || -z "$FP_PIN" ]]; then
+    echo "runai-hook: missing HTTPS fingerprint pin at $RUNAI_SERVER_PIN — refusing to forward prompt" >&2
+    exit 1
+  fi
+  FP_LIVE=$(curl -fsS $CURL_TLS --max-time 5 "$RUNAI_SERVER/api/tls/fingerprint" 2>/dev/null \
     | python3 -c "
 import json, sys
 try:
@@ -447,7 +559,7 @@ except Exception:
   fi
 fi
 
-curl -s --max-time 30 \
+curl -s $CURL_TLS --max-time 30 \
   -X POST "$RUNAI_SERVER/recommend" \
   -H "Content-Type: application/json" \
   -H "X-Runai-User: $USER@$(hostname -s)" \
@@ -521,7 +633,7 @@ PY
 fi
 
 # §1.4 — install the `runai-client` companion command (bash) at
-# ~/.local/bin/runai-client. Subcommands: upload / list / install / --help.
+# ~/.local/bin/runai-client. Subcommands: upload / list / install / get / --help.
 # Idempotent: overwrites any previous copy at the same path. Designed to
 # work with or without fzf — if fzf is missing the upload subcommand
 # falls back to non-interactive `--path / --name` mode and prints an
@@ -542,6 +654,9 @@ cat > "$RUNAI_CLIENT_PATH" <<'CLIENT'
 #   list      GET /api/community/list, render as a table.
 #   install   POST /api/community/install/<uid>/<name>, copies the skill
 #             to the caller's private pool on the server.
+#   get       GET /skills/bundle/<name>, extract into local CLI agent skills
+#             dirs (~/.claude/skills etc.) so the agent can use it. Tracks
+#             installs in ~/.runai-local-skills for clean uninstall.
 #   --help    Print this help and exit.
 #
 # All subcommands read SERVER_URL + api_key from ~/.runai-identity (or
@@ -550,6 +665,7 @@ cat > "$RUNAI_CLIENT_PATH" <<'CLIENT'
 set -euo pipefail
 
 IDENTITY_PATH="${RUNAI_IDENTITY:-$HOME/.runai-identity}"
+SERVER_PIN_PATH="${RUNAI_SERVER_PIN:-$HOME/.runai-server.json}"
 
 resolve_server() {
   if [[ -n "${RUNAI_SERVER:-}" ]]; then
@@ -601,6 +717,9 @@ Subcommands:
   list        List skills currently on the server's community pool.
   install     Install a community skill into the server's private copy
               of your account: runai-client install <uploader_uid> <name>
+  get         Install a skill from the server into your LOCAL CLI agents
+              (~/.claude/skills etc.) so the agent can use it:
+              runai-client get <name> [--target claude,codex,...|all]
   --help, -h  Print this help and exit.
 
 Environment:
@@ -648,6 +767,101 @@ ensure_creds() {
     echo "runai-client: no server URL — set RUNAI_SERVER or run install script first" >&2
     exit 1
   fi
+  # Self-signed HTTPS server → skip CA validation; the server was already
+  # fingerprint-pinned at install time. Plain HTTP → CURL_TLS stays empty.
+  # Scalar, not array: bash 3.2 (macOS) errors on an empty array + `set -u`.
+  CURL_TLS=""
+  if [[ "$SERVER" == https://* ]]; then
+    CURL_TLS="--insecure"
+    verify_server_pin
+  fi
+}
+
+verify_server_pin() {
+  local fp_pin pin_scheme fp_live
+  if [[ ! -r "$SERVER_PIN_PATH" ]]; then
+    echo "runai-client: missing server fingerprint pin at $SERVER_PIN_PATH — re-run install script" >&2
+    exit 1
+  fi
+  read -r fp_pin pin_scheme < <(python3 -c "
+import json, sys
+try:
+    d = json.load(open('$SERVER_PIN_PATH'))
+    print(d.get('fingerprint') or '', d.get('scheme') or '')
+except Exception:
+    print('', '')
+" 2>/dev/null || true)
+  if [[ "$pin_scheme" != "https" || -z "$fp_pin" ]]; then
+    echo "runai-client: HTTPS server has no usable fingerprint pin — re-run install script" >&2
+    exit 1
+  fi
+  fp_live=$(curl -fsS $CURL_TLS --max-time 5 "$SERVER/api/tls/fingerprint" 2>/dev/null \
+    | python3 -c "
+import json, sys
+try:
+    print(json.load(sys.stdin).get('fingerprint',''))
+except Exception:
+    print('')" 2>/dev/null || echo "")
+  if [[ -z "$fp_live" ]]; then
+    echo "runai-client: could not retrieve live server fingerprint from $SERVER" >&2
+    exit 1
+  fi
+  if [[ "$fp_live" != "$fp_pin" ]]; then
+    echo "runai-client: server fingerprint mismatch — refusing to contact $SERVER" >&2
+    echo "  pinned: $fp_pin" >&2
+    echo "  live  : $fp_live" >&2
+    echo "  if you rotated the server cert, re-run the install script to refresh the pin." >&2
+    exit 1
+  fi
+}
+
+is_safe_skill_name() {
+  case "${1:-}" in
+    ""|"."|".."|*/*|*\\*|*[!A-Za-z0-9_-]*)
+      return 1
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+}
+
+target_dir_for() {
+  case "$1" in
+    claude|codex|gemini|opencode)
+      printf '%s' "$HOME/.$1/skills"
+      ;;
+    *)
+      echo "runai-client get: unknown target '$1' (use claude,codex,gemini,opencode,all)" >&2
+      return 1
+      ;;
+  esac
+}
+
+url_encode() {
+  python3 - "$1" <<'PY'
+import sys, urllib.parse
+print(urllib.parse.quote(sys.argv[1], safe=''))
+PY
+}
+
+runai_curl() {
+  local prefix="$1"
+  shift
+  local err out rc
+  err="$(mktemp)"
+  if out=$(curl -sS $CURL_TLS -w '\n__HTTP_CODE__%{http_code}' "$@" 2>"$err"); then
+    rm -f "$err"
+    printf '%s' "$out"
+    return 0
+  fi
+  rc=$?
+  echo "$prefix: request failed (curl exit $rc)" >&2
+  if [[ -s "$err" ]]; then
+    cat "$err" >&2
+  fi
+  rm -f "$err"
+  return 1
 }
 
 cmd_list() {
@@ -673,7 +887,7 @@ cmd_list() {
   [[ -n "$API_KEY" ]] && AUTH=(-H "Authorization: Bearer $API_KEY")
   local URL="$SERVER/api/community/list?sort=$SORT&offset=$OFFSET&limit=$LIMIT"
   local RESP
-  RESP=$(curl -sS -w '\n__HTTP_CODE__%{http_code}' "${AUTH[@]}" "$URL")
+  RESP=$(runai_curl "runai-client list" "${AUTH[@]}" "$URL") || return 1
   local HTTP="${RESP##*__HTTP_CODE__}"
   local BODY="${RESP%__HTTP_CODE__*}"
   if [[ "$HTTP" != "200" ]]; then
@@ -725,8 +939,17 @@ cmd_install() {
   ensure_creds
   local AUTH=()
   [[ -n "$API_KEY" ]] && AUTH=(-H "Authorization: Bearer $API_KEY")
-  local URL="$SERVER/api/community/install/$UID_ARG/$NAME_ARG"
-  curl -sS -X POST "${AUTH[@]}" "$URL"
+  local URL="$SERVER/api/community/install/$(url_encode "$UID_ARG")/$(url_encode "$NAME_ARG")"
+  local RESP
+  RESP=$(runai_curl "runai-client install" -X POST "${AUTH[@]}" "$URL") || return 1
+  local HTTP="${RESP##*__HTTP_CODE__}"
+  local BODY="${RESP%__HTTP_CODE__*}"
+  if [[ "$HTTP" != "200" ]]; then
+    echo "runai-client install: server returned HTTP $HTTP" >&2
+    echo "$BODY" >&2
+    return 1
+  fi
+  echo "$BODY"
   echo
 }
 
@@ -805,6 +1028,10 @@ EOF
   if [[ -z "$NAME_ARG" ]]; then
     NAME_ARG=$(basename "$PATH_ARG")
   fi
+  if ! is_safe_skill_name "$NAME_ARG"; then
+    echo "runai-client upload: unsafe skill name: $NAME_ARG" >&2
+    return 2
+  fi
 
   local TMPDIR
   TMPDIR=$(mktemp -d)
@@ -816,11 +1043,14 @@ EOF
   local URL="$SERVER/api/community/upload"
   echo "uploading $PATH_ARG ($(wc -c <"$TARFILE" | tr -d ' ') bytes) as name=$NAME_ARG"
   local RESP
-  RESP=$(curl -sS -w '\n__HTTP_CODE__%{http_code}' \
+  RESP=$(runai_curl "runai-client upload" \
     -X POST "${AUTH[@]}" \
     -F "name=$NAME_ARG" \
     -F "bundle=@$TARFILE" \
-    "$URL")
+    "$URL") || {
+    rm -rf "$TMPDIR"
+    return 1
+  }
   rm -rf "$TMPDIR"
   local HTTP="${RESP##*__HTTP_CODE__}"
   local BODY="${RESP%__HTTP_CODE__*}"
@@ -832,6 +1062,147 @@ EOF
   echo "$BODY"
   echo
   echo "OK uploaded."
+}
+
+# Local manifest of skills materialised into local CLI agent dirs, so
+# `runai-client-uninstall` can remove exactly what we added. One line per
+# (target, name): "<target>\t<name>".
+LOCAL_MANIFEST="${RUNAI_LOCAL_SKILLS:-$HOME/.runai-local-skills}"
+
+local_manifest_contains() {
+  local target="$1" name="$2"
+  [[ -f "$LOCAL_MANIFEST" ]] || return 1
+  python3 - "$LOCAL_MANIFEST" "$target" "$name" <<'PY'
+import sys
+path, target, name = sys.argv[1:4]
+try:
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.rstrip("\n")
+            if line == f"{target}\t{name}":
+                sys.exit(0)
+except FileNotFoundError:
+    pass
+sys.exit(1)
+PY
+}
+
+usage_get() {
+  cat <<'HELP'
+runai-client get — install a skill from the server into your LOCAL CLI agents.
+
+Usage:
+  runai-client get <name> [--target claude,codex,gemini,opencode|all]
+  runai-client get                      # TUI (fzf) pick from your library
+
+Downloads GET /skills/bundle/<name> (owner-aware: your private skill shadows a
+public one of the same name) and extracts it into each target agent's skills
+dir (~/.claude/skills, ~/.codex/skills, ~/.gemini/skills, ~/.opencode/skills),
+so the local agent can actually USE the skill. Default targets = whichever of
+those agent homes already exist (else claude). Recorded for clean uninstall.
+
+Options:
+  --target <list>  Comma-separated CLI targets, or "all". Default: auto-detect.
+  --help, -h       Print this help and exit.
+HELP
+}
+
+# §1.6 — pull a skill from the server and materialise it into the local CLI
+# agent skills dirs so the agent can use it (the hook only RECOMMENDS; the
+# files must be on disk for Claude Code / Codex / OpenCode to load them).
+cmd_get() {
+  local name="" targets=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --target) targets="${2:-}"; shift 2 ;;
+      --help|-h) usage_get; return 0 ;;
+      -*) echo "runai-client get: unknown option: $1" >&2; usage_get >&2; return 2 ;;
+      *) name="$1"; shift ;;
+    esac
+  done
+  ensure_creds
+  if [[ -z "$name" ]]; then
+    if ! command -v fzf >/dev/null 2>&1; then
+      echo "runai-client get: provide a skill name (fzf not installed for TUI picker)" >&2
+      return 2
+    fi
+    name=$(curl -fsS $CURL_TLS -H "Authorization: Bearer $API_KEY" "$SERVER/api/skills" 2>/dev/null \
+      | python3 -c 'import json,sys
+try:
+    for s in json.load(sys.stdin).get("skills", []): print(s["name"])
+except Exception: pass' \
+      | fzf --prompt="install skill locally> ") || return 1
+    [[ -n "$name" ]] || { echo "runai-client get: nothing selected" >&2; return 1; }
+  fi
+  if ! is_safe_skill_name "$name"; then
+    echo "runai-client get: unsafe skill name: $name" >&2
+    return 2
+  fi
+  if [[ -z "$targets" || "$targets" == "all" ]]; then
+    targets=""
+    for t in claude codex gemini opencode; do
+      [[ -d "$HOME/.$t" ]] && targets="${targets},${t}"
+    done
+    targets="${targets#,}"
+    [[ -n "$targets" ]] || targets="claude"
+  fi
+  local OLDIFS="$IFS"; IFS=','
+  for t in $targets; do
+    IFS="$OLDIFS"
+    target_dir_for "$t" >/dev/null || return 2
+    IFS=','
+  done
+  IFS="$OLDIFS"
+
+  local tgz; tgz="$(mktemp)"
+  local http
+  local encoded_name; encoded_name="$(url_encode "$name")"
+  http=$(curl -sS $CURL_TLS -o "$tgz" -w '%{http_code}' \
+    -H "Authorization: Bearer $API_KEY" "$SERVER/skills/bundle/$encoded_name" 2>/dev/null || echo 000)
+  if [[ "$http" != "200" ]]; then
+    echo "runai-client get: server returned HTTP $http for skill '$name'" >&2
+    rm -f "$tgz"
+    return 1
+  fi
+  local manifest_dir; manifest_dir="$(dirname "$LOCAL_MANIFEST")"
+  mkdir -p "$manifest_dir"
+  local installed=0 failed=0 t dir dest
+  OLDIFS="$IFS"; IFS=','
+  for t in $targets; do
+    IFS="$OLDIFS"
+    dir="$(target_dir_for "$t")" || return 2
+    dest="$dir/$name"
+    mkdir -p "$dir"
+    if [[ -e "$dest" || -L "$dest" ]]; then
+      if ! local_manifest_contains "$t" "$name"; then
+        echo "  refusing to overwrite untracked local skill: $dest" >&2
+        failed=1
+        IFS=','
+        continue
+      fi
+      rm -rf "$dest"
+    fi
+    # bundle tar is rooted at "<name>/...", so extract INTO the skills dir.
+    if tar -xzf "$tgz" -C "$dir" 2>/dev/null; then
+      printf '%s\t%s\n' "$t" "$name" >> "$LOCAL_MANIFEST"
+      echo "  installed ${name} -> ${dest}"
+      installed=$((installed + 1))
+    else
+      echo "  failed to extract ${name} into ${dir}" >&2
+    fi
+    IFS=','
+  done
+  IFS="$OLDIFS"
+  rm -f "$tgz"
+  if [[ "$installed" -eq 0 ]]; then
+    echo "runai-client get: nothing installed" >&2
+    return 1
+  fi
+  if [[ "$failed" -ne 0 ]]; then
+    echo "runai-client get: completed with refused overwrite(s)" >&2
+    return 1
+  fi
+  echo "OK ${name} installed to ${installed} local agent(s)."
 }
 
 case "${1:-}" in
@@ -851,6 +1222,10 @@ case "${1:-}" in
     shift
     cmd_install "$@"
     ;;
+  get)
+    shift
+    cmd_get "$@"
+    ;;
   *)
     echo "runai-client: unknown subcommand: $1" >&2
     usage_root >&2
@@ -862,12 +1237,133 @@ chmod +x "$RUNAI_CLIENT_PATH"
 ok "installed ${D}${RUNAI_CLIENT_PATH}${R}"
 printf "${D}  add it to PATH if needed:${R} export PATH=\"\$HOME/.local/bin:\$PATH\"\n\n"
 
+# §1.6 — register the runai-client remote HTTP MCP into Claude Code's
+# ~/.claude.json under mcpServers. This is the MCP leg of the
+# "runai-client 三件套" (hook + cli + mcp). Claude Code talks to the
+# server's streamable-HTTP MCP at SERVER_URL/mcp, authenticating with the
+# api_key from ~/.runai-identity as `Authorization: Bearer <key>`.
+#
+#   "mcpServers": {
+#     "runai-client": {
+#       "type": "http",
+#       "url": "<SERVER_URL>/mcp",
+#       "headers": { "Authorization": "Bearer <api_key>" }
+#     }
+#   }
+#
+# We mutate ~/.claude.json with python3 so existing mcpServers entries and
+# unrelated top-level keys are preserved; the original is backed up to
+# .runai-bak first. Skipped (with a warning) when no api_key is available —
+# an unauthenticated remote MCP entry would be useless.
+if [[ "$DO_HOOK" -eq 1 ]]; then
+  CLAUDE_JSON_PATH="$HOME/.claude.json"
+  MCP_API_KEY=$(json_get "$IDENTITY_PATH" api_key)
+  if [[ -z "$MCP_API_KEY" ]]; then
+    warn "no api_key in $IDENTITY_PATH — skipping remote MCP registration"
+  else
+    if [[ -f "$CLAUDE_JSON_PATH" ]]; then
+      cp "$CLAUDE_JSON_PATH" "${CLAUDE_JSON_PATH}.runai-bak"
+    fi
+    MCP_RESULT=$(SERVER_URL="$SERVER_URL" MCP_API_KEY="$MCP_API_KEY" \
+      python3 - "$CLAUDE_JSON_PATH" <<'PY'
+import json
+import os
+import sys
+
+claude_path = sys.argv[1]
+server_url = os.environ["SERVER_URL"].rstrip("/")
+api_key = os.environ["MCP_API_KEY"]
+
+try:
+    with open(claude_path) as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        data = {}
+except (FileNotFoundError, json.JSONDecodeError):
+    data = {}
+
+servers = data.get("mcpServers")
+if not isinstance(servers, dict):
+    servers = {}
+    data["mcpServers"] = servers
+
+servers["runai-client"] = {
+    "type": "http",
+    "url": f"{server_url}/mcp",
+    "headers": {"Authorization": f"Bearer {api_key}"},
+}
+
+with open(claude_path, "w") as f:
+    json.dump(data, f, indent=2, ensure_ascii=False)
+    f.write("\n")
+
+print("__RUNAI_MCP_OK__")
+PY
+    )
+    if echo "$MCP_RESULT" | grep -q '__RUNAI_MCP_OK__'; then
+      # Match settings.json mode (600) so the embedded api_key isn't world-readable.
+      chmod 600 "$CLAUDE_JSON_PATH" 2>/dev/null || true
+      ok "registered remote MCP ${D}runai-client at $SERVER_URL/mcp${R}"
+    else
+      fail "remote MCP registration failed: $MCP_RESULT"
+    fi
+  fi
+  printf "\n"
+fi
+
 # === RUNAI_SECTION:team-only END ===
 
 hr
 printf "  ${C2}${B}all set.${R}  open a ${B}new${R} Claude Code session and your prompts\n"
 printf "  will route through ${C1}%s${R}\n" "$SERVER_URL"
 hr
+# The uninstall one-liner needs -k for a self-signed HTTPS server (same
+# reason every client curl above does); plain HTTP needs no extra flag.
+uninstall_flags="-fsSL"
+if [[ "$SERVER_URL" == https://* ]]; then
+  uninstall_flags="-fsSLk"
+fi
 printf "${D}  dashboard${R}  %s\n" "$SERVER_URL"
-printf "${D}  uninstall${R}  curl -fsSL %s/uninstall | bash\n" "$SERVER_URL"
+printf "${D}  uninstall${R}  curl %s %s/uninstall | bash\n" "$uninstall_flags" "$SERVER_URL"
 printf "${D}  switch user${R}  rm %s && rerun this script\n\n" "$IDENTITY_PATH"
+
+# ==== completion summary, printed unconditionally ====
+# Plain field names so an agent or a human can grep them. Username is
+# shown plain; password and raw api_key are never printed. The final
+# plain line is intentionally stable: tests pin it as `install complete`.
+masked_key=""
+if [[ -r "$IDENTITY_PATH" ]]; then
+  masked_key=$(python3 -c "
+import json, sys
+try:
+    with open('$IDENTITY_PATH') as f:
+        d = json.load(f)
+    k = d.get('api_key') or ''
+    print((k[:4] + '..' + k[-2:]) if len(k) > 8 else (k[:2] + '..') if k else '')
+except Exception:
+    print('')
+" 2>/dev/null || true)
+fi
+acct="${RUNAI_USERNAME:-}"
+if [[ -z "$acct" && -r "$IDENTITY_PATH" ]]; then
+  acct=$(python3 -c "
+import json, sys
+try:
+    with open('$IDENTITY_PATH') as f:
+        print(json.load(f).get('username','') or '')
+except Exception:
+    print('')
+" 2>/dev/null || true)
+fi
+hr
+printf "${C1}┃${R}  ${C2}${B}install complete${R}\n"
+printf "${D}  account   ${R}%s\n" "${acct:-<reused>}"
+printf "${D}  password  ${R}<hidden>\n"
+printf "${D}  api_key   ${R}%s\n" "${masked_key:-<skipped>}"
+printf "${D}  server    ${R}%s\n" "$SERVER_URL"
+printf "${D}  identity  ${R}%s\n" "$IDENTITY_PATH"
+printf "${D}  hook      ${R}%s\n" "$HOOK_PATH"
+printf "${D}  config    ${R}%s\n" "$SETTINGS_PATH"
+printf "${D}  client    ${R}%s\n" "$RUNAI_CLIENT_PATH"
+hr
+printf "install complete\n"

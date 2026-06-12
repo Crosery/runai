@@ -7,11 +7,12 @@
 //! /auth/login to mint the cookie.
 
 use anyhow::Result;
-use axum::http::{HeaderMap, header};
+use axum::http::{HeaderMap, Uri, header};
 use std::path::PathBuf;
 
 use crate::core::auth as authmod;
 use crate::core::db::{Database, User};
+use crate::core::recommend::local_ipv4;
 use crate::core::server_mode::ServerMode;
 
 use super::error::ApiError;
@@ -41,6 +42,32 @@ pub(super) struct AppState {
 impl AppState {
     pub(super) fn db(&self) -> Result<Database> {
         Database::open(&self.db_path)
+    }
+
+    pub(super) fn public_server_url(&self, headers: &HeaderMap, uri: &Uri) -> String {
+        let scheme = if self.tls_cert.is_some() {
+            "https"
+        } else {
+            headers
+                .get("x-forwarded-proto")
+                .and_then(|h| h.to_str().ok())
+                .unwrap_or("http")
+        };
+        // HTTP/1.1 carries the authority in Host. HTTP/2 surfaces it on the
+        // URI authority instead, so use both before falling back.
+        let host = headers
+            .get(header::HOST)
+            .and_then(|h| h.to_str().ok())
+            .or_else(|| uri.authority().map(|a| a.as_str()))
+            .unwrap_or("127.0.0.1:17888");
+
+        let host_part = host.rsplit_once(':').map(|(h, _)| h).unwrap_or(host);
+        let port_part = host.rsplit_once(':').map(|(_, p)| p).unwrap_or("17888");
+        let is_loopback = matches!(host_part, "127.0.0.1" | "localhost" | "::1" | "[::1]");
+        if is_loopback && let Some(ip) = local_ipv4() {
+            return format!("{scheme}://{ip}:{port_part}");
+        }
+        format!("{scheme}://{host}")
     }
 }
 

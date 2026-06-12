@@ -20,19 +20,39 @@
 //! 3. **Placeholder substitution**. `{SERVER_URL}` is replaced with the URL
 //!    the request came in on (best-effort: Host header → `--host` value).
 //!
+//! The team-mode bash + PowerShell install templates wire the full
+//! "runai-client 三件套" (PLANNING §1.6): the UserPromptSubmit hook, the
+//! `runai-client` companion CLI, and the remote HTTP MCP. The MCP leg
+//! registers a `runai-client` entry in `~/.claude.json`'s `mcpServers`
+//! (`type:http`, `url:<SERVER_URL>/mcp`, `Authorization: Bearer <api_key>`
+//! from `~/.runai-identity`) so Claude Code reaches the server's
+//! streamable-HTTP MCP (`mcp_http.rs`). `{SERVER_URL}` substitution in the
+//! template renderer only touches the bare `{SERVER_URL}` placeholder — the
+//! scripts deliberately use the runtime `$SERVER_URL` / `$ServerUrl` shell
+//! variable (no braces) inside the MCP block so the renderer never rewrites
+//! the substring inside `${...}`. The uninstall scripts symmetrically drop
+//! only the `runai-client` mcpServers key, preserving sibling entries. The
+//! companion CLI subcommands that call server APIs must fail non-zero and print
+//! the HTTP status + response body on non-2xx responses, and a stable
+//! subcommand-prefixed transport error when the request cannot be sent at all;
+//! curl and PowerShell defaults are not enough because they can hide the
+//! failing status or produce version-dependent text. When the rendered server
+//! URL is HTTPS, both install templates persist `~/.runai-server.json`, and
+//! both the hook wrapper and companion CLI verify `/api/tls/fingerprint`
+//! before forwarding any prompt or companion API request.
+//!
 //! See `scripts/runai-client-install.sh` for the canonical bash template
 //! and `scripts/runai-client-install.ps1` for the PowerShell mirror.
 
 use axum::{
     extract::State,
-    http::{HeaderMap, StatusCode, header},
+    http::{HeaderMap, StatusCode, Uri, header},
     response::{IntoResponse, Response},
 };
 use std::sync::Arc;
 
 use crate::core::server_mode::ServerMode;
 
-use super::recommend::guess_server_url;
 use super::state::AppState;
 use super::{CLIENT_INSTALL_PS1, CLIENT_INSTALL_SH, CLIENT_UNINSTALL_PS1, CLIENT_UNINSTALL_SH};
 
@@ -128,11 +148,12 @@ fn parse_section_marker(line: &str) -> Option<(&str, MarkerKind)> {
 pub(super) async fn handle_install_script(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    uri: Uri,
 ) -> Response {
     if state.mode == ServerMode::Owner {
         return (StatusCode::NOT_FOUND, "").into_response();
     }
-    let server_url = guess_server_url(&headers);
+    let server_url = state.public_server_url(&headers, &uri);
     let body = render_install_script(CLIENT_INSTALL_SH, state.mode, &server_url);
     (
         [(header::CONTENT_TYPE, "text/x-shellscript; charset=utf-8")],
@@ -161,11 +182,12 @@ pub(super) async fn handle_uninstall_script(State(state): State<Arc<AppState>>) 
 pub(super) async fn handle_install_ps1(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    uri: Uri,
 ) -> Response {
     if state.mode == ServerMode::Owner {
         return (StatusCode::NOT_FOUND, "").into_response();
     }
-    let server_url = guess_server_url(&headers);
+    let server_url = state.public_server_url(&headers, &uri);
     let body = render_install_script(CLIENT_INSTALL_PS1, state.mode, &server_url);
     ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], body).into_response()
 }
@@ -220,35 +242,271 @@ echo bottom
     }
 
     #[test]
-    fn real_bash_template_in_team_mode_has_no_scan_or_discover_commands() {
-        // The bash template must not contain runai-binary management
+    fn real_install_templates_in_team_mode_have_no_server_box_commands() {
+        // The client templates must not contain runai-binary management
         // commands — those only run on the server box and would 404 on a
         // remote client anyway. PLANNING §1.2 specifies scan / discover /
-        // doctor must not appear in the team-mode client script.
-        let out = render_install_script(CLIENT_INSTALL_SH, ServerMode::Team, "http://x");
-        // Token-boundary check: `runai scan` / `runai discover` / `runai doctor`
-        // are the binary subcommands; we want to be sure the script does
-        // not telegraph them to remote users.
-        for forbidden in &["runai scan", "runai discover", "runai doctor"] {
-            assert!(
-                !out.contains(forbidden),
-                "team-mode install.sh leaked binary cmd {forbidden:?}"
-            );
+        // doctor must not appear in team-mode client scripts.
+        for (name, template) in [
+            ("bash", CLIENT_INSTALL_SH),
+            ("powershell", CLIENT_INSTALL_PS1),
+        ] {
+            let out = render_install_script(template, ServerMode::Team, "http://x");
+            // Token-boundary check: `runai scan` / `runai discover` /
+            // `runai doctor` are the binary subcommands; we want to be sure
+            // the script does not telegraph them to remote users.
+            for forbidden in &["runai scan", "runai discover", "runai doctor"] {
+                assert!(
+                    !out.contains(forbidden),
+                    "team-mode {name} install template leaked binary cmd {forbidden:?}"
+                );
+            }
         }
     }
 
     #[test]
     fn server_url_placeholder_gets_substituted() {
-        let out = render_install_script(
-            CLIENT_INSTALL_SH,
-            ServerMode::Team,
-            "http://example.com:1234",
-        );
-        assert!(out.contains("http://example.com:1234"));
+        for (name, template) in [
+            ("bash", CLIENT_INSTALL_SH),
+            ("powershell", CLIENT_INSTALL_PS1),
+        ] {
+            let out = render_install_script(template, ServerMode::Team, "http://example.com:1234");
+            assert!(
+                out.contains("http://example.com:1234"),
+                "{name} template missing substituted server URL"
+            );
+            assert!(
+                !out.contains("{SERVER_URL}"),
+                "{name} placeholder must be fully replaced"
+            );
+        }
+    }
+
+    #[test]
+    fn bash_template_companion_cli_wraps_server_errors() {
+        let out = render_install_script(CLIENT_INSTALL_SH, ServerMode::Team, "http://x");
+        for required in [
+            "runai_curl()",
+            "request failed (curl exit $rc)",
+            "runai-client install: server returned HTTP $HTTP",
+            "runai-client upload: server returned HTTP $HTTP",
+            "runai-client list: server returned HTTP $HTTP",
+            r#"RESP=$(runai_curl "runai-client install""#,
+            r#"RESP=$(runai_curl "runai-client upload""#,
+            r#"RESP=$(runai_curl "runai-client list""#,
+        ] {
+            assert!(
+                out.contains(required),
+                "bash install template missing companion CLI error contract: {required}"
+            );
+        }
+    }
+
+    #[test]
+    fn powershell_template_installs_companion_cli_surface() {
+        let out = render_install_script(CLIENT_INSTALL_PS1, ServerMode::Team, "http://x");
+        for required in [
+            "function Resolve-RunaiProfileRoot",
+            r#"$RunaiProfileRoot = Resolve-RunaiProfileRoot"#,
+            r#"$RunaiClientPath = Join-Path (Join-Path $RunaiProfileRoot ".local\bin") "runai-client.ps1""#,
+            r#"$RunaiClientShimPath = Join-Path (Join-Path $RunaiProfileRoot ".local\bin") "runai-client.cmd""#,
+            "install runai-client companion",
+            "Invoke-RunaiList",
+            "Invoke-RunaiInstall",
+            "Invoke-RunaiUpload",
+            "Invoke-RunaiGet",
+            "Get-RunaiHttpErrorMessage",
+            "server returned HTTP",
+            r#"-ErrorPrefix "runai-client install""#,
+            r#"-ErrorPrefix "runai-client list""#,
+            r#"-Prefix "runai-client upload""#,
+            "/api/community/list",
+            "/api/community/install/",
+            "/api/community/upload",
+            "/skills/bundle/",
+            "RUNAI_LOCAL_SKILLS",
+            ".runai-local-skills",
+            "Test-RunaiLocalManifestContains",
+            "refusing to overwrite untracked local skill",
+            "AppendAllText",
+            "[System.Text.UTF8Encoding]::new($false)",
+            r#"[System.IO.File]::WriteAllText($RunaiClientPath"#,
+            r#"[System.IO.File]::WriteAllText($RunaiClientShimPath"#,
+            r#"powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0runai-client.ps1" %*"#,
+        ] {
+            assert!(
+                out.contains(required),
+                "PowerShell install template missing companion CLI contract: {required}"
+            );
+        }
         assert!(
-            !out.contains("{SERVER_URL}"),
-            "placeholder must be fully replaced"
+            !out.contains(
+                "if (Test-Path -LiteralPath $dest) {\n                Remove-Item -LiteralPath $dest -Recurse -Force"
+            ),
+            "PowerShell get must not delete an existing local skill before checking the local manifest"
         );
+    }
+
+    #[test]
+    fn powershell_template_reuses_verified_identity_and_disables_raw_ansi() {
+        let out = render_install_script(CLIENT_INSTALL_PS1, ServerMode::Team, "http://x");
+        for required in [
+            "Test-RunaiIdentityWithServer",
+            r#"$me = Invoke-RestMethod -Method Get -Uri "$ServerUrl/api/me" -Headers $headers"#,
+            "server accepted stored api_key",
+            "existing identity was rejected",
+            "$RunaiAnsi = $false",
+            "$Esc = [char]27",
+            "function Runai-Style",
+            "function Stop-RunaiInstall",
+            r#"$env:NO_COLOR"#,
+        ] {
+            assert!(
+                out.contains(required),
+                "PowerShell install template missing identity/ANSI contract: {required}"
+            );
+        }
+        assert!(
+            !out.contains("`e["),
+            "PowerShell template must not use PS7-only raw `e ANSI escapes"
+        );
+        for forbidden in [
+            "Write-Fail2 \"existing identity was rejected by $ServerUrl\"\n            exit 1",
+            "Write-Fail2 \"username cannot be empty",
+            "Write-Fail2 \"password cannot be empty",
+        ] {
+            assert!(
+                !out.contains(forbidden),
+                "PowerShell installer should throw instead of exiting the host shell: {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn powershell_templates_are_ascii_safe_for_windows_powershell_51() {
+        for (name, template) in [
+            ("install.ps1", CLIENT_INSTALL_PS1),
+            ("uninstall.ps1", CLIENT_UNINSTALL_PS1),
+        ] {
+            let out = render_install_script(template, ServerMode::Team, "http://x");
+            assert!(
+                out.is_ascii(),
+                "{name} must stay ASCII-only because Windows PowerShell 5.1 can parse UTF-8 no-BOM scripts as ANSI"
+            );
+        }
+    }
+
+    #[test]
+    fn client_templates_pin_https_fingerprints_before_remote_calls() {
+        let bash = render_install_script(CLIENT_INSTALL_SH, ServerMode::Team, "https://x");
+        for required in [
+            r#"SERVER_PIN_PATH="$HOME/.runai-server.json""#,
+            "pin_server_fingerprint()",
+            "if [[ \"$DO_AUTH\" -eq 1 || \"$DO_HOOK\" -eq 1 ]]",
+            "/api/tls/fingerprint",
+            "'scheme': 'https'",
+            "runai-hook: missing HTTPS fingerprint pin",
+            "runai-hook: server fingerprint mismatch",
+            "RUNAI_SERVER_PIN=\"$HOME/.runai-server.json\"",
+            "verify_server_pin()",
+            "verify_server_pin",
+            "runai-client: server fingerprint mismatch",
+            "CURL_TLS=\"--insecure\"",
+        ] {
+            assert!(
+                bash.contains(required),
+                "bash install template missing TLS pin contract: {required}"
+            );
+        }
+        assert!(
+            bash.find("verify_server_pin").unwrap() < bash.find("runai_curl()").unwrap(),
+            "bash runai-client must define/route pin verification before issuing API curls"
+        );
+
+        let ps = render_install_script(CLIENT_INSTALL_PS1, ServerMode::Team, "https://x");
+        for required in [
+            r#"$ServerPinPath = Join-Path $RunaiProfileRoot ".runai-server.json""#,
+            "function Write-RunaiServerPin",
+            "if ($DoAuth -or $DoHook)",
+            "/api/tls/fingerprint",
+            r#"scheme      = "https""#,
+            r#"`$RunaiServer = "$ServerUrl""#,
+            r#"`$RunaiServerPin = Join-Path `$RunaiProfileRoot ".runai-server.json""#,
+            "function Test-RunaiServerPin",
+            "runai-hook: server fingerprint mismatch",
+            "if (-not (Test-RunaiServerPin)) { exit 1 }",
+            r#"$RunaiServerPinPath = Join-Path $RunaiProfileRoot ".runai-server.json""#,
+            "function Assert-RunaiServerPin",
+            "Assert-RunaiServerPin $server",
+            "server fingerprint mismatch - refusing to contact",
+            "$PSDefaultParameterValues['Invoke-RestMethod:SkipCertificateCheck'] = $true",
+        ] {
+            assert!(
+                ps.contains(required),
+                "PowerShell install template missing TLS pin contract: {required}"
+            );
+        }
+        assert!(
+            ps.find("if (-not (Test-RunaiServerPin)) { exit 1 }")
+                .unwrap()
+                < ps.find(r#"-Uri "`$RunaiServer/recommend""#).unwrap(),
+            "PowerShell hook must verify the pin before forwarding /recommend"
+        );
+        assert!(
+            ps.find("Assert-RunaiServerPin $server").unwrap() < ps.find("return $server").unwrap(),
+            "PowerShell companion CLI must verify the pin before returning a usable server"
+        );
+    }
+
+    #[test]
+    fn powershell_uninstall_cleans_companion_cli_and_local_manifest() {
+        for required in [
+            "function Resolve-RunaiProfileRoot",
+            r#"$RunaiProfileRoot = Resolve-RunaiProfileRoot"#,
+            r#"$RunaiClientPath = Join-Path (Join-Path $RunaiProfileRoot ".local\bin") "runai-client.ps1""#,
+            r#"$RunaiClientShimPath = Join-Path (Join-Path $RunaiProfileRoot ".local\bin") "runai-client.cmd""#,
+            r#"$ServerPinPath = Join-Path $RunaiProfileRoot ".runai-server.json""#,
+            r#"$LocalManifestPath = Join-Path $RunaiProfileRoot ".runai-local-skills""#,
+            "Test-RunaiSafeSkillName",
+            "Get-RunaiTargetDir",
+            "Remove-Item -LiteralPath $ServerPinPath -Force",
+            "Remove-Item -LiteralPath $skillDir -Recurse -Force",
+            "Remove-Item -LiteralPath $LocalManifestPath -Force",
+            "Remove-Item -LiteralPath $RunaiClientPath -Force",
+            "Remove-Item -LiteralPath $RunaiClientShimPath -Force",
+        ] {
+            assert!(
+                CLIENT_UNINSTALL_PS1.contains(required),
+                "PowerShell uninstall template missing cleanup contract: {required}"
+            );
+        }
+        assert!(
+            !CLIENT_UNINSTALL_PS1.contains("Get-ChildItem -Recurse"),
+            "PowerShell uninstall must not scan user skill trees"
+        );
+    }
+
+    #[test]
+    fn install_templates_emit_machine_parseable_completion() {
+        for (name, template, marker) in [
+            ("bash", CLIENT_INSTALL_SH, "printf \"install complete\\n\""),
+            (
+                "powershell",
+                CLIENT_INSTALL_PS1,
+                "Write-Host \"install complete\"",
+            ),
+        ] {
+            let out = render_install_script(template, ServerMode::Team, "http://x");
+            assert!(
+                out.contains(marker),
+                "{name} template must emit a stable install-complete line"
+            );
+            for field in [
+                "account", "password", "api_key", "server", "identity", "hook", "config", "client",
+            ] {
+                assert!(out.contains(field), "{name} summary missing {field}");
+            }
+        }
     }
 
     #[test]
