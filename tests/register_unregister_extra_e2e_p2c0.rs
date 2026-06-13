@@ -228,3 +228,201 @@ fn register_ignores_rune_data_dir() {
     assert!(!alt_data.path().join(".gemini").exists());
     assert!(!alt_data.path().join(".codex").exists());
 }
+
+// ---------------------------------------------------------------------------
+// unregister tests
+// ---------------------------------------------------------------------------
+
+/// Seed each CLI config file with both a `runai` entry and at least one
+/// unrelated MCP entry. `unregister` should strip only `runai`, never the
+/// neighbour MCPs.
+#[test]
+fn unregister_removes_runai_from_all_configs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path();
+
+    // Seed Claude config with runai + a sibling MCP.
+    let claude_seed = serde_json::json!({
+        "mcpServers": {
+            "runai": {"command": "/bin/runai", "args": ["mcp-serve"]},
+            "other-mcp": {"command": "/bin/other", "args": ["serve"]}
+        }
+    });
+    std::fs::write(
+        home.join(".claude.json"),
+        serde_json::to_string_pretty(&claude_seed).unwrap(),
+    )
+    .unwrap();
+
+    // Seed Gemini config.
+    std::fs::create_dir_all(home.join(".gemini")).unwrap();
+    let gemini_seed = serde_json::json!({
+        "mcpServers": {
+            "runai": {"command": "/bin/runai", "args": ["mcp-serve"]},
+            "gemini-side": {"command": "/bin/side", "args": []}
+        }
+    });
+    std::fs::write(
+        home.join(".gemini/settings.json"),
+        serde_json::to_string_pretty(&gemini_seed).unwrap(),
+    )
+    .unwrap();
+
+    // Seed Codex TOML config.
+    std::fs::create_dir_all(home.join(".codex")).unwrap();
+    std::fs::write(
+        home.join(".codex/config.toml"),
+        r#"
+[mcp_servers.runai]
+type = "stdio"
+command = "/bin/runai"
+args = ["mcp-serve"]
+
+[mcp_servers.codex-side]
+command = "/bin/codex-side"
+args = ["go"]
+"#,
+    )
+    .unwrap();
+
+    // Seed OpenCode config.
+    std::fs::create_dir_all(home.join(".config/opencode")).unwrap();
+    let opencode_seed = serde_json::json!({
+        "mcp": {
+            "runai": {"command": ["/bin/runai", "mcp-serve"], "enabled": true, "type": "local"},
+            "opencode-side": {"command": ["/bin/oc-side"], "enabled": true, "type": "local"}
+        }
+    });
+    std::fs::write(
+        home.join(".config/opencode/opencode.json"),
+        serde_json::to_string_pretty(&opencode_seed).unwrap(),
+    )
+    .unwrap();
+
+    let (stdout, stderr, status) = run_runai(home, &["unregister"]);
+    assert!(
+        status.success(),
+        "unregister failed: stderr={stderr}\nstdout={stdout}"
+    );
+    assert!(
+        stdout.contains("Unregistered from all CLIs"),
+        "unexpected unregister stdout: {stdout}"
+    );
+
+    // Claude: runai gone, sibling kept.
+    let claude = read_json(&home.join(".claude.json"));
+    assert!(
+        claude["mcpServers"].get("runai").is_none(),
+        "claude still has runai entry: {claude}"
+    );
+    assert!(
+        claude["mcpServers"].get("other-mcp").is_some(),
+        "claude lost sibling MCP: {claude}"
+    );
+
+    // Gemini: runai gone, sibling kept.
+    let gemini = read_json(&home.join(".gemini/settings.json"));
+    assert!(gemini["mcpServers"].get("runai").is_none());
+    assert!(gemini["mcpServers"].get("gemini-side").is_some());
+
+    // Codex: runai gone, sibling kept.
+    let codex = read_toml(&home.join(".codex/config.toml"));
+    let codex_servers = codex["mcp_servers"].as_table().unwrap();
+    assert!(
+        !codex_servers.contains_key("runai"),
+        "codex still has runai entry"
+    );
+    assert!(
+        codex_servers.contains_key("codex-side"),
+        "codex lost sibling MCP"
+    );
+
+    // OpenCode: runai gone, sibling kept.
+    let opencode = read_json(&home.join(".config/opencode/opencode.json"));
+    assert!(opencode["mcp"].get("runai").is_none());
+    assert!(opencode["mcp"].get("opencode-side").is_some());
+}
+
+/// Register then unregister: all 4 CLI configs lose the runai entry.
+/// Verifies no target is left half-registered (4-target symmetry).
+#[test]
+fn unregister_symmetric_across_targets() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path();
+
+    // Plant runai entries via the real register command.
+    let (_o1, e1, st1) = run_runai(home, &["register"]);
+    assert!(st1.success(), "register failed: {e1}");
+    // Sanity: claude has runai.
+    assert!(
+        read_json(&home.join(".claude.json"))["mcpServers"]
+            .get("runai")
+            .is_some()
+    );
+
+    // Now unregister.
+    let (stdout, stderr, st2) = run_runai(home, &["unregister"]);
+    assert!(st2.success(), "unregister failed: stderr={stderr}");
+    assert!(stdout.contains("Unregistered from all CLIs"));
+
+    // All 4 configs must be free of runai — no target preference.
+    let claude = read_json(&home.join(".claude.json"));
+    assert!(
+        claude.get("mcpServers")
+            .and_then(|s| s.get("runai"))
+            .is_none(),
+        "claude still has runai after unregister: {claude}"
+    );
+
+    let gemini = read_json(&home.join(".gemini/settings.json"));
+    assert!(
+        gemini.get("mcpServers")
+            .and_then(|s| s.get("runai"))
+            .is_none(),
+        "gemini still has runai after unregister: {gemini}"
+    );
+
+    let codex = read_toml(&home.join(".codex/config.toml"));
+    if let Some(toml::Value::Table(servers)) = codex.get("mcp_servers") {
+        assert!(
+            !servers.contains_key("runai"),
+            "codex still has runai after unregister: {codex:?}"
+        );
+    }
+
+    let opencode = read_json(&home.join(".config/opencode/opencode.json"));
+    assert!(
+        opencode.get("mcp").and_then(|s| s.get("runai")).is_none(),
+        "opencode still has runai after unregister: {opencode}"
+    );
+}
+
+/// Running `unregister` against an empty HOME (no config files exist) should
+/// succeed silently — guaranteed idempotency, no crash on missing inputs.
+#[test]
+fn unregister_unit_idempotent() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path();
+
+    // No CLI configs present, no registration ever happened.
+    assert!(!home.join(".claude.json").exists());
+    assert!(!home.join(".gemini/settings.json").exists());
+    assert!(!home.join(".codex/config.toml").exists());
+    assert!(!home.join(".config/opencode/opencode.json").exists());
+
+    let (stdout, stderr, status) = run_runai(home, &["unregister"]);
+    assert!(
+        status.success(),
+        "unregister with no configs failed: stderr={stderr}\nstdout={stdout}"
+    );
+    // Even with nothing to do, the success message is emitted.
+    assert!(
+        stdout.contains("Unregistered from all CLIs"),
+        "unexpected stdout: {stdout}"
+    );
+
+    // Calling it a second time must also succeed (true idempotency).
+    let (stdout2, _stderr2, status2) = run_runai(home, &["unregister"]);
+    assert!(status2.success(), "second unregister failed");
+    assert!(stdout2.contains("Unregistered from all CLIs"));
+}
