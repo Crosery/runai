@@ -436,3 +436,244 @@ fn sm_backups_timestamp_format_restore_compatible() {
         "expected 'Restored N items' from restore: {restore_out}"
     );
 }
+
+// =============================================================================
+// 3.19 [P1] sm_restore — restore from timestamped backup
+// =============================================================================
+
+/// Helper: parse the timestamp from `runai backup` stdout.
+fn parse_backup_timestamp(out: &str) -> String {
+    let line = out
+        .lines()
+        .find(|l| l.contains("Backup created:"))
+        .unwrap_or_else(|| panic!("no 'Backup created:' line in: {out}"));
+    let path = line.split("Backup created:").nth(1).unwrap().trim();
+    PathBuf::from(path)
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .to_string()
+}
+
+/// sm_restore_specific_timestamp_overlays_state:
+/// Backup contains skill1. After backup we delete skill1 and add skill2.
+/// `runai restore --timestamp <ts>` brings skill1 back and removes skill2
+/// (whole managed-skills dir is overlaid from the snapshot — `restore_backup`
+/// removes the dest then copies the backup back, per backup.rs:140-144).
+#[test]
+fn sm_restore_specific_timestamp_overlays_state() {
+    let s = Sandbox::new();
+
+    // Seed: skill1 present.
+    write_file(
+        &s.data_dir().join("skills/skill1/SKILL.md"),
+        "# skill1\n",
+    );
+
+    // Backup
+    let mut b = s.runai();
+    b.arg("backup");
+    let out = run_ok(b);
+    let ts = parse_backup_timestamp(&out);
+
+    // Damage: remove skill1, add skill2.
+    std::fs::remove_dir_all(s.data_dir().join("skills/skill1")).unwrap();
+    write_file(
+        &s.data_dir().join("skills/skill2/SKILL.md"),
+        "# skill2\n",
+    );
+
+    // Restore the specific timestamp.
+    let mut r = s.runai();
+    r.arg("restore").arg("--timestamp").arg(&ts);
+    let r_out = run_capture(r);
+    assert!(
+        r_out.contains("Restored") && r_out.contains("items"),
+        "expected 'Restored N items', got: {r_out}"
+    );
+
+    // skill1 returns.
+    assert!(
+        s.data_dir().join("skills/skill1/SKILL.md").is_file(),
+        "skill1 should be restored from backup"
+    );
+    // skill2 was wiped (whole skills dir replaced from snapshot).
+    assert!(
+        !s.data_dir().join("skills/skill2").exists(),
+        "skill2 should be removed by restore overlay (skills dir replaced from snapshot)"
+    );
+}
+
+/// sm_restore_without_timestamp_uses_latest:
+/// Two backups separated by > 1s. With no --timestamp, the latest (the second)
+/// must be the one applied: prove by checking the file content the second
+/// backup captured is what ends up in the live tree.
+#[test]
+fn sm_restore_without_timestamp_uses_latest() {
+    let s = Sandbox::new();
+
+    // v1
+    write_file(
+        &s.data_dir().join("skills/probe/SKILL.md"),
+        "# version 1\n",
+    );
+    let mut b1 = s.runai();
+    b1.arg("backup");
+    let _o1 = run_ok(b1);
+
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+
+    // v2
+    write_file(
+        &s.data_dir().join("skills/probe/SKILL.md"),
+        "# version 2\n",
+    );
+    let mut b2 = s.runai();
+    b2.arg("backup");
+    let _o2 = run_ok(b2);
+
+    // Damage the latest (delete the live skill).
+    std::fs::remove_dir_all(s.data_dir().join("skills/probe")).unwrap();
+    assert!(!s.data_dir().join("skills/probe/SKILL.md").exists());
+
+    // Restore WITHOUT --timestamp → must pick latest (v2).
+    let mut r = s.runai();
+    r.arg("restore");
+    let r_out = run_capture(r);
+    assert!(
+        r_out.contains("Restored") && r_out.contains("items"),
+        "expected 'Restored N items', got: {r_out}"
+    );
+
+    let restored = std::fs::read_to_string(s.data_dir().join("skills/probe/SKILL.md")).unwrap();
+    assert_eq!(
+        restored.trim(),
+        "# version 2",
+        "no-timestamp restore should select the LATEST backup (v2), not v1"
+    );
+}
+
+/// sm_restore_includes_cli_configs:
+/// `~/.claude.json` is captured in the backup and restored when the live copy
+/// has been clobbered.
+#[test]
+fn sm_restore_includes_cli_configs() {
+    let s = Sandbox::new();
+
+    let claude_json = s.home_path().join(".claude.json");
+    write_file(&claude_json, r#"{"version":"original"}"#);
+
+    // Backup
+    let mut b = s.runai();
+    b.arg("backup");
+    let out = run_ok(b);
+    let ts = parse_backup_timestamp(&out);
+
+    // Modify the config.
+    write_file(&claude_json, r#"{"version":"modified"}"#);
+    assert!(
+        std::fs::read_to_string(&claude_json)
+            .unwrap()
+            .contains("modified")
+    );
+
+    // Restore from the specific timestamp.
+    let mut r = s.runai();
+    r.arg("restore").arg("--timestamp").arg(&ts);
+    let r_out = run_capture(r);
+    assert!(
+        r_out.contains("Restored") && r_out.contains("items"),
+        "expected 'Restored N items', got: {r_out}"
+    );
+
+    // Live ~/.claude.json must be original again.
+    let final_content = std::fs::read_to_string(&claude_json).unwrap();
+    assert!(
+        final_content.contains("original"),
+        "~/.claude.json should be restored to original content, got: {final_content}"
+    );
+}
+
+/// sm_restore_respects_rune_data_dir_for_managed_data:
+/// With `RUNE_DATA_DIR=<alt>`, restore writes managed data back under
+/// `<alt>/skills/`, not under the default `~/.runai/skills/`.
+#[test]
+fn sm_restore_respects_rune_data_dir_for_managed_data() {
+    let s = Sandbox::new();
+    let alt = TempDir::new().unwrap();
+    let alt_data = alt.path().join("alt_runai");
+
+    // Seed a skill inside alt_data.
+    write_file(
+        &alt_data.join("skills/altskill/SKILL.md"),
+        "# alt original\n",
+    );
+
+    // Backup against alt data dir.
+    let mut b = s.runai_with_data(&alt_data);
+    b.arg("backup");
+    let out = run_ok(b);
+    let ts = parse_backup_timestamp(&out);
+
+    // Damage alt data.
+    std::fs::remove_dir_all(alt_data.join("skills")).unwrap();
+    assert!(!alt_data.join("skills/altskill").exists());
+
+    // Restore.
+    let mut r = s.runai_with_data(&alt_data);
+    r.arg("restore").arg("--timestamp").arg(&ts);
+    let r_out = run_capture(r);
+    assert!(
+        r_out.contains("Restored") && r_out.contains("items"),
+        "expected 'Restored N items', got: {r_out}"
+    );
+
+    // The skill is back under alt_data/skills/.
+    let restored_file = alt_data.join("skills/altskill/SKILL.md");
+    assert!(
+        restored_file.is_file(),
+        "alt skill not restored at {}",
+        restored_file.display()
+    );
+
+    // Default ~/.runai/skills should NOT be touched.
+    assert!(
+        !s.data_dir().join("skills/altskill").exists(),
+        "default ~/.runai/skills must not be written when RUNE_DATA_DIR is set"
+    );
+    // The default data dir might still have been created for other reasons
+    // (DB init), but `skills/altskill` MUST NOT be there.
+}
+
+/// sm_restore_nonexistent_backup_returns_error:
+/// `runai restore --timestamp <bogus>` must print an error containing
+/// "Backup not found: <bogus>" and must not modify any live data.
+#[test]
+fn sm_restore_nonexistent_backup_returns_error() {
+    let s = Sandbox::new();
+
+    // Seed live data — restore must not touch it.
+    write_file(
+        &s.data_dir().join("skills/keepme/SKILL.md"),
+        "# do not touch\n",
+    );
+    let live_path = s.data_dir().join("skills/keepme/SKILL.md");
+    let before = std::fs::read_to_string(&live_path).unwrap();
+
+    let mut r = s.runai();
+    r.arg("restore").arg("--timestamp").arg("20990101_120000");
+    let out = run_capture(r);
+
+    assert!(
+        out.contains("Backup not found: 20990101_120000"),
+        "expected 'Backup not found: 20990101_120000' in: {out}"
+    );
+
+    // Live data untouched.
+    assert!(live_path.is_file(), "live skill must remain after failed restore");
+    let after = std::fs::read_to_string(&live_path).unwrap();
+    assert_eq!(
+        before, after,
+        "live skill content must be unchanged after a failed restore"
+    );
+}
