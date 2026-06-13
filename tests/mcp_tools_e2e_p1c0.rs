@@ -306,4 +306,123 @@ fn list_group_filter_isolates_members() {
     );
 }
 
-// sm_status tests appended in a follow-up commit.
+// ────────────────────────────────────────────────────────────────────────────
+// sm_status tests (test plan §3.2)
+// ────────────────────────────────────────────────────────────────────────────
+
+/// status_json_shape_complete — sm_status returns valid JSON with all
+/// required fields: target, skills_enabled, skills_total, mcps_enabled,
+/// mcps_total, runai_version.
+#[test]
+fn status_json_shape_complete() {
+    let env = Env::new();
+    env.seed_skill("stat-skill", "x");
+    env.cli(&["scan"]);
+
+    let body = call_tool(&env, "sm_status", serde_json::json!({}));
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(&body).expect("sm_status body must be valid JSON");
+
+    assert_eq!(parsed["target"], "claude", "default target should be claude");
+    assert!(
+        parsed["skills_enabled"].is_i64() || parsed["skills_enabled"].is_u64(),
+        "skills_enabled missing/non-int: {parsed}"
+    );
+    assert!(
+        parsed["skills_total"].is_i64() || parsed["skills_total"].is_u64(),
+        "skills_total missing/non-int: {parsed}"
+    );
+    assert!(
+        parsed["mcps_enabled"].is_i64() || parsed["mcps_enabled"].is_u64(),
+        "mcps_enabled missing/non-int: {parsed}"
+    );
+    assert!(
+        parsed["mcps_total"].is_i64() || parsed["mcps_total"].is_u64(),
+        "mcps_total missing/non-int: {parsed}"
+    );
+    let ver = parsed["runai_version"]
+        .as_str()
+        .expect("runai_version must be a string");
+    // Looks like a semver-ish version (digits.digits.digits[-tail])
+    assert!(
+        ver.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false),
+        "runai_version doesn't look like a version: {ver}"
+    );
+
+    // skills_total should reflect the seeded skill (1)
+    assert_eq!(
+        parsed["skills_total"].as_u64().unwrap_or(0),
+        1,
+        "skills_total mismatch (expected 1 after seeding): {parsed}"
+    );
+}
+
+/// status_target_param_respected — sm_status with target='codex' returns
+/// codex in the target field.
+#[test]
+fn status_target_param_respected() {
+    let env = Env::new();
+    env.seed_skill("st-target-codex", "x");
+    env.cli(&["scan"]);
+
+    let body = call_tool(&env, "sm_status", serde_json::json!({"target": "codex"}));
+    let parsed: serde_json::Value =
+        serde_json::from_str(&body).expect("body is JSON");
+    assert_eq!(parsed["target"], "codex", "target should be codex: {parsed}");
+
+    // Also test gemini for full target-passthrough coverage
+    let body2 = call_tool(
+        &env,
+        "sm_status",
+        serde_json::json!({"target": "gemini"}),
+    );
+    let parsed2: serde_json::Value =
+        serde_json::from_str(&body2).expect("body2 is JSON");
+    assert_eq!(
+        parsed2["target"], "gemini",
+        "target should be gemini: {parsed2}"
+    );
+}
+
+/// status_surfaces_pending_updates — when `~/.runai/update-check.json` reports
+/// a newer version, sm_status sets update_available=true and includes
+/// update_latest + update_hint.
+#[test]
+fn status_surfaces_pending_updates() {
+    let env = Env::new();
+    // Seed a pending-update cache file at data_dir/update-check.json
+    let cache = serde_json::json!({
+        "latest_version": "99.99.99",
+        "current_version": "0.0.1",
+        "download_url": "https://example.invalid/dl",
+        "checksum_url": "https://example.invalid/cs",
+        "checked_at": "2026-06-13T00:00:00Z"
+    });
+    std::fs::write(
+        env.data_dir().join("update-check.json"),
+        serde_json::to_string_pretty(&cache).unwrap(),
+    )
+    .expect("write update-check.json");
+
+    let body = call_tool(&env, "sm_status", serde_json::json!({}));
+    let parsed: serde_json::Value =
+        serde_json::from_str(&body).expect("body is JSON");
+
+    assert_eq!(
+        parsed["update_available"], true,
+        "update_available should be true when cache has newer version: {parsed}"
+    );
+    assert_eq!(
+        parsed["update_latest"], "99.99.99",
+        "update_latest should match cache: {parsed}"
+    );
+    let hint = parsed["update_hint"]
+        .as_str()
+        .expect("update_hint should be present");
+    assert!(
+        hint.to_lowercase().contains("runai update")
+            || hint.to_lowercase().contains("newer"),
+        "update_hint should mention runai update or newer version: {hint}"
+    );
+}
