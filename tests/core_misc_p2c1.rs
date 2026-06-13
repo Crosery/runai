@@ -606,6 +606,311 @@ fn mcp_register_creates_missing_cli_dirs() {
     assert!(gem_json["mcpServers"]["runai"].is_object());
 }
 
+// =====================================================================
+//  Feature 4: core::paths (AppPaths + 迁移)
+// =====================================================================
+
+use runai::core::paths::{self as paths_mod, AppPaths};
+use std::sync::Mutex;
+
+/// Local HOME lock — `runai::test_support` is `#[cfg(test)]` and not
+/// reachable from external integration tests. We mirror the contract here:
+/// serialize any test that mutates HOME / RUNE_DATA_DIR / SKILL_MANAGER_DATA_DIR.
+static HOME_LOCK: Mutex<()> = Mutex::new(());
+
+/// Helper: with HOME_LOCK held, set HOME + clear data-dir env, run `f`,
+/// then restore. SAFETY: HOME_LOCK serializes env mutation across tests.
+fn with_isolated_home<F: FnOnce(&std::path::Path)>(scratch_home: &std::path::Path, f: F) {
+    let _guard = HOME_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let orig_home = std::env::var("HOME").ok();
+    let orig_rdd = std::env::var("RUNE_DATA_DIR").ok();
+    let orig_smdd = std::env::var("SKILL_MANAGER_DATA_DIR").ok();
+    unsafe {
+        std::env::set_var("HOME", scratch_home);
+        std::env::remove_var("RUNE_DATA_DIR");
+        std::env::remove_var("SKILL_MANAGER_DATA_DIR");
+    }
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(scratch_home)));
+    unsafe {
+        match orig_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        match orig_rdd {
+            Some(v) => std::env::set_var("RUNE_DATA_DIR", v),
+            None => std::env::remove_var("RUNE_DATA_DIR"),
+        }
+        match orig_smdd {
+            Some(v) => std::env::set_var("SKILL_MANAGER_DATA_DIR", v),
+            None => std::env::remove_var("SKILL_MANAGER_DATA_DIR"),
+        }
+    }
+}
+
+/// 1. data_dir_respects_env_override — RUNE_DATA_DIR > SKILL_MANAGER_DATA_DIR
+/// > HOME default. default_data_dir_no_env IGNORES env override.
+#[test]
+fn paths_data_dir_respects_rune_data_dir_env() {
+    let _guard = HOME_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let tmp = tempfile::tempdir().unwrap();
+    let custom = tmp.path().join("custom-data");
+    let orig_home = std::env::var("HOME").ok();
+    let orig_rdd = std::env::var("RUNE_DATA_DIR").ok();
+    let orig_smdd = std::env::var("SKILL_MANAGER_DATA_DIR").ok();
+    unsafe {
+        std::env::set_var("HOME", tmp.path());
+        std::env::set_var("RUNE_DATA_DIR", &custom);
+        std::env::remove_var("SKILL_MANAGER_DATA_DIR");
+    }
+
+    // data_dir() reads RUNE_DATA_DIR.
+    let from_env = paths_mod::data_dir();
+    // default_data_dir_no_env IGNORES env vars.
+    let no_env = paths_mod::default_data_dir_no_env();
+
+    unsafe {
+        match orig_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        match orig_rdd {
+            Some(v) => std::env::set_var("RUNE_DATA_DIR", v),
+            None => std::env::remove_var("RUNE_DATA_DIR"),
+        }
+        match orig_smdd {
+            Some(v) => std::env::set_var("SKILL_MANAGER_DATA_DIR", v),
+            None => std::env::remove_var("SKILL_MANAGER_DATA_DIR"),
+        }
+    }
+
+    assert_eq!(from_env, custom, "data_dir must honor RUNE_DATA_DIR");
+    assert_eq!(
+        no_env,
+        tmp.path().join(".runai"),
+        "default_data_dir_no_env must IGNORE RUNE_DATA_DIR (this is the 2026-04-27 guard)"
+    );
+    assert_ne!(
+        from_env, no_env,
+        "env-aware vs env-blind paths must diverge when env is set"
+    );
+}
+
+/// 2. SKILL_MANAGER_DATA_DIR is honored as the second-priority env (when
+/// RUNE_DATA_DIR is unset). This is the 2026-04-27 high-risk regression area.
+#[test]
+fn paths_data_dir_honors_skill_manager_data_dir_when_rune_unset() {
+    let _guard = HOME_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let tmp = tempfile::tempdir().unwrap();
+    let smdd = tmp.path().join("legacy-data");
+    let orig_home = std::env::var("HOME").ok();
+    let orig_rdd = std::env::var("RUNE_DATA_DIR").ok();
+    let orig_smdd = std::env::var("SKILL_MANAGER_DATA_DIR").ok();
+    unsafe {
+        std::env::set_var("HOME", tmp.path());
+        std::env::remove_var("RUNE_DATA_DIR");
+        std::env::set_var("SKILL_MANAGER_DATA_DIR", &smdd);
+    }
+    let resolved = paths_mod::data_dir();
+    unsafe {
+        match orig_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        match orig_rdd {
+            Some(v) => std::env::set_var("RUNE_DATA_DIR", v),
+            None => std::env::remove_var("RUNE_DATA_DIR"),
+        }
+        match orig_smdd {
+            Some(v) => std::env::set_var("SKILL_MANAGER_DATA_DIR", v),
+            None => std::env::remove_var("SKILL_MANAGER_DATA_DIR"),
+        }
+    }
+    assert_eq!(
+        resolved, smdd,
+        "with RUNE_DATA_DIR unset, SKILL_MANAGER_DATA_DIR takes over"
+    );
+}
+
+// Plan-item user_root_path_traversal_guard SKIPPED: cloud HEAD's AppPaths
+// has no user_root / user_skills_dir / user_mcps_dir / user_trash_dir /
+// ensure_user_dirs — those are multi-user (v15+) APIs not in this revision.
+// Test phase=src_missing.
+
+/// 4. AppPaths::default_path() runs migration from ~/.skill-manager/ →
+/// ~/.runai/ when only the old dir exists. Renames dir, renames DB file,
+/// fixes CLI symlinks, rewrites DB path columns.
+#[test]
+fn paths_default_path_migrates_skill_manager_to_runai() {
+    let scratch = tempfile::tempdir().unwrap();
+    let home = scratch.path().to_path_buf();
+    let old_base = home.join(".skill-manager");
+    let new_base = home.join(".runai");
+
+    // Set up old structure: skill dir, SKILL.md, the old DB file name.
+    std::fs::create_dir_all(old_base.join("skills/test-skill")).unwrap();
+    std::fs::write(old_base.join("skills/test-skill/SKILL.md"), "# Test").unwrap();
+    std::fs::write(old_base.join("skill-manager.db"), "old-db-bytes").unwrap();
+    std::fs::create_dir_all(old_base.join("groups")).unwrap();
+
+    // Symlink in CLI skills dir pointing at the OLD path.
+    let claude_skills = home.join(".claude/skills");
+    std::fs::create_dir_all(&claude_skills).unwrap();
+    std::os::unix::fs::symlink(
+        old_base.join("skills/test-skill"),
+        claude_skills.join("test-skill"),
+    )
+    .unwrap();
+
+    // Drive migration through default_path() (with HOME mocked).
+    with_isolated_home(&home, |_| {
+        let app = AppPaths::default_path();
+        assert_eq!(app.data_dir(), new_base.as_path());
+    });
+
+    // Old path is gone.
+    assert!(!old_base.exists(), ".skill-manager removed after migration");
+    // New path has the skill content.
+    assert!(new_base.is_dir(), ".runai created");
+    assert!(
+        new_base.join("skills/test-skill/SKILL.md").is_file(),
+        "skill file preserved"
+    );
+    let content = std::fs::read_to_string(new_base.join("skills/test-skill/SKILL.md")).unwrap();
+    assert_eq!(content, "# Test", "skill content preserved byte-for-byte");
+    // DB file is renamed.
+    assert!(
+        new_base.join("runai.db").is_file(),
+        "skill-manager.db → runai.db"
+    );
+    assert!(
+        !new_base.join("skill-manager.db").exists(),
+        "old DB name removed"
+    );
+    assert_eq!(
+        std::fs::read_to_string(new_base.join("runai.db")).unwrap(),
+        "old-db-bytes",
+        "DB bytes preserved across rename"
+    );
+    // Symlink under ~/.claude/skills repointed.
+    let link = claude_skills.join("test-skill");
+    assert!(link.is_symlink(), "symlink still in place");
+    let target = std::fs::read_link(&link).unwrap();
+    assert!(
+        target.to_string_lossy().contains(".runai"),
+        "symlink retargeted to .runai, got: {}",
+        target.display()
+    );
+    assert!(
+        !target.to_string_lossy().contains(".skill-manager"),
+        "symlink no longer points at .skill-manager"
+    );
+}
+
+/// 5. Migration is skipped when ~/.runai/ already exists — protects an
+/// already-upgraded user from accidental clobber.
+#[test]
+fn paths_default_path_skips_migration_when_new_dir_exists() {
+    let scratch = tempfile::tempdir().unwrap();
+    let home = scratch.path().to_path_buf();
+    let old_base = home.join(".skill-manager");
+    let new_base = home.join(".runai");
+
+    // Both old and new exist; new has different content.
+    std::fs::create_dir_all(old_base.join("skills")).unwrap();
+    std::fs::write(old_base.join("skill-manager.db"), "OLD").unwrap();
+    std::fs::create_dir_all(&new_base).unwrap();
+    std::fs::write(new_base.join("runai.db"), "NEW").unwrap();
+
+    with_isolated_home(&home, |_| {
+        let app = AppPaths::default_path();
+        assert_eq!(app.data_dir(), new_base.as_path());
+    });
+
+    // .runai untouched (still NEW).
+    assert!(
+        new_base.exists(),
+        ".runai still present and not overwritten"
+    );
+    assert_eq!(
+        std::fs::read_to_string(new_base.join("runai.db")).unwrap(),
+        "NEW",
+        ".runai DB content untouched (migration was skipped)"
+    );
+    // .skill-manager NOT removed (since no migration happened).
+    assert!(
+        old_base.exists(),
+        ".skill-manager still on disk (migration skipped)"
+    );
+    assert_eq!(
+        std::fs::read_to_string(old_base.join("skill-manager.db")).unwrap(),
+        "OLD",
+        "old DB untouched too"
+    );
+}
+
+/// 6. with_base + the public-pool path getters give the expected layout.
+/// Public skills dir, mcps dir, trash dir all sibling under base.
+#[test]
+fn paths_with_base_public_layout_is_correct() {
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = AppPaths::with_base(tmp.path().to_path_buf());
+
+    assert_eq!(paths.data_dir(), tmp.path());
+    assert_eq!(paths.skills_dir(), tmp.path().join("skills"));
+    assert_eq!(paths.mcps_dir(), tmp.path().join("mcps"));
+    assert_eq!(paths.groups_dir(), tmp.path().join("groups"));
+    assert_eq!(paths.trash_dir(), tmp.path().join("trash"));
+    assert_eq!(paths.config_path(), tmp.path().join("config.toml"));
+
+    // ensure_dirs creates them all.
+    paths.ensure_dirs().unwrap();
+    assert!(paths.skills_dir().is_dir());
+    assert!(paths.mcps_dir().is_dir());
+    assert!(paths.groups_dir().is_dir());
+    assert!(paths.trash_dir().is_dir());
+}
+
+// Plan-item per-user pool layout SKIPPED: cloud HEAD has no per-user paths.
+
+/// 7. db_path() prefers runai.db, falls back to skill-manager.db when only
+/// the old one exists. Compat for users mid-migration.
+#[test]
+fn paths_db_path_prefers_new_falls_back_to_old() {
+    let tmp = tempfile::tempdir().unwrap();
+    // Only legacy DB exists.
+    std::fs::write(tmp.path().join("skill-manager.db"), "legacy").unwrap();
+    let p = AppPaths::with_base(tmp.path().to_path_buf());
+    assert_eq!(
+        p.db_path(),
+        tmp.path().join("skill-manager.db"),
+        "fall back to legacy DB name"
+    );
+
+    // Add new DB; from now on it's preferred.
+    std::fs::write(tmp.path().join("runai.db"), "new").unwrap();
+    let p2 = AppPaths::with_base(tmp.path().to_path_buf());
+    assert_eq!(
+        p2.db_path(),
+        tmp.path().join("runai.db"),
+        "new DB preferred over legacy when both exist"
+    );
+
+    // Fresh install (neither exists) → returns the new name.
+    let tmp2 = tempfile::tempdir().unwrap();
+    let p3 = AppPaths::with_base(tmp2.path().to_path_buf());
+    assert_eq!(
+        p3.db_path(),
+        tmp2.path().join("runai.db"),
+        "fresh install uses new DB name"
+    );
+}
+
 /// 6. unregister_all_removes_runai_entry — sanity for the inverse: after
 /// register_all + unregister_all, no runai entry remains in any CLI config.
 #[test]
