@@ -676,3 +676,171 @@ fn group_remove_cross_data_dir() {
         "REGRESSION: alt-dir g2 TOML lost member after default-dir remove. body:\n{g2_body}"
     );
 }
+
+// ─── group delete ───────────────────────────────────────────────────────────
+
+/// §1.23 test 1 — physical_e2e `group_delete_removes_toml`
+/// Deleting a group removes the groups/<id>.toml file. Per the cli handler
+/// semantics (`std::fs::remove_file(&path)` only — no `group_members`
+/// cleanup), the `group_members` rows in runai.db are intentionally
+/// retained (this is "delete group definition", not cascade-delete history).
+/// Success message confirms deletion.
+#[test]
+fn group_delete_removes_toml() {
+    let env = TestEnv::new();
+
+    // Setup: skill, group, member.
+    make_skill(&env.default_skills_dir(), "del-skill", "del desc");
+    assert!(env.run(&["scan"]).status.success());
+    assert!(
+        env.run(&[
+            "group", "create", "g-del", "--name", "Delete Group", "--kind", "custom"
+        ])
+        .status
+        .success()
+    );
+    assert!(
+        env.run(&["group", "add", "g-del", "del-skill"])
+            .status
+            .success()
+    );
+
+    // Preconditions.
+    let toml_path = env.default_groups_dir().join("g-del.toml");
+    assert!(toml_path.exists(), "precondition: TOML should exist");
+    assert_eq!(
+        group_member_count(&env.default_db_path(), "g-del"),
+        1,
+        "precondition: g-del has one member"
+    );
+
+    // Delete.
+    let out = env.run(&["group", "delete", "g-del"]);
+    dump(&out, "group delete g-del");
+    assert!(out.status.success(), "group delete should succeed");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("g-del")
+            && (stdout.to_lowercase().contains("deleted") || stdout.contains("'deleted'")),
+        "expected delete confirmation, got:\n{stdout}"
+    );
+
+    // TOML gone.
+    assert!(
+        !toml_path.exists(),
+        "REGRESSION: groups/g-del.toml still present after delete at {}",
+        toml_path.display()
+    );
+
+    // group_members row retained (per handler: no DB cleanup is done).
+    assert_eq!(
+        group_member_count(&env.default_db_path(), "g-del"),
+        1,
+        "REGRESSION: group delete cascaded into group_members (should retain)"
+    );
+}
+
+/// §1.23 test 2 — physical_e2e `group_delete_cross_data_dir`
+/// Two RUNE_DATA_DIRs each have a group with the same id `g1`. Deleting
+/// `g1` in the default dir must NOT affect the alt dir's `g1.toml`. This
+/// is the cross-data-dir isolation guard for a write operation that
+/// touches user-owned files — same root-cause family as 4-20/4-27.
+#[test]
+fn group_delete_cross_data_dir() {
+    let env = TestEnv::new();
+    let alt = tempfile::tempdir().expect("alt data dir");
+
+    // Default dir g1.
+    assert!(
+        env.run(&[
+            "group", "create", "g1", "--name", "Default G1", "--kind", "custom"
+        ])
+        .status
+        .success()
+    );
+    let default_toml = env.default_groups_dir().join("g1.toml");
+    assert!(default_toml.exists(), "precondition: default g1 TOML exists");
+
+    // Alt dir g1 (same id, different data dir).
+    assert!(
+        env.run_with_rune_data(
+            alt.path(),
+            &["group", "create", "g1", "--name", "Alt G1", "--kind", "custom"]
+        )
+        .status
+        .success()
+    );
+    let alt_toml = alt.path().join("groups/g1.toml");
+    assert!(alt_toml.exists(), "precondition: alt g1 TOML exists");
+
+    // Delete only in default dir.
+    let out = env.run(&["group", "delete", "g1"]);
+    dump(&out, "delete g1 in default dir only");
+    assert!(out.status.success());
+
+    // Default dir TOML gone.
+    assert!(
+        !default_toml.exists(),
+        "default-dir g1 TOML should be gone after delete"
+    );
+
+    // Alt dir TOML survives.
+    assert!(
+        alt_toml.exists(),
+        "REGRESSION: alt-dir g1 TOML deleted by default-dir command at {}",
+        alt_toml.display()
+    );
+    // And its body still says "Alt G1" — i.e. it really is the alt one,
+    // not some default-dir copy that drifted.
+    let alt_body = std::fs::read_to_string(&alt_toml).unwrap();
+    assert!(
+        alt_body.contains("Alt G1"),
+        "REGRESSION: alt-dir g1 TOML body mutated by default-dir delete. body:\n{alt_body}"
+    );
+}
+
+/// §1.23 test 3 — error path for "group not found"
+/// Deleting a non-existent group fails with a non-zero exit, an error
+/// message naming the id, and does NOT delete any unrelated files. This
+/// is the idempotent-error contract: missing target is a hard failure
+/// (anyhow::bail), not a silent no-op.
+#[test]
+fn group_delete_unit_not_found() {
+    let env = TestEnv::new();
+
+    // Plant an unrelated group so we can assert the delete does NOT touch
+    // it on a failed call.
+    assert!(
+        env.run(&[
+            "group", "create", "g-keep", "--name", "Keeper", "--kind", "custom"
+        ])
+        .status
+        .success()
+    );
+    let keep_toml = env.default_groups_dir().join("g-keep.toml");
+    let keep_before = std::fs::read_to_string(&keep_toml).unwrap();
+
+    // Attempt to delete a non-existent group.
+    let out = env.run(&["group", "delete", "ghost-group"]);
+    dump(&out, "delete non-existent group");
+    assert!(
+        !out.status.success(),
+        "group delete should fail when target does not exist"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("ghost-group"),
+        "expected error to name the missing group id, got:\n{stderr}"
+    );
+
+    // The unrelated group survived untouched.
+    assert!(
+        keep_toml.exists(),
+        "REGRESSION: failed delete removed an unrelated group's TOML"
+    );
+    let keep_after = std::fs::read_to_string(&keep_toml).unwrap();
+    assert_eq!(
+        keep_before, keep_after,
+        "REGRESSION: failed delete mutated unrelated TOML body"
+    );
+}
