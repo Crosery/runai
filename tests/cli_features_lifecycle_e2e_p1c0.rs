@@ -310,3 +310,115 @@ fn list_filters_by_group() {
         "expected `Total: 2 resources` for the 2-member group:\n{go}"
     );
 }
+
+// ─── feature: `runai trash list` ────────────────────────────────────────────
+
+/// After uninstalling 3 resources (2 skills + 1 mcp), `trash list` should
+/// list all three entries with their kind label and name, plus the total
+/// summary line.
+#[test]
+fn trash_list_shows_all_entries() {
+    let env = TestEnv::new();
+
+    // Two skills, adopt them via scan, then uninstall both.
+    make_skill(&env.skills_dir(), "trash-skill-1", "first");
+    make_skill(&env.skills_dir(), "trash-skill-2", "second");
+    assert!(env.run(&["scan"]).status.success());
+
+    // Seed one MCP backup; `runai uninstall` resolves by name, so the entry
+    // must already be visible via `list --kind mcp`.
+    make_mcp_backup(&env.mcps_dir(), "trash-mcp-1");
+
+    for name in ["trash-skill-1", "trash-skill-2", "trash-mcp-1"] {
+        let out = env.run(&["uninstall", name]);
+        dump(&out, &format!("uninstall {name}"));
+        assert!(out.status.success(), "uninstall {name} must succeed");
+    }
+
+    let list = env.run(&["trash", "list"]);
+    dump(&list, "trash list (3 entries)");
+    assert!(list.status.success(), "trash list must succeed");
+    let out = stdout_of(&list);
+
+    for name in ["trash-skill-1", "trash-skill-2", "trash-mcp-1"] {
+        assert!(
+            out.contains(name),
+            "trash list output missing `{name}`:\n{out}"
+        );
+    }
+    // Kind labels must appear (current format: `[skill]` / `[mcp]` from
+    // `ResourceKind::as_str()`).
+    assert!(
+        out.contains("[skill]"),
+        "expected `[skill]` label in trash list:\n{out}"
+    );
+    assert!(
+        out.contains("[mcp]"),
+        "expected `[mcp]` label in trash list:\n{out}"
+    );
+    // Total summary line.
+    assert!(
+        out.contains("Total: 3 trashed resources"),
+        "expected `Total: 3 trashed resources` summary, got:\n{out}"
+    );
+}
+
+/// With no uninstall ever performed, `trash list` must surface the empty-state
+/// message `Trash is empty.` rather than an empty block or an error.
+#[test]
+fn trash_list_handles_empty_trash() {
+    let env = TestEnv::new();
+
+    // Seed something so the DB is initialised, but DON'T uninstall anything.
+    make_skill(&env.skills_dir(), "kept-skill", "stays installed");
+    assert!(env.run(&["scan"]).status.success());
+
+    let list = env.run(&["trash", "list"]);
+    dump(&list, "trash list (empty)");
+    assert!(list.status.success(), "trash list on empty trash must succeed");
+    let out = stdout_of(&list);
+    assert!(
+        out.contains("Trash is empty."),
+        "expected `Trash is empty.` message, got:\n{out}"
+    );
+    // No total / kind labels for a truly empty trash.
+    assert!(
+        !out.contains("Total:"),
+        "empty trash output must not contain a `Total:` summary line:\n{out}"
+    );
+}
+
+/// A freshly-uninstalled resource must surface in `trash list` with a
+/// relative-time stamp ending in `ago` (current format is `Xm ago` /
+/// `Xh ago` / `Xd ago`).
+#[test]
+fn trash_list_formats_deletion_time_relative() {
+    let env = TestEnv::new();
+
+    make_skill(&env.skills_dir(), "time-skill", "recently deleted");
+    assert!(env.run(&["scan"]).status.success());
+
+    let un = env.run(&["uninstall", "time-skill"]);
+    dump(&un, "uninstall time-skill");
+    assert!(un.status.success());
+
+    let list = env.run(&["trash", "list"]);
+    dump(&list, "trash list (time format)");
+    assert!(list.status.success());
+    let out = stdout_of(&list);
+
+    assert!(
+        out.contains("time-skill"),
+        "expected time-skill in output:\n{out}"
+    );
+    // Relative-time suffix. Current code emits `Xm ago` for sub-hour deltas.
+    assert!(
+        out.contains(" ago"),
+        "expected relative-time `... ago` formatting, got:\n{out}"
+    );
+    // Specifically, a brand-new deletion is well under an hour: must be `m ago`.
+    assert!(
+        out.contains("m ago"),
+        "expected minute-resolution relative-time `Xm ago` for fresh deletion, got:\n{out}"
+    );
+}
