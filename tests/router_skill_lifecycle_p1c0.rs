@@ -360,3 +360,165 @@ fn recommend_endpoint_accepts_no_user_no_session() {
         "no-user no-session path must not surface an internal-error envelope"
     );
 }
+
+// ─── Feature 2: POST /skills/get/:name ──────────────────────────────────────
+
+/// Happy path: a planted+scanned skill is reachable, SKILL.md flows
+/// out verbatim, sibling files surface in the curl appendix,
+/// usage_count is bumped, and a session_adoptions row appears under
+/// the bare session_id (no user header here).
+#[test]
+fn skill_get_returns_md_appendix_and_records_adoption() {
+    let env = ServerEnv::spawn();
+    env.plant_skill_and_scan("demo", "test skill demo");
+    // Plant a sibling file so the appendix has something to surface.
+    let sibling_dir = env.managed_skills_dir().join("demo").join("references");
+    std::fs::create_dir_all(&sibling_dir).unwrap();
+    std::fs::write(sibling_dir.join("ref-a.md"), "auxiliary reference").unwrap();
+    assert_eq!(env.usage_count("demo"), 0, "precondition: usage starts 0");
+
+    let url = format!(
+        "{}/skills/get/demo?session_id=sess-A",
+        env.base_url()
+    );
+    let (status, body, ct) = http_post_json(&url, &serde_json::json!({}), &[]);
+
+    assert_eq!(
+        status.as_u16(),
+        200,
+        "skill get must return 200 for an existing skill, got {status}: {body}"
+    );
+    assert!(
+        ct.as_deref().unwrap_or("").starts_with("text/plain"),
+        "content-type must be text/plain, got {ct:?}"
+    );
+    assert!(
+        body.contains("name: demo"),
+        "body must contain SKILL.md frontmatter verbatim, got:\n{body}"
+    );
+    assert!(
+        body.contains("test skill demo"),
+        "body must contain SKILL.md description text, got:\n{body}"
+    );
+    // Appendix lists sibling files as curl commands.
+    assert!(
+        body.contains("references/ref-a.md"),
+        "appendix must list the planted sibling file, got:\n{body}"
+    );
+    assert!(
+        body.contains("curl -s"),
+        "appendix must include curl invocations, got:\n{body}"
+    );
+    // DB side-effects.
+    assert_eq!(
+        env.usage_count("demo"),
+        1,
+        "usage_count must increment by 1 after one /skills/get"
+    );
+    assert!(
+        env.has_session_adoption("sess-A", "demo"),
+        "session_adoptions row must be written for the bare session_id when no user header"
+    );
+}
+
+/// X-Runai-User + session_id ⇒ session id = `{user}:{session}` so
+/// concurrent teammates don't collide in the per-session router
+/// memory. Lock that wiring on both the DB row and the appendix
+/// (each curl line must carry the same user header back).
+#[test]
+fn skill_get_with_user_header_prefixes_session_id() {
+    let env = ServerEnv::spawn();
+    env.plant_skill_and_scan("test-skill", "user-prefixed get target");
+
+    let url = format!(
+        "{}/skills/get/test-skill?session_id=local-id",
+        env.base_url()
+    );
+    let (status, body, _ct) =
+        http_post_json(&url, &serde_json::json!({}), &[("X-Runai-User", "alice@host")]);
+
+    assert_eq!(status.as_u16(), 200, "request must succeed");
+    // The appendix-empty case still works (no siblings planted) and
+    // the file response itself does not embed user_header_arg, so we
+    // only assert it when the appendix exists. Either way the DB
+    // session_id must be the prefixed form.
+    assert!(
+        env.has_session_adoption("alice@host:local-id", "test-skill"),
+        "session_adoptions must be keyed by `{{user}}:{{session}}`, body:\n{body}"
+    );
+    assert!(
+        !env.has_session_adoption("local-id", "test-skill"),
+        "the bare session_id must NOT be written when a user header is present"
+    );
+}
+
+/// X-Runai-User with no session_id ⇒ session id = user_prefix alone.
+/// Also exercises the appendix's user_header_arg interpolation when
+/// sibling files are present, since the empty-session case used to
+/// trip an "alice@host:" key by accident.
+#[test]
+fn skill_get_appendix_propagates_user_header_into_curl_lines() {
+    let env = ServerEnv::spawn();
+    env.plant_skill_and_scan("with-refs", "skill with siblings");
+    let dir = env.managed_skills_dir().join("with-refs");
+    std::fs::create_dir_all(dir.join("scripts")).unwrap();
+    std::fs::write(dir.join("scripts").join("run.py"), "print('hi')\n").unwrap();
+
+    let url = format!("{}/skills/get/with-refs", env.base_url());
+    let (status, body, _ct) =
+        http_post_json(&url, &serde_json::json!({}), &[("X-Runai-User", "bob@host")]);
+
+    assert_eq!(status.as_u16(), 200, "request must succeed");
+    assert!(
+        body.contains("scripts/run.py"),
+        "appendix must list the planted sibling, body:\n{body}"
+    );
+    assert!(
+        body.contains("X-Runai-User: bob@host"),
+        "appendix curl lines must propagate the user header, body:\n{body}"
+    );
+    assert!(
+        env.has_session_adoption("bob@host", "with-refs"),
+        "session_id must collapse to the bare user prefix when no claude session id is given"
+    );
+}
+
+/// Nonexistent skill ⇒ 404 + no side-effects. The handler reports the
+/// error via stderr and surfaces a 404 with a `skill not found:`
+/// human-readable body — both shape and absence of DB writes are
+/// covered.
+#[test]
+fn skill_get_returns_404_for_missing_skill() {
+    let env = ServerEnv::spawn();
+    env.plant_skill_and_scan("present", "this one exists");
+    let pre_usage = env.usage_count("present");
+
+    let url = format!("{}/skills/get/nonexistent?session_id=sess-X", env.base_url());
+    let (status, body, _ct) = http_post_json(&url, &serde_json::json!({}), &[]);
+
+    assert_eq!(
+        status.as_u16(),
+        404,
+        "missing skill must return 404, got {status}: {body}"
+    );
+    assert!(
+        body.to_lowercase().contains("skill not found"),
+        "404 body must include a 'skill not found' hint, got: {body:?}"
+    );
+    // No collateral damage on a sibling skill or on phantom session
+    // rows.
+    assert_eq!(
+        env.usage_count("present"),
+        pre_usage,
+        "an unrelated skill's usage_count must not move"
+    );
+    assert_eq!(
+        env.usage_count("nonexistent"),
+        0,
+        "the missing name must never produce a resources row"
+    );
+    assert!(
+        !env.has_session_adoption("sess-X", "nonexistent"),
+        "no session_adoptions row must be written for a missing skill"
+    );
+}
