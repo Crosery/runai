@@ -19,6 +19,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use runai::core::manager::SkillManager;
 use runai::tui::app::{App, InputMode, Tab};
 use runai::tui::i18n::Lang;
+use runai::tui::theme::ThemeMode;
 use std::sync::Mutex;
 use tempfile::TempDir;
 
@@ -152,5 +153,65 @@ fn language_toggle_disabled_on_groups_tab() {
                 "Groups tab must not produce the Chinese lang-switched message"
             );
         }
+    });
+}
+
+// ─── §2.27 Theme Toggle ─────────────────────────────────────────────────────
+
+#[test]
+fn theme_toggle_dark_to_light() {
+    let tmp = TempDir::new().unwrap();
+    with_home(tmp.path(), || {
+        let mut app = fresh_app(tmp.path());
+        app.theme_mode = ThemeMode::Dark;
+        app.lang = Lang::En;
+        app.message = None;
+        assert!(
+            matches!(app.theme_mode, ThemeMode::Dark),
+            "precondition: theme_mode seeded to Dark"
+        );
+
+        app.handle_key(key(KeyCode::Char('t')));
+
+        assert!(
+            matches!(app.theme_mode, ThemeMode::Light),
+            "theme_mode must flip from Dark to Light after pressing 't'"
+        );
+
+        // After the flip, msg_theme(label) must use the NEW theme's label
+        // ("light"), per src/tui/theme.rs:18-21 and src/tui/i18n.rs:485-489.
+        let expected = app.t().msg_theme(app.theme_mode.label());
+        assert_eq!(
+            expected, "Theme: light",
+            "msg_theme should compose the English template with the new theme label"
+        );
+        assert_eq!(
+            app.message.as_deref(),
+            Some(expected.as_str()),
+            "app.message must be set to the post-toggle msg_theme(label)"
+        );
+    });
+}
+
+#[test]
+fn theme_toggle_roundtrip() {
+    let tmp = TempDir::new().unwrap();
+    with_home(tmp.path(), || {
+        let mut app = fresh_app(tmp.path());
+        app.theme_mode = ThemeMode::Dark;
+
+        // First press: Dark -> Light.
+        app.handle_key(key(KeyCode::Char('t')));
+        assert!(
+            matches!(app.theme_mode, ThemeMode::Light),
+            "first 't' press must move Dark -> Light"
+        );
+
+        // Second press: Light -> Dark, back to the seed.
+        app.handle_key(key(KeyCode::Char('t')));
+        assert!(
+            matches!(app.theme_mode, ThemeMode::Dark),
+            "second 't' press must move Light -> Dark — toggle() is involutive"
+        );
     });
 }
