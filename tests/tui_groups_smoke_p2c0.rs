@@ -574,3 +574,207 @@ fn pick_search_filters_by_name() {
         );
     });
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// Feature 2.10 — Remove Member from Group
+// ───────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn remove_member_stages_confirmation() {
+    let tmp = tempfile::tempdir().unwrap();
+    with_home(tmp.path(), || {
+        let mgr = make_manager(tmp.path());
+        plant_skill(&mgr, "alpha");
+        plant_skill(&mgr, "beta");
+        create_group(&mgr, "g1", "G1", &["local:alpha", "local:beta"]);
+
+        let mut app = App::new(mgr);
+        app.tab = Tab::Groups;
+        app.reload();
+        select_group_by_id(&mut app, "g1");
+        open_group_detail(&mut app);
+
+        // detail_idx = 0 → some member is selected.
+        assert!(
+            !app.detail_members.is_empty(),
+            "precondition: group has members"
+        );
+        let target = app.detail_members[0].clone();
+
+        app.handle_key(key(KeyCode::Char('d')));
+
+        assert!(matches!(app.mode, InputMode::ConfirmDelete));
+        match &app.pending_delete {
+            Some(PendingDelete::GroupMember {
+                group_id,
+                group_name,
+                resource_id,
+                resource_name,
+            }) => {
+                assert_eq!(group_id, "g1");
+                assert_eq!(group_name, "G1");
+                assert_eq!(resource_id, &target.id);
+                assert_eq!(resource_name, &target.name);
+            }
+            other => panic!(
+                "expected PendingDelete::GroupMember, got present={}",
+                other.is_some()
+            ),
+        }
+
+        // DB still has the member (nothing committed yet).
+        let still_there = app
+            .mgr
+            .db()
+            .get_group_member_ids("g1")
+            .unwrap_or_default();
+        assert!(still_there.contains(&target.id));
+    });
+}
+
+#[test]
+fn remove_member_deletes_db_row_preserves_resource() {
+    let tmp = tempfile::tempdir().unwrap();
+    with_home(tmp.path(), || {
+        let mgr = make_manager(tmp.path());
+        let alpha_dir = plant_skill(&mgr, "alpha");
+        let beta_dir = plant_skill(&mgr, "beta");
+        create_group(&mgr, "g1", "G1", &["local:alpha", "local:beta"]);
+
+        let before = mgr.db().get_group_member_ids("g1").unwrap_or_default();
+        assert_eq!(before.len(), 2, "precondition: 2 members in g1");
+
+        let mut app = App::new(mgr);
+        app.tab = Tab::Groups;
+        app.reload();
+        select_group_by_id(&mut app, "g1");
+        open_group_detail(&mut app);
+
+        // Remove the first member (whichever ordering get_group_members
+        // returns — we only need to know which one to assert on).
+        let removed = app.detail_members[0].clone();
+        app.handle_key(key(KeyCode::Char('d')));
+        app.handle_key(key(KeyCode::Enter));
+
+        // DB no longer carries the removed member.
+        let after = app
+            .mgr
+            .db()
+            .get_group_member_ids("g1")
+            .unwrap_or_default();
+        assert!(
+            !after.contains(&removed.id),
+            "removed member {0} should not be in g1 anymore, after={after:?}",
+            removed.id
+        );
+        assert_eq!(after.len(), 1, "g1 should now have exactly 1 member");
+
+        // detail_members reloaded — exactly 1 entry remains.
+        assert_eq!(
+            app.detail_members.len(),
+            1,
+            "detail_members should reload to the remaining 1 member"
+        );
+
+        // Message reflects removal.
+        let msg = app.message.clone().unwrap_or_default();
+        assert!(
+            msg.contains(&removed.name) && msg.to_lowercase().contains("remov"),
+            "message should mention removed name, got {msg:?}"
+        );
+
+        // The skill resources themselves survive — neither dir nor DB row
+        // was touched.
+        assert!(alpha_dir.exists(), "alpha skill dir preserved");
+        assert!(beta_dir.exists(), "beta skill dir preserved");
+        assert!(
+            app.mgr.db().get_resource("local:alpha").unwrap().is_some(),
+            "alpha resource DB row preserved"
+        );
+        assert!(
+            app.mgr.db().get_resource("local:beta").unwrap().is_some(),
+            "beta resource DB row preserved"
+        );
+    });
+}
+
+#[test]
+fn cancel_remove_member() {
+    let tmp = tempfile::tempdir().unwrap();
+    with_home(tmp.path(), || {
+        let mgr = make_manager(tmp.path());
+        plant_skill(&mgr, "alpha");
+        plant_skill(&mgr, "beta");
+        create_group(&mgr, "g1", "G1", &["local:alpha", "local:beta"]);
+
+        let mut app = App::new(mgr);
+        app.tab = Tab::Groups;
+        app.reload();
+        select_group_by_id(&mut app, "g1");
+        open_group_detail(&mut app);
+
+        let before_ids: Vec<String> =
+            app.detail_members.iter().map(|r| r.id.clone()).collect();
+        assert_eq!(before_ids.len(), 2);
+
+        app.handle_key(key(KeyCode::Char('d')));
+        assert!(matches!(app.mode, InputMode::ConfirmDelete));
+
+        app.handle_key(key(KeyCode::Esc));
+
+        // Per `PendingDelete::return_mode`, cancelling a GroupMember
+        // confirmation must return to the GroupDetail overlay, not Normal.
+        assert!(matches!(app.mode, InputMode::GroupDetail));
+        assert!(app.pending_delete.is_none());
+
+        // detail_members untouched: 2 members still listed in the same
+        // order.
+        let after_ids: Vec<String> =
+            app.detail_members.iter().map(|r| r.id.clone()).collect();
+        assert_eq!(before_ids, after_ids);
+
+        // DB still has both.
+        let db_ids = app.mgr.db().get_group_member_ids("g1").unwrap();
+        assert_eq!(db_ids.len(), 2);
+    });
+}
+
+#[test]
+fn remove_member_clamps_cursor() {
+    let tmp = tempfile::tempdir().unwrap();
+    with_home(tmp.path(), || {
+        let mgr = make_manager(tmp.path());
+        plant_skill(&mgr, "alpha");
+        plant_skill(&mgr, "beta");
+        create_group(&mgr, "g1", "G1", &["local:alpha", "local:beta"]);
+
+        let mut app = App::new(mgr);
+        app.tab = Tab::Groups;
+        app.reload();
+        select_group_by_id(&mut app, "g1");
+        open_group_detail(&mut app);
+
+        // Move cursor to the LAST member (idx=1).
+        assert_eq!(app.detail_members.len(), 2);
+        app.detail_idx = 1;
+        assert_eq!(app.detail_idx, 1);
+
+        // Remove it.
+        app.handle_key(key(KeyCode::Char('d')));
+        app.handle_key(key(KeyCode::Enter));
+
+        // After remove: list shrinks to 1, cursor was at 1 (= len of new
+        // list) and must be clamped to 0 (= len - 1) so it does not point
+        // off the end.
+        assert_eq!(app.detail_members.len(), 1);
+        assert_eq!(
+            app.detail_idx, 0,
+            "cursor should clamp to detail_members.len() - 1 after removal"
+        );
+
+        // Sanity: subsequent navigation does not panic.
+        app.handle_key(key(KeyCode::Char('j')));
+        app.handle_key(key(KeyCode::Char('k')));
+        assert_eq!(app.detail_idx, 0);
+    });
+}
