@@ -67,7 +67,6 @@ fn make_mgr(tmp: &Path) -> SkillManager {
     SkillManager::with_base(tmp.join("data")).unwrap()
 }
 
-#[allow(dead_code)]
 fn make_skill_resource(name: &str, dir: &Path) -> Resource {
     Resource {
         id: format!("local:{name}"),
@@ -156,6 +155,164 @@ fn app_new_initializes_theme_lang_and_target_defaults() {
         assert!(
             !app.sources.is_empty(),
             "App::new must load at least the builtin sources"
+        );
+    });
+}
+
+// ----------------------------------------------------------------------------
+// Feature 2: App::reload(&mut self)
+// ----------------------------------------------------------------------------
+
+#[test]
+fn reload_refreshes_resources_from_db() {
+    let tmp = tempfile::tempdir().unwrap();
+    with_home(tmp.path(), || {
+        let mgr = make_mgr(tmp.path());
+        // Pre-seed a skill row + on-disk dir.
+        let skill_dir = mgr.paths().skills_dir().join("alpha-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        let res = make_skill_resource("alpha-skill", &skill_dir);
+        mgr.db().insert_resource(&res).unwrap();
+
+        let mut app = App::new(mgr);
+        assert_eq!(app.items.len(), 0, "pre-reload items must be empty");
+        app.reload();
+        assert!(
+            app.items.iter().any(|r| r.name == "alpha-skill"),
+            "post-reload items must include alpha-skill, got {:?}",
+            app.items.iter().map(|r| &r.name).collect::<Vec<_>>()
+        );
+    });
+}
+
+#[test]
+fn reload_updates_status_counters_from_db() {
+    let tmp = tempfile::tempdir().unwrap();
+    with_home(tmp.path(), || {
+        let mgr = make_mgr(tmp.path());
+        let dir = mgr.paths().skills_dir().join("beta-skill");
+        std::fs::create_dir_all(&dir).unwrap();
+        mgr.db()
+            .insert_resource(&make_skill_resource("beta-skill", &dir))
+            .unwrap();
+
+        let mut app = App::new(mgr);
+        app.reload();
+        // status = (enabled_skills, total_skills, enabled_mcps, total_mcps).
+        // We didn't symlink so enabled is 0, but total skills must reflect 1.
+        assert_eq!(
+            app.status.1, 1,
+            "total skills counter must equal inserted rows, got {:?}",
+            app.status
+        );
+    });
+}
+
+#[test]
+fn reload_kind_filter_excludes_mcps_when_on_skills_tab() {
+    let tmp = tempfile::tempdir().unwrap();
+    with_home(tmp.path(), || {
+        let mgr = make_mgr(tmp.path());
+        // Insert one skill + one MCP. Reload on Skills tab must only see the
+        // skill row in `app.items`.
+        let skill_dir = mgr.paths().skills_dir().join("only-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        mgr.db()
+            .insert_resource(&make_skill_resource("only-skill", &skill_dir))
+            .unwrap();
+
+        let mcp_dir = mgr.paths().data_dir().join("mcps").join("only-mcp");
+        std::fs::create_dir_all(&mcp_dir).unwrap();
+        let mcp = Resource {
+            id: "local:only-mcp".into(),
+            name: "only-mcp".into(),
+            kind: ResourceKind::Mcp,
+            description: "an mcp".into(),
+            directory: mcp_dir.clone(),
+            source: Source::Local { path: mcp_dir },
+            installed_at: 0,
+            enabled: HashMap::new(),
+            usage_count: 0,
+            last_used_at: None,
+        };
+        mgr.db().insert_resource(&mcp).unwrap();
+
+        let mut app = App::new(mgr);
+        app.tab = Tab::Skills;
+        app.reload();
+
+        assert!(
+            app.items
+                .iter()
+                .all(|r| matches!(r.kind, ResourceKind::Skill)),
+            "Skills tab reload must only carry skill rows, got: {:?}",
+            app.items
+                .iter()
+                .map(|r| (&r.name, r.kind))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            app.items.iter().any(|r| r.name == "only-skill"),
+            "should have only-skill"
+        );
+        assert!(
+            app.items.iter().all(|r| r.name != "only-mcp"),
+            "must not leak only-mcp into Skills tab"
+        );
+    });
+}
+
+#[test]
+fn reload_clamps_selection_when_visible_count_shrinks() {
+    let tmp = tempfile::tempdir().unwrap();
+    with_home(tmp.path(), || {
+        let mgr = make_mgr(tmp.path());
+        let dir = mgr.paths().skills_dir().join("solo");
+        std::fs::create_dir_all(&dir).unwrap();
+        mgr.db()
+            .insert_resource(&make_skill_resource("solo", &dir))
+            .unwrap();
+
+        let mut app = App::new(mgr);
+        // Force selection above the visible count so reload's tail clamp fires
+        // (src/tui/app.rs:443-445).
+        app.selected = 999;
+        app.tab = Tab::Skills;
+        app.reload();
+        assert_eq!(app.items.len(), 1, "exactly one skill row");
+        assert_eq!(
+            app.selected, 0,
+            "reload must clamp selected to visible_count-1 when over",
+        );
+    });
+}
+
+#[test]
+fn reload_loads_groups_into_app_groups_field() {
+    use runai::core::group::{Group, GroupKind};
+    let tmp = tempfile::tempdir().unwrap();
+    with_home(tmp.path(), || {
+        let mgr = make_mgr(tmp.path());
+        // Create a group on disk via the manager API path.
+        let group = Group {
+            name: "my-grp".into(),
+            description: "test group".into(),
+            kind: GroupKind::Custom,
+            auto_enable: false,
+            members: Vec::new(),
+        };
+        mgr.create_group("my-grp", &group)
+            .expect("create_group should succeed");
+
+        let mut app = App::new(mgr);
+        app.reload();
+
+        assert!(
+            app.groups
+                .iter()
+                .any(|(id, name, _, _, _)| id.as_str() == "my-grp" && name.as_str() == "my-grp"),
+            "reload must surface manually-created group into app.groups; got {:?}",
+            app.groups.iter().map(|t| (&t.0, &t.1)).collect::<Vec<_>>()
         );
     });
 }
