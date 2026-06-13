@@ -781,3 +781,297 @@ fn trash_restore_preserves_target_state() {
     }
 }
 
+// ─── sm_trash_purge tests (PLANNING test-plan §3.9 P0) ──────────────────────
+
+/// 1. `trash_purge_permanently_deletes_files` — sm_trash_purge irreversibly
+/// removes skill files from ~/.runai/trash/.
+#[test]
+fn trash_purge_permanently_deletes_files() {
+    let home_guard = fresh_home();
+    let home = home_guard.path();
+    make_skill(&home.join(".runai/skills"), "purge-me", "purge body");
+    assert!(run_runai(home, &["scan"]).2.success());
+    assert!(run_runai(home, &["uninstall", "purge-me"]).2.success());
+
+    // Pre-purge: in trash list, payload exists somewhere under ~/.runai/trash/.
+    let trash_pre = run_runai(home, &["trash", "list"]);
+    assert!(trash_pre.0.contains("purge-me"));
+    let trash_root = home.join(".runai/trash");
+    let mut entries_before: Vec<PathBuf> =
+        std::fs::read_dir(&trash_root).unwrap().filter_map(|e| e.ok().map(|e| e.path())).collect();
+    entries_before.sort();
+    assert!(
+        !entries_before.is_empty(),
+        "trash dir should have a payload pre-purge"
+    );
+
+    // Purge.
+    let purge = run_runai(home, &["trash", "purge", "purge-me"]);
+    dump(&purge, "trash purge purge-me");
+    assert!(purge.2.success(), "purge should succeed");
+
+    // Post-purge: not in list.
+    let trash_post = run_runai(home, &["trash", "list"]);
+    assert!(
+        !trash_post.0.contains("purge-me"),
+        "trash list must NOT contain purge-me after purge; got:\n{}",
+        trash_post.0
+    );
+    // And the matching payload dir is gone (others, if any, may remain).
+    let mut payload_gone = true;
+    for p in &entries_before {
+        if p.file_name()
+            .and_then(|f| f.to_str())
+            .map(|n| n.contains("purge-me"))
+            .unwrap_or(false)
+            && p.exists()
+        {
+            payload_gone = false;
+        }
+    }
+    assert!(
+        payload_gone,
+        "REGRESSION: purge did not delete payload dir for purge-me; entries remaining: {:?}",
+        std::fs::read_dir(&trash_root)
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// 2. `trash_purge_respects_rune_data_dir_isolation` — purge under
+/// RUNE_DATA_DIR override purges from override trash only.
+#[test]
+fn trash_purge_respects_rune_data_dir_isolation() {
+    let home_guard = fresh_home();
+    let home = home_guard.path();
+    let data_guard = tempfile::tempdir().unwrap();
+    let data_dir = data_guard.path();
+    std::fs::create_dir_all(data_dir.join("skills")).unwrap();
+    make_skill(&data_dir.join("skills"), "rd-purge", "rd purge body");
+    assert!(
+        run_runai_with_data_dir(home, data_dir, &["scan"])
+            .2
+            .success()
+    );
+    assert!(
+        run_runai_with_data_dir(home, data_dir, &["uninstall", "rd-purge"])
+            .2
+            .success()
+    );
+    // Plant a sentinel in the DEFAULT trash so we can verify it remains intact.
+    let default_trash = home.join(".runai/trash");
+    std::fs::create_dir_all(&default_trash).unwrap();
+    let sentinel = default_trash.join("DO-NOT-TOUCH");
+    std::fs::write(&sentinel, b"sentinel").unwrap();
+
+    let purge = run_runai_with_data_dir(home, data_dir, &["trash", "purge", "rd-purge"]);
+    dump(&purge, "purge under RUNE_DATA_DIR");
+    assert!(purge.2.success());
+
+    // Override trash drained.
+    let override_trash = data_dir.join("trash");
+    let still_in_override = std::fs::read_dir(&override_trash)
+        .map(|it| {
+            it.filter_map(|e| e.ok())
+                .any(|e| e.file_name().to_string_lossy().contains("rd-purge"))
+        })
+        .unwrap_or(false);
+    assert!(
+        !still_in_override,
+        "purge did not remove payload from {}",
+        override_trash.display()
+    );
+
+    // DEFAULT trash sentinel untouched.
+    assert!(
+        sentinel.exists(),
+        "REGRESSION (safety contract §2): purge under RUNE_DATA_DIR override \
+         touched the DEFAULT ~/.runai/trash/ sentinel at {}",
+        sentinel.display()
+    );
+    assert_eq!(std::fs::read(&sentinel).unwrap(), b"sentinel");
+}
+
+/// 3. `trash_purge_by_id_precise` — purge by trash ID removes exactly that
+/// entry and leaves the rest alone.
+#[test]
+fn trash_purge_by_id_precise() {
+    let home_guard = fresh_home();
+    let home = home_guard.path();
+    make_skill(&home.join(".runai/skills"), "pp-one", "pp1");
+    make_skill(&home.join(".runai/skills"), "pp-two", "pp2");
+    assert!(run_runai(home, &["scan"]).2.success());
+    assert!(run_runai(home, &["uninstall", "pp-one"]).2.success());
+    assert!(run_runai(home, &["uninstall", "pp-two"]).2.success());
+
+    let trash = run_runai(home, &["trash", "list"]);
+    dump(&trash, "trash list with two entries (purge by id)");
+    let line = trash
+        .0
+        .lines()
+        .find(|l| l.contains(" — pp-one ("))
+        .or_else(|| {
+            trash
+                .0
+                .lines()
+                .find(|l| l.contains("pp-one") && !l.contains("pp-two"))
+        })
+        .expect("trash line for pp-one (not pp-two) must exist");
+    let id = line
+        .split_whitespace()
+        .nth(1)
+        .expect("trash line must have id field");
+    eprintln!("Resolved trash id for pp-one: {id}");
+
+    let purge = run_runai(home, &["trash", "purge", id]);
+    dump(&purge, "purge by id");
+    assert!(purge.2.success());
+
+    let post = run_runai(home, &["trash", "list"]);
+    assert!(
+        !post.0.contains("pp-one"),
+        "pp-one must be gone after purge-by-id; got:\n{}",
+        post.0
+    );
+    assert!(
+        post.0.contains("pp-two"),
+        "pp-two must still be in trash; got:\n{}",
+        post.0
+    );
+}
+
+/// 4. `trash_purge_nonexistent_fails_safely` — sm_trash_purge with missing
+/// query returns 'Trash entry not found' and no fs mutation.
+#[test]
+fn trash_purge_nonexistent_fails_safely() {
+    let home_guard = fresh_home();
+    let home = home_guard.path();
+    let _ = run_runai(home, &["status"]);
+
+    // Pre-plant a sentinel in trash dir to assert nothing got deleted.
+    let trash_root = home.join(".runai/trash");
+    std::fs::create_dir_all(&trash_root).unwrap();
+    let sentinel = trash_root.join("sentinel-file");
+    std::fs::write(&sentinel, b"sentinel").unwrap();
+
+    let (resp, mut child) = mcp_call(
+        home,
+        "sm_trash_purge",
+        serde_json::json!({"query": "doesnt-exist"}),
+    );
+    let _ = child.kill();
+    let _ = child.wait();
+    let text = mcp_text(&resp);
+    eprintln!("sm_trash_purge(nonexistent) → {text}");
+    assert!(
+        text.contains("Trash entry not found") || text.to_lowercase().contains("not found"),
+        "sm_trash_purge(nonexistent) should report 'Trash entry not found'; got: {text}"
+    );
+
+    // No filesystem mutation: sentinel intact.
+    assert!(sentinel.exists(), "sentinel file must remain after no-op purge");
+    assert_eq!(std::fs::read(&sentinel).unwrap(), b"sentinel");
+}
+
+/// 5. `trash_purge_mcp_cleans_backup` — purge for an MCP removes the trash
+/// entry; any residual config backup must be cleaned.
+#[test]
+fn trash_purge_mcp_cleans_backup() {
+    let home_guard = fresh_home();
+    let home = home_guard.path();
+    std::fs::write(
+        home.join(".claude.json"),
+        r#"{"mcpServers":{"purge-mcp":{"command":"/bin/purge-mcp","args":[]}}}"#,
+    )
+    .unwrap();
+    let _ = run_runai(home, &["status"]);
+    assert!(run_runai(home, &["uninstall", "purge-mcp"]).2.success());
+
+    // Pre-purge state: in trash list.
+    let trash_pre = run_runai(home, &["trash", "list"]);
+    assert!(
+        trash_pre.0.contains("purge-mcp"),
+        "pre-purge trash must list purge-mcp"
+    );
+
+    let purge = run_runai(home, &["trash", "purge", "purge-mcp"]);
+    dump(&purge, "purge MCP");
+    assert!(purge.2.success(), "MCP purge must succeed");
+
+    // Trash entry gone.
+    let trash_post = run_runai(home, &["trash", "list"]);
+    assert!(
+        !trash_post.0.contains("purge-mcp"),
+        "trash list must NOT contain purge-mcp after purge; got:\n{}",
+        trash_post.0
+    );
+
+    // Any residual backup file in ~/.runai/mcps/ must not refer to purge-mcp.
+    let mcps_dir = home.join(".runai/mcps");
+    if mcps_dir.exists() {
+        for entry in std::fs::read_dir(&mcps_dir).unwrap().flatten() {
+            let fname = entry.file_name();
+            let name = fname.to_string_lossy();
+            assert!(
+                !name.starts_with("purge-mcp"),
+                "MCP backup must be cleaned after purge, but {} remains",
+                entry.path().display()
+            );
+        }
+    }
+}
+
+/// 6. `trash_purge_group_safe_for_members` — purging a trash entry must not
+/// cascade-delete unrelated member skills. We trash two skills, purge one,
+/// confirm the other remains in trash and the *managed* skill (not in trash)
+/// is unaffected.
+#[test]
+fn trash_purge_group_safe_for_members() {
+    let home_guard = fresh_home();
+    let home = home_guard.path();
+    let managed = home.join(".runai/skills");
+    make_skill(&managed, "victim", "victim body");
+    make_skill(&managed, "bystander-trashed", "bystander trash body");
+    make_skill(&managed, "bystander-live", "bystander live body");
+    assert!(run_runai(home, &["scan"]).2.success());
+    assert!(run_runai(home, &["uninstall", "victim"]).2.success());
+    assert!(run_runai(home, &["uninstall", "bystander-trashed"]).2.success());
+
+    // bystander-live is NOT trashed — its managed dir must survive everything.
+    assert!(managed.join("bystander-live/SKILL.md").exists());
+
+    // Purge victim only.
+    let purge = run_runai(home, &["trash", "purge", "victim"]);
+    dump(&purge, "purge victim only");
+    assert!(purge.2.success());
+
+    let trash = run_runai(home, &["trash", "list"]);
+    assert!(
+        !trash.0.contains("victim"),
+        "victim must be gone from trash; got:\n{}",
+        trash.0
+    );
+    assert!(
+        trash.0.contains("bystander-trashed"),
+        "bystander-trashed must still be in trash; got:\n{}",
+        trash.0
+    );
+    assert!(
+        managed.join("bystander-live/SKILL.md").exists(),
+        "live (never-trashed) skill must remain in managed dir after purge"
+    );
+    // And bystander-trashed's trash payload must NOT have been deleted by the
+    // victim purge — verify the trash dir still has a non-empty entry for it.
+    let trash_root = home.join(".runai/trash");
+    let bystander_payload_exists = std::fs::read_dir(&trash_root)
+        .map(|it| {
+            it.filter_map(|e| e.ok())
+                .any(|e| e.file_name().to_string_lossy().contains("bystander-trashed"))
+        })
+        .unwrap_or(false);
+    assert!(
+        bystander_payload_exists,
+        "REGRESSION: purging 'victim' wiped 'bystander-trashed' payload too"
+    );
+}
