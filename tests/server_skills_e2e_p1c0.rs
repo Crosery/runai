@@ -376,3 +376,126 @@ fn skill_detail_not_found() {
     assert_eq!(status, 404, "missing skill ⇒ 404");
 }
 
+// ─────────────────── /api/skill/{name}/files ───────────────────
+
+#[test]
+fn skill_files_recursive_listing() {
+    let srv = Server::spawn();
+    let dir = srv.skills_dir().join("multi");
+    std::fs::create_dir_all(dir.join("scripts/subdir")).unwrap();
+    std::fs::write(
+        dir.join("SKILL.md"),
+        "---\nname: multi\ndescription: x\n---\n\n# multi\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("scripts/foo.sh"), "echo hi\n").unwrap();
+    std::fs::write(dir.join("scripts/subdir/bar.py"), "print('hi')\n").unwrap();
+    srv.run_scan();
+
+    let (status, body) = http_get(&srv.url("/api/skill/multi/files"));
+    assert_eq!(status, 200, "body: {body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let entries = v["entries"].as_array().expect("entries");
+    let paths: Vec<&str> = entries
+        .iter()
+        .map(|e| e["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(entries.len(), 3, "expected 3 files, got {paths:?}");
+    // Alphabetical sort by path, forward slashes only.
+    assert_eq!(
+        paths,
+        vec!["SKILL.md", "scripts/foo.sh", "scripts/subdir/bar.py"],
+        "paths must be alphabetical, forward-slash"
+    );
+    // Each entry has shape {path, size, is_text}.
+    for e in entries {
+        assert!(e["path"].is_string());
+        assert!(e["size"].is_u64() || e["size"].is_number());
+        assert!(e["is_text"].is_boolean());
+    }
+}
+
+#[test]
+fn skill_files_text_detection() {
+    let srv = Server::spawn();
+    let dir = srv.skills_dir().join("mixed");
+    std::fs::create_dir_all(dir.join("scripts")).unwrap();
+    std::fs::write(
+        dir.join("SKILL.md"),
+        "---\nname: mixed\ndescription: x\n---\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("scripts/foo.sh"), "#!/bin/sh\necho hi\n").unwrap();
+    // Real PNG magic bytes for the binary case (extension-based is_text
+    // checker uses the suffix not the contents, but writing real PNG
+    // bytes guards against any future content-sniffing branch).
+    let png_magic = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR";
+    std::fs::write(dir.join("logo.png"), png_magic).unwrap();
+    std::fs::write(dir.join("config.json"), "{\"a\":1}\n").unwrap();
+    srv.run_scan();
+
+    let (status, body) = http_get(&srv.url("/api/skill/mixed/files"));
+    assert_eq!(status, 200, "body: {body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let mut is_text: std::collections::HashMap<String, bool> =
+        std::collections::HashMap::new();
+    for e in v["entries"].as_array().unwrap() {
+        is_text.insert(
+            e["path"].as_str().unwrap().to_string(),
+            e["is_text"].as_bool().unwrap(),
+        );
+    }
+    assert_eq!(is_text.get("SKILL.md"), Some(&true), "md is text");
+    assert_eq!(
+        is_text.get("scripts/foo.sh"),
+        Some(&true),
+        ".sh is text"
+    );
+    assert_eq!(is_text.get("logo.png"), Some(&false), ".png is binary");
+    assert_eq!(is_text.get("config.json"), Some(&true), ".json is text");
+}
+
+#[test]
+fn skill_files_excludes_hidden_files() {
+    let srv = Server::spawn();
+    let dir = srv.skills_dir().join("hidden");
+    std::fs::create_dir_all(dir.join("scripts")).unwrap();
+    std::fs::write(
+        dir.join("SKILL.md"),
+        "---\nname: hidden\ndescription: x\n---\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join(".gitignore"), "target/\n").unwrap();
+    std::fs::write(dir.join(".env"), "SECRET=hunter2\n").unwrap();
+    std::fs::write(dir.join("scripts/code.sh"), "#!/bin/sh\n").unwrap();
+    srv.run_scan();
+
+    let (status, body) = http_get(&srv.url("/api/skill/hidden/files"));
+    assert_eq!(status, 200, "body: {body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let paths: Vec<&str> = v["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        paths,
+        vec!["SKILL.md", "scripts/code.sh"],
+        "hidden dot-files must be excluded"
+    );
+    for p in &paths {
+        assert!(
+            !p.split('/').any(|seg| seg.starts_with('.')),
+            "no dot-prefix segment in {p}"
+        );
+    }
+}
+
+#[test]
+fn skill_files_skill_not_found() {
+    let srv = Server::spawn();
+    let (status, _body) = http_get(&srv.url("/api/skill/nonexistent/files"));
+    assert_eq!(status, 404);
+}
+
