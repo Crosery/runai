@@ -349,3 +349,83 @@ fn search_mode_empty_shows_all() {
         );
     });
 }
+
+// ─── 2.23 Tab Navigation ─────────────────────────────────────────────────────
+
+#[test]
+fn tab_navigation_cycles_forward_all_tabs() {
+    // Plan called for 7-tab cycle; the cloud HEAD has 5 tabs
+    // (Skills, MCPs, Groups, Market, Trash). We use Tab::ALL.len() so the
+    // test is robust if the enum grows again. Each L press:
+    //  - advances tab by +1 (modulo ALL.len())
+    //  - resets `selected` to 0
+    //  - clears the `search` buffer
+    //  - calls `reload()` which populates `items` and `groups` from the DB
+    let tmp = TempDir::new().unwrap();
+    with_isolated_home(tmp.path(), || {
+        let mut app = fresh_app(&tmp.path().join("data"), &["one", "two", "three"]);
+        let n = Tab::ALL.len();
+        let initial = app.tab.label().to_string();
+        // Pre-populate selected and search so we can prove each L clears them.
+        app.selected = 2;
+        app.search = "leftover".into();
+
+        // Press L exactly n times → back to initial tab.
+        for i in 0..n {
+            app.handle_key(key(KeyCode::Char('L')));
+            assert_eq!(
+                app.selected, 0,
+                "after L press {} selected must reset to 0",
+                i
+            );
+            assert_eq!(
+                app.search, "",
+                "after L press {} search buffer must be cleared",
+                i
+            );
+        }
+        assert_eq!(
+            app.tab.label(),
+            initial,
+            "{} L presses cycle back to start",
+            n
+        );
+
+        // reload() must have repopulated items/groups; Skills tab has 3 items.
+        assert_eq!(app.tab.label(), "Skills");
+        assert_eq!(app.items.len(), 3, "reload() repopulates after cycle");
+    });
+}
+
+#[test]
+fn tab_navigation_backward_wraps() {
+    // H key moves backward through the tab cycle. From Tab::Skills (index 0)
+    // a single H must wrap to the last tab (Trash for the current 5-tab
+    // enum). After n presses we land back on Skills.
+    let tmp = TempDir::new().unwrap();
+    with_isolated_home(tmp.path(), || {
+        let mut app = fresh_app(&tmp.path().join("data"), &["a", "b"]);
+        let n = Tab::ALL.len();
+        let last_label = Tab::ALL[n - 1].label();
+
+        // From Skills (idx 0) → backward should land on the last tab.
+        app.handle_key(key(KeyCode::Char('H')));
+        assert_eq!(
+            app.tab.label(),
+            last_label,
+            "H from Skills wraps to last tab"
+        );
+
+        // n-1 more H presses → back to Skills.
+        for _ in 1..n {
+            app.handle_key(key(KeyCode::Char('H')));
+        }
+        assert_eq!(app.tab.label(), "Skills", "{} H presses cycle back", n);
+
+        // visible_items() must be re-computed for the current tab; with 2
+        // skills inserted and active_target=Claude (none enabled) the count
+        // is 2 under filter_mode=All.
+        let visible: Vec<String> = app.visible_items().iter().map(|r| r.name.clone()).collect();
+        assert_eq!(visible.len(), 2);
+    });
+}
