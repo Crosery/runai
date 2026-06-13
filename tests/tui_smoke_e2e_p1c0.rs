@@ -515,3 +515,150 @@ fn search_clears_selected_index() {
         assert_eq!(app.selected, 0);
     });
 }
+
+// ───────────────────── §2.8 Group Detail Overlay ──────────────────────────
+
+#[test]
+fn open_group_detail_loads_members() {
+    let tmp = TempDir::new().unwrap();
+    with_home(tmp.path(), || {
+        let mgr = make_manager(tmp.path());
+        plant_skill(&mgr, "skill1");
+        plant_skill(&mgr, "skill2");
+        plant_group(&mgr, "grp", "MyGroup", "");
+        mgr.db().add_group_member("grp", "local:skill1").unwrap();
+        mgr.db().add_group_member("grp", "local:skill2").unwrap();
+
+        let mut app = App::new(mgr);
+        app.mode = InputMode::Normal;
+        app.tab = Tab::Groups;
+        app.reload();
+        app.selected = 0;
+
+        // Enter opens the group detail overlay.
+        app.handle_key(key(KeyCode::Enter));
+
+        assert!(matches!(app.mode, InputMode::GroupDetail));
+        assert_eq!(app.detail_group_id, "grp");
+        assert_eq!(app.detail_group_name, "MyGroup");
+        assert_eq!(
+            app.detail_members.len(),
+            2,
+            "detail_members loaded from get_group_members()"
+        );
+        assert_eq!(app.detail_idx, 0, "cursor starts at first member");
+        let member_names: Vec<String> = app.detail_members.iter().map(|r| r.name.clone()).collect();
+        assert!(member_names.contains(&"skill1".into()));
+        assert!(member_names.contains(&"skill2".into()));
+    });
+}
+
+#[test]
+fn group_detail_navigation_clamps() {
+    let tmp = TempDir::new().unwrap();
+    with_home(tmp.path(), || {
+        let mgr = make_manager(tmp.path());
+        plant_skill(&mgr, "a");
+        plant_skill(&mgr, "b");
+        plant_skill(&mgr, "c");
+        plant_group(&mgr, "grp", "G", "");
+        mgr.db().add_group_member("grp", "local:a").unwrap();
+        mgr.db().add_group_member("grp", "local:b").unwrap();
+        mgr.db().add_group_member("grp", "local:c").unwrap();
+
+        let mut app = App::new(mgr);
+        app.mode = InputMode::Normal;
+        app.tab = Tab::Groups;
+        app.reload();
+        app.selected = 0;
+        app.handle_key(key(KeyCode::Enter));
+        assert!(matches!(app.mode, InputMode::GroupDetail));
+        assert_eq!(app.detail_members.len(), 3);
+        assert_eq!(app.detail_idx, 0);
+
+        // j moves down through 0 -> 1 -> 2 -> clamps at 2.
+        app.handle_key(key(KeyCode::Char('j')));
+        assert_eq!(app.detail_idx, 1);
+        app.handle_key(key(KeyCode::Char('j')));
+        assert_eq!(app.detail_idx, 2);
+        app.handle_key(key(KeyCode::Char('j')));
+        assert_eq!(app.detail_idx, 2, "j at last clamps");
+
+        // k moves back up; clamps at 0.
+        app.handle_key(key(KeyCode::Char('k')));
+        assert_eq!(app.detail_idx, 1);
+        app.handle_key(key(KeyCode::Char('k')));
+        assert_eq!(app.detail_idx, 0);
+        app.handle_key(key(KeyCode::Char('k')));
+        assert_eq!(app.detail_idx, 0, "k at 0 clamps");
+    });
+}
+
+#[test]
+fn escape_from_group_detail() {
+    let tmp = TempDir::new().unwrap();
+    with_home(tmp.path(), || {
+        let mgr = make_manager(tmp.path());
+        plant_skill(&mgr, "s");
+        plant_group(&mgr, "g", "Gr", "");
+        mgr.db().add_group_member("g", "local:s").unwrap();
+
+        let mut app = App::new(mgr);
+        app.mode = InputMode::Normal;
+        app.tab = Tab::Groups;
+        app.reload();
+        app.selected = 0;
+        app.handle_key(key(KeyCode::Enter));
+        assert!(matches!(app.mode, InputMode::GroupDetail));
+
+        // Esc returns to Normal and stays on Groups tab.
+        app.handle_key(key(KeyCode::Esc));
+        assert!(matches!(app.mode, InputMode::Normal));
+        assert!(matches!(app.tab, Tab::Groups));
+    });
+}
+
+#[test]
+fn group_detail_target_switch_reloads() {
+    let tmp = TempDir::new().unwrap();
+    with_home(tmp.path(), || {
+        let mgr = make_manager(tmp.path());
+        plant_skill(&mgr, "member");
+        plant_group(&mgr, "g", "Gr", "");
+        mgr.db().add_group_member("g", "local:member").unwrap();
+
+        // Enable for Claude only — pre-create the symlink so the skill is
+        // "enabled for Claude" by definition (`check_skill_symlinks` truths).
+        let claude_dir = CliTarget::Claude.skills_dir();
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::os::unix::fs::symlink(
+            mgr.paths().skills_dir().join("member"),
+            claude_dir.join("member"),
+        )
+        .unwrap();
+
+        let mut app = App::new(mgr);
+        app.mode = InputMode::Normal;
+        app.tab = Tab::Groups;
+        app.active_target = CliTarget::Claude;
+        app.reload();
+        app.selected = 0;
+        app.handle_key(key(KeyCode::Enter));
+        assert!(matches!(app.mode, InputMode::GroupDetail));
+        assert!(
+            app.detail_members[0].is_enabled_for(CliTarget::Claude),
+            "member enabled for Claude before switch"
+        );
+
+        // Press '2' inside detail overlay -> switch to Codex + reload members.
+        app.handle_key(key(KeyCode::Char('2')));
+        assert!(matches!(app.active_target, CliTarget::Codex));
+        // After reload, the member is NOT enabled for Codex (no codex symlink).
+        assert!(
+            !app.detail_members[0].is_enabled_for(CliTarget::Codex),
+            "member should be disabled for Codex after target switch"
+        );
+        // Mode stays in GroupDetail.
+        assert!(matches!(app.mode, InputMode::GroupDetail));
+    });
+}
