@@ -251,3 +251,136 @@ fn reload_community_reports_generic_http_error() {
         );
     });
 }
+
+// ─── feature 2: scan_upload_candidates ─ audit said `upload_picker_scan` ───
+//
+// Real signature: `pub fn scan_upload_candidates(&mut self)` — returns
+// `()`. Scans `~/.claude/skills/<name>/` and `<cwd>/.claude/skills/<name>/`
+// for subdirectories containing `SKILL.md`. Populates
+// `App.upload_candidates`, clears `upload_message`, clamps `upload_idx`.
+
+/// Build a fake skill dir at `<parent>/<name>/SKILL.md` so the scanner
+/// counts it as a valid candidate (source guard: `path.join("SKILL.md").is_file()`).
+fn mkskill(parent: &Path, name: &str) {
+    let dir = parent.join(name);
+    std::fs::create_dir_all(&dir).expect("create skill dir");
+    std::fs::write(dir.join("SKILL.md"), "---\nname: x\n---\nbody").expect("write SKILL.md");
+}
+
+#[test]
+fn scan_upload_candidates_finds_skills_under_claude_user_dir() {
+    let tmp = TempDir::new().unwrap();
+    with_sandbox(tmp.path(), || {
+        let user_skills = tmp.path().join(".claude/skills");
+        std::fs::create_dir_all(&user_skills).unwrap();
+        mkskill(&user_skills, "z-skill-alpha");
+        mkskill(&user_skills, "a-skill-beta");
+        // Dir without SKILL.md must be ignored.
+        std::fs::create_dir_all(user_skills.join("not-a-skill")).unwrap();
+
+        let mut app = fresh_app(tmp.path());
+        app.scan_upload_candidates();
+
+        let names: Vec<String> = app
+            .upload_candidates
+            .iter()
+            .map(|c| c.name.clone())
+            .collect();
+        assert!(
+            names.iter().any(|n| n == "z-skill-alpha") && names.iter().any(|n| n == "a-skill-beta"),
+            "both well-formed skills must be discovered; got {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n == "not-a-skill"),
+            "dirs without SKILL.md must be skipped; got {names:?}"
+        );
+        assert!(
+            app.upload_message.is_empty(),
+            "scan must clear stale upload_message; got {:?}",
+            app.upload_message
+        );
+    });
+}
+
+#[test]
+fn scan_upload_candidates_resets_state_when_no_source_dirs_exist() {
+    let tmp = TempDir::new().unwrap();
+    with_sandbox(tmp.path(), || {
+        // Intentionally do NOT create ~/.claude/skills. The source has
+        // `let Ok(rd) = read_dir(parent) else { return; }` so missing
+        // parents collapse to zero rows rather than panicking. The cwd
+        // scan may still find skills (cargo test cwd is the repo), so
+        // we cannot assert == 0; we assert the post-scan invariants
+        // hold instead.
+        let mut app = fresh_app(tmp.path());
+        // Pre-set upload_idx to an out-of-range value; the scan must
+        // clamp it to len-1 (saturating_sub(1)).
+        app.upload_idx = 999;
+        // Pre-set upload_message to a stale string; the scan must clear it.
+        app.upload_message = "stale message".to_string();
+
+        app.scan_upload_candidates();
+
+        let len = app.upload_candidates.len();
+        assert!(
+            app.upload_idx == 0 || app.upload_idx < len,
+            "upload_idx must be clamped post-scan; got {} for {} candidates",
+            app.upload_idx,
+            len
+        );
+        assert!(
+            app.upload_message.is_empty(),
+            "scan must clear stale upload_message; got {:?}",
+            app.upload_message
+        );
+    });
+}
+
+#[test]
+fn scan_upload_candidates_produces_alpha_sort_within_user_source() {
+    let tmp = TempDir::new().unwrap();
+    with_sandbox(tmp.path(), || {
+        let user_skills = tmp.path().join(".claude/skills");
+        std::fs::create_dir_all(&user_skills).unwrap();
+        // Insert in reverse-alpha order to force the sort to rearrange.
+        mkskill(&user_skills, "zeta-skill");
+        mkskill(&user_skills, "alpha-skill");
+        mkskill(&user_skills, "mid-skill");
+
+        let mut app = fresh_app(tmp.path());
+        app.scan_upload_candidates();
+
+        // Filter to just the ones we planted: their paths live under
+        // our tmp HOME's `.claude/skills/`. The source enum
+        // (`UploadSource`) is not pub-re-exported so we discriminate
+        // via the path prefix instead.
+        let user_names: Vec<String> = app
+            .upload_candidates
+            .iter()
+            .filter(|c| c.path.starts_with(tmp.path().join(".claude/skills")))
+            .map(|c| c.name.clone())
+            .collect();
+
+        let planted: Vec<&str> = user_names
+            .iter()
+            .filter(|n| matches!(n.as_str(), "zeta-skill" | "alpha-skill" | "mid-skill"))
+            .map(|n| n.as_str())
+            .collect();
+
+        assert_eq!(
+            planted.len(),
+            3,
+            "all three planted skills must appear in the candidate list; got {planted:?}"
+        );
+        // Within a single source group the source sort is
+        // `a.name.cmp(&b.name)` after sorting by source label first
+        // (USER < PROJECT). So our three rows must appear in alpha order
+        // among the USER segment.
+        let mut sorted = planted.clone();
+        sorted.sort();
+        assert_eq!(
+            planted, sorted,
+            "USER candidates must be sorted alpha; got {planted:?}"
+        );
+    });
+}
