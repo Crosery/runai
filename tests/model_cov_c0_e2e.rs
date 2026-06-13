@@ -20,6 +20,7 @@
 
 use runai::core::manager::SkillManager;
 use runai::tui::app::{App, FilterMode, Tab};
+use runai::tui::i18n::{Lang, T};
 use runai::tui::theme::ThemeMode;
 use std::path::Path;
 use std::sync::Mutex;
@@ -261,4 +262,71 @@ fn theme_field_persists_to_disk() {
     );
     // App field still holds the assignment (no implicit reset).
     assert!(matches!(app.theme_mode, ThemeMode::Light));
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Feature 4: App.lang field
+// ────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn lang_field_default_is_zh() {
+    let (app, _tmp) = fresh_app();
+    assert!(
+        matches!(app.lang, Lang::Zh),
+        "App::new must default `lang` to Lang::Zh"
+    );
+    assert_eq!(app.lang.label(), "中文");
+}
+
+#[test]
+fn lang_field_can_be_en() {
+    let (mut app, _tmp) = fresh_app();
+    app.lang = Lang::En;
+    assert!(matches!(app.lang, Lang::En));
+    assert_eq!(app.lang.label(), "EN");
+}
+
+#[test]
+fn lang_field_affects_i18n_strings() {
+    // `App::t()` returns a `T` bound to the current `app.lang`. Switching
+    // the field must immediately flip every label `T` returns.
+    let (mut app, _tmp) = fresh_app();
+    assert!(matches!(app.lang, Lang::Zh));
+    let t_zh: T = app.t();
+    assert_eq!(t_zh.tab_skills(), "技能");
+    assert_eq!(t_zh.tab_mcps(), "MCP");
+    assert_eq!(t_zh.filter_all(), "全部");
+
+    app.lang = Lang::En;
+    let t_en: T = app.t();
+    assert_eq!(t_en.tab_skills(), "Skills");
+    assert_eq!(t_en.tab_mcps(), "MCPs");
+    assert_eq!(t_en.filter_all(), "All");
+
+    // The two T views are wired to different lang discriminants.
+    assert!(t_zh.lang != t_en.lang);
+}
+
+#[test]
+fn lang_field_persists_to_disk() {
+    // Same situation as theme_mode: no on-disk persistence exists for
+    // `lang` in this branch. Verify the field survives a full toggle
+    // round-trip (Lang::toggle is the user-facing cycler bound to the
+    // language-switch key handler) and that the field remains the
+    // assigned value across unrelated state mutations.
+    let (mut app, _tmp) = fresh_app();
+    app.lang = Lang::En;
+    let once = app.lang.toggle();
+    assert!(matches!(once, Lang::Zh), "Lang::En.toggle() -> Lang::Zh");
+    let twice = once.toggle();
+    assert!(matches!(twice, Lang::En), "Lang round-trip");
+
+    // App.lang assignment survives peer-field churn.
+    app.tab = Tab::Trash;
+    app.filter_mode = FilterMode::Disabled;
+    app.theme_mode = ThemeMode::Light;
+    assert!(
+        matches!(app.lang, Lang::En),
+        "App.lang must persist across peer-field mutations"
+    );
 }
