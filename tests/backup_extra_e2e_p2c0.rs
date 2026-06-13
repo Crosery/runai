@@ -221,3 +221,126 @@ fn backup_respects_rune_data_dir() {
         "default data dir must NOT receive any backup when RUNE_DATA_DIR is set"
     );
 }
+
+// ─── feature 2: backups (list) ──────────────────────────────────────────────
+
+/// Three manually-created timestamp dirs must list newest-first and report
+/// the total at the bottom. Names are sortable strings — older first
+/// lexically, newest last — so listing reversed must put the latest stamp
+/// on the first non-blank line of output.
+#[test]
+fn backups_lists_in_order_newest_first() {
+    let (home_tmp, data) = make_env();
+    let home = home_tmp.path();
+    let backups_root = data.join("backups");
+    std::fs::create_dir_all(&backups_root).unwrap();
+
+    // Forge three timestamp dirs spanning two days.
+    for ts in ["20260101_100000", "20260102_100000", "20260101_150000"] {
+        std::fs::create_dir_all(backups_root.join(ts)).unwrap();
+        std::fs::write(backups_root.join(ts).join("timestamp"), ts).unwrap();
+    }
+
+    let out = run_in(home, &data, &["backups"]);
+    dump(&out, "backups list");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+
+    // All three timestamps must appear.
+    for ts in ["20260101_100000", "20260102_100000", "20260101_150000"] {
+        assert!(stdout.contains(ts), "{ts} missing from output:\n{stdout}");
+    }
+    // Total tally.
+    assert!(
+        stdout.contains("Total: 3 backups"),
+        "total tally missing:\n{stdout}"
+    );
+
+    // Newest-first ordering: pos(20260102_100000) < pos(20260101_150000) <
+    // pos(20260101_100000).
+    let p_newest = stdout.find("20260102_100000").unwrap();
+    let p_middle = stdout.find("20260101_150000").unwrap();
+    let p_oldest = stdout.find("20260101_100000").unwrap();
+    assert!(
+        p_newest < p_middle && p_middle < p_oldest,
+        "expected newest-first order; positions newest={p_newest} mid={p_middle} oldest={p_oldest}\n{stdout}"
+    );
+}
+
+/// `runai backups` against an empty data dir must report "No backups found."
+/// (no panic, no error exit) — the canonical empty-state UX.
+#[test]
+fn backups_handles_empty() {
+    let (home_tmp, data) = make_env();
+    let home = home_tmp.path();
+    // No backups/ subdir at all (make_env didn't create one).
+    assert!(!data.join("backups").exists());
+
+    let out = run_in(home, &data, &["backups"]);
+    dump(&out, "backups empty");
+    assert!(out.status.success(), "empty backups must still exit ok");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("No backups found"),
+        "empty-state message missing, got:\n{stdout}"
+    );
+}
+
+/// `RUNE_DATA_DIR` isolation: a backup created in the alt data dir must NOT
+/// appear when `backups` is run against the default `~/.runai/`, and vice
+/// versa.
+#[test]
+fn backups_respects_rune_data_dir() {
+    let home_tmp = tempfile::tempdir().unwrap();
+    let home = home_tmp.path();
+    for cli in ["claude", "codex", "gemini", "opencode"] {
+        std::fs::create_dir_all(home.join(format!(".{cli}/skills"))).unwrap();
+    }
+    let default_data = home.join(".runai");
+    std::fs::create_dir_all(default_data.join("skills")).unwrap();
+    let alt_root = tempfile::tempdir().unwrap();
+    let alt_data = alt_root.path().join("alt-runai");
+    std::fs::create_dir_all(alt_data.join("skills")).unwrap();
+
+    // Forge a known timestamp under each data dir.
+    let def_ts = "20260101_010101";
+    std::fs::create_dir_all(default_data.join("backups").join(def_ts)).unwrap();
+    let alt_ts = "20260202_020202";
+    std::fs::create_dir_all(alt_data.join("backups").join(alt_ts)).unwrap();
+
+    // Listing against default data dir sees only def_ts.
+    let out_def = run_in(home, &default_data, &["backups"]);
+    dump(&out_def, "backups default");
+    assert!(out_def.status.success());
+    let so_def = String::from_utf8_lossy(&out_def.stdout);
+    assert!(
+        so_def.contains(def_ts),
+        "default listing missing its own ts:\n{so_def}"
+    );
+    assert!(
+        !so_def.contains(alt_ts),
+        "default listing leaked alt ts:\n{so_def}"
+    );
+    assert!(
+        so_def.contains("Total: 1 backups"),
+        "default listing wrong total:\n{so_def}"
+    );
+
+    // Listing against alt sees only alt_ts.
+    let out_alt = run_in(home, &alt_data, &["backups"]);
+    dump(&out_alt, "backups alt");
+    assert!(out_alt.status.success());
+    let so_alt = String::from_utf8_lossy(&out_alt.stdout);
+    assert!(
+        so_alt.contains(alt_ts),
+        "alt listing missing its own ts:\n{so_alt}"
+    );
+    assert!(
+        !so_alt.contains(def_ts),
+        "alt listing leaked default ts:\n{so_alt}"
+    );
+    assert!(
+        so_alt.contains("Total: 1 backups"),
+        "alt listing wrong total:\n{so_alt}"
+    );
+}
