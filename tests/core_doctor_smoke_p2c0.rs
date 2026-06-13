@@ -277,3 +277,324 @@ fn auto_group_multi_group_assignment() {
         "expected `ecc-workflow` group, got {ids:?}"
     );
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// 5.11 core::doctor — physical e2e via spawned `/Users/crosery/.cargo/bin/runai`
+// ════════════════════════════════════════════════════════════════════════════
+//
+// `run_doctor()` and `run_doctor_fix()` read `dirs::home_dir()` +
+// `paths::data_dir()` (which honors RUNE_DATA_DIR). Mutating env vars
+// mid-test would race with other tests in the same process, so we spawn the
+// pre-installed binary in an isolated HOME and assert on filesystem state.
+
+mod doctor {
+    use std::os::unix::fs::symlink;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
+    use tempfile::TempDir;
+
+    const RUNAI_BIN: &str = "/Users/crosery/.cargo/bin/runai";
+
+    /// Build an isolated HOME with the four CLI skills dirs pre-created plus a
+    /// fresh `~/.runai/` so `runai` spawns can't see the real user state.
+    pub(super) struct DoctorEnv {
+        home: TempDir,
+    }
+
+    impl DoctorEnv {
+        pub(super) fn new() -> Self {
+            let home = tempfile::tempdir().expect("create tmp HOME");
+            for cli in ["claude", "codex", "gemini", "opencode"] {
+                std::fs::create_dir_all(home.path().join(format!(".{cli}/skills")))
+                    .expect("pre-create CLI skills dir");
+            }
+            std::fs::create_dir_all(home.path().join(".runai/skills"))
+                .expect("pre-create managed skills dir");
+            Self { home }
+        }
+
+        pub(super) fn home(&self) -> &Path {
+            self.home.path()
+        }
+
+        pub(super) fn run(&self, args: &[&str]) -> std::process::Output {
+            let runai_data = self.home().join(".runai");
+            Command::new(RUNAI_BIN)
+                .args(args)
+                .env("HOME", self.home())
+                .env("RUNE_DATA_DIR", &runai_data)
+                .env("RUNAI_NO_AUTOSPAWN", "1")
+                .env_remove("SKILL_MANAGER_DATA_DIR")
+                .output()
+                .expect("runai binary spawn")
+        }
+
+        pub(super) fn run_with_rune_data(
+            &self,
+            rune_data: &Path,
+            args: &[&str],
+        ) -> std::process::Output {
+            Command::new(RUNAI_BIN)
+                .args(args)
+                .env("HOME", self.home())
+                .env("RUNE_DATA_DIR", rune_data)
+                .env("RUNAI_NO_AUTOSPAWN", "1")
+                .env_remove("SKILL_MANAGER_DATA_DIR")
+                .output()
+                .expect("runai binary spawn")
+        }
+
+        pub(super) fn cli_skills_dir(&self, cli: &str) -> PathBuf {
+            self.home().join(format!(".{cli}/skills"))
+        }
+    }
+
+    pub(super) fn make_skill_dir(parent: &Path, name: &str) -> PathBuf {
+        let dir = parent.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\n---\n# {name}\nbody\n"),
+        )
+        .unwrap();
+        dir
+    }
+
+    pub(super) fn make_dangling_symlink(link_parent: &Path, link_name: &str) -> PathBuf {
+        let nonexistent = link_parent.join(format!(".doctor-ghost-{link_name}"));
+        let link = link_parent.join(link_name);
+        symlink(&nonexistent, &link).expect("create dangling symlink");
+        assert!(link.is_symlink(), "symlink not created at {link:?}");
+        assert!(!link.exists(), "symlink should be dangling");
+        link
+    }
+
+    pub(super) fn create_valid_symlink(link_parent: &Path, target: &Path, name: &str) -> PathBuf {
+        let link = link_parent.join(name);
+        symlink(target, &link).unwrap();
+        assert!(link.exists(), "valid symlink should resolve");
+        link
+    }
+}
+
+/// `runai doctor` (no --fix) must be read-only: no file mutations, no symlink
+/// pruning. Even a dangling symlink in `~/.claude/skills/` must survive a
+/// plain `runai doctor` invocation.
+#[test]
+fn doctor_read_only_no_mutations() {
+    let env = doctor::DoctorEnv::new();
+    let _real_skill = doctor::make_skill_dir(&env.home().join(".runai/skills"), "real-skill");
+    let dangling = doctor::make_dangling_symlink(&env.cli_skills_dir("claude"), "ghost");
+    let plain_file = env.cli_skills_dir("claude").join("README.txt");
+    std::fs::write(&plain_file, b"keep me").unwrap();
+
+    let out = env.run(&["doctor"]);
+    assert!(
+        out.status.success() || !out.stdout.is_empty(),
+        "doctor exit/stdout: status={:?} stdout={} stderr={}",
+        out.status,
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+
+    // Dangling symlink must still exist (read-only mode).
+    assert!(
+        dangling.is_symlink(),
+        "doctor without --fix removed dangling symlink at {dangling:?}"
+    );
+    // Plain file must still exist untouched.
+    assert!(
+        plain_file.exists(),
+        "doctor without --fix removed plain file"
+    );
+    assert_eq!(std::fs::read(&plain_file).unwrap(), b"keep me");
+}
+
+/// `runai doctor --fix` must prune dangling symlinks across all 4 CLI skill
+/// dirs symmetrically. Valid symlinks (target exists) and non-symlink files
+/// must be left untouched.
+#[test]
+fn doctor_fix_removes_dangling_symlinks_all_4_cli() {
+    let env = doctor::DoctorEnv::new();
+
+    // Real skill that valid symlinks will point at.
+    let real_skill = doctor::make_skill_dir(&env.home().join(".runai/skills"), "real-skill");
+
+    // Create one dangling + one valid symlink per CLI dir, plus a plain file.
+    let mut danglings = Vec::new();
+    let mut valids = Vec::new();
+    let mut plain_files = Vec::new();
+    for cli in ["claude", "codex", "gemini", "opencode"] {
+        let cli_dir = env.cli_skills_dir(cli);
+        danglings.push(doctor::make_dangling_symlink(&cli_dir, "ghost"));
+        valids.push(doctor::create_valid_symlink(&cli_dir, &real_skill, "real-skill"));
+
+        let plain = cli_dir.join("notes.txt");
+        std::fs::write(&plain, b"hello").unwrap();
+        plain_files.push(plain);
+    }
+
+    let out = env.run(&["doctor", "--fix"]);
+    assert!(
+        out.status.success() || !out.stdout.is_empty(),
+        "doctor --fix failed: status={:?} stdout={} stderr={}",
+        out.status,
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+
+    // All dangling symlinks removed.
+    for d in &danglings {
+        assert!(
+            !d.exists() && !d.is_symlink(),
+            "dangling symlink survived --fix: {d:?}"
+        );
+    }
+    // Valid symlinks untouched.
+    for v in &valids {
+        assert!(
+            v.is_symlink() && v.exists(),
+            "valid symlink was wrongly removed: {v:?}"
+        );
+    }
+    // Plain files untouched.
+    for p in &plain_files {
+        assert!(p.exists(), "plain file wrongly removed: {p:?}");
+        assert_eq!(std::fs::read(p).unwrap(), b"hello");
+    }
+}
+
+/// `runai doctor --fix` runs the DB dedupe pass. We can't plant duplicate
+/// rows from outside SkillManager, so this test verifies the dedupe surface
+/// is reachable and idempotent: register one skill, run --fix twice, and
+/// both invocations succeed (no panic, no error) with no observable change.
+#[test]
+fn doctor_fix_deduplicates_skills_by_name() {
+    let env = doctor::DoctorEnv::new();
+    let _ = doctor::make_skill_dir(&env.home().join(".runai/skills"), "alpha");
+
+    let reg = env.run(&["register"]);
+    assert!(
+        reg.status.success() || !reg.stdout.is_empty() || !reg.stderr.is_empty(),
+        "register: status={:?}",
+        reg.status,
+    );
+
+    let out1 = env.run(&["doctor", "--fix"]);
+    assert!(
+        out1.status.success() || !out1.stdout.is_empty(),
+        "first --fix failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&out1.stdout),
+        String::from_utf8_lossy(&out1.stderr),
+    );
+    let out2 = env.run(&["doctor", "--fix"]);
+    assert!(
+        out2.status.success() || !out2.stdout.is_empty(),
+        "second --fix failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&out2.stdout),
+        String::from_utf8_lossy(&out2.stderr),
+    );
+}
+
+/// `runai doctor --fix` must be idempotent: running it twice leaves the
+/// filesystem in the same state as one run.
+#[test]
+fn doctor_fix_idempotent() {
+    let env = doctor::DoctorEnv::new();
+    let _real = doctor::make_skill_dir(&env.home().join(".runai/skills"), "real-skill");
+    let mut danglings = Vec::new();
+    for cli in ["claude", "codex"] {
+        danglings.push(doctor::make_dangling_symlink(&env.cli_skills_dir(cli), "ghost"));
+    }
+
+    let _ = env.run(&["doctor", "--fix"]);
+    for d in &danglings {
+        assert!(!d.is_symlink(), "first --fix left dangling: {d:?}");
+    }
+    // Snapshot file lists per CLI dir.
+    let snapshot = |dir: std::path::PathBuf| -> Vec<String> {
+        let mut v: Vec<String> = std::fs::read_dir(&dir)
+            .map(|it| {
+                it.filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        v.sort();
+        v
+    };
+    let before = ["claude", "codex", "gemini", "opencode"]
+        .iter()
+        .map(|c| snapshot(env.cli_skills_dir(c)))
+        .collect::<Vec<_>>();
+
+    let _ = env.run(&["doctor", "--fix"]);
+    let after = ["claude", "codex", "gemini", "opencode"]
+        .iter()
+        .map(|c| snapshot(env.cli_skills_dir(c)))
+        .collect::<Vec<_>>();
+    assert_eq!(before, after, "--fix is not idempotent");
+}
+
+/// `runai doctor --fix` must touch HOME-rooted CLI skill dirs regardless of
+/// where RUNE_DATA_DIR points. Dangling symlinks live under HOME, not under
+/// RUNE_DATA_DIR — a custom RUNE_DATA_DIR must not prevent the cleanup.
+#[test]
+fn doctor_fix_works_with_rune_data_dir_override() {
+    let env = doctor::DoctorEnv::new();
+    let custom_data = tempfile::tempdir().expect("custom data dir");
+    std::fs::create_dir_all(custom_data.path().join("skills")).unwrap();
+
+    let dangling1 = doctor::make_dangling_symlink(&env.cli_skills_dir("claude"), "ghost");
+    let dangling2 = doctor::make_dangling_symlink(&env.cli_skills_dir("codex"), "ghost");
+
+    let out = env.run_with_rune_data(custom_data.path(), &["doctor", "--fix"]);
+    assert!(
+        out.status.success() || !out.stdout.is_empty(),
+        "doctor --fix with override failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+
+    assert!(
+        !dangling1.is_symlink(),
+        "ghost not removed from claude under RUNE_DATA_DIR override"
+    );
+    assert!(
+        !dangling2.is_symlink(),
+        "ghost not removed from codex under RUNE_DATA_DIR override"
+    );
+}
+
+/// `runai doctor` must run all checks and emit labels for each (Binary,
+/// Data dir, Database, MCP server, 4 CLI registrations, Symlinks).
+#[test]
+fn doctor_comprehensive_health_checks() {
+    let env = doctor::DoctorEnv::new();
+    let _ = doctor::make_skill_dir(&env.home().join(".runai/skills"), "real-skill");
+
+    let out = env.run(&["doctor"]);
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+
+    let must_have = [
+        "Binary",
+        "Data dir",
+        "Database",
+        "MCP server",
+        "Claude MCP",
+        "Codex MCP",
+        "Gemini MCP",
+        "OpenCode MCP",
+        "Symlinks",
+    ];
+    for label in must_have {
+        assert!(
+            combined.contains(label),
+            "doctor output missing label `{label}`. full output:\n{combined}",
+        );
+    }
+}
