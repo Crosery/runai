@@ -14,14 +14,27 @@
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::{Duration, Instant};
 
+use assert_cmd::cargo::CommandCargoExt;
 use tempfile::TempDir;
 
-const BIN: &str = "/Users/crosery/.cargo/bin/runai";
+/// Resolve the runai binary the test will spawn. We prefer the
+/// `cargo`-built worktree binary (via assert_cmd) over a system install
+/// so the binary's DB schema matches the lib this test links against —
+/// otherwise inserting `RouterEvent` rows via the lib could collide with
+/// a newer schema the binary expects. Falls back to the installed path
+/// if cargo metadata is unavailable for any reason.
+fn bin_path() -> PathBuf {
+    Command::cargo_bin("runai")
+        .ok()
+        .and_then(|c| c.get_program().to_os_string().into_string().ok())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/Users/crosery/.cargo/bin/runai"))
+}
 
 // Each test grabs a unique port to avoid stomping on parallel test runs
 // or the user's real dashboard. We probe a freshly-bound ephemeral port,
@@ -46,7 +59,7 @@ impl ServerHandle {
         let home = tempfile::tempdir().expect("tmp HOME");
         std::fs::create_dir_all(home.path().join(".runai")).unwrap();
         let port = pick_port();
-        let child = Command::new(BIN)
+        let child = Command::new(bin_path())
             .args([
                 "server",
                 "--port",
@@ -151,12 +164,13 @@ fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
         .map(|(_, v)| v.as_str())
 }
 
-// Helper: confirm a CLI binary exists; otherwise abort the test (not a
-// failure — the harness path is the contract).
+// Helper: confirm the binary that will be spawned exists.
 fn ensure_bin() {
+    let p = bin_path();
     assert!(
-        Path::new(BIN).exists(),
-        "expected runai binary at {BIN} (rebuild + cargo install if missing)"
+        Path::new(&p).exists(),
+        "expected runai binary at {} (cargo build it first)",
+        p.display()
     );
 }
 
@@ -360,6 +374,136 @@ fn app_js_immutable_after_restart() {
     assert_eq!(
         body1, body2,
         "/app.js body byte-identical across server restarts (immutable per binary)"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// §4.4 GET /api/summary
+// ─────────────────────────────────────────────────────────────────────
+//
+// Plan items 4.4.3 (`summary_requires_auth_after_user_registration`)
+// and 4.4.4 (`summary_tenant_isolation_non_admin`) are SKIPPED here:
+// the cloud HEAD this test runs against has no `users` table, no
+// `/auth/login` endpoint, and no auth gate on `/api/summary` (see
+// `src/server.rs` route table). Implementing those tests would require
+// src changes, which the test plan forbids in this chunk.
+
+#[test]
+fn summary_empty_server() {
+    ensure_bin();
+    let server = ServerHandle::start();
+    let (status, headers, body) = server.get("/api/summary").expect("GET /api/summary");
+    assert_eq!(status, 200, "cold-server status");
+    let ct = header(&headers, "content-type").expect("content-type header");
+    assert!(
+        ct.starts_with("application/json"),
+        "content-type starts with application/json, got {ct}"
+    );
+    let v: serde_json::Value =
+        serde_json::from_slice(&body).expect("response body is valid JSON");
+    assert_eq!(v["total"].as_i64(), Some(0), "total is 0");
+    assert_eq!(v["hits"].as_i64(), Some(0), "hits is 0");
+    assert_eq!(v["errors"].as_i64(), Some(0), "errors is 0");
+    let hr = v["hit_rate"].as_f64().expect("hit_rate is a number");
+    assert!(hr.abs() < f64::EPSILON, "hit_rate is 0.0, got {hr}");
+    assert!(
+        v["avg_latency_ms"].is_null(),
+        "avg_latency_ms is null on empty server, got {:?}",
+        v["avg_latency_ms"]
+    );
+    let apt = v["avg_prompt_tokens"].as_f64().expect("avg_prompt_tokens");
+    assert!(apt.abs() < f64::EPSILON, "avg_prompt_tokens is 0.0, got {apt}");
+    assert_eq!(v["total_tokens"].as_i64(), Some(0), "total_tokens is 0");
+    let pm = v["per_model"].as_array().expect("per_model is an array");
+    assert!(pm.is_empty(), "per_model is empty, got {pm:?}");
+}
+
+#[test]
+fn summary_filters_by_hours_rolling_window() {
+    ensure_bin();
+    let server = ServerHandle::start();
+
+    // Insert three router_events directly into the spawned server's DB
+    // (same RUNE_DATA_DIR) via the lib's Database API. The spawned
+    // binary is the cargo-built worktree binary (see `bin_path()`), so
+    // its schema and our lib's schema match by construction.
+    let db_path = server._home.path().join(".runai").join("runai.db");
+    // wait a beat for axum to finish migrating the DB on its side; the
+    // file should already exist after wait_ready() returned.
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !db_path.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        db_path.exists(),
+        "expected DB file at {} after server boot",
+        db_path.display()
+    );
+
+    let now = chrono::Utc::now().timestamp();
+    let two_hrs_ago = now - 2 * 3600;
+    let three_days_ago = now - 3 * 86400;
+    let timestamps = [now, two_hrs_ago, three_days_ago];
+
+    {
+        let db = runai::core::db::Database::open(&db_path).expect("open db via lib");
+        for (i, ts) in timestamps.iter().enumerate() {
+            let ev = runai::core::db::RouterEvent {
+                id: None,
+                ts: *ts,
+                provider: "test".to_string(),
+                model: "test-model".to_string(),
+                prompt_tokens: 10,
+                completion_tokens: 5,
+                reasoning_tokens: 0,
+                total_tokens: 15,
+                cache_hit_tokens: 0,
+                cache_miss_tokens: 0,
+                latency_ms: 100,
+                chosen_skills_json: "[]".to_string(),
+                candidate_count: 1,
+                status: "ok".to_string(),
+                error_msg: None,
+                session_id: format!("sess-{i}"),
+                mode: "exclusive".to_string(),
+                user_prompt: format!("p{i}"),
+                cwd: "/tmp".to_string(),
+                bm25_kept: 1,
+                llm_raw_response: String::new(),
+                hook_output: String::new(),
+                llm_input: String::new(),
+            };
+            db.insert_router_event(&ev)
+                .expect("insert router event into spawned server DB");
+        }
+    }
+
+    let fetch_total = |q: &str| -> i64 {
+        let (st, _, body) = server.get(q).expect("GET /api/summary");
+        assert_eq!(st, 200, "{q} status");
+        let v: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        v["total"]
+            .as_i64()
+            .unwrap_or_else(|| panic!("{q} total missing: {v:?}"))
+    };
+
+    let h24 = fetch_total("/api/summary?hours=24");
+    let h72 = fetch_total("/api/summary?hours=72");
+    let h1 = fetch_total("/api/summary?hours=1");
+
+    assert_eq!(
+        h24, 2,
+        "?hours=24 sees now + (now - 2h), not (now - 3d); got {h24}"
+    );
+    assert_eq!(h72, 3, "?hours=72 sees all 3 events; got {h72}");
+    assert_eq!(h1, 1, "?hours=1 sees only the just-inserted event; got {h1}");
+    assert!(
+        h24 >= h1,
+        "monotonic: shrinking the window must not raise total ({h24} >= {h1})"
+    );
+    assert!(
+        h72 >= h24,
+        "monotonic: growing the window must not lower total ({h72} >= {h24})"
     );
 }
 
