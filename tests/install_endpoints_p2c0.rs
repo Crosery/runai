@@ -275,3 +275,59 @@ fn install_preserves_non_loopback_hostname() {
         "non-loopback Host must not be rewritten to loopback, got: {url_line}"
     );
 }
+
+// ----- 4.16 GET /uninstall ----------------------------------------------
+
+#[test]
+fn uninstall_owner_mode_returns_empty_404() {
+    let server = spawn_server("owner");
+    let (status, _ct, content_len, body) = http_get(server.port, "/uninstall", None);
+    assert_eq!(status, 404, "owner mode must 404 /uninstall");
+    assert!(
+        body.is_empty(),
+        "owner-mode /uninstall body must be empty (PLANNING §1.2: anti-explore), got {} bytes",
+        body.len()
+    );
+    assert_eq!(
+        content_len, 0,
+        "owner-mode /uninstall must advertise Content-Length: 0"
+    );
+}
+
+#[test]
+fn uninstall_team_mode_returns_removal_script() {
+    let server = spawn_server("team");
+    let (status, ct, _len, body) = http_get(server.port, "/uninstall", None);
+    assert_eq!(status, 200, "team mode /uninstall must 200");
+    assert!(
+        ct.contains("text/x-shellscript"),
+        "team mode /uninstall must return shellscript content-type, got: {ct}"
+    );
+    let body_str = String::from_utf8_lossy(&body);
+    assert!(
+        body_str.starts_with("#!"),
+        "uninstall script must start with shebang"
+    );
+    // The uninstall script must reference the hook it removes.
+    let mentions_hook = body_str.contains(".runai-hook.sh")
+        || body_str.contains("settings.json")
+        || body_str.contains("UserPromptSubmit");
+    assert!(
+        mentions_hook,
+        "uninstall script must reference .runai-hook.sh / settings.json / UserPromptSubmit"
+    );
+    // Smoke-check: a syntactically broken remote-shipped script is a
+    // release blocker; `bash -n` parses without executing.
+    let tmp = tempfile::tempdir().expect("mktemp tmpdir");
+    let path = tmp.path().join("uninstall.sh");
+    std::fs::write(&path, &body).expect("write uninstall.sh");
+    let status = Command::new("bash")
+        .arg("-n")
+        .arg(&path)
+        .status()
+        .expect("spawn bash -n");
+    assert!(
+        status.success(),
+        "uninstall script failed `bash -n` syntax check"
+    );
+}
