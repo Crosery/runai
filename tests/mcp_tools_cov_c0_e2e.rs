@@ -425,3 +425,173 @@ fn sm_create_group_validates_id() {
         "group add must resolve the id we just created"
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  sm_delete_group  (src/mcp/tools/server.rs:423 — `fn sm_delete_group(...)`)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// `sm_delete_group` removes the `<groups_dir>/<id>.toml` file. After
+/// deletion the group must not appear in `group list` anymore.
+#[test]
+fn sm_delete_group_removes_toml() {
+    let env = CovEnv::new();
+    assert!(
+        env.run(&[
+            "group",
+            "create",
+            "cov-del",
+            "--name",
+            "Cov Del",
+            "--description",
+            "to be deleted",
+        ])
+        .status
+        .success(),
+        "preflight: create must succeed"
+    );
+    let toml_path = env.groups_dir().join("cov-del.toml");
+    assert!(toml_path.exists(), "preflight: TOML must exist");
+
+    let del = env.run(&["group", "delete", "cov-del"]);
+    dump(&del, "group delete cov-del");
+    assert!(del.status.success(), "delete must succeed");
+
+    assert!(
+        !toml_path.exists(),
+        "TOML at {} must be gone after delete",
+        toml_path.display()
+    );
+
+    let list = env.run(&["group", "list"]);
+    dump(&list, "group list after delete");
+    assert!(list.status.success());
+    let listing = String::from_utf8_lossy(&list.stdout);
+    assert!(
+        !listing.contains("cov-del"),
+        "deleted group must not appear in list: {listing}"
+    );
+}
+
+/// `sm_delete_group` on a name that doesn't exist must surface a "not
+/// found" signal — non-zero exit OR a message mentioning "not found" /
+/// "no such" / the group name. It must NEVER delete some other unrelated
+/// TOML by accident.
+#[test]
+fn sm_delete_group_handles_missing() {
+    let env = CovEnv::new();
+    // Seed an unrelated group so we can prove non-target groups survive.
+    assert!(
+        env.run(&[
+            "group",
+            "create",
+            "untouched",
+            "--name",
+            "Untouched",
+            "--description",
+            "anchor",
+        ])
+        .status
+        .success()
+    );
+    let untouched_path = env.groups_dir().join("untouched.toml");
+    let before = std::fs::read_to_string(&untouched_path).unwrap();
+
+    let out = env.run(&["group", "delete", "no-such-group"]);
+    dump(&out, "group delete no-such-group");
+
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let lower = combined.to_lowercase();
+    let signalled = !out.status.success()
+        || lower.contains("not found")
+        || lower.contains("no such")
+        || lower.contains("no-such-group");
+    assert!(
+        signalled,
+        "delete of missing group must signal absence: {combined}"
+    );
+
+    // Untouched group is still intact.
+    assert!(
+        untouched_path.exists(),
+        "unrelated group TOML must survive missing-name delete"
+    );
+    let after = std::fs::read_to_string(&untouched_path).unwrap();
+    assert_eq!(
+        before, after,
+        "unrelated group's TOML bytes must be byte-identical"
+    );
+}
+
+/// `sm_delete_group` removes the TOML only — it does NOT delete the
+/// group's member resources. This is the explicit MCP-tool description
+/// guarantee ("does not delete its members").
+#[test]
+fn sm_delete_group_preserves_members() {
+    let env = CovEnv::new();
+    // Two member skills to anchor the test.
+    make_skill(&env.skills_root(), "member-keep-a");
+    make_skill(&env.skills_root(), "member-keep-b");
+    assert!(env.run(&["scan"]).status.success(), "scan must succeed");
+
+    assert!(
+        env.run(&[
+            "group",
+            "create",
+            "cov-preserve",
+            "--name",
+            "Cov Preserve",
+            "--description",
+            "members must survive",
+        ])
+        .status
+        .success()
+    );
+    for n in ["member-keep-a", "member-keep-b"] {
+        let add = env.run(&[
+            "group",
+            "add",
+            "cov-preserve",
+            n,
+            "--resource-type",
+            "skill",
+        ]);
+        dump(&add, &format!("group add cov-preserve {n}"));
+        assert!(add.status.success(), "preflight: group add {n} must work");
+    }
+
+    let del = env.run(&["group", "delete", "cov-preserve"]);
+    dump(&del, "group delete cov-preserve");
+    assert!(del.status.success(), "delete must succeed");
+    assert!(
+        !env.groups_dir().join("cov-preserve.toml").exists(),
+        "group TOML must be gone"
+    );
+
+    // Member skills survive on disk.
+    for n in ["member-keep-a", "member-keep-b"] {
+        let skill_md = env.skills_root().join(n).join("SKILL.md");
+        assert!(
+            skill_md.exists(),
+            "member skill file {} must survive group deletion",
+            skill_md.display()
+        );
+        let body = std::fs::read_to_string(&skill_md).unwrap();
+        assert!(body.contains(n), "member SKILL.md bytes must be intact");
+    }
+
+    // Member skills still listed by `runai list` (i.e. still in the DB).
+    let list = env.run(&["list"]);
+    dump(&list, "list after group delete");
+    assert!(list.status.success());
+    let listing = String::from_utf8_lossy(&list.stdout);
+    for n in ["member-keep-a", "member-keep-b"] {
+        assert!(
+            listing.contains(n),
+            "member {n} must still appear in `list`: {listing}"
+        );
+    }
+}
