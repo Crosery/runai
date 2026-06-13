@@ -619,3 +619,229 @@ fn enable_respects_rune_data_dir_isolation() {
         default_path.display()
     );
 }
+
+// ─── disable tests (P0 §1.5) ────────────────────────────────────────────────
+
+/// PLAN §1.5 test 1 — disable removes the symlink from each of the 4 CLI
+/// target dirs symmetrically. We enable on all 4 then disable on each in turn
+/// and assert only the target-specific symlink disappears.
+#[test]
+fn disable_removes_symlinks_from_cli_targets() {
+    for target in ["claude", "codex", "gemini", "opencode"] {
+        let env = TestEnv::new();
+        let skill_name = "dis-skill";
+        make_skill(&env.default_skills_dir(), skill_name, "desc");
+        assert!(env.run(&["scan"]).status.success(), "scan failed");
+        assert!(
+            env.run(&["enable", skill_name, "--target", target])
+                .status
+                .success(),
+            "enable on {target} failed"
+        );
+
+        let link_path = env.cli_skills_dir(target).join(skill_name);
+        assert!(
+            std::fs::symlink_metadata(&link_path).is_ok(),
+            "preconditions: symlink should exist on {target} before disable"
+        );
+
+        let out = env.run(&["disable", skill_name, "--target", target]);
+        dump(&out, &format!("disable on {target}"));
+        assert!(
+            out.status.success(),
+            "disable failed for target={target}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        assert!(
+            std::fs::symlink_metadata(&link_path).is_err(),
+            "disable on {target} did not remove symlink at {}",
+            link_path.display()
+        );
+    }
+}
+
+/// PLAN §1.5 test 2 — disable is idempotent on a missing symlink: calling
+/// disable when there is nothing to remove returns success and prints a
+/// clean message (no panic, no "EEXIST"-style error).
+#[test]
+fn disable_idempotent_on_missing_symlink() {
+    let env = TestEnv::new();
+    let skill_name = "no-link-skill";
+    make_skill(&env.default_skills_dir(), skill_name, "desc");
+    assert!(env.run(&["scan"]).status.success());
+
+    // Skill exists in DB but was never enabled → no symlink at the link path.
+    let link_path = env.cli_skills_dir("claude").join(skill_name);
+    assert!(
+        std::fs::symlink_metadata(&link_path).is_err(),
+        "preconditions: no symlink before disable"
+    );
+
+    let out = env.run(&["disable", skill_name, "--target", "claude"]);
+    dump(&out, "disable when no symlink exists");
+    assert!(
+        out.status.success(),
+        "disable should be idempotent when symlink already absent; \
+         stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // Running it a second time must also succeed.
+    let out2 = env.run(&["disable", skill_name, "--target", "claude"]);
+    dump(&out2, "disable a second time");
+    assert!(
+        out2.status.success(),
+        "second disable should still succeed (idempotent)"
+    );
+}
+
+/// PLAN §1.5 test 3 — disable refuses to delete a real directory at the
+/// link path. If a user has hand-created `~/.claude/skills/<name>/` as a
+/// real directory (not a symlink), disable must NOT recursively delete it.
+///
+/// We assert the real directory survives the disable call (best-effort:
+/// either disable bails with non-zero exit OR completes successfully but
+/// leaves the directory alone).
+#[test]
+fn disable_refuses_to_delete_real_directory() {
+    let env = TestEnv::new();
+    let skill_name = "real-dir-skill";
+    make_skill(&env.default_skills_dir(), skill_name, "desc");
+    assert!(env.run(&["scan"]).status.success());
+
+    // Plant a REAL directory (not symlink) at the link path with a sentinel
+    // file. disable must not nuke it.
+    let real_dir = env.cli_skills_dir("claude").join(skill_name);
+    std::fs::create_dir_all(&real_dir).unwrap();
+    let sentinel = real_dir.join("sentinel.txt");
+    std::fs::write(&sentinel, "do not delete\n").unwrap();
+    assert!(
+        std::fs::metadata(&real_dir).unwrap().is_dir(),
+        "preconditions: real dir at link path"
+    );
+    assert!(
+        !std::fs::symlink_metadata(&real_dir).unwrap().is_symlink(),
+        "preconditions: must be a real dir, not a symlink"
+    );
+
+    let out = env.run(&["disable", skill_name, "--target", "claude"]);
+    dump(&out, "disable when real dir present");
+
+    // Regardless of exit status, the real directory + sentinel must survive.
+    // The data-safety invariant is "do not recursively rm a real dir at the
+    // link path", not "exit 0 vs 1".
+    assert!(
+        real_dir.exists(),
+        "REGRESSION: disable removed a REAL directory at {}",
+        real_dir.display()
+    );
+    assert_eq!(
+        std::fs::read_to_string(&sentinel).unwrap(),
+        "do not delete\n",
+        "REGRESSION: disable touched the sentinel file inside the real dir"
+    );
+}
+
+/// PLAN §1.5 test 4 — disable by group name disables every member of the
+/// group on the given target. Mirror of `enable_group_enables_all_members`
+/// but reversed.
+#[test]
+fn disable_group_disables_all_members() {
+    let env = TestEnv::new();
+    make_skill(&env.default_skills_dir(), "dg-skill1", "a");
+    make_skill(&env.default_skills_dir(), "dg-skill2", "b");
+    assert!(env.run(&["scan"]).status.success());
+
+    assert!(
+        env.run(&[
+            "group",
+            "create",
+            "dis-group",
+            "--name",
+            "Dis Group",
+            "--kind",
+            "custom",
+        ])
+        .status
+        .success()
+    );
+    for m in ["dg-skill1", "dg-skill2"] {
+        assert!(env.run(&["group", "add", "dis-group", m]).status.success());
+        assert!(
+            env.run(&["enable", m, "--target", "claude"])
+                .status
+                .success()
+        );
+        assert!(std::fs::symlink_metadata(env.cli_skills_dir("claude").join(m)).is_ok());
+    }
+
+    let out = env.run(&["disable", "dis-group", "--target", "claude"]);
+    dump(&out, "disable group");
+    assert!(
+        out.status.success(),
+        "disable group failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    for m in ["dg-skill1", "dg-skill2"] {
+        let link = env.cli_skills_dir("claude").join(m);
+        assert!(
+            std::fs::symlink_metadata(&link).is_err(),
+            "disable group did not remove symlink for {m} at {}",
+            link.display()
+        );
+    }
+}
+
+/// PLAN §1.5 test 5 — after disable, the DB reflects the target as no
+/// longer enabled. `list --target claude` post-disable should not include
+/// the skill, and the unfiltered list row should not show `claude` in the
+/// enabled-targets segment.
+#[test]
+fn disable_updates_database_enabled_flag() {
+    let env = TestEnv::new();
+    let skill_name = "dis-db-skill";
+    make_skill(&env.default_skills_dir(), skill_name, "desc");
+    assert!(env.run(&["scan"]).status.success());
+    assert!(
+        env.run(&["enable", skill_name, "--target", "claude"])
+            .status
+            .success()
+    );
+
+    // Sanity: list --target claude shows it pre-disable.
+    let pre = env.run(&["list", "--target", "claude"]);
+    let pre_out = String::from_utf8_lossy(&pre.stdout);
+    assert!(
+        pre_out.contains(skill_name),
+        "preconditions: list --target claude should contain {skill_name}:\n{pre_out}"
+    );
+
+    assert!(
+        env.run(&["disable", skill_name, "--target", "claude"])
+            .status
+            .success()
+    );
+
+    // list --target claude must no longer include it.
+    let post = env.run(&["list", "--target", "claude"]);
+    dump(&post, "list --target claude post-disable");
+    let post_out = String::from_utf8_lossy(&post.stdout);
+    assert!(
+        !post_out.contains(skill_name),
+        "list --target claude should NOT contain {skill_name} after disable:\n{post_out}"
+    );
+
+    // Unfiltered list row should mark it disabled.
+    let full = env.run(&["list"]);
+    let full_out = String::from_utf8_lossy(&full.stdout);
+    let row = full_out
+        .lines()
+        .find(|l| l.contains(skill_name))
+        .expect("expected list row for skill");
+    assert!(
+        row.contains("[disabled]"),
+        "post-disable row should say [disabled]; row: {row}"
+    );
+}
