@@ -1,6 +1,6 @@
 //! Physical e2e regressions for the Skills/MCPs Enable/Disable Toggle
-//! feature described in `runai-158-test-plan.md §2.2` (Delete (Trash)
-//! scenarios are appended in a separate commit for §2.3).
+//! (§2.2) and Skills/MCPs Delete (Trash) (§2.3) features described in
+//! `runai-158-test-plan.md`.
 //!
 //! Tests spawn the real `runai` binary in an isolated `HOME` tempdir with
 //! `RUNE_DATA_DIR` / `SKILL_MANAGER_DATA_DIR` env explicitly cleared (or
@@ -112,7 +112,6 @@ fn write_claude_json_with_mcp(home: &Path, mcp_name: &str, command: &str, args: 
     .unwrap();
 }
 
-#[allow(dead_code)] // used by §2.3 Delete (Trash) tests appended in a follow-up commit
 fn write_codex_toml_with_mcp(home: &Path, mcp_name: &str, command: &str, args: &[&str]) {
     let codex_dir = home.join(".codex");
     std::fs::create_dir_all(&codex_dir).unwrap();
@@ -468,5 +467,461 @@ fn enable_respects_rune_data_dir_dual_run() {
         resolved2.parent().unwrap(),
         data_dir_1.path().join("skills"),
         "REGRESSION: skill2 leaked into data_dir_1"
+    );
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// §2.3 Skills/MCPs Delete (Trash)
+// ════════════════════════════════════════════════════════════════════════════
+
+/// §2.3 test 1 (adapted from TUI unit_in_module to CLI e2e): `runai uninstall`
+/// is trash-first — it moves the resource into trash, never permanently
+/// deletes. After uninstall, the original skill dir is gone but the trash
+/// payload exists and is listed by `runai trash list`.
+///
+/// The plan's `delete_skill_stages_confirmation` test verifies the TUI's
+/// ConfirmDelete intermediate state, which is internal to the TUI app and not
+/// reachable through the CLI binary. The trash-first contract — the load-
+/// bearing safety invariant the staging confirmation guards — IS observable
+/// here, so we cover it at the CLI surface.
+#[test]
+fn delete_skill_stages_confirmation_trash_first_contract() {
+    let env = TestEnv::new();
+    let skill_dir = env.default_skills_dir();
+    make_skill(&skill_dir, "stageme");
+    assert!(env.run(&["scan"]).status.success());
+
+    // Sanity: skill present in list.
+    let list = env.run(&["list"]);
+    dump(&list, "list before uninstall");
+    assert!(
+        String::from_utf8_lossy(&list.stdout).contains("stageme"),
+        "precondition: stageme missing from list"
+    );
+
+    let un = env.run(&["uninstall", "stageme"]);
+    dump(&un, "uninstall stageme");
+    assert!(un.status.success(), "uninstall failed");
+    // Output must mention "trash" so a user reading it knows the action
+    // is recoverable. ("moved to trash" is the current message; this asserts
+    // on the contract, not the exact phrasing.)
+    assert!(
+        String::from_utf8_lossy(&un.stdout)
+            .to_lowercase()
+            .contains("trash"),
+        "REGRESSION: uninstall did not signal trash-first to user"
+    );
+
+    // Skill dir gone from managed location.
+    assert!(
+        !skill_dir.join("stageme").exists(),
+        "REGRESSION: managed skill dir still present after uninstall"
+    );
+    // Trash entry exists.
+    let trash_list = env.run(&["trash", "list"]);
+    dump(&trash_list, "trash list");
+    assert!(
+        String::from_utf8_lossy(&trash_list.stdout).contains("stageme"),
+        "REGRESSION: stageme not in trash listing"
+    );
+    // Physical payload exists under ~/.runai/trash/.
+    let trash_root = env.home().join(".runai/trash");
+    let payload_present = std::fs::read_dir(&trash_root)
+        .map(|rd| {
+            rd.flatten().any(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .to_lowercase()
+                    .contains("stageme")
+            })
+        })
+        .unwrap_or(false);
+    assert!(
+        payload_present,
+        "REGRESSION: no stageme payload under ~/.runai/trash/"
+    );
+}
+
+/// §2.3 test 2: Confirm-delete (i.e. `runai uninstall`) moves the skill to
+/// trash, removes all symlinks across enabled targets, and removes the
+/// resource row from the live list. Trash payload retains the data for
+/// restore.
+#[test]
+fn confirm_delete_moves_to_trash_removes_symlinks() {
+    let env = TestEnv::new();
+    let skill_dir = env.default_skills_dir();
+    make_skill(&skill_dir, "deleteme");
+    assert!(env.run(&["scan"]).status.success());
+    assert!(
+        env.run(&["enable", "deleteme", "--target", "claude"])
+            .status
+            .success()
+    );
+    let claude_link = env.cli_skills_dir("claude").join("deleteme");
+    assert!(
+        std::fs::symlink_metadata(&claude_link).is_ok(),
+        "precondition: claude symlink should exist"
+    );
+
+    let un = env.run(&["uninstall", "deleteme"]);
+    dump(&un, "uninstall deleteme (enabled for claude)");
+    assert!(un.status.success(), "uninstall failed");
+
+    // Symlink gone.
+    assert!(
+        std::fs::symlink_metadata(&claude_link).is_err(),
+        "REGRESSION: claude symlink left after uninstall"
+    );
+    // Managed dir gone.
+    assert!(
+        !skill_dir.join("deleteme").exists(),
+        "REGRESSION: managed skill dir not moved out"
+    );
+    // Trash payload exists.
+    let trash_root = env.home().join(".runai/trash");
+    let any_payload = std::fs::read_dir(&trash_root)
+        .map(|rd| rd.flatten().any(|e| e.path().is_dir()))
+        .unwrap_or(false);
+    assert!(any_payload, "REGRESSION: no trash payload deposited");
+
+    // list output no longer mentions the skill (resource row removed from
+    // live list — it now lives under `trash list` only).
+    let list_after = env.run(&["list"]);
+    dump(&list_after, "list after uninstall");
+    let stdout = String::from_utf8_lossy(&list_after.stdout);
+    // The "list" output may include both skills and MCPs; we assert the
+    // managed skill name no longer appears as an enabled/disabled row. Use
+    // a strict word check to avoid coincidental substring hits.
+    let has_active_row = stdout.lines().any(|line| line.contains("deleteme"));
+    assert!(
+        !has_active_row,
+        "REGRESSION: 'deleteme' still in live list after uninstall:\n{}",
+        stdout
+    );
+
+    // Trash list contains it.
+    let trash_list = env.run(&["trash", "list"]);
+    assert!(
+        String::from_utf8_lossy(&trash_list.stdout).contains("deleteme"),
+        "REGRESSION: deleteme missing from trash list"
+    );
+}
+
+/// §2.3 test 3 (adapted from TUI unit_in_module): "cancel delete" means the
+/// user can choose NOT to call `runai uninstall`. The contract the TUI
+/// confirmation guards is: until you confirm, no filesystem changes occur.
+/// We assert this contract at the CLI surface by verifying that simply
+/// listing / inspecting does not mutate state, and that an aborted workflow
+/// leaves the skill fully intact and enabled.
+#[test]
+fn cancel_delete_clears_pending_and_returns_mode_no_mutation() {
+    let env = TestEnv::new();
+    let skill_dir = env.default_skills_dir();
+    make_skill(&skill_dir, "cancelme");
+    assert!(env.run(&["scan"]).status.success());
+    assert!(
+        env.run(&["enable", "cancelme", "--target", "claude"])
+            .status
+            .success()
+    );
+
+    let link = env.cli_skills_dir("claude").join("cancelme");
+    let managed = skill_dir.join("cancelme");
+    assert!(std::fs::symlink_metadata(&link).is_ok());
+    assert!(managed.exists());
+
+    // Operations that should NEVER mutate state — even when the user is
+    // visually "hovering" over the skill in the TUI. `list`, `status`,
+    // `trash list` all read-only.
+    assert!(env.run(&["list"]).status.success());
+    assert!(env.run(&["status"]).status.success());
+    assert!(env.run(&["trash", "list"]).status.success());
+
+    // After the read-only walk, the skill is still fully present and enabled.
+    assert!(
+        std::fs::symlink_metadata(&link).is_ok(),
+        "REGRESSION: read-only commands removed enable symlink"
+    );
+    assert!(
+        managed.exists(),
+        "REGRESSION: read-only commands removed managed dir"
+    );
+    // And no trash entry was created.
+    let trash_list = env.run(&["trash", "list"]);
+    let out = String::from_utf8_lossy(&trash_list.stdout);
+    assert!(
+        !out.contains("cancelme"),
+        "REGRESSION: cancelme appeared in trash without uninstall:\n{}",
+        out
+    );
+}
+
+/// §2.3 test 4: Deleting an MCP enabled on multiple targets removes the
+/// entries from every target's MCP config file and persists the canonical
+/// backup. Other targets' files remain valid JSON / TOML and their unrelated
+/// keys are untouched.
+#[test]
+fn delete_mcp_removes_from_all_targets_preserves_backup() {
+    let env = TestEnv::new();
+    // Seed the MCP in both claude and codex configs. (Gemini and OpenCode
+    // configs left absent — runai must tolerate missing target configs.)
+    write_claude_json_with_mcp(env.home(), "deleteme-mcp", "/usr/bin/echo", &["--mcp"]);
+    write_codex_toml_with_mcp(env.home(), "deleteme-mcp", "/usr/bin/echo", &["--mcp"]);
+
+    // Sanity: both targets have it before uninstall.
+    assert!(
+        read_claude_json(env.home())["mcpServers"]
+            .get("deleteme-mcp")
+            .is_some(),
+        "precondition: deleteme-mcp missing from .claude.json"
+    );
+    let codex_before = std::fs::read_to_string(env.home().join(".codex/config.toml")).unwrap();
+    assert!(
+        codex_before.contains("deleteme-mcp"),
+        "precondition: deleteme-mcp missing from codex config"
+    );
+
+    // `runai uninstall` works against the resource name; MCPs are auto-
+    // discovered, so a plain `uninstall deleteme-mcp` is the user-facing
+    // path here.
+    let un = env.run(&["uninstall", "deleteme-mcp"]);
+    dump(&un, "uninstall deleteme-mcp");
+    assert!(un.status.success(), "uninstall mcp failed");
+
+    // Claude config no longer carries the entry.
+    let after_claude = read_claude_json(env.home());
+    assert!(
+        after_claude["mcpServers"].get("deleteme-mcp").is_none(),
+        "REGRESSION: deleteme-mcp still in .claude.json after uninstall"
+    );
+    // Other claude keys preserved.
+    assert_eq!(after_claude["theme"], "dark");
+
+    // Codex config: still a valid TOML, no `deleteme-mcp` section.
+    let codex_after = std::fs::read_to_string(env.home().join(".codex/config.toml")).unwrap();
+    assert!(
+        !codex_after.contains("deleteme-mcp"),
+        "REGRESSION: deleteme-mcp still in codex config:\n{}",
+        codex_after
+    );
+    // TOML must still parse.
+    let _: toml::Value = codex_after
+        .parse()
+        .expect("codex config.toml became invalid TOML after uninstall");
+
+    // Trash entry exists.
+    let trash_list = env.run(&["trash", "list"]);
+    assert!(
+        String::from_utf8_lossy(&trash_list.stdout).contains("deleteme-mcp"),
+        "REGRESSION: deleteme-mcp missing from trash list"
+    );
+}
+
+/// §2.3 test 5: Restoring a skill from trash re-creates the managed dir and
+/// re-installs symlinks for the targets that were enabled at delete time.
+#[test]
+fn restore_from_trash_recreates_skill_and_symlinks() {
+    let env = TestEnv::new();
+    let skill_dir = env.default_skills_dir();
+    make_skill(&skill_dir, "restoreme");
+    assert!(env.run(&["scan"]).status.success());
+    assert!(
+        env.run(&["enable", "restoreme", "--target", "claude"])
+            .status
+            .success()
+    );
+    assert!(
+        env.run(&["enable", "restoreme", "--target", "codex"])
+            .status
+            .success()
+    );
+
+    let claude_link = env.cli_skills_dir("claude").join("restoreme");
+    let codex_link = env.cli_skills_dir("codex").join("restoreme");
+    assert!(std::fs::symlink_metadata(&claude_link).is_ok());
+    assert!(std::fs::symlink_metadata(&codex_link).is_ok());
+
+    let un = env.run(&["uninstall", "restoreme"]);
+    dump(&un, "uninstall restoreme (claude+codex enabled)");
+    assert!(un.status.success());
+
+    // Pre-restore state: managed dir gone, symlinks gone.
+    assert!(!skill_dir.join("restoreme").exists());
+    assert!(std::fs::symlink_metadata(&claude_link).is_err());
+    assert!(std::fs::symlink_metadata(&codex_link).is_err());
+
+    let restore = env.run(&["trash", "restore", "restoreme"]);
+    dump(&restore, "trash restore restoreme");
+    assert!(restore.status.success(), "restore failed");
+
+    // Managed dir recreated with SKILL.md intact.
+    let restored_managed = skill_dir.join("restoreme");
+    assert!(
+        restored_managed.exists(),
+        "REGRESSION: restore did not recreate managed dir"
+    );
+    assert!(
+        restored_managed.join("SKILL.md").exists(),
+        "REGRESSION: restored skill missing SKILL.md"
+    );
+
+    // Symlinks recreated for both targets the resource was enabled on.
+    let resolved_claude = std::fs::read_link(&claude_link).expect("claude link should exist");
+    assert_eq!(resolved_claude, restored_managed);
+    let resolved_codex = std::fs::read_link(&codex_link).expect("codex link should exist");
+    assert_eq!(resolved_codex, restored_managed);
+
+    // No longer in trash listing.
+    let trash_list = env.run(&["trash", "list"]);
+    let out = String::from_utf8_lossy(&trash_list.stdout);
+    assert!(
+        !out.contains("restoreme"),
+        "REGRESSION: trash still references restored skill:\n{}",
+        out
+    );
+}
+
+/// §2.3 test 6: Purging a trash entry permanently deletes its payload from
+/// disk and removes the trash entry from the DB. Restore is no longer
+/// possible after purge.
+#[test]
+fn purge_trash_permanently_deletes_payload() {
+    let env = TestEnv::new();
+    let skill_dir = env.default_skills_dir();
+    make_skill(&skill_dir, "purgeme");
+    assert!(env.run(&["scan"]).status.success());
+    assert!(env.run(&["uninstall", "purgeme"]).status.success());
+
+    // Capture pre-purge payload path: any dir under ~/.runai/trash/ whose
+    // name contains "purgeme" qualifies.
+    let trash_root = env.home().join(".runai/trash");
+    let payload_dir = std::fs::read_dir(&trash_root)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| {
+            p.file_name()
+                .map(|n| n.to_string_lossy().contains("purgeme"))
+                .unwrap_or(false)
+        })
+        .expect("pre-purge: trash payload dir for purgeme should exist");
+    assert!(payload_dir.exists());
+
+    let purge = env.run(&["trash", "purge", "purgeme"]);
+    dump(&purge, "trash purge purgeme");
+    assert!(purge.status.success(), "purge failed");
+
+    // Payload dir gone.
+    assert!(
+        !payload_dir.exists(),
+        "REGRESSION: purge left payload dir at {}",
+        payload_dir.display()
+    );
+    // Trash list no longer mentions it.
+    let trash_list = env.run(&["trash", "list"]);
+    let out = String::from_utf8_lossy(&trash_list.stdout);
+    assert!(
+        !out.contains("purgeme"),
+        "REGRESSION: purgeme still in trash list after purge:\n{}",
+        out
+    );
+    // Restore after purge MUST fail (no entry to restore from).
+    let restore = env.run(&["trash", "restore", "purgeme"]);
+    dump(&restore, "trash restore purgeme (after purge)");
+    assert!(
+        !restore.status.success(),
+        "REGRESSION: restore succeeded after purge"
+    );
+}
+
+/// §2.3 test 7: Delete/restore must respect `RUNE_DATA_DIR` boundaries —
+/// trash payloads from data_dir_1 must NOT spill into data_dir_2, and a
+/// restore run with `RUNE_DATA_DIR=data_dir_1` must only see data_dir_1's
+/// trash entries. This is the AGENTS.md cross-data-dir invariant.
+#[test]
+fn trash_restore_respects_rune_data_dir_boundaries() {
+    let env = TestEnv::new();
+    let data_dir_1 = tempfile::tempdir().unwrap();
+    let data_dir_2 = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(data_dir_1.path().join("skills")).unwrap();
+    std::fs::create_dir_all(data_dir_2.path().join("skills")).unwrap();
+    make_skill(&data_dir_1.path().join("skills"), "skill1");
+    make_skill(&data_dir_2.path().join("skills"), "skill2");
+
+    assert!(
+        env.run_with_rune_data(data_dir_1.path(), &["scan"])
+            .status
+            .success()
+    );
+    assert!(
+        env.run_with_rune_data(data_dir_2.path(), &["scan"])
+            .status
+            .success()
+    );
+
+    // Uninstall skill1 with RUNE_DATA_DIR=data_dir_1.
+    let un1 = env.run_with_rune_data(data_dir_1.path(), &["uninstall", "skill1"]);
+    dump(&un1, "uninstall skill1 with data_dir_1");
+    assert!(un1.status.success());
+
+    // skill1 payload lives under data_dir_1/trash/, not data_dir_2/trash/.
+    let trash_dir_1 = data_dir_1.path().join("trash");
+    let trash_dir_2 = data_dir_2.path().join("trash");
+    let in_dd1 = std::fs::read_dir(&trash_dir_1)
+        .map(|rd| {
+            rd.flatten()
+                .any(|e| e.file_name().to_string_lossy().contains("skill1"))
+        })
+        .unwrap_or(false);
+    let in_dd2 = std::fs::read_dir(&trash_dir_2)
+        .map(|rd| {
+            rd.flatten()
+                .any(|e| e.file_name().to_string_lossy().contains("skill1"))
+        })
+        .unwrap_or(false);
+    assert!(
+        in_dd1,
+        "REGRESSION: skill1 trash payload did NOT land in data_dir_1/trash/"
+    );
+    assert!(
+        !in_dd2,
+        "REGRESSION: skill1 trash payload leaked into data_dir_2/trash/"
+    );
+
+    // Listing trash with RUNE_DATA_DIR=data_dir_1 shows skill1, NOT skill2.
+    let list1 = env.run_with_rune_data(data_dir_1.path(), &["trash", "list"]);
+    let out1 = String::from_utf8_lossy(&list1.stdout);
+    assert!(out1.contains("skill1"), "data_dir_1 trash missing skill1");
+    assert!(
+        !out1.contains("skill2"),
+        "REGRESSION: data_dir_1 trash list contains skill2 (cross-pollination)"
+    );
+
+    // Listing trash with RUNE_DATA_DIR=data_dir_2 shows neither (skill2 was
+    // never deleted; nothing in data_dir_2/trash).
+    let list2 = env.run_with_rune_data(data_dir_2.path(), &["trash", "list"]);
+    let out2 = String::from_utf8_lossy(&list2.stdout);
+    assert!(
+        !out2.contains("skill1"),
+        "REGRESSION: data_dir_2 trash list contains skill1 (cross-pollination)"
+    );
+
+    // Restore skill1 with data_dir_1 — recreates only inside data_dir_1/skills/.
+    let restore = env.run_with_rune_data(data_dir_1.path(), &["trash", "restore", "skill1"]);
+    dump(&restore, "trash restore skill1 with data_dir_1");
+    assert!(restore.status.success());
+
+    assert!(
+        data_dir_1.path().join("skills/skill1").exists(),
+        "REGRESSION: restore did not recreate skill1 in data_dir_1/skills/"
+    );
+    // data_dir_2/skills/ untouched.
+    assert!(
+        data_dir_2.path().join("skills/skill2").exists(),
+        "REGRESSION: restore on data_dir_1 mutated data_dir_2/skills/"
+    );
+    assert!(
+        !data_dir_2.path().join("skills/skill1").exists(),
+        "REGRESSION: restore on data_dir_1 created skill1 in data_dir_2/skills/"
     );
 }
