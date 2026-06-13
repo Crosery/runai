@@ -542,3 +542,137 @@ fn group_add_cross_data_dir_isolation() {
         "REGRESSION: default-skill leaked into alt-dir g2.toml"
     );
 }
+
+// ─── group remove ───────────────────────────────────────────────────────────
+
+/// §1.20 test 1 — physical_e2e `group_remove_deletes_from_db_and_toml`
+/// Removing a skill from a group drops the matching row from `group_members`
+/// AND retains() the member out of the TOML's member list. Success message
+/// names both resource and group.
+#[test]
+fn group_remove_deletes_from_db_and_toml() {
+    let env = TestEnv::new();
+
+    // Setup: skill + group + add.
+    make_skill(&env.default_skills_dir(), "rm-skill", "rm desc");
+    assert!(env.run(&["scan"]).status.success());
+    assert!(
+        env.run(&[
+            "group", "create", "g-rm", "--name", "Remove Group", "--kind", "custom"
+        ])
+        .status
+        .success()
+    );
+    assert!(
+        env.run(&["group", "add", "g-rm", "rm-skill"])
+            .status
+            .success()
+    );
+
+    // Sanity: precondition holds before remove.
+    assert_eq!(group_member_count(&env.default_db_path(), "g-rm"), 1);
+    let toml_before = std::fs::read_to_string(env.default_groups_dir().join("g-rm.toml")).unwrap();
+    assert!(
+        toml_before.contains("rm-skill"),
+        "precondition: TOML should list rm-skill before remove"
+    );
+
+    // Remove.
+    let out = env.run(&["group", "remove", "g-rm", "rm-skill"]);
+    dump(&out, "group remove rm-skill from g-rm");
+    assert!(out.status.success(), "group remove should succeed");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("rm-skill") && stdout.contains("g-rm"),
+        "expected message naming both resource + group, got:\n{stdout}"
+    );
+
+    // DB row gone.
+    assert_eq!(
+        group_member_count(&env.default_db_path(), "g-rm"),
+        0,
+        "REGRESSION: group_members row not removed from DB"
+    );
+
+    // TOML member retain()ed out.
+    let toml_after = std::fs::read_to_string(env.default_groups_dir().join("g-rm.toml")).unwrap();
+    assert!(
+        !toml_after.contains("rm-skill"),
+        "REGRESSION: rm-skill still present in TOML after remove. body:\n{toml_after}"
+    );
+}
+
+/// §1.20 test 2 — physical_e2e `group_remove_cross_data_dir`
+/// Cross RUNE_DATA_DIR: removing a member in one dir must not touch the
+/// other dir's group/member state. This is the root-cause invariant for
+/// the 4-20/4-27 incidents applied to group state.
+#[test]
+fn group_remove_cross_data_dir() {
+    let env = TestEnv::new();
+    let alt = tempfile::tempdir().expect("alt data dir");
+
+    // Default dir: skill1 → g1.
+    make_skill(&env.default_skills_dir(), "skill-d", "desc-d");
+    assert!(env.run(&["scan"]).status.success());
+    assert!(
+        env.run(&[
+            "group", "create", "g1", "--name", "G1", "--kind", "custom"
+        ])
+        .status
+        .success()
+    );
+    assert!(
+        env.run(&["group", "add", "g1", "skill-d"])
+            .status
+            .success()
+    );
+
+    // Alt dir: skill2 → g2.
+    let alt_skills = alt.path().join("skills");
+    std::fs::create_dir_all(&alt_skills).unwrap();
+    make_skill(&alt_skills, "skill-a", "desc-a");
+    assert!(
+        env.run_with_rune_data(alt.path(), &["scan"])
+            .status
+            .success()
+    );
+    assert!(
+        env.run_with_rune_data(
+            alt.path(),
+            &["group", "create", "g2", "--name", "G2", "--kind", "custom"]
+        )
+        .status
+        .success()
+    );
+    assert!(
+        env.run_with_rune_data(alt.path(), &["group", "add", "g2", "skill-a"])
+            .status
+            .success()
+    );
+
+    let alt_db = alt.path().join("runai.db");
+    assert_eq!(group_member_count(&env.default_db_path(), "g1"), 1);
+    assert_eq!(group_member_count(&alt_db, "g2"), 1);
+
+    // Remove only from default dir's g1.
+    let rm = env.run(&["group", "remove", "g1", "skill-d"]);
+    dump(&rm, "remove skill-d from g1 (default dir only)");
+    assert!(rm.status.success());
+
+    // Default dir: g1 now empty.
+    assert_eq!(group_member_count(&env.default_db_path(), "g1"), 0);
+    let g1_body = std::fs::read_to_string(env.default_groups_dir().join("g1.toml")).unwrap();
+    assert!(!g1_body.contains("skill-d"));
+
+    // Alt dir: untouched by the default-dir command.
+    assert_eq!(
+        group_member_count(&alt_db, "g2"),
+        1,
+        "REGRESSION: alt-dir g2 member dropped by default-dir remove"
+    );
+    let g2_body = std::fs::read_to_string(alt.path().join("groups/g2.toml")).unwrap();
+    assert!(
+        g2_body.contains("skill-a"),
+        "REGRESSION: alt-dir g2 TOML lost member after default-dir remove. body:\n{g2_body}"
+    );
+}
