@@ -228,3 +228,107 @@ fn sm_install_allows_at_symbol_for_branch() {
         "owner/repo@branch should not be rejected: {out}"
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// sm_market_install (5 tests)
+// ─────────────────────────────────────────────────────────────────────
+
+#[test]
+fn sm_market_install_single_skill_returns_command() {
+    let s = scratch();
+    let mut mcp = McpSession::new(s.path());
+    let out = mcp.call_tool(1, "sm_market_install", json!({"name": "my-skill"}));
+    assert!(
+        out.contains("Run this command via Bash tool:"),
+        "missing instruction header: {out}"
+    );
+    assert!(
+        out.contains("runai market-install my-skill"),
+        "missing market-install command: {out}"
+    );
+    // Single skill must not get the multi-skill "Then run: runai scan" tail.
+    assert!(
+        !out.contains("Then run: runai scan"),
+        "single-skill output should not include batch scan tail: {out}"
+    );
+    // And should not list multiple commands.
+    let cmd_count = out.matches("runai market-install ").count();
+    assert_eq!(
+        cmd_count, 1,
+        "single-skill output should contain exactly one command line: {out}"
+    );
+}
+
+#[test]
+fn sm_market_install_multiple_skills_returns_batch_commands() {
+    let s = scratch();
+    let mut mcp = McpSession::new(s.path());
+    let out = mcp.call_tool(
+        1,
+        "sm_market_install",
+        json!({"names": ["skill1", "skill2"]}),
+    );
+    assert!(
+        out.contains("runai market-install skill1"),
+        "missing first skill command: {out}"
+    );
+    assert!(
+        out.contains("runai market-install skill2"),
+        "missing second skill command: {out}"
+    );
+    assert!(
+        out.contains("one by one or with &&"),
+        "missing batch guidance: {out}"
+    );
+    assert!(
+        out.contains("Then run: runai scan"),
+        "missing scan tail: {out}"
+    );
+}
+
+#[test]
+fn sm_market_install_with_source_parameter() {
+    let s = scratch();
+    let mut mcp = McpSession::new(s.path());
+    let out = mcp.call_tool(
+        1,
+        "sm_market_install",
+        json!({"name": "skill1", "source": "anthropic/skills"}),
+    );
+    // Source must be single-quoted in the emitted shell command.
+    assert!(
+        out.contains("runai market-install skill1 --source 'anthropic/skills'"),
+        "source argument missing or not single-quoted: {out}"
+    );
+}
+
+#[test]
+fn sm_market_install_rejects_unsafe_args() {
+    let s = scratch();
+    let mut mcp = McpSession::new(s.path());
+    let out = mcp.call_tool(
+        1,
+        "sm_market_install",
+        json!({"name": "skill; rm -rf /"}),
+    );
+    assert!(out.contains("Invalid name"), "unsafe name not rejected: {out}");
+    assert!(
+        !out.contains("runai market-install skill;"),
+        "no command should be emitted for unsafe input: {out}"
+    );
+}
+
+#[test]
+fn sm_market_install_allows_slash_and_dash() {
+    let s = scratch();
+    let mut mcp = McpSession::new(s.path());
+    let out = mcp.call_tool(1, "sm_market_install", json!({"name": "org/skill-name"}));
+    assert!(
+        out.contains("runai market-install org/skill-name"),
+        "/ and - should be allowed in name: {out}"
+    );
+    assert!(
+        !out.contains("Invalid name"),
+        "org/skill-name should not be rejected: {out}"
+    );
+}
