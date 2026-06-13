@@ -483,3 +483,186 @@ fn register_ignores_rune_data_dir() {
         "RUNE_DATA_DIR must NOT contain .codex dir"
     );
 }
+
+// ─── 1.29 unregister CLI tests ──────────────────────────────────────────────
+
+/// 1.29 #1 — `runai unregister` removes the runai entry from all 4 CLI configs
+/// while preserving any other MCP entries the user had.
+#[test]
+fn unregister_removes_runai_from_all_configs() {
+    let home = TempDir::new().unwrap();
+
+    // Set up all four config files with both runai and a sibling "other" MCP.
+    std::fs::write(
+        home.path().join(".claude.json"),
+        r#"{"mcpServers":{"runai":{"command":"runai","args":["mcp-serve"]},"other":{"command":"foo"}}}"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(home.path().join(".gemini")).unwrap();
+    std::fs::write(
+        home.path().join(".gemini/settings.json"),
+        r#"{"mcpServers":{"runai":{"command":"runai","args":["mcp-serve"]},"other":{"command":"bar"}}}"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(home.path().join(".codex")).unwrap();
+    std::fs::write(
+        home.path().join(".codex/config.toml"),
+        r#"
+[mcp_servers.runai]
+type = "stdio"
+command = "runai"
+args = ["mcp-serve"]
+
+[mcp_servers.other]
+type = "stdio"
+command = "baz"
+"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(home.path().join(".config/opencode")).unwrap();
+    std::fs::write(
+        home.path().join(".config/opencode/opencode.json"),
+        r#"{"mcp":{"runai":{"command":["runai","mcp-serve"],"enabled":true,"type":"local"},"other":{"command":["bar","x"],"enabled":true,"type":"local"}}}"#,
+    )
+    .unwrap();
+
+    let out = run_in_home(home.path(), &["unregister"]);
+    assert!(
+        out.status.success(),
+        "runai unregister failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("Unregistered"),
+        "stdout should mention 'Unregistered', got: {stdout}"
+    );
+
+    // Claude: runai gone, other preserved.
+    let claude = read_json(&home.path().join(".claude.json"));
+    assert!(
+        claude["mcpServers"].get("runai").is_none()
+            || claude["mcpServers"]["runai"].is_null(),
+        "Claude runai entry should be removed"
+    );
+    assert!(
+        claude["mcpServers"]["other"].is_object(),
+        "Claude 'other' MCP should be preserved"
+    );
+
+    // Gemini: runai gone, other preserved.
+    let gemini = read_json(&home.path().join(".gemini/settings.json"));
+    assert!(
+        gemini["mcpServers"].get("runai").is_none()
+            || gemini["mcpServers"]["runai"].is_null(),
+        "Gemini runai entry should be removed"
+    );
+    assert!(
+        gemini["mcpServers"]["other"].is_object(),
+        "Gemini 'other' MCP should be preserved"
+    );
+
+    // Codex: runai gone, other preserved.
+    let codex = read_toml(&home.path().join(".codex/config.toml"));
+    let codex_servers = codex
+        .get("mcp_servers")
+        .and_then(|v| v.as_table())
+        .expect("[mcp_servers] must remain");
+    assert!(
+        codex_servers.get("runai").is_none(),
+        "Codex runai entry should be removed"
+    );
+    assert!(
+        codex_servers.get("other").is_some(),
+        "Codex 'other' MCP should be preserved"
+    );
+
+    // OpenCode: runai gone, other preserved.
+    let opencode = read_json(&home.path().join(".config/opencode/opencode.json"));
+    assert!(
+        opencode["mcp"].get("runai").is_none()
+            || opencode["mcp"]["runai"].is_null(),
+        "OpenCode runai entry should be removed"
+    );
+    assert!(
+        opencode["mcp"]["other"].is_object(),
+        "OpenCode 'other' MCP should be preserved"
+    );
+}
+
+/// 1.29 #2 — unregister is symmetric: register all 4, then unregister all 4,
+/// none of the 4 configs should still have a runai entry.
+#[test]
+fn unregister_symmetric_across_targets() {
+    let home = TempDir::new().unwrap();
+
+    // First register so all four configs end up with runai entries.
+    let r_out = run_in_home(home.path(), &["register"]);
+    assert!(r_out.status.success(), "register failed");
+
+    // Then unregister.
+    let u_out = run_in_home(home.path(), &["unregister"]);
+    assert!(
+        u_out.status.success(),
+        "unregister failed: stderr={}",
+        String::from_utf8_lossy(&u_out.stderr)
+    );
+
+    let claude = read_json(&home.path().join(".claude.json"));
+    assert!(
+        claude["mcpServers"].get("runai").is_none()
+            || claude["mcpServers"]["runai"].is_null(),
+        "Claude still has runai entry after unregister"
+    );
+
+    let gemini = read_json(&home.path().join(".gemini/settings.json"));
+    assert!(
+        gemini["mcpServers"].get("runai").is_none()
+            || gemini["mcpServers"]["runai"].is_null(),
+        "Gemini still has runai entry after unregister"
+    );
+
+    let codex = read_toml(&home.path().join(".codex/config.toml"));
+    let codex_runai = codex
+        .get("mcp_servers")
+        .and_then(|v| v.as_table())
+        .and_then(|t| t.get("runai"));
+    assert!(
+        codex_runai.is_none(),
+        "Codex still has [mcp_servers.runai] after unregister"
+    );
+
+    let opencode = read_json(&home.path().join(".config/opencode/opencode.json"));
+    assert!(
+        opencode["mcp"].get("runai").is_none()
+            || opencode["mcp"]["runai"].is_null(),
+        "OpenCode still has runai entry after unregister"
+    );
+}
+
+/// 1.29 #3 — unregister is idempotent: with no config files present, the
+/// command must exit 0 and not crash.
+#[test]
+fn unregister_unit_idempotent() {
+    let home = TempDir::new().unwrap();
+    // No .cli config files anywhere.
+
+    let out = run_in_home(home.path(), &["unregister"]);
+    assert!(
+        out.status.success(),
+        "unregister on empty HOME should succeed (exit 0): stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // No config files should have been created by unregister itself.
+    assert!(
+        !home.path().join(".claude.json").exists(),
+        "unregister must not create .claude.json out of thin air"
+    );
+    assert!(
+        !home.path().join(".gemini/settings.json").exists(),
+        "unregister must not create .gemini/settings.json out of thin air"
+    );
+}
