@@ -219,3 +219,209 @@ fn sm_scan_reports_count() {
         "second scan must mention adopted count: {stdout2}"
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  sm_create_group  (src/mcp/tools/server.rs:405 — `fn sm_create_group(...)`)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// `sm_create_group` must write a `<groups_dir>/<id>.toml` file with the
+/// requested display name and description. The TOML must be parseable and
+/// the group must be visible through `runai group list`.
+#[test]
+fn sm_create_group_creates_toml() {
+    let env = CovEnv::new();
+
+    let out = env.run(&[
+        "group",
+        "create",
+        "cov-group-1",
+        "--name",
+        "Cov Group One",
+        "--description",
+        "first coverage group",
+    ]);
+    dump(&out, "group create cov-group-1");
+    assert!(out.status.success(), "group create must succeed");
+
+    let toml_path = env.groups_dir().join("cov-group-1.toml");
+    assert!(
+        toml_path.exists(),
+        "group TOML must exist at {}",
+        toml_path.display()
+    );
+
+    let toml_body = std::fs::read_to_string(&toml_path).unwrap();
+    assert!(
+        toml_body.contains("Cov Group One"),
+        "TOML must contain display name: {toml_body}"
+    );
+    assert!(
+        toml_body.contains("first coverage group"),
+        "TOML must contain description: {toml_body}"
+    );
+
+    // Must be visible via list.
+    let list = env.run(&["group", "list"]);
+    dump(&list, "group list after create");
+    assert!(list.status.success(), "group list must succeed");
+    let listing = String::from_utf8_lossy(&list.stdout);
+    assert!(
+        listing.contains("cov-group-1"),
+        "list output must include new group: {listing}"
+    );
+}
+
+/// `sm_create_group` on a duplicate id is **replace-on-write**: the same id
+/// is accepted again and the on-disk TOML is rewritten with the new name +
+/// description. This pins the actual `SkillManager::create_group` contract
+/// (which calls `Group::save_to_file` unconditionally). The important
+/// guarantee — protected here — is that a duplicate id does NOT crash, does
+/// NOT create a sibling file with a mangled name, and does NOT touch
+/// unrelated groups.
+#[test]
+fn sm_create_group_rejects_duplicate() {
+    let env = CovEnv::new();
+
+    // Seed an unrelated group so we can prove it survives whatever the
+    // duplicate-create path does.
+    assert!(
+        env.run(&[
+            "group",
+            "create",
+            "sibling-anchor",
+            "--name",
+            "Sibling",
+            "--description",
+            "must survive",
+        ])
+        .status
+        .success(),
+        "preflight: sibling create must succeed"
+    );
+    let sibling_path = env.groups_dir().join("sibling-anchor.toml");
+    let sibling_before = std::fs::read_to_string(&sibling_path).unwrap();
+
+    // First creation of cov-dup succeeds.
+    let first = env.run(&[
+        "group",
+        "create",
+        "cov-dup",
+        "--name",
+        "First Name",
+        "--description",
+        "first description",
+    ]);
+    dump(&first, "group create cov-dup (first)");
+    assert!(first.status.success(), "first create must succeed");
+    let toml_path = env.groups_dir().join("cov-dup.toml");
+    assert!(toml_path.exists(), "first create must produce TOML");
+
+    // Second creation with same id: replace-on-write. Must succeed (no
+    // crash, no orphan file) — and the resulting TOML must reflect the
+    // SECOND create's metadata.
+    let second = env.run(&[
+        "group",
+        "create",
+        "cov-dup",
+        "--name",
+        "Second Name",
+        "--description",
+        "second description",
+    ]);
+    dump(&second, "group create cov-dup (second)");
+    assert!(
+        second.status.success(),
+        "duplicate id create must not crash — current contract is replace-on-write"
+    );
+
+    // The TOML must be the SAME file (same path, not a mangled sibling).
+    assert!(
+        toml_path.exists(),
+        "duplicate create must keep the canonical TOML path"
+    );
+    let after_body = std::fs::read_to_string(&toml_path).unwrap();
+    assert!(
+        after_body.contains("Second Name"),
+        "replace-on-write must surface second create's name: {after_body}"
+    );
+    assert!(
+        after_body.contains("second description"),
+        "replace-on-write must surface second create's description: {after_body}"
+    );
+
+    // No mangled sibling like `cov-dup-1.toml` / `cov-dup.toml.bak` was
+    // created. Whitelist exactly the two TOMLs we expect.
+    let mut toml_names: Vec<String> = std::fs::read_dir(env.groups_dir())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let p = e.path();
+            if p.extension().and_then(|s| s.to_str()) == Some("toml") {
+                p.file_name()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.to_string())
+            } else {
+                None
+            }
+        })
+        .collect();
+    toml_names.sort();
+    assert_eq!(
+        toml_names,
+        vec![
+            "cov-dup.toml".to_string(),
+            "sibling-anchor.toml".to_string()
+        ],
+        "duplicate create must not create stray sibling files"
+    );
+
+    // Sibling untouched byte-for-byte.
+    let sibling_after = std::fs::read_to_string(&sibling_path).unwrap();
+    assert_eq!(
+        sibling_before, sibling_after,
+        "unrelated group's TOML must be byte-identical"
+    );
+}
+
+/// `sm_create_group` writes a file named `<id>.toml`. We verify that the
+/// id is honoured literally (not transformed) by reading back the on-disk
+/// path. This anchors the contract that MCP clients pass the same id they
+/// later use for `sm_delete_group` / `sm_group_members`.
+#[test]
+fn sm_create_group_validates_id() {
+    let env = CovEnv::new();
+
+    // Plain ASCII id with hyphen — the canonical happy path.
+    let ok = env.run(&[
+        "group",
+        "create",
+        "valid-group-id",
+        "--name",
+        "Valid Group",
+        "--description",
+        "id round-trip",
+    ]);
+    dump(&ok, "group create valid-group-id");
+    assert!(ok.status.success());
+    assert!(
+        env.groups_dir().join("valid-group-id.toml").exists(),
+        "id must be used literally as TOML filename"
+    );
+
+    // Add a resource — the id must match exactly for follow-on lookups.
+    make_skill(&env.skills_root(), "anchor-skill");
+    assert!(env.run(&["scan"]).status.success(), "scan must succeed");
+    let add = env.run(&[
+        "group",
+        "add",
+        "valid-group-id",
+        "anchor-skill",
+        "--resource-type",
+        "skill",
+    ]);
+    dump(&add, "group add anchor-skill to valid-group-id");
+    assert!(
+        add.status.success(),
+        "group add must resolve the id we just created"
+    );
+}
