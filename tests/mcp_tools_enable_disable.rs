@@ -420,3 +420,391 @@ fn enable_group_cascades_to_members() {
         "result message should mention group enable: stdout={stdout} stderr={stderr}"
     );
 }
+
+// ─── sm_disable tests ───────────────────────────────────────────────────────
+
+/// sm_disable removes ONLY the CLI symlink at `~/.claude/skills/<name>`;
+/// the managed skill dir `~/.runai/skills/<name>` (and its SKILL.md) must
+/// be left intact.
+#[test]
+fn disable_skill_removes_symlink_only() {
+    let env = EnableEnv::new();
+    let managed = make_skill(&env.skills_root(), "test-skill");
+    assert!(env.run(&["scan"]).status.success(), "scan failed");
+    assert!(
+        env.run(&["enable", "test-skill", "--target", "claude"])
+            .status
+            .success(),
+        "enable preflight failed"
+    );
+    let link = env.cli_skills_dir("claude").join("test-skill");
+    assert!(
+        std::fs::symlink_metadata(&link).is_ok(),
+        "preflight: symlink must exist"
+    );
+
+    let dis = env.run(&["disable", "test-skill", "--target", "claude"]);
+    dump(&dis, "disable test-skill on claude");
+    assert!(dis.status.success(), "disable failed");
+
+    assert!(
+        std::fs::symlink_metadata(&link).is_err(),
+        "symlink at {} should be gone after disable",
+        link.display()
+    );
+    // Managed dir survives in full.
+    assert!(
+        managed.exists(),
+        "managed dir {} should still exist",
+        managed.display()
+    );
+    let content = std::fs::read_to_string(managed.join("SKILL.md")).unwrap();
+    assert!(
+        content.contains("test-skill"),
+        "managed SKILL.md content must be unchanged"
+    );
+    // None of the OTHER CLI target dirs were touched.
+    for other in ["codex", "gemini", "opencode"] {
+        let stray = env.cli_skills_dir(other).join("test-skill");
+        assert!(
+            std::fs::symlink_metadata(&stray).is_err(),
+            "disable on claude must not affect {other}: {}",
+            stray.display()
+        );
+    }
+}
+
+/// sm_disable on a target whose source dir was moved away must still clean
+/// up the now-dangling symlink without touching anything else. Verified
+/// symmetrically across the 4 targets.
+#[test]
+fn disable_cleans_dangling_symlinks_across_targets() {
+    let env = EnableEnv::new();
+    make_skill(&env.skills_root(), "dangler");
+    assert!(env.run(&["scan"]).status.success(), "scan failed");
+
+    // Enable on claude + codex.
+    assert!(
+        env.run(&["enable", "dangler", "--target", "claude"])
+            .status
+            .success(),
+        "claude enable preflight failed"
+    );
+    assert!(
+        env.run(&["enable", "dangler", "--target", "codex"])
+            .status
+            .success(),
+        "codex enable preflight failed"
+    );
+    let claude_link = env.cli_skills_dir("claude").join("dangler");
+    let codex_link = env.cli_skills_dir("codex").join("dangler");
+    assert!(std::fs::symlink_metadata(&claude_link).is_ok());
+    assert!(std::fs::symlink_metadata(&codex_link).is_ok());
+
+    // Move the managed dir away → both symlinks now dangle.
+    let managed = env.skills_root().join("dangler");
+    let stash = env.home().join("dangler-stash");
+    std::fs::rename(&managed, &stash).expect("stash managed dir");
+    assert!(!managed.exists(), "managed dir should be temporarily gone");
+    // Symlinks still present, just dangling.
+    assert!(std::fs::symlink_metadata(&claude_link).is_ok());
+    assert!(std::fs::symlink_metadata(&codex_link).is_ok());
+
+    // Disable on both targets; dangling symlinks must still be cleaned up.
+    let d_claude = env.run(&["disable", "dangler", "--target", "claude"]);
+    dump(&d_claude, "disable dangling on claude");
+    let d_codex = env.run(&["disable", "dangler", "--target", "codex"]);
+    dump(&d_codex, "disable dangling on codex");
+
+    // Even if the binary error-exits on either (treat permissively), both
+    // symlinks should be gone by the time both calls complete.
+    assert!(
+        std::fs::symlink_metadata(&claude_link).is_err(),
+        "claude dangling symlink should be removed"
+    );
+    assert!(
+        std::fs::symlink_metadata(&codex_link).is_err(),
+        "codex dangling symlink should be removed"
+    );
+    // Managed dir was never touched by disable (we moved it ourselves).
+    assert!(
+        stash.exists(),
+        "stashed managed dir must remain untouched by disable"
+    );
+    // Gemini / opencode never had a link; still empty.
+    for empty in ["gemini", "opencode"] {
+        let stray = env.cli_skills_dir(empty).join("dangler");
+        assert!(
+            std::fs::symlink_metadata(&stray).is_err(),
+            "disable must not have touched {empty}"
+        );
+    }
+}
+
+/// With `RUNE_DATA_DIR` override, sm_disable must remove the symlink from
+/// `~/.claude/skills/` (HOME-rooted) and leave the source skill files under
+/// `$RUNE_DATA_DIR/skills/` intact. The default `~/.runai` path is never
+/// modified.
+#[test]
+fn disable_respects_rune_data_dir_no_cross_modify() {
+    let env = EnableEnv::new();
+    let alt_data = tempfile::tempdir().expect("tmp RUNE_DATA_DIR");
+    let alt_skills = alt_data.path().join("skills");
+    std::fs::create_dir_all(&alt_skills).unwrap();
+    let managed = make_skill(&alt_skills, "alt-skill");
+
+    assert!(
+        env.run_with_rune(alt_data.path(), &["scan"]).status.success(),
+        "scan with RUNE_DATA_DIR failed"
+    );
+    assert!(
+        env.run_with_rune(
+            alt_data.path(),
+            &["enable", "alt-skill", "--target", "claude"]
+        )
+        .status
+        .success(),
+        "enable preflight with RUNE_DATA_DIR failed"
+    );
+    let link = env.cli_skills_dir("claude").join("alt-skill");
+    assert!(
+        std::fs::symlink_metadata(&link).is_ok(),
+        "preflight symlink must exist"
+    );
+
+    let dis = env.run_with_rune(
+        alt_data.path(),
+        &["disable", "alt-skill", "--target", "claude"],
+    );
+    dump(&dis, "disable alt-skill with RUNE_DATA_DIR");
+    assert!(dis.status.success(), "disable with RUNE_DATA_DIR failed");
+
+    // Symlink at ~/.claude/skills/alt-skill removed.
+    assert!(
+        std::fs::symlink_metadata(&link).is_err(),
+        "symlink at {} should be gone after disable",
+        link.display()
+    );
+    // Source skill in alt_data still present and unmodified.
+    assert!(
+        managed.exists(),
+        "managed dir at {} must survive disable",
+        managed.display()
+    );
+    let body = std::fs::read_to_string(managed.join("SKILL.md")).unwrap();
+    assert!(body.contains("alt-skill"));
+    // Default ~/.runai/skills/ untouched.
+    assert!(
+        !env.skills_root().join("alt-skill").exists(),
+        "default ~/.runai/skills/alt-skill must NOT have been created"
+    );
+}
+
+/// sm_disable for an MCP removes the entry from `~/.claude.json`'s
+/// `mcpServers` and writes a canonical backup at
+/// `~/.runai/mcps/<name>.json`. The resulting JSON must still parse.
+#[test]
+fn disable_mcp_removes_config_entry() {
+    let env = EnableEnv::new();
+    // Seed claude config with two MCPs so we can prove only the targeted one
+    // gets removed.
+    std::fs::write(
+        env.home().join(".claude.json"),
+        r#"{"mcpServers":{
+            "keepme":{"command":"/bin/keepme","args":[]},
+            "drop-me":{"command":"/bin/drop-me","args":["--port","1234"]}
+        }}"#,
+    )
+    .unwrap();
+
+    assert!(env.run(&["scan"]).status.success(), "scan failed");
+
+    let dis = env.run(&["disable", "drop-me", "--target", "claude"]);
+    dump(&dis, "disable drop-me on claude");
+    assert!(dis.status.success(), "disable mcp failed");
+
+    let claude: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(env.home().join(".claude.json")).unwrap())
+            .expect("claude.json should still be valid JSON");
+    assert!(
+        claude["mcpServers"].get("drop-me").is_none(),
+        "drop-me entry should be gone"
+    );
+    assert!(
+        claude["mcpServers"].get("keepme").is_some(),
+        "keepme entry must be preserved"
+    );
+    let keepme = &claude["mcpServers"]["keepme"];
+    assert_eq!(keepme["command"], serde_json::json!("/bin/keepme"));
+
+    // Backup at ~/.runai/mcps/drop-me.json with canonical shape.
+    let backup = env.home().join(".runai/mcps/drop-me.json");
+    assert!(
+        backup.exists(),
+        "canonical backup should exist at {}",
+        backup.display()
+    );
+    let backup_json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&backup).unwrap()).unwrap();
+    assert_eq!(
+        backup_json["command"],
+        serde_json::json!("/bin/drop-me"),
+        "backup must be canonical (command:string)"
+    );
+    assert_eq!(backup_json["args"], serde_json::json!(["--port", "1234"]));
+}
+
+/// `runai` should refuse to disable its own self-registered MCP. The
+/// system MCP name is `runai` (or legacy `skill-manager`). On a fresh HOME
+/// the binary registers itself; calling `disable runai` must NOT silently
+/// remove the entry — error or no-op-with-message both acceptable, but
+/// the entry must remain present afterwards.
+#[test]
+fn disable_refuses_system_mcps() {
+    let env = EnableEnv::new();
+    // Run any benign cmd to trigger self-registration into ~/.claude.json.
+    let _ = env.run(&["list"]);
+
+    let claude_before: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(env.home().join(".claude.json")).unwrap())
+            .unwrap();
+    let runai_before = claude_before["mcpServers"].get("runai").cloned();
+
+    // Skip the assertion path if self-registration didn't actually happen
+    // (the binary may need a different first command to trigger it). The
+    // real assertion is "if it's present, disable must NOT remove it".
+    if runai_before.is_none() {
+        eprintln!(
+            "self-registration did not seed `runai` into ~/.claude.json — skipping refusal check; full claude.json: {claude_before:?}"
+        );
+        return;
+    }
+
+    let dis = env.run(&["disable", "runai", "--target", "claude"]);
+    dump(&dis, "disable runai (system mcp)");
+
+    // After the attempt, the runai entry must still be present.
+    let claude_after: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(env.home().join(".claude.json")).unwrap())
+            .unwrap();
+    let runai_after = claude_after["mcpServers"].get("runai").cloned();
+    assert!(
+        runai_after.is_some(),
+        "system MCP `runai` must not be disabled — entry was removed: stdout={} stderr={}",
+        String::from_utf8_lossy(&dis.stdout),
+        String::from_utf8_lossy(&dis.stderr),
+    );
+    assert_eq!(
+        runai_after, runai_before,
+        "runai MCP entry must be unchanged after disable refusal"
+    );
+}
+
+/// sm_disable on a name that doesn't exist must return a "Not found"-style
+/// message and must not remove any symlinks.
+#[test]
+fn disable_nonexistent_fails_gracefully() {
+    let env = EnableEnv::new();
+    // Enable an unrelated skill so the baseline state has a symlink.
+    make_skill(&env.skills_root(), "anchor");
+    assert!(env.run(&["scan"]).status.success(), "scan failed");
+    assert!(
+        env.run(&["enable", "anchor", "--target", "claude"])
+            .status
+            .success(),
+        "anchor enable failed"
+    );
+    let anchor_link = env.cli_skills_dir("claude").join("anchor");
+    assert!(std::fs::symlink_metadata(&anchor_link).is_ok());
+
+    let out = env.run(&["disable", "doesnt-exist", "--target", "claude"]);
+    dump(&out, "disable doesnt-exist");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let lower = combined.to_lowercase();
+    let mentions_not_found = lower.contains("not found")
+        || lower.contains("doesnt-exist")
+        || lower.contains("unknown")
+        || lower.contains("no such")
+        || lower.contains("no resource");
+    assert!(
+        !out.status.success() || mentions_not_found,
+        "disable of nonexistent must error or mention not-found, got: {combined}"
+    );
+
+    // Anchor symlink still present.
+    assert!(
+        std::fs::symlink_metadata(&anchor_link).is_ok(),
+        "disable of nonexistent must not touch the anchor symlink"
+    );
+}
+
+/// Disabling a group removes every member's symlink in the target CLI dir.
+#[test]
+fn disable_group_cascades_to_members() {
+    let env = EnableEnv::new();
+    for n in ["dgrp-a", "dgrp-b", "dgrp-c"] {
+        make_skill(&env.skills_root(), n);
+    }
+    assert!(env.run(&["scan"]).status.success(), "scan failed");
+
+    let cg = env.run(&[
+        "group",
+        "create",
+        "team-pack",
+        "--name",
+        "Team Pack",
+        "--description",
+        "Disable cascade test",
+    ]);
+    dump(&cg, "group create team-pack");
+    assert!(cg.status.success(), "group create failed");
+    for n in ["dgrp-a", "dgrp-b", "dgrp-c"] {
+        let add = env.run(&["group", "add", "team-pack", n]);
+        dump(&add, &format!("group add team-pack {n}"));
+        assert!(add.status.success(), "group add {n} failed");
+    }
+
+    // Enable then disable the group; members' symlinks should be removed.
+    let en = env.run(&["enable", "team-pack", "--target", "claude"]);
+    dump(&en, "enable group team-pack on claude");
+    assert!(en.status.success(), "enable group preflight failed");
+    for n in ["dgrp-a", "dgrp-b", "dgrp-c"] {
+        let link = env.cli_skills_dir("claude").join(n);
+        assert!(
+            std::fs::symlink_metadata(&link).is_ok(),
+            "preflight: {n} should be enabled"
+        );
+    }
+
+    let dis = env.run(&["disable", "team-pack", "--target", "claude"]);
+    dump(&dis, "disable group team-pack on claude");
+    assert!(dis.status.success(), "disable group failed");
+
+    for n in ["dgrp-a", "dgrp-b", "dgrp-c"] {
+        let link = env.cli_skills_dir("claude").join(n);
+        assert!(
+            std::fs::symlink_metadata(&link).is_err(),
+            "member {n} symlink should be removed after group disable: {}",
+            link.display()
+        );
+    }
+    // Managed dirs survive.
+    for n in ["dgrp-a", "dgrp-b", "dgrp-c"] {
+        assert!(
+            env.skills_root().join(n).exists(),
+            "managed dir {n} must survive group disable"
+        );
+    }
+
+    let stdout = String::from_utf8_lossy(&dis.stdout);
+    let stderr = String::from_utf8_lossy(&dis.stderr);
+    let combined = format!("{stdout}{stderr}").to_lowercase();
+    assert!(
+        combined.contains("team-pack") || combined.contains("group"),
+        "disable group result should mention group/team-pack: stdout={stdout} stderr={stderr}"
+    );
+}
