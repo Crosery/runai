@@ -284,3 +284,65 @@ fn market_find_skill_by_name_and_filter() {
     let r = find_skill_in_sources(data_dir, &[], "foo", None);
     assert!(r.is_none(), "empty sources → None");
 }
+
+// ─── Test 4: plugin marker roundtrip ───────────────────────────────────────
+
+#[test]
+fn market_plugin_marker_roundtrip() {
+    let tmp = tempfile::tempdir().expect("tmp data dir");
+    let data_dir = tmp.path();
+
+    let src = mk_source("anthropics", "claude-plugins-official");
+    let other = mk_source("ComposioHQ", "awesome-claude-skills");
+
+    // 1. Virgin data dir: no marker → is_plugin_source returns false.
+    assert!(
+        !is_plugin_source(data_dir, &src),
+        "is_plugin_source must be false before save_plugin_marker is called"
+    );
+    assert!(
+        !is_plugin_source(data_dir, &other),
+        "is_plugin_source must be false for other source as well"
+    );
+
+    // 2. Marker file does not need a pre-created market-cache/ dir;
+    //    save_plugin_marker should mkdir -p the path itself.
+    save_plugin_marker(data_dir, &src);
+
+    // 3. Verify the marker file lives at the documented path:
+    //    <data_dir>/market-cache/<owner>_<repo>.plugin
+    let marker_path = data_dir
+        .join("market-cache")
+        .join(format!("{}_{}.plugin", src.owner, src.repo));
+    assert!(
+        marker_path.is_file(),
+        "save_plugin_marker should write {}",
+        marker_path.display()
+    );
+
+    // 4. is_plugin_source now returns true for the marked source.
+    assert!(
+        is_plugin_source(data_dir, &src),
+        "is_plugin_source must be true after save_plugin_marker for the same source"
+    );
+
+    // 5. Other sources stay false — the marker is per-source, not global.
+    assert!(
+        !is_plugin_source(data_dir, &other),
+        "is_plugin_source must remain false for unrelated source"
+    );
+
+    // 6. save_plugin_marker is idempotent: calling it twice doesn't error
+    //    and the file is still there.
+    save_plugin_marker(data_dir, &src);
+    assert!(marker_path.is_file(), "second save_plugin_marker should be a no-op");
+    assert!(is_plugin_source(data_dir, &src));
+
+    // 7. Removing the marker file flips is_plugin_source back to false —
+    //    confirms the check is filesystem-based, not cached.
+    std::fs::remove_file(&marker_path).unwrap();
+    assert!(
+        !is_plugin_source(data_dir, &src),
+        "is_plugin_source must reflect filesystem state, not be cached"
+    );
+}
