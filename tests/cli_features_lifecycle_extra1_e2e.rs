@@ -761,3 +761,165 @@ fn trash_restore_respects_rune_data_dir() {
     );
 }
 
+
+#[test]
+fn trash_purge_deletes_permanently() {
+    let env = TestEnv::new();
+
+    // Plant + uninstall to populate trash.
+    make_skill(&env.default_skills_dir(), "purgeable", "purgeable body");
+    assert!(env.run(&["scan"]).status.success());
+    assert!(env.run(&["uninstall", "purgeable"]).status.success());
+
+    // Sanity: trash has the entry and a payload dir under ~/.runai/trash/.
+    let trash_root = env.default_trash_dir();
+    let payload_dirs_before: Vec<PathBuf> = std::fs::read_dir(&trash_root)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    assert!(
+        !payload_dirs_before.is_empty(),
+        "precondition: trash should have a payload after uninstall"
+    );
+
+    // Purge by name.
+    let purge = env.run(&["trash", "purge", "purgeable"]);
+    dump(&purge, "trash purge purgeable");
+    assert!(purge.status.success(), "purge must succeed");
+
+    // trash list should no longer mention purgeable (and should report empty).
+    let list = env.run(&["trash", "list"]);
+    dump(&list, "trash list after purge");
+    let list_out = String::from_utf8_lossy(&list.stdout);
+    assert!(
+        !list_out.contains("purgeable"),
+        "REGRESSION: trash list still shows purged entry:\n{list_out}"
+    );
+
+    // Payload dirs that existed before purge should be gone.
+    for p in &payload_dirs_before {
+        assert!(
+            !p.exists(),
+            "REGRESSION: purge left payload dir at {} on disk",
+            p.display()
+        );
+    }
+
+    // Managed skills dir should still NOT contain the purged skill (it never
+    // came back) — purge is a permanent delete, not a restore.
+    assert!(
+        !env.default_skills_dir().join("purgeable").exists(),
+        "purge must not resurrect the skill into managed skills/"
+    );
+}
+
+
+#[test]
+fn trash_purge_fails_on_not_found() {
+    let env = TestEnv::new();
+
+    // Plant one real trash entry so we can verify it survives the failed purge.
+    make_skill(&env.default_skills_dir(), "survivor", "survivor body");
+    assert!(env.run(&["scan"]).status.success());
+    assert!(env.run(&["uninstall", "survivor"]).status.success());
+
+    let before_list = env.run(&["trash", "list"]);
+    let before_out = String::from_utf8_lossy(&before_list.stdout).to_string();
+    assert!(
+        before_out.contains("survivor"),
+        "precondition: survivor must be in trash"
+    );
+
+    let purge = env.run(&["trash", "purge", "ghost-name-that-does-not-exist"]);
+    dump(&purge, "trash purge nonexistent");
+    assert!(
+        !purge.status.success(),
+        "REGRESSION: purge of a nonexistent entry returned success"
+    );
+
+    // The other trash entry must still be there.
+    let after_list = env.run(&["trash", "list"]);
+    let after_out = String::from_utf8_lossy(&after_list.stdout);
+    assert!(
+        after_out.contains("survivor"),
+        "REGRESSION: failed purge corrupted the trash list (survivor disappeared):\n{after_out}"
+    );
+}
+
+
+#[test]
+fn trash_purge_respects_rune_data_dir() {
+    let env = TestEnv::new();
+    let alt = tempfile::tempdir().unwrap();
+    let alt_data = alt.path();
+    std::fs::create_dir_all(alt_data.join("skills")).unwrap();
+
+    // Populate default trash with a sentinel — must NOT be touched.
+    make_skill(&env.default_skills_dir(), "default-sentinel", "default body");
+    assert!(env.run(&["scan"]).status.success());
+    assert!(
+        env.run(&["uninstall", "default-sentinel"])
+            .status
+            .success()
+    );
+    let default_trash = env.default_trash_dir();
+    let default_payloads_before: Vec<PathBuf> = std::fs::read_dir(&default_trash)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .collect();
+    assert!(!default_payloads_before.is_empty());
+
+    // Populate alt trash.
+    make_skill(&alt_data.join("skills"), "alt-purgee", "alt body");
+    assert!(
+        env.run_with_rune_data(alt_data, &["scan"])
+            .status
+            .success()
+    );
+    assert!(
+        env.run_with_rune_data(alt_data, &["uninstall", "alt-purgee"])
+            .status
+            .success()
+    );
+    let alt_trash = alt_data.join("trash");
+    let alt_payloads_before: Vec<PathBuf> = std::fs::read_dir(&alt_trash)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .collect();
+    assert!(!alt_payloads_before.is_empty());
+
+    // Purge in alt only.
+    let purge = env.run_with_rune_data(alt_data, &["trash", "purge", "alt-purgee"]);
+    dump(&purge, "trash purge alt-purgee (alt data dir)");
+    assert!(purge.status.success(), "alt-dir purge must succeed");
+
+    // Alt trash payload dirs gone.
+    for p in &alt_payloads_before {
+        assert!(
+            !p.exists(),
+            "REGRESSION: alt purge left payload at {}",
+            p.display()
+        );
+    }
+
+    // Default trash payloads still present, and `trash list` still shows
+    // default-sentinel.
+    for p in &default_payloads_before {
+        assert!(
+            p.exists(),
+            "REGRESSION: alt-dir purge deleted a default trash payload at {}",
+            p.display()
+        );
+    }
+    let default_list = env.run(&["trash", "list"]);
+    let default_list_out = String::from_utf8_lossy(&default_list.stdout);
+    assert!(
+        default_list_out.contains("default-sentinel"),
+        "REGRESSION: alt-dir purge wiped default trash entry; list:\n{default_list_out}"
+    );
+}
+
