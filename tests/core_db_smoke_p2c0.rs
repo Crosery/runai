@@ -142,3 +142,245 @@ fn bm25_is_cjk_and_contains_cjk_smoke() {
     assert!(!contains_cjk("ascii only"));
     assert!(!contains_cjk(""));
 }
+
+// ============================================================================
+// core::backup
+// ============================================================================
+
+#[cfg(not(target_os = "windows"))]
+mod backup_tests {
+    use runai::core::backup::{create_backup, has_backup, list_backups, restore_backup};
+    use runai::core::paths::AppPaths;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    /// Run a closure with HOME set to a tempdir. Tests are serialized
+    /// by --test-threads=1 so this is safe.
+    fn with_isolated_home<F: FnOnce(&PathBuf, &AppPaths)>(f: F) {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().to_path_buf();
+        std::fs::create_dir_all(&home).unwrap();
+        let data = home.join(".runai");
+        let paths = AppPaths::with_base(data);
+        paths.ensure_dirs().unwrap();
+
+        let orig_home = std::env::var_os("HOME");
+        let orig_rdd = std::env::var_os("RUNE_DATA_DIR");
+        // SAFETY: cargo test runs with --test-threads=1; HOME/RUNE_DATA_DIR
+        // are only read elsewhere by code under test serialized through this
+        // single thread.
+        unsafe {
+            std::env::set_var("HOME", &home);
+            std::env::set_var("RUNE_DATA_DIR", paths.data_dir());
+        }
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&home, &paths)));
+
+        unsafe {
+            match orig_home {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+            match orig_rdd {
+                Some(v) => std::env::set_var("RUNE_DATA_DIR", v),
+                None => std::env::remove_var("RUNE_DATA_DIR"),
+            }
+        }
+        if let Err(e) = result {
+            std::panic::resume_unwind(e);
+        }
+    }
+
+    #[test]
+    fn backup_preserves_symlinks_not_dereferenced() {
+        // create_backup must copy symlinks as symlinks (preserved targets),
+        // NOT dereference them. This is load-bearing: symlinks encode
+        // "which skills are enabled" state. Dereferencing = lost meaning.
+        with_isolated_home(|home, paths| {
+            let claude_skills = home.join(".claude/skills");
+            std::fs::create_dir_all(&claude_skills).unwrap();
+            // Create a managed skill the symlink points at (so symlink is valid)
+            let real_skill = paths.skills_dir().join("real");
+            std::fs::create_dir_all(&real_skill).unwrap();
+            std::fs::write(real_skill.join("SKILL.md"), "# real").unwrap();
+
+            let link_path = claude_skills.join("link-skill");
+            std::os::unix::fs::symlink(&real_skill, &link_path).unwrap();
+            assert!(link_path.symlink_metadata().unwrap().file_type().is_symlink());
+
+            let backup_dir = create_backup(paths).expect("create_backup");
+
+            let backed_up_link = backup_dir.join("claude-skills").join("link-skill");
+            let md = std::fs::symlink_metadata(&backed_up_link)
+                .expect("backed up symlink should exist");
+            assert!(
+                md.file_type().is_symlink(),
+                "backed up entry must be a symlink, was: {:?}",
+                md.file_type()
+            );
+            let resolved = std::fs::read_link(&backed_up_link).unwrap();
+            assert_eq!(resolved, real_skill, "symlink target should be preserved");
+        });
+    }
+
+    #[test]
+    fn backup_snapshots_managed_data_and_cli_configs() {
+        // create_backup captures managed skills + managed MCPs + ~/.claude.json.
+        with_isolated_home(|home, paths| {
+            // managed skill
+            std::fs::create_dir_all(paths.skills_dir().join("alpha")).unwrap();
+            std::fs::write(paths.skills_dir().join("alpha/SKILL.md"), "# alpha").unwrap();
+            // managed MCP backup
+            std::fs::create_dir_all(paths.mcps_dir()).unwrap();
+            std::fs::write(
+                paths.mcps_dir().join("pencil.json"),
+                r#"{"command":"pencil"}"#,
+            )
+            .unwrap();
+            // claude config + gemini settings
+            std::fs::write(home.join(".claude.json"), r#"{"mcpServers":{}}"#).unwrap();
+            std::fs::create_dir_all(home.join(".gemini")).unwrap();
+            std::fs::write(home.join(".gemini/settings.json"), r#"{"a":1}"#).unwrap();
+
+            let backup_dir = create_backup(paths).expect("create_backup");
+
+            assert!(backup_dir.join("timestamp").exists(), "timestamp marker");
+            assert!(
+                backup_dir.join("managed-skills/alpha/SKILL.md").exists(),
+                "managed skill copied"
+            );
+            assert!(
+                backup_dir.join("managed-mcps/pencil.json").exists(),
+                "managed MCP backup copied"
+            );
+            assert!(backup_dir.join("claude.json").exists(), "claude config copied");
+            assert!(
+                backup_dir.join("gemini-settings.json").exists(),
+                "gemini settings copied"
+            );
+        });
+    }
+
+    #[test]
+    fn list_backups_returns_newest_first() {
+        // list_backups returns timestamps sorted lexicographically descending,
+        // which for the YYYYMMDD_HHMMSS format equals newest first.
+        with_isolated_home(|_home, paths| {
+            let bdir = paths.data_dir().join("backups");
+            std::fs::create_dir_all(bdir.join("20260101_100000")).unwrap();
+            std::fs::create_dir_all(bdir.join("20260102_100000")).unwrap();
+            std::fs::create_dir_all(bdir.join("20260101_150000")).unwrap();
+
+            let list = list_backups(paths);
+            assert_eq!(
+                list,
+                vec!["20260102_100000", "20260101_150000", "20260101_100000"],
+                "expected newest first"
+            );
+        });
+    }
+
+    #[test]
+    fn restore_backup_overlays_into_managed_dirs() {
+        // restore_backup must move backed-up managed-skills back into
+        // paths.skills_dir() and restore claude.json. The current impl
+        // wipes the live managed dir before overlaying.
+        with_isolated_home(|home, paths| {
+            // Pre-state: a managed skill + claude config to back up
+            std::fs::create_dir_all(paths.skills_dir().join("foo")).unwrap();
+            std::fs::write(paths.skills_dir().join("foo/SKILL.md"), "# original").unwrap();
+            std::fs::write(home.join(".claude.json"), r#"{"v":"orig"}"#).unwrap();
+
+            let backup_dir = create_backup(paths).expect("create_backup");
+            let ts = std::fs::read_to_string(backup_dir.join("timestamp")).unwrap();
+
+            // Simulate damage
+            std::fs::remove_dir_all(paths.skills_dir()).unwrap();
+            std::fs::write(home.join(".claude.json"), r#"{"v":"damaged"}"#).unwrap();
+
+            let restored = restore_backup(paths, &ts).expect("restore_backup");
+            assert!(restored >= 2, "restore count expected >= 2, got {}", restored);
+
+            assert!(
+                paths.skills_dir().join("foo/SKILL.md").exists(),
+                "managed skill restored"
+            );
+            let content = std::fs::read_to_string(home.join(".claude.json")).unwrap();
+            assert!(
+                content.contains("orig"),
+                "claude.json restored, got: {}",
+                content
+            );
+        });
+    }
+
+    #[test]
+    fn restore_backup_nonexistent_timestamp_err() {
+        // restore_backup on a timestamp directory that doesn't exist returns
+        // an Err — no files modified, no panic.
+        with_isolated_home(|home, paths| {
+            std::fs::write(home.join(".claude.json"), r#"{"a":1}"#).unwrap();
+            let result = restore_backup(paths, "nonexistent_timestamp_xx");
+            assert!(result.is_err(), "expected Err, got: {:?}", result);
+            // Live file untouched
+            let content = std::fs::read_to_string(home.join(".claude.json")).unwrap();
+            assert!(content.contains("\"a\":1"));
+        });
+    }
+
+    #[test]
+    fn has_backup_reflects_backups_dir_state() {
+        // has_backup returns false on a fresh data dir, true after a backup
+        // exists. Used by TUI to decide whether to offer 'Restore'.
+        with_isolated_home(|home, paths| {
+            assert!(!has_backup(paths), "fresh dir has no backup");
+            std::fs::create_dir_all(home).unwrap();
+            let _bd = create_backup(paths).expect("create_backup");
+            assert!(has_backup(paths), "after backup, has_backup true");
+        });
+    }
+
+    #[test]
+    fn backup_restore_all_4_cli_targets_symmetric() {
+        // create_backup + restore_backup cover all 4 CLI skill dirs:
+        // claude, codex, gemini, opencode. Each dir's symlinks are preserved.
+        with_isolated_home(|home, paths| {
+            let real_skill = paths.skills_dir().join("multi");
+            std::fs::create_dir_all(&real_skill).unwrap();
+            std::fs::write(real_skill.join("SKILL.md"), "# multi").unwrap();
+
+            for cli in &["claude", "codex", "gemini", "opencode"] {
+                let dir = home.join(format!(".{cli}/skills"));
+                std::fs::create_dir_all(&dir).unwrap();
+                let link = dir.join("multi");
+                std::os::unix::fs::symlink(&real_skill, &link).unwrap();
+            }
+
+            let backup_dir = create_backup(paths).expect("create_backup");
+
+            // Each CLI dir backed up
+            for cli in &["claude", "codex", "gemini", "opencode"] {
+                let backed = backup_dir.join(format!("{cli}-skills")).join("multi");
+                let md = std::fs::symlink_metadata(&backed).unwrap_or_else(|e| {
+                    panic!("missing {cli} symlink in backup: {e}");
+                });
+                assert!(
+                    md.file_type().is_symlink(),
+                    "{cli} backup entry must be symlink"
+                );
+            }
+
+            // Damage one CLI dir and restore
+            let ts = std::fs::read_to_string(backup_dir.join("timestamp")).unwrap();
+            std::fs::remove_dir_all(home.join(".claude/skills")).unwrap();
+            restore_backup(paths, &ts).expect("restore_backup");
+            let restored = home.join(".claude/skills/multi");
+            assert!(
+                std::fs::symlink_metadata(&restored)
+                    .map(|m| m.file_type().is_symlink())
+                    .unwrap_or(false),
+                "claude symlink restored"
+            );
+        });
+    }
+}
