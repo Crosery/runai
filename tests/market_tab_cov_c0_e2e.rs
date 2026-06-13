@@ -384,3 +384,129 @@ fn scan_upload_candidates_produces_alpha_sort_within_user_source() {
         );
     });
 }
+
+// ─── feature 3: upload_selected_candidate ─ audit said `upload_selected` ───
+//
+// Real signature: `pub fn upload_selected_candidate(&mut self)` —
+// returns `()`. POSTs `upload_candidates[upload_idx]` to
+// `/api/community/upload` via `reqwest::blocking`. Side effects:
+// `upload_busy` flips, `upload_message` carries the outcome,
+// `reload_community` fires on success.
+
+#[test]
+fn upload_selected_candidate_no_selection_sets_message() {
+    let tmp = TempDir::new().unwrap();
+    // Hold the port so any synchronous network attempt either gets a
+    // clean connect-refused on a port we own or skips the assertion.
+    // For the no-candidate path we never reach the network, so holding
+    // the port is harmless.
+    let _maybe = try_lock_community_port();
+    with_sandbox(tmp.path(), || {
+        let mut app = fresh_app(tmp.path());
+        // Wipe candidates explicitly: cwd-scan might have populated
+        // them indirectly via prior tests; we want the empty path
+        // through `get(self.upload_idx)`.
+        app.upload_candidates.clear();
+        app.upload_idx = 0;
+        app.upload_busy = false;
+        app.upload_message.clear();
+
+        app.upload_selected_candidate();
+
+        assert!(
+            !app.upload_busy,
+            "no-candidate path must not leave busy flag stuck"
+        );
+        assert!(
+            app.upload_message.contains("no candidate"),
+            "no-selection must surface friendly message; got {:?}",
+            app.upload_message
+        );
+    });
+}
+
+#[test]
+fn upload_selected_candidate_busy_flag_short_circuits() {
+    let tmp = TempDir::new().unwrap();
+    with_sandbox(tmp.path(), || {
+        let mut app = fresh_app(tmp.path());
+        // Pre-set busy true: the source returns immediately at the top,
+        // before mutating upload_message or doing any IO. We assert the
+        // message stays empty (no "uploading ..." line, no error string).
+        app.upload_busy = true;
+        let original_msg = app.upload_message.clone();
+
+        app.upload_selected_candidate();
+
+        assert!(
+            app.upload_busy,
+            "early-return on busy must NOT flip the busy flag itself"
+        );
+        assert_eq!(
+            app.upload_message, original_msg,
+            "busy short-circuit must not touch upload_message"
+        );
+    });
+}
+
+#[test]
+fn upload_selected_candidate_reports_terminal_state_with_real_skill() {
+    let tmp = TempDir::new().unwrap();
+    // Take the port so the upload POST gets a connect failure (we own
+    // 17888 with a bare TCP listener that doesn't speak HTTP), NOT a
+    // weird 405 from a real dashboard that might happen to be running.
+    // Without this guard a dev box with a live runai server on 17888
+    // would 401 instead of refuse-connect, and the assertion would
+    // tighten/loosen unpredictably.
+    let port_owned = try_lock_community_port().is_some();
+
+    with_sandbox(tmp.path(), || {
+        // Plant one skill so the candidate selector resolves to a real
+        // tar-able directory; the upload still fails because the
+        // multipart POST has no listening HTTP server on the port.
+        let user_skills = tmp.path().join(".claude/skills");
+        std::fs::create_dir_all(&user_skills).unwrap();
+        let dir = user_skills.join("uploadable-skill");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("SKILL.md"), "---\nname: x\n---\nbody").unwrap();
+
+        let mut app = fresh_app(tmp.path());
+        app.scan_upload_candidates();
+
+        let Some(idx) = app
+            .upload_candidates
+            .iter()
+            .position(|c| c.name == "uploadable-skill")
+        else {
+            eprintln!("[skip] cwd-scan ate the test dir; cannot exercise upload path");
+            return;
+        };
+        app.upload_idx = idx;
+        app.upload_busy = false;
+        app.upload_message.clear();
+
+        app.upload_selected_candidate();
+
+        // Source: on Ok → `uploaded {name}`; on Err → `upload failed: {e}`.
+        // Either way the busy flag must flip back and the message must
+        // not be the in-flight `uploading {name} …` line.
+        assert!(
+            !app.upload_busy,
+            "upload completion must clear busy flag whether or not the POST succeeded"
+        );
+        assert!(
+            !app.upload_message.contains(" …"),
+            "upload completion must replace the in-flight message; got {:?}",
+            app.upload_message
+        );
+        if port_owned {
+            // We hold the port with a bare TCP listener (no HTTP), so
+            // the POST must fail at the protocol layer → `upload failed`.
+            assert!(
+                app.upload_message.starts_with("upload failed"),
+                "with no live HTTP server on 17888 the upload must surface failure; got {:?}",
+                app.upload_message
+            );
+        }
+    });
+}
