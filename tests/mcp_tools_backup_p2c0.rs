@@ -294,3 +294,145 @@ fn sm_backup_returns_valid_path() {
         "expected underscore in pos 8: {dirname}"
     );
 }
+
+// =============================================================================
+// 3.18 [P2] sm_backups — list backups, newest first
+// =============================================================================
+
+/// sm_backups_lists_newest_first:
+/// Create 3 backups with > 1s spacing, list them, and verify the order is
+/// newest first.
+#[test]
+fn sm_backups_lists_newest_first() {
+    let s = Sandbox::new();
+
+    // Create 3 backups, separated by > 1s so the YYYYMMDD_HHMMSS keys differ.
+    let mut created: Vec<String> = Vec::new();
+    for _ in 0..3 {
+        let mut cmd = s.runai();
+        cmd.arg("backup");
+        let out = run_ok(cmd);
+        let line = out
+            .lines()
+            .find(|l| l.contains("Backup created:"))
+            .expect("Backup created line");
+        let path = line.split("Backup created:").nth(1).unwrap().trim();
+        let ts = PathBuf::from(path)
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        created.push(ts);
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+    }
+
+    // List them.
+    let mut cmd = s.runai();
+    cmd.arg("backups");
+    let out = run_ok(cmd);
+
+    // CLI prints "  <ts>\n  <ts>\n  <ts>\n\nTotal: 3 backups".
+    let listed: Vec<String> = out
+        .lines()
+        .filter_map(|l| {
+            let t = l.trim();
+            if t.len() == 15 && t.chars().nth(8) == Some('_') {
+                Some(t.to_string())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(listed.len(), 3, "expected 3 timestamps listed, got: {out}");
+
+    // The CLI surface is the same `list_backups` core::backup helper that
+    // sm_backups uses — and it sorts newest first.
+    let mut expected = created.clone();
+    expected.sort_unstable();
+    expected.reverse();
+    assert_eq!(
+        listed, expected,
+        "backups should be listed newest first; got {listed:?} expected {expected:?}"
+    );
+
+    // Sanity: total count line is present.
+    assert!(
+        out.contains("Total: 3 backups"),
+        "missing 'Total: 3 backups' in: {out}"
+    );
+}
+
+/// sm_backups_no_backups_message:
+/// No backups → CLI prints "No backups found.", not an empty result.
+/// (Matches the sm_backups MCP tool which returns "No backups found".)
+#[test]
+fn sm_backups_no_backups_message() {
+    let s = Sandbox::new();
+    let mut cmd = s.runai();
+    cmd.arg("backups");
+    let out = run_ok(cmd);
+    assert!(
+        out.contains("No backups found"),
+        "expected 'No backups found' in: {out}"
+    );
+}
+
+/// sm_backups_timestamp_format_restore_compatible:
+/// Each listed timestamp matches YYYYMMDD_HHMMSS, and feeding any one of them
+/// into `runai restore --timestamp <ts>` succeeds (not "Backup not found").
+/// This proves the listing format is the canonical restore key.
+#[test]
+fn sm_backups_timestamp_format_restore_compatible() {
+    let s = Sandbox::new();
+
+    // Make one backup with non-empty managed-skills so restore has something to do.
+    write_file(
+        &s.data_dir().join("skills/probe/SKILL.md"),
+        "# probe\n",
+    );
+    let mut cmd = s.runai();
+    cmd.arg("backup");
+    let _ = run_ok(cmd);
+
+    // List + parse the timestamp.
+    let mut list_cmd = s.runai();
+    list_cmd.arg("backups");
+    let out = run_ok(list_cmd);
+    let ts = out
+        .lines()
+        .filter_map(|l| {
+            let t = l.trim();
+            if t.len() == 15 && t.chars().nth(8) == Some('_') {
+                Some(t.to_string())
+            } else {
+                None
+            }
+        })
+        .next()
+        .unwrap_or_else(|| panic!("no timestamp line in: {out}"));
+
+    // Verify format: 8 digits + '_' + 6 digits.
+    assert_eq!(ts.len(), 15);
+    assert!(
+        ts.chars().take(8).all(|c| c.is_ascii_digit()),
+        "first 8 chars must be digits: {ts}"
+    );
+    assert_eq!(ts.chars().nth(8).unwrap(), '_', "underscore at pos 8: {ts}");
+    assert!(
+        ts.chars().skip(9).all(|c| c.is_ascii_digit()),
+        "last 6 chars must be digits: {ts}"
+    );
+
+    // Feed back into restore — must succeed, not "Backup not found".
+    let mut restore_cmd = s.runai();
+    restore_cmd.arg("restore").arg("--timestamp").arg(&ts);
+    let restore_out = run_capture(restore_cmd);
+    assert!(
+        !restore_out.contains("Backup not found"),
+        "restore rejected the listed timestamp: {restore_out}"
+    );
+    assert!(
+        restore_out.contains("Restored") && restore_out.contains("items"),
+        "expected 'Restored N items' from restore: {restore_out}"
+    );
+}
