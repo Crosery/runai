@@ -522,3 +522,102 @@ fn skill_get_returns_404_for_missing_skill() {
         "no session_adoptions row must be written for a missing skill"
     );
 }
+
+// ─── Feature 3: POST /feedback ──────────────────────────────────────────────
+//
+// The happy-path "updates score and returns confirmation" variants of
+// the plan require a live LLM provider (cfg.enabled=true + api_key +
+// call_summary_llm hitting the network). e2e cannot mock LLM, so we
+// only lock the failure-mode wire contracts here: an unconfigured
+// router rejects with 400 + diagnostic text, a missing skill rejects
+// with 400, malformed JSON rejects with 400 (axum Json extractor),
+// and the server stays responsive afterwards.
+
+/// POST /feedback for a nonexistent skill must still come back 400 +
+/// text/plain (handle_feedback maps recommend::reevaluate_skill
+/// errors to BAD_REQUEST). Without LLM provider configured the
+/// rejection is "runai recommend not configured" rather than "skill
+/// not found", but the wire contract — 400 + descriptive body — is
+/// the same and is what hook clients depend on.
+#[test]
+fn feedback_returns_400_for_unconfigured_router_or_missing_skill() {
+    let env = ServerEnv::spawn();
+    let url = format!("{}/feedback", env.base_url());
+
+    let (status, body, ct) = http_post_json(
+        &url,
+        &serde_json::json!({ "skill": "does-not-exist", "note": "test note" }),
+        &[],
+    );
+
+    assert_eq!(
+        status.as_u16(),
+        400,
+        "feedback for an invalid skill must return 400, got {status}: {body}"
+    );
+    assert!(
+        ct.as_deref().unwrap_or("").starts_with("text/plain"),
+        "400 body must be text/plain, got {ct:?}"
+    );
+    assert!(
+        body.to_lowercase().contains("feedback error"),
+        "400 body must carry the 'feedback error' envelope, got: {body:?}"
+    );
+    assert!(
+        !body.is_empty(),
+        "400 body must include a diagnostic, got empty"
+    );
+}
+
+/// Malformed JSON ⇒ axum's `Json` extractor rejects before our
+/// handler runs. Status is one of 400 / 415 / 422 depending on axum
+/// version (currently 400). We accept any client-error code and lock
+/// that the server keeps serving subsequent requests (no panic, no
+/// hang).
+#[test]
+fn feedback_rejects_malformed_json_and_server_stays_up() {
+    let env = ServerEnv::spawn();
+    let url = format!("{}/feedback", env.base_url());
+
+    let (status, body) = http_post_raw_body(&url, "{not valid json", "application/json");
+    assert!(
+        status.is_client_error(),
+        "malformed JSON must return a 4xx client error, got {status}: {body}"
+    );
+
+    // Subsequent feedback requests must still work (server didn't
+    // panic / desync on the bad request).
+    let (status2, body2, _ct) = http_post_json(
+        &url,
+        &serde_json::json!({ "skill": "anything", "note": "still alive?" }),
+        &[],
+    );
+    assert_eq!(
+        status2.as_u16(),
+        400,
+        "server must remain responsive after a malformed request, got {status2}: {body2}"
+    );
+}
+
+/// Empty body / wrong shape ⇒ 422 from axum Json extractor (missing
+/// required fields `skill` and `note`). Locks the contract that the
+/// shape is enforced before our handler is invoked.
+#[test]
+fn feedback_rejects_payload_missing_required_fields() {
+    let env = ServerEnv::spawn();
+    let url = format!("{}/feedback", env.base_url());
+
+    let (status, body, _ct) =
+        http_post_json(&url, &serde_json::json!({ "skill": "alpha" }), &[]);
+    assert!(
+        status.is_client_error(),
+        "feedback with missing `note` must reject, got {status}: {body}"
+    );
+
+    let (status2, body2, _ct) =
+        http_post_json(&url, &serde_json::json!({ "note": "no skill here" }), &[]);
+    assert!(
+        status2.is_client_error(),
+        "feedback with missing `skill` must reject, got {status2}: {body2}"
+    );
+}
