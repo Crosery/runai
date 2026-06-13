@@ -361,3 +361,240 @@ fn trash_empty_respects_rune_data_dir() {
     assert_eq!(count_subdirs(&alt_trash), 0);
 }
 
+
+#[test]
+fn backup_creates_snapshot() {
+    let env = TestEnv::new();
+
+    // Pre-populate managed skills.
+    make_skill(&env.default_skills_dir(), "back-a", "back-a desc");
+    make_skill(&env.default_skills_dir(), "back-b", "back-b desc");
+
+    // Pre-populate managed MCP backup file.
+    let mcps_dir = env.default_data_dir().join("mcps");
+    std::fs::create_dir_all(&mcps_dir).unwrap();
+    std::fs::write(
+        mcps_dir.join("disabled-mcp.json"),
+        r#"{"command":"my-mcp","args":[]}"#,
+    )
+    .unwrap();
+
+    // Pre-populate ~/.claude.json (so backup picks it up).
+    std::fs::write(
+        env.home().join(".claude.json"),
+        r#"{"mcpServers":{},"version":"test"}"#,
+    )
+    .unwrap();
+
+    // Adopt + enable so a CLI skill symlink exists in ~/.claude/skills/.
+    // NOTE: `runai scan` triggers a one-shot "first backup" if none exists yet
+    // (see `Scanner::scan_all`). We sleep >=1s so the explicit `runai backup`
+    // below gets a distinct YYYYMMDD_HHMMSS timestamp; then assert on the
+    // newest snapshot under <data>/backups/, which is the one we just made.
+    assert!(env.run(&["scan"]).status.success());
+    let en = env.run(&["enable", "back-a", "--target", "claude"]);
+    dump(&en, "enable back-a for claude");
+    assert!(en.status.success());
+
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+
+    let out = env.run(&["backup"]);
+    dump(&out, "backup");
+    assert!(out.status.success(), "runai backup should succeed");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("Backup created:"),
+        "expected 'Backup created:' in output. Got:\n{stdout}"
+    );
+
+    // Inspect the newest backup (the explicit `runai backup` we just ran).
+    let backup_dir = newest_backup_dir(&env.default_data_dir());
+
+    assert!(
+        backup_dir.join("timestamp").exists(),
+        "backup should write timestamp marker"
+    );
+    // Managed skills snapshot includes the two skill dirs.
+    assert!(
+        backup_dir.join("managed-skills/back-a/SKILL.md").exists(),
+        "backup missing managed-skills/back-a/SKILL.md"
+    );
+    assert!(
+        backup_dir.join("managed-skills/back-b/SKILL.md").exists(),
+        "backup missing managed-skills/back-b/SKILL.md"
+    );
+    // Managed MCPs snapshot present.
+    assert!(
+        backup_dir.join("managed-mcps/disabled-mcp.json").exists(),
+        "backup missing managed-mcps/disabled-mcp.json"
+    );
+    // claude.json copied.
+    assert!(
+        backup_dir.join("claude.json").exists(),
+        "backup missing claude.json"
+    );
+    // CLI skill symlink farm snapshotted (claude has back-a enabled).
+    assert!(
+        backup_dir.join("claude-skills").exists(),
+        "backup missing claude-skills/ snapshot dir"
+    );
+    assert!(
+        std::fs::symlink_metadata(backup_dir.join("claude-skills/back-a")).is_ok(),
+        "backup should preserve the enabled claude/back-a symlink"
+    );
+}
+
+
+#[test]
+fn backup_creates_independent_snapshots() {
+    let env = TestEnv::new();
+
+    make_skill(&env.default_skills_dir(), "snap-skill", "original body");
+    // Scan triggers the implicit first backup; sleep before each subsequent
+    // backup to guarantee distinct YYYYMMDD_HHMMSS timestamps.
+    assert!(env.run(&["scan"]).status.success());
+
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+
+    // First explicit backup (skill in original state).
+    let first = env.run(&["backup"]);
+    dump(&first, "first explicit backup");
+    assert!(first.status.success());
+
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+
+    // Mutate the skill: rewrite SKILL.md body.
+    std::fs::write(
+        env.default_skills_dir().join("snap-skill/SKILL.md"),
+        "---\nname: snap-skill\ndescription: MUTATED\n---\n\n# snap-skill\n\nMUTATED\n",
+    )
+    .unwrap();
+
+    // Second explicit backup (after mutation).
+    let second = env.run(&["backup"]);
+    dump(&second, "second explicit backup");
+    assert!(second.status.success());
+
+    // Collect all backup dirs in lexicographic (== chronological) order.
+    let backups_root = env.default_data_dir().join("backups");
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(&backups_root)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    entries.sort();
+    // Scan auto-backup + 2 explicit backups == 3 snapshots total.
+    assert_eq!(
+        entries.len(),
+        3,
+        "expected 3 backup snapshots (1 auto + 2 explicit), found {}",
+        entries.len()
+    );
+
+    // The two explicit backups are the second-and-third (newest two).
+    let first_skill = entries[1].join("managed-skills/snap-skill/SKILL.md");
+    let second_skill = entries[2].join("managed-skills/snap-skill/SKILL.md");
+    assert!(first_skill.exists(), "first backup missing snap-skill");
+    assert!(second_skill.exists(), "second backup missing snap-skill");
+
+    let first_body = std::fs::read_to_string(&first_skill).unwrap();
+    let second_body = std::fs::read_to_string(&second_skill).unwrap();
+    assert!(
+        first_body.contains("original body"),
+        "first backup should preserve original body. Got:\n{first_body}"
+    );
+    assert!(
+        second_body.contains("MUTATED"),
+        "second backup should reflect MUTATED body. Got:\n{second_body}"
+    );
+    assert_ne!(
+        first_body, second_body,
+        "two backups should be independent snapshots"
+    );
+}
+
+
+#[test]
+fn backup_respects_rune_data_dir() {
+    let env = TestEnv::new();
+
+    // NOTE: `runai scan` creates an implicit first backup if none exists.
+    // The flow below makes scan + explicit backup => 2 backups per data dir.
+
+    // Default home: install one skill, scan (auto-backup), explicit backup.
+    make_skill(&env.default_skills_dir(), "default-skill", "default desc");
+    assert!(env.run(&["scan"]).status.success());
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let b_default = env.run(&["backup"]);
+    dump(&b_default, "backup (default)");
+    assert!(b_default.status.success());
+
+    let default_backups = env.default_data_dir().join("backups");
+    let default_count_before_alt = count_subdirs(&default_backups);
+    assert!(
+        default_count_before_alt >= 1,
+        "default ~/.runai/backups/ should hold >=1 snapshot after scan+backup"
+    );
+
+    // Sleep so timestamps for the next backup differ.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+
+    // Alt data dir: install one skill there, scan (auto-backup), explicit
+    // backup — all routed through RUNE_DATA_DIR.
+    let alt = tempfile::tempdir().unwrap();
+    let alt_data = alt.path().to_path_buf();
+    std::fs::create_dir_all(alt_data.join("skills")).unwrap();
+    make_skill(&alt_data.join("skills"), "alt-skill", "alt desc");
+    assert!(
+        env.run_with_rune_data(&alt_data, &["scan"])
+            .status
+            .success()
+    );
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let b_alt = env.run_with_rune_data(&alt_data, &["backup"]);
+    dump(&b_alt, "backup (alt RUNE_DATA_DIR)");
+    assert!(b_alt.status.success());
+
+    let alt_backups = alt_data.join("backups");
+    assert!(
+        count_subdirs(&alt_backups) >= 1,
+        "alt RUNE_DATA_DIR should hold >=1 backup snapshot at {}",
+        alt_backups.display()
+    );
+
+    // Verify the NEWEST snapshots contain the right content (no leaks).
+    let default_snap = newest_backup_dir(&env.default_data_dir());
+    assert!(
+        default_snap
+            .join("managed-skills/default-skill/SKILL.md")
+            .exists(),
+        "default backup should contain default-skill"
+    );
+    assert!(
+        !default_snap
+            .join("managed-skills/alt-skill/SKILL.md")
+            .exists(),
+        "REGRESSION: default backup leaked alt-skill across RUNE_DATA_DIR"
+    );
+
+    let alt_snap = newest_backup_dir(&alt_data);
+    assert!(
+        alt_snap.join("managed-skills/alt-skill/SKILL.md").exists(),
+        "alt backup should contain alt-skill"
+    );
+    assert!(
+        !alt_snap
+            .join("managed-skills/default-skill/SKILL.md")
+            .exists(),
+        "REGRESSION: alt backup leaked default-skill from default ~/.runai/"
+    );
+
+    // Default ~/.runai/backups/ count unchanged after alt RUNE_DATA_DIR ops.
+    assert_eq!(
+        count_subdirs(&default_backups),
+        default_count_before_alt,
+        "alt RUNE_DATA_DIR backup should not write into default ~/.runai/backups/"
+    );
+}
+
