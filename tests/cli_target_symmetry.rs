@@ -211,3 +211,205 @@ fn enable_two_targets_keeps_both_symlinks_independent() {
         "codex link should remain after disabling on claude"
     );
 }
+
+// =============================================================================
+// PLANNING §5.17 — core::cli_target (4 CLI 抽象) — P0 high-risk regression suite
+// =============================================================================
+//
+// Unit-style tests on the `CliTarget` enum directly. They mutate the process
+// HOME env to redirect `dirs::home_dir()`; runs are serialised by
+// `HOME_MUTEX` and the outer cargo invocation already pins `--test-threads=1`,
+// so they never interleave with the physical e2e tests above.
+
+use std::str::FromStr;
+use std::sync::Mutex;
+
+use runai::core::cli_target::CliTarget;
+
+static HOME_MUTEX: Mutex<()> = Mutex::new(());
+
+/// Pins HOME to a fresh tempdir for the duration of a closure. Restores the
+/// previous HOME on drop. Other tests in this file (and other crates running
+/// in the same process under `--test-threads=1`) won't see the override after
+/// the closure returns.
+fn with_pinned_home<F: FnOnce(&Path) -> R, R>(f: F) -> R {
+    let _guard = HOME_MUTEX.lock().unwrap();
+    let scratch = tempfile::tempdir().unwrap();
+    let prev = std::env::var_os("HOME");
+    // SAFETY: serialised by HOME_MUTEX above.
+    unsafe {
+        std::env::set_var("HOME", scratch.path());
+    }
+    let result = f(scratch.path());
+    unsafe {
+        if let Some(p) = prev {
+            std::env::set_var("HOME", p);
+        } else {
+            std::env::remove_var("HOME");
+        }
+    }
+    result
+}
+
+#[test]
+fn skills_dir_cross_target_symmetry() {
+    with_pinned_home(|home| {
+        let mut seen: Vec<PathBuf> = Vec::new();
+        for target in CliTarget::ALL {
+            let dir = target.skills_dir();
+            // Each path must be non-empty and rooted under our pinned HOME so
+            // we know `dirs::home_dir()` is being respected.
+            assert!(
+                !dir.as_os_str().is_empty(),
+                "skills_dir() for {target:?} returned empty path"
+            );
+            assert!(
+                dir.starts_with(home),
+                "skills_dir() for {target:?} = {} not under pinned HOME {}",
+                dir.display(),
+                home.display(),
+            );
+            assert!(
+                dir.ends_with("skills"),
+                "skills_dir() for {target:?} did not end in 'skills': {}",
+                dir.display(),
+            );
+            assert!(
+                !seen.contains(&dir),
+                "skills_dir() for {target:?} collides with an earlier target: {}",
+                dir.display(),
+            );
+            seen.push(dir);
+        }
+
+        // Specific expected paths on unix.
+        assert_eq!(CliTarget::Claude.skills_dir(), home.join(".claude/skills"));
+        assert_eq!(CliTarget::Codex.skills_dir(), home.join(".codex/skills"));
+        assert_eq!(CliTarget::Gemini.skills_dir(), home.join(".gemini/skills"));
+        assert_eq!(
+            CliTarget::OpenCode.skills_dir(),
+            home.join(".opencode/skills"),
+        );
+        assert_eq!(seen.len(), 4, "expected exactly 4 distinct skills_dir paths");
+    });
+}
+
+#[test]
+fn mcp_config_path_cross_target_symmetry() {
+    with_pinned_home(|home| {
+        let mut seen: Vec<PathBuf> = Vec::new();
+        for target in CliTarget::ALL {
+            let p = target.mcp_config_path();
+            assert!(
+                !p.as_os_str().is_empty(),
+                "mcp_config_path() for {target:?} returned empty path"
+            );
+            assert!(
+                p.starts_with(home),
+                "mcp_config_path() for {target:?} = {} not under pinned HOME {}",
+                p.display(),
+                home.display(),
+            );
+            assert!(
+                !seen.contains(&p),
+                "mcp_config_path() for {target:?} collides with an earlier target: {}",
+                p.display(),
+            );
+            seen.push(p);
+        }
+
+        // Pin the exact paths the rest of the codebase depends on.
+        assert_eq!(CliTarget::Claude.mcp_config_path(), home.join(".claude.json"));
+        assert_eq!(
+            CliTarget::Codex.mcp_config_path(),
+            home.join(".codex/config.toml")
+        );
+        assert_eq!(
+            CliTarget::Gemini.mcp_config_path(),
+            home.join(".gemini/settings.json")
+        );
+        assert_eq!(
+            CliTarget::OpenCode.mcp_config_path(),
+            home.join(".config/opencode/opencode.json")
+        );
+
+        // Codex is the ONLY target that uses TOML — invariant that drives the
+        // canonical/toml serialisation router in `mcp_canonical`.
+        let toml_targets: Vec<_> = CliTarget::ALL
+            .iter()
+            .filter(|t| t.uses_toml())
+            .copied()
+            .collect();
+        assert_eq!(
+            toml_targets,
+            vec![CliTarget::Codex],
+            "exactly one target (Codex) must self-report as TOML"
+        );
+    });
+}
+
+#[test]
+fn format_predicates_match_targets() {
+    // Note: this test does NOT depend on HOME, so no pin needed.
+    for target in CliTarget::ALL {
+        let is_toml = target.uses_toml();
+        let is_opencode = target.uses_opencode_format();
+        match target {
+            CliTarget::Claude | CliTarget::Gemini => {
+                assert!(!is_toml, "{target:?} should not be TOML");
+                assert!(!is_opencode, "{target:?} should not be OpenCode format");
+            }
+            CliTarget::Codex => {
+                assert!(is_toml, "Codex must report uses_toml() == true");
+                assert!(
+                    !is_opencode,
+                    "Codex must report uses_opencode_format() == false"
+                );
+            }
+            CliTarget::OpenCode => {
+                assert!(!is_toml, "OpenCode must report uses_toml() == false");
+                assert!(
+                    is_opencode,
+                    "OpenCode must report uses_opencode_format() == true"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn cli_target_display_fromstr_roundtrip() {
+    for target in CliTarget::ALL {
+        let display = target.to_string();
+        // Display matches `name()`.
+        assert_eq!(display, target.name(), "Display != name() for {target:?}");
+        // Round-trips through FromStr.
+        let parsed = CliTarget::from_str(&display)
+            .unwrap_or_else(|_| panic!("FromStr failed for {display:?}"));
+        assert_eq!(parsed, *target, "FromStr roundtrip mismatch for {target:?}");
+    }
+    // FromStr only accepts the canonical lowercase name — uppercase / mixed
+    // case should fail (this is a pinned-behaviour test; if we ever switch to
+    // case-insensitive parsing it intentionally breaks here so we can update
+    // the docs in lockstep).
+    assert!(CliTarget::from_str("CLAUDE").is_err());
+    assert!(CliTarget::from_str("Codex").is_err());
+    // Unknown name rejected.
+    assert!(CliTarget::from_str("notacli").is_err());
+    assert!(CliTarget::from_str("").is_err());
+}
+
+#[test]
+fn cli_target_all_order_stable() {
+    // TUI tab numbering, `enabled_targets` ordering in `runai list`, and the
+    // watcher's path-enumeration all hard-code this order. Lock it in.
+    assert_eq!(
+        CliTarget::ALL.len(),
+        4,
+        "CliTarget::ALL must contain exactly 4 entries"
+    );
+    assert_eq!(CliTarget::ALL[0], CliTarget::Claude);
+    assert_eq!(CliTarget::ALL[1], CliTarget::Codex);
+    assert_eq!(CliTarget::ALL[2], CliTarget::Gemini);
+    assert_eq!(CliTarget::ALL[3], CliTarget::OpenCode);
+}
