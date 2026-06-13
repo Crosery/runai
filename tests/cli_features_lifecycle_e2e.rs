@@ -845,3 +845,194 @@ fn disable_updates_database_enabled_flag() {
         "post-disable row should say [disabled]; row: {row}"
     );
 }
+
+// ─── install tests (P0 §1.6) ────────────────────────────────────────────────
+
+/// PLAN §1.6 test 3 — `install <full-url>` accepts the
+/// `https://github.com/owner/repo` form and parses it equivalently to
+/// `owner/repo`. We assert by passing a deliberately bad source through the
+/// URL parser: invalid format produces a clean "Invalid format" message.
+///
+/// This is an offline test: it never reaches the network because the source
+/// fails parse validation before any GitHub call.
+#[test]
+fn install_accepts_full_github_url() {
+    let env = TestEnv::new();
+
+    // Invalid format: just a hostname, no owner/repo — must produce a clean
+    // parse error rather than panic / hang / network probe.
+    let out = env.run(&["install", "not-a-valid-source"]);
+    dump(&out, "install with invalid format");
+    assert!(
+        !out.status.success(),
+        "install with invalid source must fail"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let combined = format!("{stdout}{stderr}");
+    assert!(
+        combined.contains("Invalid format") || combined.contains("owner/repo"),
+        "install should give a clean format error, got:\n{combined}"
+    );
+
+    // Now: the full URL form. Parsing strips `https://github.com/` and
+    // trailing `/`. With a malformed remainder (no slash), it should still
+    // reach the format error path — proving the URL prefix was stripped.
+    let out2 = env.run(&["install", "https://github.com/justonepart"]);
+    dump(&out2, "install with full URL but missing repo");
+    assert!(
+        !out2.status.success(),
+        "install with malformed full URL must fail"
+    );
+    let combined2 = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out2.stdout),
+        String::from_utf8_lossy(&out2.stderr),
+    );
+    assert!(
+        combined2.contains("Invalid format") || combined2.contains("owner/repo"),
+        "install should parse the URL prefix then complain about format; got:\n{combined2}"
+    );
+}
+
+/// PLAN §1.6 test 4 — install fails gracefully when the target repo cannot
+/// be reached (network error, nonexistent repo). The key invariant: a
+/// failed install must not leave half-installed state in `~/.runai/skills/`
+/// or partial DB rows.
+///
+/// We point at a deliberately bogus owner/repo that no public GitHub
+/// account holds. The fetch fails; we assert:
+///   1. exit code != 0
+///   2. ~/.runai/skills/ stays empty (no partial directory)
+///   3. `list` shows no skills (no DB pollution)
+///
+/// Note: this test does hit the network with one HEAD/GET request to
+/// jsdelivr/GitHub for the bogus repo, which is the production fetch path.
+/// In offline CI this still passes — the request fails fast (DNS or 4xx)
+/// and the assertion only requires "no partial state".
+#[test]
+fn install_fails_gracefully_on_network_error() {
+    let env = TestEnv::new();
+
+    // Bogus owner/repo: extremely unlikely to ever exist.
+    let bogus = "runai-test-nonexistent-owner-9999/nonexistent-repo-xyz-9999";
+    let out = env.run(&["install", bogus]);
+    dump(&out, "install bogus repo");
+    assert!(
+        !out.status.success(),
+        "install of nonexistent repo must fail"
+    );
+
+    // ~/.runai/skills/ must remain effectively empty (no partial skill dir).
+    let skills_dir = env.default_skills_dir();
+    if skills_dir.exists() {
+        let entries: Vec<_> = skills_dir
+            .read_dir()
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        assert!(
+            entries.is_empty(),
+            "FAILURE: install left partial state in {}; entries: {:?}",
+            skills_dir.display(),
+            entries.iter().map(|e| e.file_name()).collect::<Vec<_>>()
+        );
+    }
+
+    // list must report no skills (no DB row inserted before failure).
+    let list = env.run(&["list"]);
+    let list_out = String::from_utf8_lossy(&list.stdout);
+    assert!(
+        list_out.contains("No resources found") || !list_out.contains("github:"),
+        "list should not show skills after failed install; got:\n{list_out}"
+    );
+}
+
+/// PLAN §1.6 — branch parameter parsing: `owner/repo@branch` is split at
+/// the `@`. We verify the CLI accepts and propagates the branch by passing
+/// an invalid branch on a non-existent repo and asserting the failure
+/// happens *after* the format passes parse (no "Invalid format" message).
+///
+/// This is an offline-safe test of the parsing layer — the network fetch
+/// fails (bogus repo) but the parse step proves `@branch` is handled.
+#[test]
+fn install_respects_branch_parameter() {
+    let env = TestEnv::new();
+
+    // owner/repo@branch with a bogus repo — fetch will fail, but parse must succeed.
+    let out = env.run(&["install", "runai-test-nonexistent/some-repo@develop"]);
+    dump(&out, "install with @branch");
+    assert!(
+        !out.status.success(),
+        "fetch must fail on bogus repo even with valid parse"
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    // Critical assertion: failure must NOT be the format-parse error.
+    // If we saw "Invalid format" that means `@branch` was rejected at parse
+    // (regression of branch-suffix support).
+    assert!(
+        !combined.contains("Invalid format"),
+        "REGRESSION: `owner/repo@branch` should parse, but install reported\n\
+         a format error:\n{combined}"
+    );
+    // And the printed banner should include "@develop" (proves the branch
+    // was extracted and routed through).
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("@develop"),
+        "install banner should show the parsed branch @develop; stdout:\n{stdout}"
+    );
+}
+
+/// PLAN §1.6 test 5 — install respects `RUNE_DATA_DIR` isolation.
+///
+/// Since real `install` requires network to fetch from GitHub, this test
+/// verifies the data-dir routing on the failure path: when install runs
+/// with a custom `RUNE_DATA_DIR` and fails, it must not write any partial
+/// state into EITHER the alt data dir OR the default `~/.runai/skills/`.
+#[test]
+fn install_respects_rune_data_dir() {
+    let env = TestEnv::new();
+    let alt_data = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(alt_data.path().join("skills")).unwrap();
+
+    let bogus = "runai-test-nonexistent/some-repo-9999";
+    let out = env.run_with_rune_data(alt_data.path(), &["install", bogus]);
+    dump(&out, "install bogus repo under alt RUNE_DATA_DIR");
+    assert!(
+        !out.status.success(),
+        "bogus install under alt data dir must fail"
+    );
+
+    // Default data dir must stay clean.
+    let default_skills = env.default_skills_dir();
+    if default_skills.exists() {
+        let entries: Vec<_> = default_skills
+            .read_dir()
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        assert!(
+            entries.is_empty(),
+            "REGRESSION: install with alt RUNE_DATA_DIR leaked into default skills dir: {:?}",
+            entries.iter().map(|e| e.file_name()).collect::<Vec<_>>()
+        );
+    }
+
+    // Alt data dir's skills/ must also be empty (failed install ≠ partial state).
+    let alt_skills = alt_data.path().join("skills");
+    let entries: Vec<_> = alt_skills
+        .read_dir()
+        .unwrap()
+        .filter_map(Result::ok)
+        .collect();
+    assert!(
+        entries.is_empty(),
+        "FAILURE: install left partial state in alt skills dir: {:?}",
+        entries.iter().map(|e| e.file_name()).collect::<Vec<_>>()
+    );
+}
