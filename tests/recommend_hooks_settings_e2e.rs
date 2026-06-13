@@ -434,3 +434,188 @@ fn install_hook_canonical_path() {
         "~/.config/opencode/opencode.json must not be touched by install-hook"
     );
 }
+
+// ─── recommend uninstall-hook ──────────────────────────────────────────────
+
+#[test]
+fn uninstall_hook_idempotent_preserves_others() {
+    let env = HookEnv::new();
+    let claude_dir = env.home().join(".claude");
+    std::fs::create_dir_all(&claude_dir).unwrap();
+
+    // Plant a settings.json with our hook PLUS unrelated user hooks. We do
+    // this directly rather than calling install-hook first, so the test
+    // isolates the uninstall path from any install behavior.
+    let pre = serde_json::json!({
+        "theme": "dark",
+        "hooks": {
+            "PostToolUse": [
+                {"hooks": [{"type": "command", "command": "my-formatter"}]}
+            ],
+            "UserPromptSubmit": [
+                {"hooks": [{"type": "command", "command": "user-existing-hook"}]},
+                {"hooks": [{"type": "command", "command": "runai recommend"}]},
+                {"hooks": [{"type": "command", "command": "another-user-hook"}]}
+            ]
+        }
+    });
+    std::fs::write(
+        env.settings_path(),
+        serde_json::to_string_pretty(&pre).unwrap(),
+    )
+    .unwrap();
+
+    // First uninstall removes our entry only.
+    let out1 = env.run(&["recommend", "uninstall-hook"]);
+    dump(&out1, "uninstall-hook run 1");
+    assert!(
+        out1.status.success(),
+        "uninstall-hook run 1 must exit 0; stderr={}",
+        String::from_utf8_lossy(&out1.stderr)
+    );
+    let stdout1 = String::from_utf8_lossy(&out1.stdout).to_string();
+    assert!(
+        stdout1.contains("hook removed"),
+        "first run should announce 'hook removed': stdout={stdout1}"
+    );
+
+    let after1 = read_settings(&env.settings_path());
+    let cmds1 = ups_commands(&after1);
+    assert!(
+        !cmds1.iter().any(|c| c == "runai recommend"),
+        "our UserPromptSubmit entry must be gone; cmds={cmds1:?}"
+    );
+    assert!(
+        cmds1.iter().any(|c| c == "user-existing-hook"),
+        "user-existing-hook must be preserved; cmds={cmds1:?}"
+    );
+    assert!(
+        cmds1.iter().any(|c| c == "another-user-hook"),
+        "another-user-hook must be preserved; cmds={cmds1:?}"
+    );
+    let post1 = post_tool_commands(&after1);
+    assert!(
+        post1.iter().any(|c| c == "my-formatter"),
+        "unrelated PostToolUse hook must be preserved; cmds={post1:?}"
+    );
+    assert_eq!(after1["theme"], "dark", "unrelated top-level keys preserved");
+
+    // Snapshot for idempotency comparison.
+    let snapshot = std::fs::read_to_string(env.settings_path()).unwrap();
+
+    // Second uninstall reports not-present and changes nothing.
+    let out2 = env.run(&["recommend", "uninstall-hook"]);
+    dump(&out2, "uninstall-hook run 2");
+    assert!(out2.status.success(), "uninstall-hook run 2 must exit 0");
+    let stdout2 = String::from_utf8_lossy(&out2.stdout).to_string();
+    assert!(
+        stdout2.contains("hook not present"),
+        "second run should announce 'hook not present': stdout={stdout2}"
+    );
+    let snapshot2 = std::fs::read_to_string(env.settings_path()).unwrap();
+    assert_eq!(
+        snapshot, snapshot2,
+        "settings.json bytes must not change on a no-op uninstall"
+    );
+}
+
+#[test]
+fn uninstall_hook_missing_file() {
+    // No ~/.claude/settings.json at all — uninstall-hook must succeed (exit
+    // 0) and announce that no changes were needed.
+    let env = HookEnv::new();
+    assert!(
+        !env.settings_path().exists(),
+        "precondition: settings.json must not exist"
+    );
+
+    let out = env.run(&["recommend", "uninstall-hook"]);
+    dump(&out, "uninstall-hook missing");
+    assert!(
+        out.status.success(),
+        "uninstall-hook on missing settings.json must exit 0 (idempotent), got status={}",
+        out.status
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(
+        stdout.contains("hook not present"),
+        "stdout should say 'hook not present, no changes': stdout={stdout}"
+    );
+    // It must NOT have silently created settings.json.
+    assert!(
+        !env.settings_path().exists(),
+        "uninstall-hook must not create settings.json when none existed"
+    );
+}
+
+#[test]
+fn uninstall_hook_valid_json_output() {
+    // After install + uninstall, settings.json must still be valid JSON and
+    // round-trip cleanly through another install-hook (no parse errors).
+    let env = HookEnv::new();
+    let claude_dir = env.home().join(".claude");
+    std::fs::create_dir_all(&claude_dir).unwrap();
+
+    // Start with a non-trivial pre-existing settings.json so the post-install
+    // file is structurally interesting.
+    let pre = serde_json::json!({
+        "theme": "dark",
+        "model": "sonnet",
+        "hooks": {
+            "UserPromptSubmit": [
+                {"hooks": [{"type": "command", "command": "user-existing-hook"}]}
+            ]
+        }
+    });
+    std::fs::write(
+        env.settings_path(),
+        serde_json::to_string_pretty(&pre).unwrap(),
+    )
+    .unwrap();
+
+    // install → uninstall.
+    let out_install = env.run(&["recommend", "install-hook"]);
+    dump(&out_install, "install-hook before uninstall");
+    assert!(out_install.status.success(), "install-hook must exit 0");
+
+    let out_uninstall = env.run(&["recommend", "uninstall-hook"]);
+    dump(&out_uninstall, "uninstall-hook after install");
+    assert!(out_uninstall.status.success(), "uninstall-hook must exit 0");
+
+    // settings.json must still parse as JSON.
+    let txt = std::fs::read_to_string(env.settings_path()).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&txt).unwrap_or_else(|e| {
+        panic!("uninstall-hook produced invalid JSON: {e}\n--- contents ---\n{txt}\n--- end ---")
+    });
+
+    // Other top-level keys preserved (we never touched them).
+    assert_eq!(parsed["theme"], "dark");
+    assert_eq!(parsed["model"], "sonnet");
+    // Our hook is gone.
+    let cmds = ups_commands(&parsed);
+    assert!(
+        !cmds.iter().any(|c| c == "runai recommend"),
+        "uninstall-hook must remove our entry; cmds={cmds:?}"
+    );
+
+    // Round-trip: a follow-up install-hook must read this file back cleanly
+    // (no parse errors) and reach the Installed branch again.
+    let out_reinstall = env.run(&["recommend", "install-hook"]);
+    dump(&out_reinstall, "reinstall after uninstall");
+    assert!(
+        out_reinstall.status.success(),
+        "reinstall after uninstall must exit 0; stderr={}",
+        String::from_utf8_lossy(&out_reinstall.stderr)
+    );
+    let stdout_re = String::from_utf8_lossy(&out_reinstall.stdout).to_string();
+    assert!(
+        stdout_re.contains("hook installed"),
+        "post-uninstall reinstall must hit the 'hook installed' branch (proves JSON parsed cleanly): stdout={stdout_re}"
+    );
+    let after_re = read_settings(&env.settings_path());
+    let cmds_re = ups_commands(&after_re);
+    assert!(
+        cmds_re.iter().any(|c| c == "runai recommend"),
+        "reinstall must put our hook back; cmds={cmds_re:?}"
+    );
+}
