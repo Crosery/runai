@@ -315,3 +315,203 @@ fn mcps_list_and_filter_identical_to_skills() {
         assert_eq!(app.visible_items()[0].name, "mcp-alpha");
     });
 }
+
+// ───────────────────── §2.4 Groups List & Search ──────────────────────────
+
+#[test]
+fn group_list_displays_all_with_counts() {
+    let tmp = TempDir::new().unwrap();
+    with_home(tmp.path(), || {
+        let mgr = make_manager(tmp.path());
+
+        // Plant 3 skills first so groups have something to point at.
+        plant_skill(&mgr, "s1");
+        plant_skill(&mgr, "s2");
+        plant_skill(&mgr, "s3");
+
+        // Enable s1 for Claude so group1's enabled count is 1.
+        let claude_dir = CliTarget::Claude.skills_dir();
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::os::unix::fs::symlink(mgr.paths().skills_dir().join("s1"), claude_dir.join("s1"))
+            .unwrap();
+
+        plant_group(&mgr, "group1", "GroupOne", "first group");
+        plant_group(&mgr, "group2", "GroupTwo", "second group");
+
+        // group1: 3 members (s1, s2, s3), 1 enabled (s1 only)
+        // group2: 2 members (s2, s3), 2 enabled... but s2/s3 not symlinked, so
+        // group2: 2 members, 0 enabled.
+        mgr.db()
+            .add_group_member("group1", "local:s1")
+            .expect("add s1 to group1");
+        mgr.db()
+            .add_group_member("group1", "local:s2")
+            .expect("add s2 to group1");
+        mgr.db()
+            .add_group_member("group1", "local:s3")
+            .expect("add s3 to group1");
+        mgr.db()
+            .add_group_member("group2", "local:s2")
+            .expect("add s2 to group2");
+        mgr.db()
+            .add_group_member("group2", "local:s3")
+            .expect("add s3 to group2");
+        // Enable s2 + s3 for Claude so group2 has 2 enabled.
+        std::os::unix::fs::symlink(mgr.paths().skills_dir().join("s2"), claude_dir.join("s2"))
+            .unwrap();
+        std::os::unix::fs::symlink(mgr.paths().skills_dir().join("s3"), claude_dir.join("s3"))
+            .unwrap();
+
+        let mut app = App::new(mgr);
+        app.tab = Tab::Groups;
+        app.active_target = CliTarget::Claude;
+        app.reload();
+
+        assert_eq!(app.groups.len(), 2, "both groups visible");
+        assert_eq!(app.visible_groups().len(), 2);
+
+        // groups are sorted by name alphabetically in `list_groups()`.
+        let by_id: std::collections::HashMap<String, (String, usize, usize, String)> = app
+            .groups
+            .iter()
+            .map(|(id, name, total, enabled, desc)| {
+                (
+                    id.clone(),
+                    (name.clone(), *total, *enabled, desc.clone()),
+                )
+            })
+            .collect();
+
+        let (n1, total1, enabled1, desc1) = by_id.get("group1").expect("group1 present").clone();
+        assert_eq!(n1, "GroupOne");
+        assert_eq!(total1, 3, "group1 has 3 members");
+        assert_eq!(enabled1, 3, "group1 has 3 enabled (s1,s2,s3 all symlinked)");
+        assert_eq!(desc1, "first group");
+
+        let (n2, total2, enabled2, desc2) = by_id.get("group2").expect("group2 present").clone();
+        assert_eq!(n2, "GroupTwo");
+        assert_eq!(total2, 2, "group2 has 2 members");
+        assert_eq!(enabled2, 2, "group2 has 2 enabled (s2,s3 symlinked)");
+        assert_eq!(desc2, "second group");
+    });
+}
+
+#[test]
+fn group_search_case_insensitive() {
+    let tmp = TempDir::new().unwrap();
+    with_home(tmp.path(), || {
+        let mgr = make_manager(tmp.path());
+        // Plant a sentinel skill so App doesn't boot into FirstLaunch mode.
+        plant_skill(&mgr, "sentinel-skill");
+        plant_group(&mgr, "g-my", "MyGroup", "");
+        plant_group(&mgr, "g-test", "TestGroup", "");
+        plant_group(&mgr, "g-other", "another", "");
+
+        let mut app = App::new(mgr);
+        app.mode = InputMode::Normal; // belt + suspenders against FirstLaunch
+        app.tab = Tab::Groups;
+        app.reload();
+        assert_eq!(app.visible_groups().len(), 3);
+
+        // 'my' matches MyGroup (case-insensitive)
+        app.search = "my".to_string();
+        let names: Vec<String> = app
+            .visible_groups()
+            .iter()
+            .map(|(_, n, _, _, _)| n.clone())
+            .collect();
+        assert_eq!(names, vec!["MyGroup".to_string()]);
+
+        // Uppercase 'MY' also matches
+        app.search = "MY".to_string();
+        let names: Vec<String> = app
+            .visible_groups()
+            .iter()
+            .map(|(_, n, _, _, _)| n.clone())
+            .collect();
+        assert_eq!(names, vec!["MyGroup".to_string()]);
+
+        // 'test' returns TestGroup
+        app.search = "test".to_string();
+        let names: Vec<String> = app
+            .visible_groups()
+            .iter()
+            .map(|(_, n, _, _, _)| n.clone())
+            .collect();
+        assert_eq!(names, vec!["TestGroup".to_string()]);
+
+        // 'xyz' returns empty
+        app.search = "xyz".to_string();
+        assert_eq!(app.visible_groups().len(), 0);
+    });
+}
+
+#[test]
+fn group_search_by_id() {
+    let tmp = TempDir::new().unwrap();
+    with_home(tmp.path(), || {
+        let mgr = make_manager(tmp.path());
+        plant_skill(&mgr, "sentinel-skill");
+        plant_group(&mgr, "my-group", "MyGroup", "");
+        plant_group(&mgr, "other-id", "Other", "");
+
+        let mut app = App::new(mgr);
+        app.mode = InputMode::Normal;
+        app.tab = Tab::Groups;
+        app.reload();
+
+        // Full id match
+        app.search = "my-group".to_string();
+        assert_eq!(app.visible_groups().len(), 1);
+        assert_eq!(app.visible_groups()[0].0, "my-group");
+
+        // Uppercase id match (case-insensitive)
+        app.search = "MY-GROUP".to_string();
+        assert_eq!(app.visible_groups().len(), 1);
+        assert_eq!(app.visible_groups()[0].0, "my-group");
+
+        // Substring '-group' should match by id (both 'my-group' has it).
+        app.search = "-group".to_string();
+        let ids: Vec<String> = app
+            .visible_groups()
+            .iter()
+            .map(|(id, _, _, _, _)| id.clone())
+            .collect();
+        assert!(ids.contains(&"my-group".into()));
+    });
+}
+
+#[test]
+fn search_clears_selected_index() {
+    let tmp = TempDir::new().unwrap();
+    with_home(tmp.path(), || {
+        let mgr = make_manager(tmp.path());
+        plant_skill(&mgr, "sentinel-skill");
+        plant_group(&mgr, "g-a", "Alpha", "");
+        plant_group(&mgr, "g-b", "Beta", "");
+        plant_group(&mgr, "g-c", "Gamma", "");
+
+        let mut app = App::new(mgr);
+        app.mode = InputMode::Normal;
+        app.tab = Tab::Groups;
+        app.reload();
+        app.selected = 2;
+
+        // Press '/' to enter search.
+        app.handle_key(key(KeyCode::Char('/')));
+        assert!(matches!(app.mode, InputMode::Search));
+        // search.clear() ran on '/' but the index is NOT reset until the
+        // first character is typed. Type one char to filter.
+        app.handle_key(key(KeyCode::Char('a')));
+        assert_eq!(
+            app.selected, 0,
+            "typing a char in search resets selected index to 0"
+        );
+
+        // ESC clears search and returns to Normal mode.
+        app.handle_key(key(KeyCode::Esc));
+        assert!(matches!(app.mode, InputMode::Normal));
+        assert!(app.search.is_empty(), "Esc clears search query");
+        assert_eq!(app.selected, 0);
+    });
+}
