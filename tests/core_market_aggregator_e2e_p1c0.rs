@@ -207,3 +207,80 @@ fn market_cache_ttl_enforcement() {
         "load_cache must return None for corrupt JSON, not panic"
     );
 }
+
+// ─── Test 3: find_skill_in_sources by name + source filter ─────────────────
+
+#[test]
+fn market_find_skill_by_name_and_filter() {
+    let tmp = tempfile::tempdir().expect("tmp data dir");
+    let data_dir = tmp.path();
+
+    let src1 = SourceEntry {
+        owner: "repo1".into(),
+        repo: "skills".into(),
+        branch: "main".into(),
+        skill_prefix: String::new(),
+        label: "Repo One".into(),
+        description: "".into(),
+        builtin: false,
+        enabled: true,
+    };
+    let src2 = SourceEntry {
+        owner: "repo2".into(),
+        repo: "skills".into(),
+        branch: "main".into(),
+        skill_prefix: String::new(),
+        label: "Repo Two".into(),
+        description: "".into(),
+        builtin: false,
+        enabled: true,
+    };
+
+    // Seed two separate caches.
+    save_cache(data_dir, &src1, &[mk_skill("foo", "foo", &src1)])
+        .expect("seed repo1 cache");
+    save_cache(data_dir, &src2, &[mk_skill("bar", "bar", &src2)])
+        .expect("seed repo2 cache");
+
+    let sources = vec![src1.clone(), src2.clone()];
+
+    // 1. (foo, None) — found in any enabled source.
+    let r = find_skill_in_sources(data_dir, &sources, "foo", None)
+        .expect("foo should be found without filter");
+    assert_eq!(r.name, "foo");
+    assert_eq!(r.source_repo, "repo1/skills");
+
+    // 2. (foo, Some("repo1")) — match by repo_id substring; repo1/skills
+    //    contains "repo1".
+    let r = find_skill_in_sources(data_dir, &sources, "foo", Some("repo1"))
+        .expect("foo should be found in repo1 filter");
+    assert_eq!(r.name, "foo");
+    assert_eq!(r.source_repo, "repo1/skills");
+
+    // 3. (foo, Some("Repo Two")) — filter matches src2's label, but src2's
+    //    cache has 'bar', not 'foo' → must return None.
+    let r = find_skill_in_sources(data_dir, &sources, "foo", Some("Repo Two"));
+    assert!(
+        r.is_none(),
+        "foo only lives in repo1; filtering to Repo Two must return None, got {r:?}"
+    );
+
+    // 4. (baz, None) — not in any cache.
+    let r = find_skill_in_sources(data_dir, &sources, "baz", None);
+    assert!(r.is_none(), "baz is in no cache; expect None");
+
+    // 5. Disabled source must be skipped entirely. Mark src1 disabled and
+    //    ask for 'foo' — it should now be unfindable because src2 doesn't
+    //    have foo and src1 is excluded.
+    let mut sources_disabled = sources.clone();
+    sources_disabled[0].enabled = false;
+    let r = find_skill_in_sources(data_dir, &sources_disabled, "foo", None);
+    assert!(
+        r.is_none(),
+        "find_skill_in_sources must skip disabled sources; expected None"
+    );
+
+    // 6. Empty source slice returns None gracefully (no panic, no lookup).
+    let r = find_skill_in_sources(data_dir, &[], "foo", None);
+    assert!(r.is_none(), "empty sources → None");
+}
