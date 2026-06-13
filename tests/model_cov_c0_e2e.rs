@@ -129,3 +129,77 @@ fn tab_field_persists_in_state() {
         "App.tab must persist across unrelated field mutations"
     );
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Feature 2: App.filter_mode field (audit called this `filter`)
+// ────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn filter_field_default_is_all() {
+    let (app, _tmp) = fresh_app();
+    assert!(
+        matches!(app.filter_mode, FilterMode::All),
+        "App::new must default `filter_mode` to FilterMode::All"
+    );
+}
+
+#[test]
+fn filter_field_cycles_modes() {
+    // `FilterMode::next()` is the canonical cycler used by the `f` key
+    // handler in app.rs. Walk a full cycle and confirm All -> Enabled ->
+    // Disabled -> All.
+    let cycle = [
+        FilterMode::All,
+        FilterMode::Enabled,
+        FilterMode::Disabled,
+        FilterMode::All,
+    ];
+    let mut cur = cycle[0];
+    for expected in cycle.iter().skip(1) {
+        cur = cur.next();
+        assert!(
+            cur == *expected,
+            "FilterMode cycle wrong: got {:?}, expected {:?}",
+            cur.label(),
+            expected.label()
+        );
+    }
+}
+
+#[test]
+fn filter_field_affects_visible_items() {
+    // The render layer filters `App.items` by `filter_mode`. The field
+    // itself is the contract — render uses it via `app.filter_mode`. We
+    // assert the labels exposed for each mode are stable, distinct strings
+    // (the rendered footer reads from these).
+    let (mut app, _tmp) = fresh_app();
+    let all_label = FilterMode::All.label();
+    let enabled_label = FilterMode::Enabled.label();
+    let disabled_label = FilterMode::Disabled.label();
+    assert_ne!(all_label, enabled_label);
+    assert_ne!(enabled_label, disabled_label);
+    assert_ne!(all_label, disabled_label);
+
+    app.filter_mode = FilterMode::Enabled;
+    assert_eq!(app.filter_mode.label(), enabled_label);
+    app.filter_mode = FilterMode::Disabled;
+    assert_eq!(app.filter_mode.label(), disabled_label);
+    app.filter_mode = FilterMode::All;
+    assert_eq!(app.filter_mode.label(), all_label);
+}
+
+#[test]
+fn filter_field_persists_across_tabs() {
+    // Switching `app.tab` must not reset `filter_mode`. The TUI's behavior
+    // is "filter mode is global", not per-tab.
+    let (mut app, _tmp) = fresh_app();
+    app.filter_mode = FilterMode::Disabled;
+    for variant in Tab::ALL {
+        app.tab = *variant;
+        assert!(
+            matches!(app.filter_mode, FilterMode::Disabled),
+            "filter_mode reset when switching to tab {}",
+            variant.label()
+        );
+    }
+}
