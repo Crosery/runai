@@ -595,3 +595,128 @@ fn sm_delete_group_preserves_members() {
         );
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  sm_recommend_stats  (src/mcp/tools/server.rs:886 — `fn sm_recommend_stats(...)`)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// `sm_recommend_stats` (all-time, no hours filter) must emit the
+/// documented telemetry sections: total calls, errors, token totals (prompt,
+/// completion, reasoning, total). These header lines are part of the MCP
+/// contract regardless of whether the DB has any rows yet.
+#[test]
+fn sm_recommend_stats_returns_router_metrics() {
+    let env = CovEnv::new();
+    // Trigger DB schema creation via any benign command first.
+    assert!(env.run(&["list"]).status.success(), "list must succeed");
+
+    let out = env.run(&["recommend", "stats"]);
+    dump(&out, "recommend stats");
+    assert!(out.status.success(), "recommend stats must succeed");
+
+    let body = String::from_utf8_lossy(&out.stdout);
+    let lower = body.to_lowercase();
+    assert!(
+        lower.contains("router") && lower.contains("telemetry"),
+        "stats header must mention router telemetry: {body}"
+    );
+    assert!(
+        lower.contains("total calls"),
+        "stats must include 'total calls' line: {body}"
+    );
+    assert!(
+        lower.contains("errors"),
+        "stats must include 'errors' line: {body}"
+    );
+}
+
+/// `sm_recommend_stats` must include all four token-count lines. This
+/// validates that the summary struct's prompt / completion / reasoning /
+/// total tokens are surfaced — every one is part of the MCP contract.
+#[test]
+fn sm_recommend_stats_includes_token_count() {
+    let env = CovEnv::new();
+    assert!(env.run(&["list"]).status.success());
+
+    let out = env.run(&["recommend", "stats"]);
+    dump(&out, "recommend stats tokens");
+    assert!(out.status.success());
+
+    let body = String::from_utf8_lossy(&out.stdout);
+    let lower = body.to_lowercase();
+    for field in [
+        "prompt tokens",
+        "completion tokens",
+        "reasoning tokens",
+        "total tokens",
+    ] {
+        assert!(
+            lower.contains(field),
+            "stats output must include `{field}` line: {body}"
+        );
+    }
+}
+
+/// `sm_recommend_stats` on a fresh, empty DB must succeed (not bail) and
+/// report zero counts. This is the "first call after install" guarantee —
+/// callers expect a valid summary structure even before the router has run
+/// once.
+#[test]
+fn sm_recommend_stats_handles_empty_db() {
+    let env = CovEnv::new();
+    // Force DB init via list.
+    assert!(env.run(&["list"]).status.success());
+
+    let out = env.run(&["recommend", "stats"]);
+    dump(&out, "recommend stats empty DB");
+    assert!(out.status.success(), "stats on empty DB must succeed");
+
+    let body = String::from_utf8_lossy(&out.stdout);
+    // Zero counts somewhere in the output. We don't require an exact string
+    // — only that the counter lines exist and at least one shows 0.
+    let lower = body.to_lowercase();
+    assert!(
+        lower.contains("total calls"),
+        "stats must list total calls even on empty DB: {body}"
+    );
+    let has_zero = body.contains(" 0") || body.contains(":0") || body.contains("\t0");
+    assert!(
+        has_zero,
+        "empty-DB stats must show at least one zero count: {body}"
+    );
+}
+
+/// `sm_recommend_stats` with the `hours` filter must change its window
+/// label — all-time → "last Nh". This pins the documented behaviour of the
+/// `hours` parameter (`since_ts = now - h * 3600`).
+#[test]
+fn sm_recommend_stats_filters_by_hours() {
+    let env = CovEnv::new();
+    assert!(env.run(&["list"]).status.success());
+
+    // All-time window label.
+    let all_time = env.run(&["recommend", "stats"]);
+    dump(&all_time, "recommend stats all-time");
+    assert!(all_time.status.success());
+    let all_body = String::from_utf8_lossy(&all_time.stdout);
+    assert!(
+        all_body.to_lowercase().contains("all-time"),
+        "all-time window must be labelled `all-time`: {all_body}"
+    );
+
+    // Hours-filtered window label.
+    let windowed = env.run(&["recommend", "stats", "--hours", "24"]);
+    dump(&windowed, "recommend stats --hours 24");
+    assert!(windowed.status.success(), "stats --hours 24 must succeed");
+    let windowed_body = String::from_utf8_lossy(&windowed.stdout);
+    let lower = windowed_body.to_lowercase();
+    assert!(
+        lower.contains("last 24h") || lower.contains("24h"),
+        "hours-filtered stats must label its window as `last 24h`: {windowed_body}"
+    );
+    // And the all-time label must NOT appear in the windowed variant.
+    assert!(
+        !lower.contains("all-time"),
+        "windowed stats must not say `all-time`: {windowed_body}"
+    );
+}
