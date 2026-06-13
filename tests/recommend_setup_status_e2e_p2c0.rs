@@ -261,3 +261,157 @@ fn recommend_setup_respects_rune_data_dir() {
         "status prints the custom config path, not HOME default; stdout={stdout}"
     );
 }
+
+// ───── Feature: recommend status ───────────────────────────────────────────
+
+/// Plant a minimal `config.toml` with the given api_key (may be empty) under
+/// the given RUNE_DATA_DIR. Skips the wizard so we can test what `status`
+/// shows for arbitrary saved states.
+fn plant_config(rune_data: &Path, api_key: &str) {
+    let body = format!(
+        "[recommend]\n\
+         enabled = true\n\
+         provider = \"anthropic\"\n\
+         base_url = \"https://api.anthropic.com\"\n\
+         model = \"claude-opus\"\n\
+         api_key = \"{api_key}\"\n\
+         top_k = 8\n\
+         min_prompt_len = 0\n\
+         summary_lang = \"zh\"\n"
+    );
+    std::fs::write(rune_data.join("config.toml"), body).expect("plant config.toml");
+}
+
+#[test]
+fn recommend_status_no_key_echo() {
+    // `recommend status` must NEVER echo the api_key. When the key is set in
+    // the config file, it prints the literal phrase "set in config" — not
+    // the secret. status output goes to stdout, which user transcripts and
+    // logs slurp by default.
+    let (home, rune_data) = isolated_env();
+    plant_config(&rune_data, "test-key-12345");
+
+    let out = runai_cmd(home.path(), &rune_data)
+        .args(["recommend", "status"])
+        .output()
+        .expect("spawn recommend status");
+    assert!(
+        out.status.success(),
+        "status must succeed; stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(
+        stdout.contains("enabled:        true"),
+        "status reflects enabled state; stdout={stdout}"
+    );
+    assert!(
+        stdout.contains("provider:       anthropic"),
+        "provider line uses lowercase tag matching the toml serde enum; stdout={stdout}"
+    );
+    assert!(
+        stdout.contains("api_key:        set in config"),
+        "api_key must be shown as 'set in config', not echoed; stdout={stdout}"
+    );
+    assert!(
+        !stdout.contains("test-key-12345"),
+        "api_key value must NEVER appear in status stdout; stdout={stdout}"
+    );
+    let cfg_path = rune_data.join("config.toml");
+    assert!(
+        stdout.contains(cfg_path.to_string_lossy().as_ref()),
+        "status prints the config file path so users can find it; stdout={stdout}"
+    );
+}
+
+#[test]
+fn recommend_status_env_api_key() {
+    // When the config has no api_key but the env var is set, status reports
+    // 'set via RUNAI_RECOMMEND_API_KEY'. The env var value itself MUST NOT
+    // be echoed (it often appears in debug logs already; status shouldn't
+    // amplify the leak surface).
+    let (home, rune_data) = isolated_env();
+    plant_config(&rune_data, "");
+
+    let mut cmd = runai_cmd(home.path(), &rune_data);
+    cmd.env("RUNAI_RECOMMEND_API_KEY", "env-key-secret-9876");
+    cmd.args(["recommend", "status"]);
+    let out = cmd.output().expect("spawn recommend status");
+    assert!(
+        out.status.success(),
+        "status must succeed; stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(
+        stdout.contains("api_key:        set via RUNAI_RECOMMEND_API_KEY"),
+        "env var must take precedence and be reported by name; stdout={stdout}"
+    );
+    assert!(
+        !stdout.contains("env-key-secret-9876"),
+        "env var value must NEVER appear in status stdout; stdout={stdout}"
+    );
+    // Cross-check the precedence ordering: when the file is empty AND env is
+    // present, the file is silent — only the env path shows.
+    assert!(
+        !stdout.contains("api_key:        set in config"),
+        "with empty config api_key and env set, the env path wins; stdout={stdout}"
+    );
+    assert!(
+        !stdout.contains("api_key:        missing"),
+        "with env set the key must NOT report as missing; stdout={stdout}"
+    );
+}
+
+#[test]
+fn recommend_status_disabled_defaults() {
+    // Fresh data dir, no setup ever run. status must succeed and display
+    // every field with their defaults so users can preview what setup
+    // would produce.
+    let (home, rune_data) = isolated_env();
+
+    let out = runai_cmd(home.path(), &rune_data)
+        .args(["recommend", "status"])
+        .output()
+        .expect("spawn recommend status");
+    assert!(
+        out.status.success(),
+        "status must succeed without a config file; stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(
+        stdout.contains("enabled:        false"),
+        "default enabled=false; stdout={stdout}"
+    );
+    assert!(
+        stdout.contains("provider:       openai-compat"),
+        "default provider is openai-compat; stdout={stdout}"
+    );
+    // No setup ran, no env var set → api_key reports missing.
+    assert!(
+        stdout.contains("api_key:        missing"),
+        "no config + no env var = missing; stdout={stdout}"
+    );
+    // Every required field renders, even with defaults.
+    for field in [
+        "enabled:",
+        "provider:",
+        "base_url:",
+        "model:",
+        "api_key:",
+        "top_k:",
+        "summary_lang:",
+        "min_prompt_len:",
+        "config file:",
+    ] {
+        assert!(
+            stdout.contains(field),
+            "status must display {field} line even on defaults; stdout={stdout}"
+        );
+    }
+}
+
