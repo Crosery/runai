@@ -78,7 +78,8 @@ fn plant_skill(mgr: &SkillManager, name: &str) -> String {
     let skill_dir: PathBuf = mgr.paths().data_dir().join("skills").join(name);
     std::fs::create_dir_all(&skill_dir).expect("create skill dir");
     std::fs::write(skill_dir.join("SKILL.md"), format!("# {name}\n")).expect("write SKILL.md");
-    mgr.register_local_skill(name).expect("register local skill");
+    mgr.register_local_skill(name)
+        .expect("register local skill");
     mgr.find_resource_id(name).expect("resource id present")
 }
 

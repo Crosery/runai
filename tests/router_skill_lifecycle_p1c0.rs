@@ -52,13 +52,7 @@ impl ServerEnv {
         let rune_data_dir = home.path().join(".runai");
 
         let child = Command::new(RUNAI_BIN)
-            .args([
-                "server",
-                "--port",
-                &port.to_string(),
-                "--host",
-                "127.0.0.1",
-            ])
+            .args(["server", "--port", &port.to_string(), "--host", "127.0.0.1"])
             .env("HOME", home.path())
             .env("RUNAI_NO_AUTOSPAWN", "1")
             .env("RUNE_DATA_DIR", &rune_data_dir)
@@ -91,10 +85,7 @@ impl ServerEnv {
             }
             std::thread::sleep(Duration::from_millis(80));
         }
-        panic!(
-            "runai server on port {} never came up within 5s",
-            self.port
-        );
+        panic!("runai server on port {} never came up within 5s", self.port);
     }
 
     fn home(&self) -> &Path {
@@ -377,10 +368,7 @@ fn skill_get_returns_md_appendix_and_records_adoption() {
     std::fs::write(sibling_dir.join("ref-a.md"), "auxiliary reference").unwrap();
     assert_eq!(env.usage_count("demo"), 0, "precondition: usage starts 0");
 
-    let url = format!(
-        "{}/skills/get/demo?session_id=sess-A",
-        env.base_url()
-    );
+    let url = format!("{}/skills/get/demo?session_id=sess-A", env.base_url());
     let (status, body, ct) = http_post_json(&url, &serde_json::json!({}), &[]);
 
     assert_eq!(
@@ -434,8 +422,11 @@ fn skill_get_with_user_header_prefixes_session_id() {
         "{}/skills/get/test-skill?session_id=local-id",
         env.base_url()
     );
-    let (status, body, _ct) =
-        http_post_json(&url, &serde_json::json!({}), &[("X-Runai-User", "alice@host")]);
+    let (status, body, _ct) = http_post_json(
+        &url,
+        &serde_json::json!({}),
+        &[("X-Runai-User", "alice@host")],
+    );
 
     assert_eq!(status.as_u16(), 200, "request must succeed");
     // The appendix-empty case still works (no siblings planted) and
@@ -465,8 +456,11 @@ fn skill_get_appendix_propagates_user_header_into_curl_lines() {
     std::fs::write(dir.join("scripts").join("run.py"), "print('hi')\n").unwrap();
 
     let url = format!("{}/skills/get/with-refs", env.base_url());
-    let (status, body, _ct) =
-        http_post_json(&url, &serde_json::json!({}), &[("X-Runai-User", "bob@host")]);
+    let (status, body, _ct) = http_post_json(
+        &url,
+        &serde_json::json!({}),
+        &[("X-Runai-User", "bob@host")],
+    );
 
     assert_eq!(status.as_u16(), 200, "request must succeed");
     assert!(
@@ -493,7 +487,10 @@ fn skill_get_returns_404_for_missing_skill() {
     env.plant_skill_and_scan("present", "this one exists");
     let pre_usage = env.usage_count("present");
 
-    let url = format!("{}/skills/get/nonexistent?session_id=sess-X", env.base_url());
+    let url = format!(
+        "{}/skills/get/nonexistent?session_id=sess-X",
+        env.base_url()
+    );
     let (status, body, _ct) = http_post_json(&url, &serde_json::json!({}), &[]);
 
     assert_eq!(
@@ -607,8 +604,7 @@ fn feedback_rejects_payload_missing_required_fields() {
     let env = ServerEnv::spawn();
     let url = format!("{}/feedback", env.base_url());
 
-    let (status, body, _ct) =
-        http_post_json(&url, &serde_json::json!({ "skill": "alpha" }), &[]);
+    let (status, body, _ct) = http_post_json(&url, &serde_json::json!({ "skill": "alpha" }), &[]);
     assert!(
         status.is_client_error(),
         "feedback with missing `note` must reject, got {status}: {body}"

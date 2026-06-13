@@ -70,8 +70,9 @@ fn recommend_hook_snippet_valid_json() {
     let json_block = extract_json_block(&stdout);
 
     // 1. Must parse as valid JSON (no trailing commas / dangling braces).
-    let parsed: serde_json::Value = serde_json::from_str(&json_block)
-        .unwrap_or_else(|e| panic!("hook-snippet JSON block is invalid: {e}\nblock:\n{json_block}"));
+    let parsed: serde_json::Value = serde_json::from_str(&json_block).unwrap_or_else(|e| {
+        panic!("hook-snippet JSON block is invalid: {e}\nblock:\n{json_block}")
+    });
 
     // 2. Must carry a hooks.UserPromptSubmit array.
     let user_prompt_submit = parsed

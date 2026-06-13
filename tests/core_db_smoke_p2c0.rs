@@ -42,8 +42,16 @@ fn bm25_tokenize_cjk_unigrams_and_bigrams_smoke() {
     let t = tokenize("做ppt视频");
     assert!(t.contains(&"ppt".to_string()), "missing latin ppt: {:?}", t);
     // Content unigrams retained
-    assert!(t.contains(&"视".to_string()), "missing '视' unigram: {:?}", t);
-    assert!(t.contains(&"频".to_string()), "missing '频' unigram: {:?}", t);
+    assert!(
+        t.contains(&"视".to_string()),
+        "missing '视' unigram: {:?}",
+        t
+    );
+    assert!(
+        t.contains(&"频".to_string()),
+        "missing '频' unigram: {:?}",
+        t
+    );
     // Adjacent-pair bigram emitted
     assert!(
         t.contains(&"视频".to_string()),
@@ -85,18 +93,40 @@ fn bm25_rank_scoring_and_length_norm_smoke() {
     // by B=0.75 length normalization. Doc with the rare term in a short doc
     // should rank higher than doc with the rare term diluted in a long doc.
     let docs = vec![
-        "python basics tutorial",                   // 3 tokens
+        "python basics tutorial",                    // 3 tokens
         "ruby guide programming language reference", // 5 tokens
-        "python advanced reference",                // 3 tokens
+        "python advanced reference",                 // 3 tokens
     ];
     let scores = rank("python", &docs);
     assert_eq!(scores.len(), 3);
     // doc[0] and doc[2] contain "python"; doc[1] does not
-    let s0 = scores.iter().find(|(i, _)| *i == 0).map(|(_, s)| *s).unwrap();
-    let s1 = scores.iter().find(|(i, _)| *i == 1).map(|(_, s)| *s).unwrap();
-    let s2 = scores.iter().find(|(i, _)| *i == 2).map(|(_, s)| *s).unwrap();
-    assert!(s0 > s1, "doc[0] (has python) > doc[1] (no python): {} > {}", s0, s1);
-    assert!(s2 > s1, "doc[2] (has python) > doc[1] (no python): {} > {}", s2, s1);
+    let s0 = scores
+        .iter()
+        .find(|(i, _)| *i == 0)
+        .map(|(_, s)| *s)
+        .unwrap();
+    let s1 = scores
+        .iter()
+        .find(|(i, _)| *i == 1)
+        .map(|(_, s)| *s)
+        .unwrap();
+    let s2 = scores
+        .iter()
+        .find(|(i, _)| *i == 2)
+        .map(|(_, s)| *s)
+        .unwrap();
+    assert!(
+        s0 > s1,
+        "doc[0] (has python) > doc[1] (no python): {} > {}",
+        s0,
+        s1
+    );
+    assert!(
+        s2 > s1,
+        "doc[2] (has python) > doc[1] (no python): {} > {}",
+        s2,
+        s1
+    );
     // Top-ranked must be one of the two python docs, not the ruby doc
     assert!(
         scores[0].0 == 0 || scores[0].0 == 2,
@@ -122,8 +152,16 @@ fn bm25_rank_exact_keyword_match_cjk_doc_smoke() {
     assert_eq!(scores[0].0, 0, "ppt doc must rank first, got {:?}", scores);
     assert!(scores[0].1 > 0.0, "score should be > 0 for matching doc");
     // Non-matching docs score zero
-    let s1 = scores.iter().find(|(i, _)| *i == 1).map(|(_, s)| *s).unwrap();
-    let s2 = scores.iter().find(|(i, _)| *i == 2).map(|(_, s)| *s).unwrap();
+    let s1 = scores
+        .iter()
+        .find(|(i, _)| *i == 1)
+        .map(|(_, s)| *s)
+        .unwrap();
+    let s2 = scores
+        .iter()
+        .find(|(i, _)| *i == 2)
+        .map(|(_, s)| *s)
+        .unwrap();
     assert_eq!(s1, 0.0);
     assert_eq!(s2, 0.0);
 }
@@ -206,13 +244,19 @@ mod backup_tests {
 
             let link_path = claude_skills.join("link-skill");
             std::os::unix::fs::symlink(&real_skill, &link_path).unwrap();
-            assert!(link_path.symlink_metadata().unwrap().file_type().is_symlink());
+            assert!(
+                link_path
+                    .symlink_metadata()
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
 
             let backup_dir = create_backup(paths).expect("create_backup");
 
             let backed_up_link = backup_dir.join("claude-skills").join("link-skill");
-            let md = std::fs::symlink_metadata(&backed_up_link)
-                .expect("backed up symlink should exist");
+            let md =
+                std::fs::symlink_metadata(&backed_up_link).expect("backed up symlink should exist");
             assert!(
                 md.file_type().is_symlink(),
                 "backed up entry must be a symlink, was: {:?}",
@@ -253,7 +297,10 @@ mod backup_tests {
                 backup_dir.join("managed-mcps/pencil.json").exists(),
                 "managed MCP backup copied"
             );
-            assert!(backup_dir.join("claude.json").exists(), "claude config copied");
+            assert!(
+                backup_dir.join("claude.json").exists(),
+                "claude config copied"
+            );
             assert!(
                 backup_dir.join("gemini-settings.json").exists(),
                 "gemini settings copied"
@@ -299,7 +346,11 @@ mod backup_tests {
             std::fs::write(home.join(".claude.json"), r#"{"v":"damaged"}"#).unwrap();
 
             let restored = restore_backup(paths, &ts).expect("restore_backup");
-            assert!(restored >= 2, "restore count expected >= 2, got {}", restored);
+            assert!(
+                restored >= 2,
+                "restore count expected >= 2, got {}",
+                restored
+            );
 
             assert!(
                 paths.skills_dir().join("foo/SKILL.md").exists(),
@@ -529,7 +580,11 @@ mod db_tests {
         db.insert_resource(&keeper).unwrap();
 
         let removed = db.dedupe_skills_by_name().unwrap();
-        assert!(removed >= 1, "dedupe should remove at least the loser, got {}", removed);
+        assert!(
+            removed >= 1,
+            "dedupe should remove at least the loser, got {}",
+            removed
+        );
 
         // Keeper survives, loser is gone
         assert!(
@@ -578,7 +633,10 @@ mod db_tests {
         };
         db.insert_trash_entry(&entry).unwrap();
 
-        let got = db.get_trash_entry("trash-1").unwrap().expect("entry present");
+        let got = db
+            .get_trash_entry("trash-1")
+            .unwrap()
+            .expect("entry present");
         assert_eq!(got.id, "trash-1");
         assert_eq!(got.name, "victim");
         assert_eq!(got.usage_count, 7);
@@ -641,7 +699,12 @@ mod db_tests {
         db.record_session_adoption("sid_abc", "skill1").unwrap();
         db.record_session_adoption("sid_abc", "skill2").unwrap();
         let routed = db.router_session_routed_skills("sid_abc").unwrap();
-        assert_eq!(routed.len(), 2, "two unique adopted skills, got {:?}", routed);
+        assert_eq!(
+            routed.len(),
+            2,
+            "two unique adopted skills, got {:?}",
+            routed
+        );
         assert!(routed.contains(&"skill1".to_string()));
         assert!(routed.contains(&"skill2".to_string()));
 
@@ -686,7 +749,7 @@ mod db_tests {
 #[cfg(not(target_os = "windows"))]
 mod enrich_tests {
     use runai::core::manager::SkillManager;
-    use runai::core::recommend::{enrich_skills, EnrichMode, EnrichReport, RecommendConfig};
+    use runai::core::recommend::{EnrichMode, EnrichReport, RecommendConfig, enrich_skills};
     use runai::core::resource::{Resource, ResourceKind, Source};
     use std::collections::HashMap;
     use tempfile::TempDir;
@@ -791,7 +854,11 @@ mod enrich_tests {
 
         // DB summary untouched
         let got = mgr.db().skill_ai_summary("alpha").unwrap();
-        assert!(got.contains("existing"), "summary should be unchanged: {}", got);
+        assert!(
+            got.contains("existing"),
+            "summary should be unchanged: {}",
+            got
+        );
     }
 
     #[test]

@@ -39,9 +39,7 @@ fn mcp_line(name: &str, ts: &str) -> String {
 }
 
 fn parse_ts(s: &str) -> i64 {
-    chrono::DateTime::parse_from_rfc3339(s)
-        .unwrap()
-        .timestamp()
+    chrono::DateTime::parse_from_rfc3339(s).unwrap().timestamp()
 }
 
 // ── core::transcript_stats ─────────────────────────────────────────────────
@@ -416,10 +414,7 @@ fn binary_replacement_atomic() {
     // ── Step 1: rename current → .bak (the updater's first destructive step).
     let backup = exe.with_extension("bak");
     std::fs::rename(&exe, &backup).unwrap();
-    assert!(
-        backup.exists(),
-        "after rename the .bak archive must exist",
-    );
+    assert!(backup.exists(), "after rename the .bak archive must exist",);
     assert!(
         !exe.exists(),
         "after rename the original path must be vacated",
@@ -472,7 +467,10 @@ fn cache_path_lives_under_data_dir() {
     // RUNE_DATA_DIR sandboxes don't share a single cache (which would let
     // one isolated test poison another).
     let tmp = tempfile::tempdir().unwrap();
-    assert!(read_cache(tmp.path()).is_none(), "empty data dir has no cache");
+    assert!(
+        read_cache(tmp.path()).is_none(),
+        "empty data dir has no cache"
+    );
 
     let cache = UpdateCache {
         latest_version: "0.7.0".to_string(),
@@ -486,6 +484,8 @@ fn cache_path_lives_under_data_dir() {
 
     // A second isolated tempdir must NOT see the first dir's cache.
     let other = tempfile::tempdir().unwrap();
-    assert!(read_cache(other.path()).is_none(),
-        "cache must be isolated per-data-dir; cross-dir leakage indicates a hardcoded path");
+    assert!(
+        read_cache(other.path()).is_none(),
+        "cache must be isolated per-data-dir; cross-dir leakage indicates a hardcoded path"
+    );
 }

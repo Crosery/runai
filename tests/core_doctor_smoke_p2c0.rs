@@ -30,7 +30,12 @@ fn auto_group_classifies_and_creates() {
     let tmp = tempfile::tempdir().unwrap();
     let mgr = SkillManager::with_base(tmp.path().to_path_buf()).unwrap();
 
-    for name in &["python-testing", "django-patterns", "rust-cli", "random-tool"] {
+    for name in &[
+        "python-testing",
+        "django-patterns",
+        "rust-cli",
+        "random-tool",
+    ] {
         let dir = mgr.paths().skills_dir().join(name);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
@@ -55,7 +60,10 @@ fn auto_group_classifies_and_creates() {
 
     let groups = mgr.list_groups().unwrap();
     let ids: Vec<&str> = groups.iter().map(|(id, _)| id.as_str()).collect();
-    assert!(ids.contains(&"python"), "missing `python` group, have {ids:?}");
+    assert!(
+        ids.contains(&"python"),
+        "missing `python` group, have {ids:?}"
+    );
     assert!(ids.contains(&"rust"), "missing `rust` group, have {ids:?}");
 
     // Members landed in the right group.
@@ -148,7 +156,10 @@ fn auto_group_id_derivation_from_name() {
                 "group id `{id}` has bad char `{c}`",
             );
         }
-        assert!(!id.starts_with('-') && !id.ends_with('-'), "trim failure: `{id}`");
+        assert!(
+            !id.starts_with('-') && !id.ends_with('-'),
+            "trim failure: `{id}`"
+        );
         assert!(!id.contains("--"), "dash run not collapsed in `{id}`");
     }
 }
@@ -428,7 +439,11 @@ fn doctor_fix_removes_dangling_symlinks_all_4_cli() {
     for cli in ["claude", "codex", "gemini", "opencode"] {
         let cli_dir = env.cli_skills_dir(cli);
         danglings.push(doctor::make_dangling_symlink(&cli_dir, "ghost"));
-        valids.push(doctor::create_valid_symlink(&cli_dir, &real_skill, "real-skill"));
+        valids.push(doctor::create_valid_symlink(
+            &cli_dir,
+            &real_skill,
+            "real-skill",
+        ));
 
         let plain = cli_dir.join("notes.txt");
         std::fs::write(&plain, b"hello").unwrap();
@@ -505,7 +520,10 @@ fn doctor_fix_idempotent() {
     let _real = doctor::make_skill_dir(&env.home().join(".runai/skills"), "real-skill");
     let mut danglings = Vec::new();
     for cli in ["claude", "codex"] {
-        danglings.push(doctor::make_dangling_symlink(&env.cli_skills_dir(cli), "ghost"));
+        danglings.push(doctor::make_dangling_symlink(
+            &env.cli_skills_dir(cli),
+            "ghost",
+        ));
     }
 
     let _ = env.run(&["doctor", "--fix"]);

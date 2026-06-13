@@ -89,7 +89,10 @@ fn resource_kind_as_str_lowercase() {
 #[test]
 fn resource_kind_fromstr_roundtrip() {
     // FromStr accepts the same lowercase strings as_str() emits
-    assert_eq!("skill".parse::<ResourceKind>().unwrap(), ResourceKind::Skill);
+    assert_eq!(
+        "skill".parse::<ResourceKind>().unwrap(),
+        ResourceKind::Skill
+    );
     assert_eq!("mcp".parse::<ResourceKind>().unwrap(), ResourceKind::Mcp);
 }
 

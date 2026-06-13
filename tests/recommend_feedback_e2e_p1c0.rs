@@ -14,8 +14,8 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -65,9 +65,7 @@ impl TestEnv {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("SKILL.md"),
-            format!(
-                "---\nname: {name}\ndescription: {body}\n---\n\n# {name}\n\n{body}\n"
-            ),
+            format!("---\nname: {name}\ndescription: {body}\n---\n\n# {name}\n\n{body}\n"),
         )
         .unwrap();
         let out = self.run(&["scan"]);
@@ -149,9 +147,7 @@ impl MockLlm {
     /// `choices[0].message.content`).
     fn start(content: &str) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock LLM");
-        listener
-            .set_nonblocking(true)
-            .expect("set nonblocking");
+        listener.set_nonblocking(true).expect("set nonblocking");
         let addr = listener.local_addr().expect("local addr");
         let base_url = format!("http://{}", addr);
         let shutdown = Arc::new(AtomicBool::new(false));
@@ -272,8 +268,9 @@ fn recommend_feedback_adjusts_score() {
     );
 
     // DB invariants: summary replaced + score lowered.
-    let (new_summary, new_score) =
-        env.get_summary("alpha").expect("summary row must exist post-feedback");
+    let (new_summary, new_score) = env
+        .get_summary("alpha")
+        .expect("summary row must exist post-feedback");
     assert_eq!(new_score, 3, "DB score must reflect LLM's new score (3)");
     assert!(
         new_summary.contains("triggers: alpha, beta, gamma"),

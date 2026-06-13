@@ -191,10 +191,7 @@ fn sm_backup_covers_all_cli_targets() {
 
     for target in ["claude", "codex", "gemini", "opencode"] {
         let target_dir = bd.join(format!("{target}-skills"));
-        assert!(
-            target_dir.is_dir(),
-            "missing {target}-skills under backup"
-        );
+        assert!(target_dir.is_dir(), "missing {target}-skills under backup");
         let link = target_dir.join("real-skill");
         // Should be a symlink, NOT a real dir/file (symlink preservation).
         let meta = std::fs::symlink_metadata(&link).unwrap_or_else(|e| {
@@ -275,10 +272,7 @@ fn sm_backup_returns_valid_path() {
         p.display()
     );
     let ts_marker = p.join("timestamp");
-    assert!(
-        ts_marker.is_file(),
-        "returned path has no timestamp marker"
-    );
+    assert!(ts_marker.is_file(), "returned path has no timestamp marker");
     let ts_in_marker = std::fs::read_to_string(&ts_marker).unwrap();
     let dirname = p.file_name().unwrap().to_string_lossy().to_string();
     assert_eq!(
@@ -386,10 +380,7 @@ fn sm_backups_timestamp_format_restore_compatible() {
     let s = Sandbox::new();
 
     // Make one backup with non-empty managed-skills so restore has something to do.
-    write_file(
-        &s.data_dir().join("skills/probe/SKILL.md"),
-        "# probe\n",
-    );
+    write_file(&s.data_dir().join("skills/probe/SKILL.md"), "# probe\n");
     let mut cmd = s.runai();
     cmd.arg("backup");
     let _ = run_ok(cmd);
@@ -465,10 +456,7 @@ fn sm_restore_specific_timestamp_overlays_state() {
     let s = Sandbox::new();
 
     // Seed: skill1 present.
-    write_file(
-        &s.data_dir().join("skills/skill1/SKILL.md"),
-        "# skill1\n",
-    );
+    write_file(&s.data_dir().join("skills/skill1/SKILL.md"), "# skill1\n");
 
     // Backup
     let mut b = s.runai();
@@ -478,10 +466,7 @@ fn sm_restore_specific_timestamp_overlays_state() {
 
     // Damage: remove skill1, add skill2.
     std::fs::remove_dir_all(s.data_dir().join("skills/skill1")).unwrap();
-    write_file(
-        &s.data_dir().join("skills/skill2/SKILL.md"),
-        "# skill2\n",
-    );
+    write_file(&s.data_dir().join("skills/skill2/SKILL.md"), "# skill2\n");
 
     // Restore the specific timestamp.
     let mut r = s.runai();
@@ -513,10 +498,7 @@ fn sm_restore_without_timestamp_uses_latest() {
     let s = Sandbox::new();
 
     // v1
-    write_file(
-        &s.data_dir().join("skills/probe/SKILL.md"),
-        "# version 1\n",
-    );
+    write_file(&s.data_dir().join("skills/probe/SKILL.md"), "# version 1\n");
     let mut b1 = s.runai();
     b1.arg("backup");
     let _o1 = run_ok(b1);
@@ -524,10 +506,7 @@ fn sm_restore_without_timestamp_uses_latest() {
     std::thread::sleep(std::time::Duration::from_millis(1100));
 
     // v2
-    write_file(
-        &s.data_dir().join("skills/probe/SKILL.md"),
-        "# version 2\n",
-    );
+    write_file(&s.data_dir().join("skills/probe/SKILL.md"), "# version 2\n");
     let mut b2 = s.runai();
     b2.arg("backup");
     let _o2 = run_ok(b2);
@@ -670,7 +649,10 @@ fn sm_restore_nonexistent_backup_returns_error() {
     );
 
     // Live data untouched.
-    assert!(live_path.is_file(), "live skill must remain after failed restore");
+    assert!(
+        live_path.is_file(),
+        "live skill must remain after failed restore"
+    );
     let after = std::fs::read_to_string(&live_path).unwrap();
     assert_eq!(
         before, after,

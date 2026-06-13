@@ -89,7 +89,9 @@ fn plant_skill(mgr: &SkillManager, name: &str) -> PathBuf {
         usage_count: 0,
         last_used_at: None,
     };
-    mgr.db().insert_resource(&resource).expect("insert skill row");
+    mgr.db()
+        .insert_resource(&resource)
+        .expect("insert skill row");
     dir
 }
 
@@ -375,10 +377,7 @@ fn group_list_displays_all_with_counts() {
             .groups
             .iter()
             .map(|(id, name, total, enabled, desc)| {
-                (
-                    id.clone(),
-                    (name.clone(), *total, *enabled, desc.clone()),
-                )
+                (id.clone(), (name.clone(), *total, *enabled, desc.clone()))
             })
             .collect();
 

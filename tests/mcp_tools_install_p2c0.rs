@@ -123,9 +123,9 @@ impl McpSession {
                 let inner = &v["result"]["structuredContent"]["result"];
                 let s = inner
                     .as_str()
-                    .unwrap_or_else(|| panic!(
-                        "expected structuredContent.result to be a string, got: {v}"
-                    ))
+                    .unwrap_or_else(|| {
+                        panic!("expected structuredContent.result to be a string, got: {v}")
+                    })
                     .to_string();
                 return s;
             }
@@ -306,12 +306,11 @@ fn sm_market_install_with_source_parameter() {
 fn sm_market_install_rejects_unsafe_args() {
     let s = scratch();
     let mut mcp = McpSession::new(s.path());
-    let out = mcp.call_tool(
-        1,
-        "sm_market_install",
-        json!({"name": "skill; rm -rf /"}),
+    let out = mcp.call_tool(1, "sm_market_install", json!({"name": "skill; rm -rf /"}));
+    assert!(
+        out.contains("Invalid name"),
+        "unsafe name not rejected: {out}"
     );
-    assert!(out.contains("Invalid name"), "unsafe name not rejected: {out}");
     assert!(
         !out.contains("runai market-install skill;"),
         "no command should be emitted for unsafe input: {out}"
@@ -400,18 +399,16 @@ fn seed_market_disabling_builtins(data_dir: &Path) {
     // List enough built-in sources to disable them; load_sources merges by
     // (builtin, repo_id). Anything not listed retains its default enabled
     // state, so we list the ones load_sources is documented to ship.
-    let mut sources: Vec<Value> = vec![
-        json!({
-            "owner": "testorg",
-            "repo": "testskills",
-            "branch": "main",
-            "skill_prefix": "",
-            "label": "testorg/testskills",
-            "description": "test source",
-            "builtin": false,
-            "enabled": true
-        }),
-    ];
+    let mut sources: Vec<Value> = vec![json!({
+        "owner": "testorg",
+        "repo": "testskills",
+        "branch": "main",
+        "skill_prefix": "",
+        "label": "testorg/testskills",
+        "description": "test source",
+        "builtin": false,
+        "enabled": true
+    })];
     for (owner, repo) in [
         ("anthropics", "claude-plugins-official"),
         ("affaan-m", "everything-claude-code"),
@@ -473,8 +470,8 @@ fn sm_market_list_all_returns_valid_json() {
 
     let mut mcp = McpSession::new(s.path());
     let out = mcp.call_tool(1, "sm_market", json!({}));
-    let parsed: Value =
-        serde_json::from_str(&out).unwrap_or_else(|e| panic!("sm_market did not return JSON ({e}): {out}"));
+    let parsed: Value = serde_json::from_str(&out)
+        .unwrap_or_else(|e| panic!("sm_market did not return JSON ({e}): {out}"));
     let arr = parsed
         .as_array()
         .unwrap_or_else(|| panic!("sm_market output is not an array: {out}"));
@@ -488,12 +485,21 @@ fn sm_market_list_all_returns_valid_json() {
         );
         assert!(entry["name"].is_string(), "name not string in {entry}");
         assert!(entry["source"].is_string(), "source not string in {entry}");
-        assert!(entry["installed"].is_boolean(), "installed not bool in {entry}");
+        assert!(
+            entry["installed"].is_boolean(),
+            "installed not bool in {entry}"
+        );
     }
     // Both seeded skills should appear.
     let names: Vec<&str> = arr.iter().filter_map(|e| e["name"].as_str()).collect();
-    assert!(names.contains(&"video-player"), "missing video-player: {names:?}");
-    assert!(names.contains(&"file-manager"), "missing file-manager: {names:?}");
+    assert!(
+        names.contains(&"video-player"),
+        "missing video-player: {names:?}"
+    );
+    assert!(
+        names.contains(&"file-manager"),
+        "missing file-manager: {names:?}"
+    );
 }
 
 #[test]
@@ -607,11 +613,7 @@ fn sm_market_no_results_helpful_message() {
     seed_market_disabling_builtins(&data_dir);
 
     let mut mcp = McpSession::new(s.path());
-    let out = mcp.call_tool(
-        1,
-        "sm_market",
-        json!({"search": "xyznonexistent99999"}),
-    );
+    let out = mcp.call_tool(1, "sm_market", json!({"search": "xyznonexistent99999"}));
     // The response is a human-readable message, not JSON.
     assert!(
         out.contains("No skills matching"),

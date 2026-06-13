@@ -128,7 +128,11 @@ fn recommend_setup_writes_config_0o600() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(&cfg_path).expect("stat").permissions().mode() & 0o777;
+        let mode = std::fs::metadata(&cfg_path)
+            .expect("stat")
+            .permissions()
+            .mode()
+            & 0o777;
         assert_eq!(
             mode, 0o600,
             "config.toml must be owner-only on unix (api_key on disk); got {mode:o}"
@@ -143,7 +147,10 @@ fn recommend_setup_idempotent_overwrites() {
     // First run — openai-compat / deepseek defaults + a first key.
     let first = "openai-compat\nhttps://api.deepseek.com/v1\ndeepseek-v4-flash\nfirst-key\nzh\n";
     let (ok1, out1, err1) = run_setup_with_answers(home.path(), rune_data.as_path(), first);
-    assert!(ok1, "first setup must succeed; stdout={out1}\nstderr={err1}");
+    assert!(
+        ok1,
+        "first setup must succeed; stdout={out1}\nstderr={err1}"
+    );
     let cfg_path = rune_data.join("config.toml");
     let first_contents = std::fs::read_to_string(&cfg_path).expect("read first config");
     assert!(
@@ -187,7 +194,11 @@ fn recommend_setup_idempotent_overwrites() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(&cfg_path).expect("stat").permissions().mode() & 0o777;
+        let mode = std::fs::metadata(&cfg_path)
+            .expect("stat")
+            .permissions()
+            .mode()
+            & 0o777;
         assert_eq!(
             mode, 0o600,
             "rewritten config.toml must remain owner-only; got {mode:o}"
@@ -414,4 +425,3 @@ fn recommend_status_disabled_defaults() {
         );
     }
 }
-

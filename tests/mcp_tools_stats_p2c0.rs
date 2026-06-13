@@ -150,7 +150,10 @@ impl Mcp {
         });
         me.send(&init);
         let resp = me.read_response();
-        assert_eq!(resp["jsonrpc"], "2.0", "init response not jsonrpc 2.0: {resp}");
+        assert_eq!(
+            resp["jsonrpc"], "2.0",
+            "init response not jsonrpc 2.0: {resp}"
+        );
         assert!(
             resp["result"]["serverInfo"].is_object(),
             "init missing serverInfo: {resp}"
@@ -174,7 +177,9 @@ impl Mcp {
 
     fn read_response(&mut self) -> serde_json::Value {
         let mut line = String::new();
-        self.reader.read_line(&mut line).expect("read response line");
+        self.reader
+            .read_line(&mut line)
+            .expect("read response line");
         serde_json::from_str(line.trim())
             .unwrap_or_else(|e| panic!("non-JSON line from mcp-serve: {e}\nGot: {line}"))
     }
@@ -284,7 +289,11 @@ fn sm_recommend_stats_all_time_window() {
     // labels and totals.
     for i in 0..10 {
         let ts = now - (i as i64 * 3600);
-        let model = if i % 2 == 0 { "claude-3.5-sonnet" } else { "gpt-4" };
+        let model = if i % 2 == 0 {
+            "claude-3.5-sonnet"
+        } else {
+            "gpt-4"
+        };
         insert_event(
             &conn,
             ts,
@@ -316,11 +325,20 @@ fn sm_recommend_stats_all_time_window() {
         "expected per-model section, got: {text}"
     );
     // Both models in summary
-    assert!(text.contains("claude-3.5-sonnet"), "expected sonnet in per-model: {text}");
-    assert!(text.contains("gpt-4"), "expected gpt-4 in per-model: {text}");
+    assert!(
+        text.contains("claude-3.5-sonnet"),
+        "expected sonnet in per-model: {text}"
+    );
+    assert!(
+        text.contains("gpt-4"),
+        "expected gpt-4 in per-model: {text}"
+    );
     // Each grouped row carries a calls + tokens column.
     assert!(text.contains("calls"), "row label includes 'calls': {text}");
-    assert!(text.contains("tokens"), "row label includes 'tokens': {text}");
+    assert!(
+        text.contains("tokens"),
+        "row label includes 'tokens': {text}"
+    );
 }
 
 #[test]

@@ -382,7 +382,6 @@ fn timeline_default_bucket_calculation() {
     drop(guard);
 }
 
-
 // ─── feature 2: GET /api/events ─────────────────────────────────────────────
 
 #[test]
@@ -432,8 +431,12 @@ fn events_pagination_limit_offset() {
     let i1 = ids(e1);
     let i2 = ids(e2);
     let i3 = ids(e3);
-    let all: std::collections::HashSet<i64> =
-        i1.iter().chain(i2.iter()).chain(i3.iter()).copied().collect();
+    let all: std::collections::HashSet<i64> = i1
+        .iter()
+        .chain(i2.iter())
+        .chain(i3.iter())
+        .copied()
+        .collect();
     assert_eq!(all.len(), 150, "pages must not overlap");
 
     // Newest-first ordering by ts.
@@ -528,7 +531,10 @@ fn events_filter_hit_only() {
     assert_eq!(events.len(), 2);
     for e in events {
         let chosen = e.get("chosen").and_then(|x| x.as_array()).unwrap();
-        assert!(!chosen.is_empty(), "hit_only events must have non-empty chosen");
+        assert!(
+            !chosen.is_empty(),
+            "hit_only events must have non-empty chosen"
+        );
     }
     drop(guard);
 }
@@ -684,10 +690,7 @@ fn event_by_id_not_found_empty_body() {
     let (home, _db) = fresh_env();
     let port = pick_free_port();
     let guard = spawn_server(home, port);
-    let (code, _body) = http_get(&format!(
-        "http://127.0.0.1:{}/api/event/99999",
-        guard.port
-    ));
+    let (code, _body) = http_get(&format!("http://127.0.0.1:{}/api/event/99999", guard.port));
     assert_eq!(code, 404, "non-existent event id should be 404, got {code}");
     drop(guard);
 }

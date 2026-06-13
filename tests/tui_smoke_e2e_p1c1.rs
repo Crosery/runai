@@ -166,10 +166,7 @@ fn search_mode_activates_on_slash() {
 fn search_mode_accumulates_input() {
     let tmp = TempDir::new().unwrap();
     with_isolated_home(tmp.path(), || {
-        let mut app = fresh_app(
-            &tmp.path().join("data"),
-            &["alpha", "beta", "gamma"],
-        );
+        let mut app = fresh_app(&tmp.path().join("data"), &["alpha", "beta", "gamma"]);
         app.handle_key(key(KeyCode::Char('/')));
         assert_eq!(app.search, "");
 
@@ -183,7 +180,11 @@ fn search_mode_accumulates_input() {
         app.handle_key(key(KeyCode::Char('p')));
         assert_eq!(app.search, "alp");
 
-        let visible: Vec<&str> = app.visible_items().iter().map(|r| r.name.as_str()).collect();
+        let visible: Vec<&str> = app
+            .visible_items()
+            .iter()
+            .map(|r| r.name.as_str())
+            .collect();
         assert_eq!(
             visible,
             vec!["alpha"],
@@ -196,10 +197,7 @@ fn search_mode_accumulates_input() {
 fn search_mode_backspace_deletes() {
     let tmp = TempDir::new().unwrap();
     with_isolated_home(tmp.path(), || {
-        let mut app = fresh_app(
-            &tmp.path().join("data"),
-            &["alpha", "beta", "gamma"],
-        );
+        let mut app = fresh_app(&tmp.path().join("data"), &["alpha", "beta", "gamma"]);
         // Enter search and accumulate "alpha".
         app.handle_key(key(KeyCode::Char('/')));
         for c in "alpha".chars() {
@@ -225,10 +223,7 @@ fn search_mode_backspace_deletes() {
 fn search_mode_enter_confirms() {
     let tmp = TempDir::new().unwrap();
     with_isolated_home(tmp.path(), || {
-        let mut app = fresh_app(
-            &tmp.path().join("data"),
-            &["alpha-skill", "beta"],
-        );
+        let mut app = fresh_app(&tmp.path().join("data"), &["alpha-skill", "beta"]);
         app.handle_key(key(KeyCode::Char('/')));
         for c in "alpha".chars() {
             app.handle_key(key(KeyCode::Char(c)));
@@ -246,7 +241,11 @@ fn search_mode_enter_confirms() {
             app.search, "alpha",
             "Enter preserves the query (search persists after confirm)"
         );
-        let visible: Vec<&str> = app.visible_items().iter().map(|r| r.name.as_str()).collect();
+        let visible: Vec<&str> = app
+            .visible_items()
+            .iter()
+            .map(|r| r.name.as_str())
+            .collect();
         assert_eq!(
             visible,
             vec!["alpha-skill"],
@@ -259,10 +258,7 @@ fn search_mode_enter_confirms() {
 fn search_mode_esc_cancels() {
     let tmp = TempDir::new().unwrap();
     with_isolated_home(tmp.path(), || {
-        let mut app = fresh_app(
-            &tmp.path().join("data"),
-            &["alpha", "beta", "gamma"],
-        );
+        let mut app = fresh_app(&tmp.path().join("data"), &["alpha", "beta", "gamma"]);
         app.handle_key(key(KeyCode::Char('/')));
         for c in "alpha".chars() {
             app.handle_key(key(KeyCode::Char(c)));
@@ -277,11 +273,7 @@ fn search_mode_esc_cancels() {
         assert_eq!(app.selected, 0, "Esc resets selected to 0");
 
         let visible: Vec<String> = app.visible_items().iter().map(|r| r.name.clone()).collect();
-        assert_eq!(
-            visible.len(),
-            3,
-            "Esc-cancel restores the unfiltered list"
-        );
+        assert_eq!(visible.len(), 3, "Esc-cancel restores the unfiltered list");
     });
 }
 
@@ -331,7 +323,10 @@ fn search_mode_preserves_query_across_tabs() {
         // Switch back to Skills
         app.handle_key(key(KeyCode::Char('H')));
         assert_eq!(app.tab.label(), "Skills");
-        assert_eq!(app.search, "", "search remains cleared after switching back");
+        assert_eq!(
+            app.search, "",
+            "search remains cleared after switching back"
+        );
     });
 }
 
@@ -441,11 +436,7 @@ fn scan_discovers_new_skills_in_all_cli_dirs() {
         app.handle_key(key(KeyCode::Char('s')));
 
         // Scan should have registered the new row in the DB.
-        let row = app
-            .mgr
-            .db()
-            .get_resource("local:test-new-skill")
-            .unwrap();
+        let row = app.mgr.db().get_resource("local:test-new-skill").unwrap();
         assert!(row.is_some(), "scan adopts the planted skill into the DB");
         assert_eq!(row.unwrap().name, "test-new-skill");
 
@@ -499,11 +490,7 @@ fn scan_respects_rune_data_dir_boundary() {
         app.handle_key(key(KeyCode::Char('s')));
 
         // The custom skill must be in the DB.
-        let custom_row = app
-            .mgr
-            .db()
-            .get_resource("local:skill-custom")
-            .unwrap();
+        let custom_row = app.mgr.db().get_resource("local:skill-custom").unwrap();
         assert!(
             custom_row.is_some(),
             "scan registered skill-custom from the custom data dir"
@@ -511,11 +498,7 @@ fn scan_respects_rune_data_dir_boundary() {
 
         // The default-dir skill MUST NOT be in the DB — that would mean scan
         // crossed the data-dir boundary.
-        let default_row = app
-            .mgr
-            .db()
-            .get_resource("local:skill-default")
-            .unwrap();
+        let default_row = app.mgr.db().get_resource("local:skill-default").unwrap();
         assert!(
             default_row.is_none(),
             "scan must NOT cross into the default data dir; skill-default \

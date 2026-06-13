@@ -26,11 +26,9 @@ fn key(code: KeyCode) -> KeyEvent {
 }
 
 fn with_home<F: FnOnce()>(tmp: &std::path::Path, f: F) {
-    let _guard = HOME_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned: std::sync::PoisonError<std::sync::MutexGuard<'_, ()>>| {
-            poisoned.into_inner()
-        });
+    let _guard = HOME_LOCK.lock().unwrap_or_else(
+        |poisoned: std::sync::PoisonError<std::sync::MutexGuard<'_, ()>>| poisoned.into_inner(),
+    );
     let original = std::env::var("HOME").ok();
     unsafe {
         std::env::set_var("HOME", tmp);
@@ -119,11 +117,7 @@ fn rename_group_updates_toml_and_reloads() {
     with_home(tmp.path(), || {
         let mut app = app_with_group(tmp.path(), "test-group", "OldName");
 
-        let toml_path = app
-            .mgr
-            .paths()
-            .groups_dir()
-            .join("test-group.toml");
+        let toml_path = app.mgr.paths().groups_dir().join("test-group.toml");
         assert!(
             toml_path.exists(),
             "precondition: group TOML must exist on disk"
@@ -195,11 +189,7 @@ fn rename_group_rejects_empty_name() {
     with_home(tmp.path(), || {
         let mut app = app_with_group(tmp.path(), "test-group", "OldName");
 
-        let toml_path = app
-            .mgr
-            .paths()
-            .groups_dir()
-            .join("test-group.toml");
+        let toml_path = app.mgr.paths().groups_dir().join("test-group.toml");
         let before = std::fs::read_to_string(&toml_path).unwrap();
 
         // Enter rename, clear input via backspaces.
@@ -245,11 +235,7 @@ fn cancel_rename_discards_changes() {
     with_home(tmp.path(), || {
         let mut app = app_with_group(tmp.path(), "test-group", "OldName");
 
-        let toml_path = app
-            .mgr
-            .paths()
-            .groups_dir()
-            .join("test-group.toml");
+        let toml_path = app.mgr.paths().groups_dir().join("test-group.toml");
         let before = std::fs::read_to_string(&toml_path).unwrap();
 
         // Enter rename, replace name with "NewName".
@@ -274,10 +260,7 @@ fn cancel_rename_discards_changes() {
 
         // On-disk TOML must be byte-identical (no write happened).
         let after = std::fs::read_to_string(&toml_path).unwrap();
-        assert_eq!(
-            before, after,
-            "TOML must be untouched after Esc cancel"
-        );
+        assert_eq!(before, after, "TOML must be untouched after Esc cancel");
 
         // Visible list still has the old name.
         let visible = app.visible_groups();

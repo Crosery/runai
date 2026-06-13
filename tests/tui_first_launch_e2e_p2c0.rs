@@ -98,9 +98,17 @@ fn first_launch_scans_all_cli_dirs_and_registers_mcps() {
 
     // Plant one skill under each CLI's skills dir. These would be adopted by
     // a scan that traversed CLI directories.
-    plant_skill(&env.home().join(".claude/skills"), "from-claude", GOOD_SKILL);
+    plant_skill(
+        &env.home().join(".claude/skills"),
+        "from-claude",
+        GOOD_SKILL,
+    );
     plant_skill(&env.home().join(".codex/skills"), "from-codex", GOOD_SKILL);
-    plant_skill(&env.home().join(".gemini/skills"), "from-gemini", GOOD_SKILL);
+    plant_skill(
+        &env.home().join(".gemini/skills"),
+        "from-gemini",
+        GOOD_SKILL,
+    );
     plant_skill(
         &env.home().join(".opencode/skills"),
         "from-opencode",
@@ -188,9 +196,7 @@ fn first_launch_scans_all_cli_dirs_and_registers_mcps() {
         touched_any,
         "register_all must produce at least one CLI config containing 'runai'; \
          configs checked: {candidate_configs:?}; registered={:?}; skipped={:?}; errors={:?}",
-        reg.registered,
-        reg.skipped,
-        reg.errors,
+        reg.registered, reg.skipped, reg.errors,
     );
 }
 
@@ -238,7 +244,10 @@ fn first_launch_logs_scan_errors_and_continues() {
     let reg = McpRegister::register_all(env.home());
     assert!(
         reg.errors.is_empty()
-            || reg.errors.iter().all(|e| !e.to_lowercase().contains("panic")),
+            || reg
+                .errors
+                .iter()
+                .all(|e| !e.to_lowercase().contains("panic")),
         "registration must not panic after a scan with errors; got {:?}",
         reg.errors,
     );

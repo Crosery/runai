@@ -87,10 +87,7 @@ fn usage_aggregates_transcripts() {
     // 1 hit on mcp "runai"
     let mcp = r#"{"type":"assistant","timestamp":"2026-04-17T03:00:00Z","message":{"role":"assistant","content":[{"type":"tool_use","name":"mcp__runai__sm_list","input":{}}]}}"#;
 
-    write_jsonl(
-        &log,
-        &[alpha, alpha, alpha, alpha, alpha, beta, beta, mcp],
-    );
+    write_jsonl(&log, &[alpha, alpha, alpha, alpha, alpha, beta, beta, mcp]);
 
     let out = runai_usage(home.path(), transcripts.path(), &[]);
     dump(&out, "usage_aggregates_transcripts");
@@ -109,12 +106,12 @@ fn usage_aggregates_transcripts() {
     assert!(stdout.contains("name"), "missing 'name' column header");
 
     // Rows for our three transcripts.
-    assert!(stdout.contains("alpha"), "missing skill alpha row: {stdout}");
-    assert!(stdout.contains("beta"), "missing skill beta row: {stdout}");
     assert!(
-        stdout.contains("runai"),
-        "missing mcp runai row: {stdout}"
+        stdout.contains("alpha"),
+        "missing skill alpha row: {stdout}"
     );
+    assert!(stdout.contains("beta"), "missing skill beta row: {stdout}");
+    assert!(stdout.contains("runai"), "missing mcp runai row: {stdout}");
 
     // type column distinguishes skill vs mcp.
     assert!(stdout.contains("skill"), "missing 'skill' type label");
@@ -177,10 +174,7 @@ fn usage_top_limit_caps_output() {
     );
 
     let stdout = String::from_utf8(out.stdout).expect("usage stdout utf8");
-    let non_empty: Vec<&str> = stdout
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .collect();
+    let non_empty: Vec<&str> = stdout.lines().filter(|l| !l.trim().is_empty()).collect();
 
     // header line + 3 data rows = 4
     assert_eq!(

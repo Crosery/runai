@@ -66,8 +66,8 @@ fn market_load_save_sources_roundtrip() {
     //    two user-added repos. Save it.
     let user_a = SourceEntry::from_input("crosery/runai-skills")
         .expect("parse user-added source from owner/repo");
-    let user_b = SourceEntry::from_input("foo/bar@dev")
-        .expect("parse user-added source with branch suffix");
+    let user_b =
+        SourceEntry::from_input("foo/bar@dev").expect("parse user-added source with branch suffix");
 
     // Take the first built-in and flip its enabled state to verify per-source
     // state is preserved on reload.
@@ -94,7 +94,10 @@ fn market_load_save_sources_roundtrip() {
         .iter()
         .find(|s| s.repo_id() == "crosery/runai-skills")
         .expect("user-added source crosery/runai-skills survived the roundtrip");
-    assert!(!reload_user_a.builtin, "user-added source must keep builtin=false");
+    assert!(
+        !reload_user_a.builtin,
+        "user-added source must keep builtin=false"
+    );
     assert_eq!(reload_user_a.owner, "crosery");
     assert_eq!(reload_user_a.repo, "runai-skills");
     assert_eq!(reload_user_a.branch, "main", "default branch is main");
@@ -237,10 +240,8 @@ fn market_find_skill_by_name_and_filter() {
     };
 
     // Seed two separate caches.
-    save_cache(data_dir, &src1, &[mk_skill("foo", "foo", &src1)])
-        .expect("seed repo1 cache");
-    save_cache(data_dir, &src2, &[mk_skill("bar", "bar", &src2)])
-        .expect("seed repo2 cache");
+    save_cache(data_dir, &src1, &[mk_skill("foo", "foo", &src1)]).expect("seed repo1 cache");
+    save_cache(data_dir, &src2, &[mk_skill("bar", "bar", &src2)]).expect("seed repo2 cache");
 
     let sources = vec![src1.clone(), src2.clone()];
 
@@ -335,7 +336,10 @@ fn market_plugin_marker_roundtrip() {
     // 6. save_plugin_marker is idempotent: calling it twice doesn't error
     //    and the file is still there.
     save_plugin_marker(data_dir, &src);
-    assert!(marker_path.is_file(), "second save_plugin_marker should be a no-op");
+    assert!(
+        marker_path.is_file(),
+        "second save_plugin_marker should be a no-op"
+    );
     assert!(is_plugin_source(data_dir, &src));
 
     // 7. Removing the marker file flips is_plugin_source back to false —

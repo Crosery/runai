@@ -141,7 +141,10 @@ fn delete_group_stages_confirmation() {
                 assert_eq!(id, "grp-keep");
                 assert_eq!(name, "GroupKeep");
             }
-            other => panic!("expected PendingDelete::Group, got {other:?}", other = other.is_some()),
+            other => panic!(
+                "expected PendingDelete::Group, got {other:?}",
+                other = other.is_some()
+            ),
         }
 
         // TOML still on disk before confirmation.
@@ -184,19 +187,11 @@ fn delete_group_removes_toml_preserves_members() {
         assert!(skill_a_dir.exists(), "skill 'alpha' physical dir survives");
         assert!(skill_b_dir.exists(), "skill 'beta' physical dir survives");
         assert!(
-            app.mgr
-                .db()
-                .get_resource("local:alpha")
-                .unwrap()
-                .is_some(),
+            app.mgr.db().get_resource("local:alpha").unwrap().is_some(),
             "skill 'alpha' DB row survives group delete"
         );
         assert!(
-            app.mgr
-                .db()
-                .get_resource("local:beta")
-                .unwrap()
-                .is_some(),
+            app.mgr.db().get_resource("local:beta").unwrap().is_some(),
             "skill 'beta' DB row survives group delete"
         );
 
@@ -395,11 +390,7 @@ fn confirm_add_member() {
         app.handle_key(key(KeyCode::Enter));
 
         // DB now lists the picked id as a member.
-        let member_ids = app
-            .mgr
-            .db()
-            .get_group_member_ids("g1")
-            .unwrap_or_default();
+        let member_ids = app.mgr.db().get_group_member_ids("g1").unwrap_or_default();
         assert!(
             member_ids.contains(&target_id),
             "expected DB to record member {target_id}, got {member_ids:?}"
@@ -624,11 +615,7 @@ fn remove_member_stages_confirmation() {
         }
 
         // DB still has the member (nothing committed yet).
-        let still_there = app
-            .mgr
-            .db()
-            .get_group_member_ids("g1")
-            .unwrap_or_default();
+        let still_there = app.mgr.db().get_group_member_ids("g1").unwrap_or_default();
         assert!(still_there.contains(&target.id));
     });
 }
@@ -658,11 +645,7 @@ fn remove_member_deletes_db_row_preserves_resource() {
         app.handle_key(key(KeyCode::Enter));
 
         // DB no longer carries the removed member.
-        let after = app
-            .mgr
-            .db()
-            .get_group_member_ids("g1")
-            .unwrap_or_default();
+        let after = app.mgr.db().get_group_member_ids("g1").unwrap_or_default();
         assert!(
             !after.contains(&removed.id),
             "removed member {0} should not be in g1 anymore, after={after:?}",
@@ -714,8 +697,7 @@ fn cancel_remove_member() {
         select_group_by_id(&mut app, "g1");
         open_group_detail(&mut app);
 
-        let before_ids: Vec<String> =
-            app.detail_members.iter().map(|r| r.id.clone()).collect();
+        let before_ids: Vec<String> = app.detail_members.iter().map(|r| r.id.clone()).collect();
         assert_eq!(before_ids.len(), 2);
 
         app.handle_key(key(KeyCode::Char('d')));
@@ -730,8 +712,7 @@ fn cancel_remove_member() {
 
         // detail_members untouched: 2 members still listed in the same
         // order.
-        let after_ids: Vec<String> =
-            app.detail_members.iter().map(|r| r.id.clone()).collect();
+        let after_ids: Vec<String> = app.detail_members.iter().map(|r| r.id.clone()).collect();
         assert_eq!(before_ids, after_ids);
 
         // DB still has both.
@@ -1012,7 +993,10 @@ fn toggle_group_mixed_kinds() {
         assert_eq!(row.2, 2, "group has 2 members (1 skill + 1 mcp)");
         // Partial coverage (skill enabled, mcp disabled) → toggle should
         // ENABLE all.
-        assert!(row.3 < row.2, "partial coverage triggers full-enable branch");
+        assert!(
+            row.3 < row.2,
+            "partial coverage triggers full-enable branch"
+        );
 
         // Space, not Enter — Enter opens detail; Space toggles on Groups.
         app.handle_key(key(KeyCode::Char(' ')));

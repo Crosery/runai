@@ -80,9 +80,7 @@ impl TestEnv {
             .spawn()
             .expect("spawn runai binary with stdin pipe");
         if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(stdin_bytes)
-                .expect("write to runai stdin");
+            stdin.write_all(stdin_bytes).expect("write to runai stdin");
             // Drop stdin to close it (EOF).
         }
         child.wait_with_output().expect("wait for runai")
@@ -131,11 +129,9 @@ impl TestEnv {
 
     fn count_summaries(db_path: &Path) -> i64 {
         let conn = rusqlite::Connection::open(db_path).expect("open db to count summaries");
-        conn.query_row(
-            "SELECT COUNT(*) FROM resource_ai_summary",
-            [],
-            |r| r.get::<_, i64>(0),
-        )
+        conn.query_row("SELECT COUNT(*) FROM resource_ai_summary", [], |r| {
+            r.get::<_, i64>(0)
+        })
         .expect("count rows")
     }
 }

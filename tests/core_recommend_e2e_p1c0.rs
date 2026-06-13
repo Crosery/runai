@@ -23,8 +23,8 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -325,9 +325,8 @@ impl MockLlm {
                                 // text is fine. First line is the mode tag
                                 // ("EXCLUSIVE" / "COMPATIBLE"), second is
                                 // reasoning, then skill names one per line.
-                                let content = format!(
-                                    "EXCLUSIVE\nreasoning: {reasoning}\n{skill}\n"
-                                );
+                                let content =
+                                    format!("EXCLUSIVE\nreasoning: {reasoning}\n{skill}\n");
                                 let body = serde_json::json!({
                                     "id": "mock",
                                     "object": "chat.completion",

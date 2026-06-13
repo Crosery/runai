@@ -120,11 +120,10 @@ fn scan_adopts_foreign_skill_from_cli_dir() {
     assert!(
         managed_path.join("SKILL.md").exists(),
         "test-skill1 should be in managed dir after scan, got: {:?}",
-        std::fs::read_dir(env.default_skills_dir())
-            .map(|it| it
-                .filter_map(|e| e.ok())
-                .map(|e| e.path())
-                .collect::<Vec<_>>())
+        std::fs::read_dir(env.default_skills_dir()).map(|it| it
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .collect::<Vec<_>>())
     );
 
     // The original CLI path should now be a symlink (not a real dir).

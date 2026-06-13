@@ -332,7 +332,8 @@ fn recommend_get_respects_rune_data_dir() {
     let home_db = sb.home_default_db_path();
     let home_usage = usage_count_at(&home_db, "delta");
     assert_eq!(
-        home_usage, 0,
+        home_usage,
+        0,
         "HOME/.runai/runai.db must NOT carry 'delta' usage when RUNE_DATA_DIR is set; home_db={}",
         home_db.display()
     );

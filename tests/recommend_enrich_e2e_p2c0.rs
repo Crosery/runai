@@ -94,7 +94,10 @@ fn enrich_default_config_is_a_noop_with_zero_stats() {
     );
     // The trailing block is rendered unconditionally — even when
     // enrich_skills returns EnrichReport::default() because enabled=false.
-    assert!(s.contains("enrichment done:"), "missing summary block; stdout={s}");
+    assert!(
+        s.contains("enrichment done:"),
+        "missing summary block; stdout={s}"
+    );
     assert!(s.contains("generated:"), "stdout={s}");
     assert!(s.contains("refreshed (stale):"), "stdout={s}");
     assert!(s.contains("skipped (up-to-date):"), "stdout={s}");

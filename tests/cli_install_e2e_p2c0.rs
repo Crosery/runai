@@ -246,7 +246,10 @@ fn install_respects_branch_parameter_in_parse() {
     ]);
     dump(&out, "install owner/repo@dev");
 
-    assert!(!out.status.success(), "install of nonexistent repo on @dev must fail");
+    assert!(
+        !out.status.success(),
+        "install of nonexistent repo on @dev must fail"
+    );
 
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);

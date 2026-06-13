@@ -38,15 +38,14 @@ fn dump(out: &std::process::Output, label: &str) {
 }
 
 fn read_json(path: &Path) -> serde_json::Value {
-    let raw = std::fs::read_to_string(path)
-        .unwrap_or_else(|_| panic!("read {} failed", path.display()));
-    serde_json::from_str(&raw)
-        .unwrap_or_else(|_| panic!("parse {} as json failed", path.display()))
+    let raw =
+        std::fs::read_to_string(path).unwrap_or_else(|_| panic!("read {} failed", path.display()));
+    serde_json::from_str(&raw).unwrap_or_else(|_| panic!("parse {} as json failed", path.display()))
 }
 
 fn read_toml(path: &Path) -> toml::Value {
-    let raw = std::fs::read_to_string(path)
-        .unwrap_or_else(|_| panic!("read {} failed", path.display()));
+    let raw =
+        std::fs::read_to_string(path).unwrap_or_else(|_| panic!("read {} failed", path.display()));
     raw.parse::<toml::Value>()
         .unwrap_or_else(|_| panic!("parse {} as toml failed", path.display()))
 }
@@ -434,21 +433,15 @@ fn unregister_symmetric_across_targets() {
     let cx = read_toml(&codex_config(home));
     let oj = read_json(&opencode_config(home));
 
-    let claude_has = cj
-        .get("mcpServers")
-        .and_then(|s| s.get("runai"))
-        .is_some();
-    let gemini_has = gj
-        .get("mcpServers")
-        .and_then(|s| s.get("runai"))
-        .is_some();
-    let codex_has = cx
-        .get("mcp_servers")
-        .and_then(|s| s.get("runai"))
-        .is_some();
+    let claude_has = cj.get("mcpServers").and_then(|s| s.get("runai")).is_some();
+    let gemini_has = gj.get("mcpServers").and_then(|s| s.get("runai")).is_some();
+    let codex_has = cx.get("mcp_servers").and_then(|s| s.get("runai")).is_some();
     let opencode_has = oj.get("mcp").and_then(|s| s.get("runai")).is_some();
 
-    assert!(!claude_has, ".claude.json must be runai-free after unregister");
+    assert!(
+        !claude_has,
+        ".claude.json must be runai-free after unregister"
+    );
     assert!(
         !gemini_has,
         ".gemini/settings.json must be runai-free after unregister"

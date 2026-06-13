@@ -258,7 +258,10 @@ fn market_search_respects_source_switch() {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         app.handle_key(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE));
         assert_eq!(app.market_source_idx, 1, "next source on `]`");
-        assert_eq!(app.search, "alpha", "search query is preserved across switch");
+        assert_eq!(
+            app.search, "alpha",
+            "search query is preserved across switch"
+        );
 
         // Now source 2 should show only its alpha matches (2 of them), NOT
         // re-using source 1's filtered cache.

@@ -169,10 +169,7 @@ fn backup_creates_independent_snapshots() {
         second_body.contains("VERSION TWO"),
         "second backup should reflect v2 mutation, got: {second_body:?}"
     );
-    assert_ne!(
-        first_body, second_body,
-        "two snapshots must be independent"
-    );
+    assert_ne!(first_body, second_body, "two snapshots must be independent");
 }
 
 /// A custom `RUNE_DATA_DIR` must place its backup under that directory and
@@ -475,8 +472,7 @@ fn restore_fails_on_unknown_timestamp() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     let combined = format!("{stdout}\n{stderr}");
     assert!(
-        combined.contains("Backup not found")
-            || combined.contains("Restore failed"),
+        combined.contains("Backup not found") || combined.contains("Restore failed"),
         "expected failure note in output, got:\nstdout={stdout}\nstderr={stderr}"
     );
     // Live state untouched: still there with original body.
@@ -501,7 +497,11 @@ fn restore_respects_rune_data_dir() {
     let default_data = home.join(".runai");
     std::fs::create_dir_all(default_data.join("skills")).unwrap();
     // Pre-seed default data with a separate skill — proof it's untouched.
-    let _ = make_skill(&default_data.join("skills"), "default-skill", "default body");
+    let _ = make_skill(
+        &default_data.join("skills"),
+        "default-skill",
+        "default body",
+    );
 
     let alt_root = tempfile::tempdir().unwrap();
     let alt_data = alt_root.path().join("alt-runai");

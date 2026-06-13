@@ -64,13 +64,7 @@ impl Server {
 
         let data_dir = home.path().join(".runai");
         let child = Command::new(RUNAI_BIN)
-            .args([
-                "server",
-                "--host",
-                "127.0.0.1",
-                "--port",
-                &port.to_string(),
-            ])
+            .args(["server", "--host", "127.0.0.1", "--port", &port.to_string()])
             .env("HOME", home.path())
             .env("RUNAI_NO_AUTOSPAWN", "1")
             .env("RUNE_DATA_DIR", &data_dir)
@@ -277,9 +271,8 @@ fn skills_lists_planted_skills_with_metadata() {
 fn skill_detail_returns_skill_md_content() {
     let srv = Server::spawn();
     let body_text = "x".repeat(10_000);
-    let md = format!(
-        "---\nname: test-skill\ndescription: small\n---\n\n# test-skill\n\n{body_text}\n"
-    );
+    let md =
+        format!("---\nname: test-skill\ndescription: small\n---\n\n# test-skill\n\n{body_text}\n");
     let md_len = md.len();
     srv.plant_skill_with_md_body("test-skill", &md);
 
@@ -437,8 +430,7 @@ fn skill_files_text_detection() {
     let (status, body) = http_get(&srv.url("/api/skill/mixed/files"));
     assert_eq!(status, 200, "body: {body}");
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
-    let mut is_text: std::collections::HashMap<String, bool> =
-        std::collections::HashMap::new();
+    let mut is_text: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
     for e in v["entries"].as_array().unwrap() {
         is_text.insert(
             e["path"].as_str().unwrap().to_string(),
@@ -446,11 +438,7 @@ fn skill_files_text_detection() {
         );
     }
     assert_eq!(is_text.get("SKILL.md"), Some(&true), "md is text");
-    assert_eq!(
-        is_text.get("scripts/foo.sh"),
-        Some(&true),
-        ".sh is text"
-    );
+    assert_eq!(is_text.get("scripts/foo.sh"), Some(&true), ".sh is text");
     assert_eq!(is_text.get("logo.png"), Some(&false), ".png is binary");
     assert_eq!(is_text.get("config.json"), Some(&true), ".json is text");
 }
@@ -574,10 +562,7 @@ fn skill_file_path_traversal_prevention() {
 
     let traversals = ["../secret.txt", "../../etc/passwd", "../../.bash_history"];
     for t in traversals {
-        let url = format!(
-            "/api/skill/safe/file?path={}",
-            urlencoded(t.as_bytes())
-        );
+        let url = format!("/api/skill/safe/file?path={}", urlencoded(t.as_bytes()));
         let (status, _body) = http_get(&srv.url(&url));
         assert_eq!(
             status, 404,

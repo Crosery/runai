@@ -131,7 +131,13 @@ fn list_shows_all_resources() {
     assert!(out.status.success(), "list must succeed");
 
     let s = stdout_of(&out);
-    for name in ["alpha-skill", "beta-skill", "gamma-skill", "mcp-one", "mcp-two"] {
+    for name in [
+        "alpha-skill",
+        "beta-skill",
+        "gamma-skill",
+        "mcp-one",
+        "mcp-two",
+    ] {
         assert!(
             s.contains(name),
             "list output is missing expected resource '{name}':\n{s}"

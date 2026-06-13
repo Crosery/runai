@@ -242,11 +242,7 @@ fn doctor_fix_dedupes_db_rows() {
     }
 
     // Insert row 1 (older)
-    let placeholders = col_list
-        .iter()
-        .map(|_| "?")
-        .collect::<Vec<_>>()
-        .join(",");
+    let placeholders = col_list.iter().map(|_| "?").collect::<Vec<_>>().join(",");
     let sql = format!(
         "INSERT INTO resources ({}) VALUES ({})",
         col_list.join(","),
@@ -306,10 +302,14 @@ fn doctor_fix_dedupes_db_rows() {
         row2_values.push(v2);
     }
 
-    let params1: Vec<&dyn rusqlite::ToSql> =
-        row1_values.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
-    let params2: Vec<&dyn rusqlite::ToSql> =
-        row2_values.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+    let params1: Vec<&dyn rusqlite::ToSql> = row1_values
+        .iter()
+        .map(|v| v as &dyn rusqlite::ToSql)
+        .collect();
+    let params2: Vec<&dyn rusqlite::ToSql> = row2_values
+        .iter()
+        .map(|v| v as &dyn rusqlite::ToSql)
+        .collect();
 
     conn.execute(&sql, params1.as_slice())
         .expect("insert row 1");

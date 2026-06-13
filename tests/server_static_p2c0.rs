@@ -60,13 +60,7 @@ impl ServerHandle {
         std::fs::create_dir_all(home.path().join(".runai")).unwrap();
         let port = pick_port();
         let child = Command::new(bin_path())
-            .args([
-                "server",
-                "--port",
-                &port.to_string(),
-                "--host",
-                "127.0.0.1",
-            ])
+            .args(["server", "--port", &port.to_string(), "--host", "127.0.0.1"])
             .env("HOME", home.path())
             .env("RUNE_DATA_DIR", home.path().join(".runai"))
             .env("RUNAI_NO_AUTOSPAWN", "1")
@@ -103,10 +97,7 @@ impl ServerHandle {
             }
             std::thread::sleep(Duration::from_millis(50));
         }
-        panic!(
-            "runai server on 127.0.0.1:{} never became ready",
-            self.port
-        );
+        panic!("runai server on 127.0.0.1:{} never became ready", self.port);
     }
 
     /// Minimal HTTP/1.1 GET. Returns (status_code, headers_lowercased, body_bytes).
@@ -399,8 +390,7 @@ fn summary_empty_server() {
         ct.starts_with("application/json"),
         "content-type starts with application/json, got {ct}"
     );
-    let v: serde_json::Value =
-        serde_json::from_slice(&body).expect("response body is valid JSON");
+    let v: serde_json::Value = serde_json::from_slice(&body).expect("response body is valid JSON");
     assert_eq!(v["total"].as_i64(), Some(0), "total is 0");
     assert_eq!(v["hits"].as_i64(), Some(0), "hits is 0");
     assert_eq!(v["errors"].as_i64(), Some(0), "errors is 0");
@@ -412,7 +402,10 @@ fn summary_empty_server() {
         v["avg_latency_ms"]
     );
     let apt = v["avg_prompt_tokens"].as_f64().expect("avg_prompt_tokens");
-    assert!(apt.abs() < f64::EPSILON, "avg_prompt_tokens is 0.0, got {apt}");
+    assert!(
+        apt.abs() < f64::EPSILON,
+        "avg_prompt_tokens is 0.0, got {apt}"
+    );
     assert_eq!(v["total_tokens"].as_i64(), Some(0), "total_tokens is 0");
     let pm = v["per_model"].as_array().expect("per_model is an array");
     assert!(pm.is_empty(), "per_model is empty, got {pm:?}");
@@ -496,7 +489,10 @@ fn summary_filters_by_hours_rolling_window() {
         "?hours=24 sees now + (now - 2h), not (now - 3d); got {h24}"
     );
     assert_eq!(h72, 3, "?hours=72 sees all 3 events; got {h72}");
-    assert_eq!(h1, 1, "?hours=1 sees only the just-inserted event; got {h1}");
+    assert_eq!(
+        h1, 1,
+        "?hours=1 sees only the just-inserted event; got {h1}"
+    );
     assert!(
         h24 >= h1,
         "monotonic: shrinking the window must not raise total ({h24} >= {h1})"

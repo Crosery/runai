@@ -73,7 +73,10 @@ fn mcp_serve_initializes_and_waits() {
     send_line(&mut stdin, &init_msg);
 
     let init_resp = read_jsonrpc_line(&mut reader);
-    assert_eq!(init_resp["jsonrpc"], "2.0", "init response not JSON-RPC 2.0");
+    assert_eq!(
+        init_resp["jsonrpc"], "2.0",
+        "init response not JSON-RPC 2.0"
+    );
     assert_eq!(init_resp["id"], 1, "init response id mismatch");
     assert!(
         init_resp["result"]["serverInfo"].is_object(),
@@ -114,10 +117,7 @@ fn mcp_serve_initializes_and_waits() {
     );
 
     // SmServer must publish sm_list — the contract test for §1.26 #2 leans on it.
-    let names: Vec<&str> = tools
-        .iter()
-        .filter_map(|t| t["name"].as_str())
-        .collect();
+    let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
     assert!(
         names.iter().any(|n| *n == "sm_list"),
         "tools/list missing 'sm_list'; got: {names:?}"

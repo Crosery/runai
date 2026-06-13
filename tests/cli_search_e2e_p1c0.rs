@@ -199,10 +199,7 @@ fn search_finds_installed_and_market_skills() {
     // 5. Already-installed names must not be duplicated in the Market section
     //    — `runai search` filters `installed_names.contains(...)` before
     //    pushing market candidates.
-    let market_block = stdout
-        .split("── Market")
-        .nth(1)
-        .unwrap_or("");
+    let market_block = stdout.split("── Market").nth(1).unwrap_or("");
     assert!(
         !market_block.contains("fronted-helper"),
         "installed skill must not also appear in Market section:\n{stdout}"
@@ -211,7 +208,10 @@ fn search_finds_installed_and_market_skills() {
     // 6. A query with no matches anywhere should print "No matches".
     let nothing = env.run(&["search", "zzzz-nonexistent-keyword-xyz"]);
     dump(&nothing, "search nothing");
-    assert!(nothing.status.success(), "search with no hits should still exit 0");
+    assert!(
+        nothing.status.success(),
+        "search with no hits should still exit 0"
+    );
     let nothing_out = String::from_utf8_lossy(&nothing.stdout);
     assert!(
         nothing_out.contains("No matches for 'zzzz-nonexistent-keyword-xyz'"),

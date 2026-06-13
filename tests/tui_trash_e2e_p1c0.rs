@@ -259,7 +259,11 @@ fn trash_search_by_name_and_id() {
     // search='id2' → 1 (resource_id substring).
     app.search = "id2".into();
     let v = app.visible_trash();
-    assert_eq!(v.len(), 1, "search='id2' should match resource_id substring");
+    assert_eq!(
+        v.len(),
+        1,
+        "search='id2' should match resource_id substring"
+    );
     assert_eq!(v[0].resource_id, "local:id2");
     assert_eq!(v[0].name, "beta");
 
@@ -362,6 +366,8 @@ fn trash_search_clamps_selection() {
 
     // Indexing visible_trash() with the clamped selected must not panic.
     let visible = app.visible_trash();
-    let entry = visible.get(app.selected).expect("selected indexes a visible entry");
+    let entry = visible
+        .get(app.selected)
+        .expect("selected indexes a visible entry");
     assert_eq!(entry.name, "match-me-skill");
 }

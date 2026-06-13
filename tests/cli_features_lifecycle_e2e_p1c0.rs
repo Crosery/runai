@@ -375,7 +375,10 @@ fn trash_list_handles_empty_trash() {
 
     let list = env.run(&["trash", "list"]);
     dump(&list, "trash list (empty)");
-    assert!(list.status.success(), "trash list on empty trash must succeed");
+    assert!(
+        list.status.success(),
+        "trash list on empty trash must succeed"
+    );
     let out = stdout_of(&list);
     assert!(
         out.contains("Trash is empty."),
@@ -432,9 +435,7 @@ fn trash_empty_clears_all() {
     let env = TestEnv::new();
 
     // Seed 5 skills, scan, uninstall them all so trash holds 5 entries.
-    let names = [
-        "empty-1", "empty-2", "empty-3", "empty-4", "empty-5",
-    ];
+    let names = ["empty-1", "empty-2", "empty-3", "empty-4", "empty-5"];
     for n in &names {
         make_skill(&env.skills_dir(), n, &format!("payload for {n}"));
     }
@@ -552,7 +553,11 @@ fn trash_empty_respects_rune_data_dir() {
     let alt_trash = alt_data.join("trash");
     let count_dirs = |p: &Path| -> usize {
         std::fs::read_dir(p)
-            .map(|rd| rd.filter_map(|e| e.ok()).filter(|e| e.path().is_dir()).count())
+            .map(|rd| {
+                rd.filter_map(|e| e.ok())
+                    .filter(|e| e.path().is_dir())
+                    .count()
+            })
             .unwrap_or(0)
     };
     assert!(

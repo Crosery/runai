@@ -214,7 +214,10 @@ fn register_ignores_rune_data_dir() {
     );
 
     // CLI configs should be under HOME, not under alt_data.
-    assert!(home.join(".claude.json").is_file(), "claude config under HOME missing");
+    assert!(
+        home.join(".claude.json").is_file(),
+        "claude config under HOME missing"
+    );
     assert!(home.join(".gemini/settings.json").is_file());
     assert!(home.join(".codex/config.toml").is_file());
     assert!(home.join(".config/opencode/opencode.json").is_file());
@@ -368,7 +371,8 @@ fn unregister_symmetric_across_targets() {
     // All 4 configs must be free of runai — no target preference.
     let claude = read_json(&home.join(".claude.json"));
     assert!(
-        claude.get("mcpServers")
+        claude
+            .get("mcpServers")
             .and_then(|s| s.get("runai"))
             .is_none(),
         "claude still has runai after unregister: {claude}"
@@ -376,7 +380,8 @@ fn unregister_symmetric_across_targets() {
 
     let gemini = read_json(&home.join(".gemini/settings.json"));
     assert!(
-        gemini.get("mcpServers")
+        gemini
+            .get("mcpServers")
             .and_then(|s| s.get("runai"))
             .is_none(),
         "gemini still has runai after unregister: {gemini}"

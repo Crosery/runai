@@ -41,8 +41,7 @@ impl Env {
         }
         std::fs::create_dir_all(home.path().join(".runai/skills"))
             .expect("pre-create managed skills dir");
-        std::fs::create_dir_all(home.path().join(".runai/mcps"))
-            .expect("pre-create mcps dir");
+        std::fs::create_dir_all(home.path().join(".runai/mcps")).expect("pre-create mcps dir");
         Self { home }
     }
 
@@ -58,9 +57,8 @@ impl Env {
     fn seed_skill(&self, name: &str, description: &str) {
         let dir = self.data_dir().join("skills").join(name);
         std::fs::create_dir_all(&dir).expect("create skill dir");
-        let skill_md = format!(
-            "---\nname: {name}\ndescription: {description}\n---\n{name} body.\n"
-        );
+        let skill_md =
+            format!("---\nname: {name}\ndescription: {description}\n---\n{name} body.\n");
         std::fs::write(dir.join("SKILL.md"), skill_md).expect("write SKILL.md");
     }
 
@@ -279,11 +277,7 @@ fn list_group_filter_isolates_members() {
     env.cli(&["group", "add", "test-group", "member-one"]);
     env.cli(&["group", "add", "test-group", "member-two"]);
 
-    let body = call_tool(
-        &env,
-        "sm_list",
-        serde_json::json!({"group": "test-group"}),
-    );
+    let body = call_tool(&env, "sm_list", serde_json::json!({"group": "test-group"}));
 
     // Header reports 2 resources (the two group members).
     assert!(
@@ -324,7 +318,10 @@ fn status_json_shape_complete() {
     let parsed: serde_json::Value =
         serde_json::from_str(&body).expect("sm_status body must be valid JSON");
 
-    assert_eq!(parsed["target"], "claude", "default target should be claude");
+    assert_eq!(
+        parsed["target"], "claude",
+        "default target should be claude"
+    );
     assert!(
         parsed["skills_enabled"].is_i64() || parsed["skills_enabled"].is_u64(),
         "skills_enabled missing/non-int: {parsed}"
@@ -346,7 +343,10 @@ fn status_json_shape_complete() {
         .expect("runai_version must be a string");
     // Looks like a semver-ish version (digits.digits.digits[-tail])
     assert!(
-        ver.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false),
+        ver.chars()
+            .next()
+            .map(|c| c.is_ascii_digit())
+            .unwrap_or(false),
         "runai_version doesn't look like a version: {ver}"
     );
 
@@ -367,18 +367,15 @@ fn status_target_param_respected() {
     env.cli(&["scan"]);
 
     let body = call_tool(&env, "sm_status", serde_json::json!({"target": "codex"}));
-    let parsed: serde_json::Value =
-        serde_json::from_str(&body).expect("body is JSON");
-    assert_eq!(parsed["target"], "codex", "target should be codex: {parsed}");
+    let parsed: serde_json::Value = serde_json::from_str(&body).expect("body is JSON");
+    assert_eq!(
+        parsed["target"], "codex",
+        "target should be codex: {parsed}"
+    );
 
     // Also test gemini for full target-passthrough coverage
-    let body2 = call_tool(
-        &env,
-        "sm_status",
-        serde_json::json!({"target": "gemini"}),
-    );
-    let parsed2: serde_json::Value =
-        serde_json::from_str(&body2).expect("body2 is JSON");
+    let body2 = call_tool(&env, "sm_status", serde_json::json!({"target": "gemini"}));
+    let parsed2: serde_json::Value = serde_json::from_str(&body2).expect("body2 is JSON");
     assert_eq!(
         parsed2["target"], "gemini",
         "target should be gemini: {parsed2}"
@@ -406,8 +403,7 @@ fn status_surfaces_pending_updates() {
     .expect("write update-check.json");
 
     let body = call_tool(&env, "sm_status", serde_json::json!({}));
-    let parsed: serde_json::Value =
-        serde_json::from_str(&body).expect("body is JSON");
+    let parsed: serde_json::Value = serde_json::from_str(&body).expect("body is JSON");
 
     assert_eq!(
         parsed["update_available"], true,
@@ -421,8 +417,7 @@ fn status_surfaces_pending_updates() {
         .as_str()
         .expect("update_hint should be present");
     assert!(
-        hint.to_lowercase().contains("runai update")
-            || hint.to_lowercase().contains("newer"),
+        hint.to_lowercase().contains("runai update") || hint.to_lowercase().contains("newer"),
         "update_hint should mention runai update or newer version: {hint}"
     );
 }

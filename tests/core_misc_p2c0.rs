@@ -195,9 +195,7 @@ fn skills_dir_cross_target_symmetry() {
     let mut seen: Vec<PathBuf> = Vec::new();
     for t in CliTarget::ALL {
         let dir = t.skills_dir();
-        let expect = home
-            .join(format!(".{}", t.name()))
-            .join("skills");
+        let expect = home.join(format!(".{}", t.name())).join("skills");
         assert_eq!(dir, expect, "skills_dir mismatch for {t}");
         assert!(!dir.as_os_str().is_empty(), "empty skills_dir for {t}");
         assert!(
@@ -349,13 +347,11 @@ fn watcher_fires_on_file_modify() {
     std::fs::write(&f, r#"{"v":1}"#).unwrap();
 
     let (tx, rx) = std::sync::mpsc::channel::<()>();
-    let mut deb = notify_debouncer_mini::new_debouncer(
-        std::time::Duration::from_millis(150),
-        move |_res| {
+    let mut deb =
+        notify_debouncer_mini::new_debouncer(std::time::Duration::from_millis(150), move |_res| {
             let _ = tx.send(());
-        },
-    )
-    .unwrap();
+        })
+        .unwrap();
     deb.watcher()
         .watch(&f, notify::RecursiveMode::NonRecursive)
         .unwrap();

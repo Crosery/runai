@@ -115,8 +115,11 @@ fn repo_rules_additive() {
 
     // Repo rule alone — name doesn't match anything in NAME_RULES but the
     // repo rule still kicks in.
-    let groups2 =
-        Classifier::suggest_groups_with_source("totally-novel", "", Some(("vercel-labs", "skills")));
+    let groups2 = Classifier::suggest_groups_with_source(
+        "totally-novel",
+        "",
+        Some(("vercel-labs", "skills")),
+    );
     assert_eq!(
         groups2,
         vec!["Superpower".to_string()],
@@ -356,8 +359,11 @@ fn deduplication_and_ordering() {
     // Ordering across keyword-fallback: name pass is empty for `random-tool`,
     // so keyword fallback runs and emits in iteration order. Then repo rule
     // appends. Verify keyword-derived group precedes repo-derived group.
-    let groups4 =
-        Classifier::suggest_groups_with_source("random-tool", "rust helpers", Some(("vercel-labs", "skills")));
+    let groups4 = Classifier::suggest_groups_with_source(
+        "random-tool",
+        "rust helpers",
+        Some(("vercel-labs", "skills")),
+    );
     let rust_idx = groups4
         .iter()
         .position(|g| g == "Rust")

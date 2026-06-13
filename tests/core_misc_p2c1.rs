@@ -55,7 +55,11 @@ fn mcp_canonical_normalizes_opencode_shape() {
     let canon = to_canonical(&oc);
     assert_eq!(canon["command"], json!("/bin/foo"));
     assert_eq!(canon["args"], json!(["arg1", "arg2"]));
-    assert_eq!(canon["disabled"], json!(true), "enabled:false → disabled:true");
+    assert_eq!(
+        canon["disabled"],
+        json!(true),
+        "enabled:false → disabled:true"
+    );
     assert!(
         canon.get("enabled").is_none(),
         "enabled key stripped (consumed)"
@@ -516,11 +520,13 @@ fn mcp_register_opencode_command_is_array_not_string() {
         "command array must include mcp-serve, got {arr:?}"
     );
     assert_eq!(
-        oc_json["mcp"]["runai"]["enabled"], serde_json::json!(true),
+        oc_json["mcp"]["runai"]["enabled"],
+        serde_json::json!(true),
         "OpenCode entry must be enabled by default"
     );
     assert_eq!(
-        oc_json["mcp"]["runai"]["type"], serde_json::json!("local"),
+        oc_json["mcp"]["runai"]["type"],
+        serde_json::json!("local"),
         "OpenCode entry must carry type:local"
     );
 }
@@ -592,9 +598,7 @@ fn mcp_register_creates_missing_cli_dirs() {
         "Codex config.toml created"
     );
     assert!(
-        tmp.path()
-            .join(".config/opencode/opencode.json")
-            .is_file(),
+        tmp.path().join(".config/opencode/opencode.json").is_file(),
         "OpenCode opencode.json created"
     );
 

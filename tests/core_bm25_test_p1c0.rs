@@ -141,7 +141,10 @@ fn rank_empty_inputs() {
 
     // Whitespace-only query has no tokens → also empty.
     let r3 = rank("   ", &docs2);
-    assert!(r3.is_empty(), "whitespace-only query must return empty rank");
+    assert!(
+        r3.is_empty(),
+        "whitespace-only query must return empty rank"
+    );
 
     // Both empty.
     let r4 = rank("", &docs);
