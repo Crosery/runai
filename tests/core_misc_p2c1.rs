@@ -386,3 +386,275 @@ fn mcp_discovery_empty_home_returns_empty_no_error() {
         results.len()
     );
 }
+
+// =====================================================================
+//  Feature 3: core::mcp_register (high-risk: writes 4 CLI configs)
+// =====================================================================
+
+use runai::core::mcp_register::McpRegister;
+
+/// 1. register_all_symmetric_across_targets — register_all() writes the runai
+/// entry to all four CLIs in their format-specific shape.
+#[test]
+fn mcp_register_all_symmetric_across_four_targets() {
+    let tmp = tempfile::tempdir().unwrap();
+
+    let result = McpRegister::register_all(tmp.path());
+    // Errors should be empty, every target should be either registered or
+    // skipped (idempotent case). On a fresh empty HOME all four should land
+    // in "registered".
+    assert!(
+        result.errors.is_empty(),
+        "no errors expected, got {:?}",
+        result.errors
+    );
+    let total = result.registered.len() + result.skipped.len();
+    assert_eq!(
+        total, 4,
+        "all four CLI targets accounted for, got registered={:?} skipped={:?}",
+        result.registered, result.skipped
+    );
+    assert_eq!(
+        result.registered.len(),
+        4,
+        "fresh home: all four should be NEWLY registered, got {:?}",
+        result.registered
+    );
+
+    // Claude: ~/.claude.json has mcpServers.runai
+    let claude_json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(tmp.path().join(".claude.json")).unwrap())
+            .unwrap();
+    assert!(
+        claude_json["mcpServers"]["runai"]["command"].is_string(),
+        "Claude config has mcpServers.runai.command as string"
+    );
+    assert_eq!(claude_json["mcpServers"]["runai"]["args"][0], "mcp-serve");
+
+    // Gemini: ~/.gemini/settings.json has mcpServers.runai
+    let gem_json: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(tmp.path().join(".gemini/settings.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(gem_json["mcpServers"]["runai"]["command"].is_string());
+
+    // Codex: ~/.codex/config.toml has [mcp_servers.runai]
+    let codex_text = std::fs::read_to_string(tmp.path().join(".codex/config.toml")).unwrap();
+    assert!(
+        codex_text.contains("[mcp_servers.runai]"),
+        "Codex TOML has [mcp_servers.runai] section, got:\n{codex_text}"
+    );
+
+    // OpenCode: ~/.config/opencode/opencode.json has mcp.runai with array command
+    let oc_json: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(tmp.path().join(".config/opencode/opencode.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        oc_json["mcp"]["runai"]["command"].is_array(),
+        "OpenCode command MUST be an array, got {:?}",
+        oc_json["mcp"]["runai"]["command"]
+    );
+}
+
+/// 2. register_idempotent — second register_all() reports all four as
+/// skipped (already registered with same binary path); no duplicate entries.
+#[test]
+fn mcp_register_is_idempotent_on_second_call() {
+    let tmp = tempfile::tempdir().unwrap();
+
+    let first = McpRegister::register_all(tmp.path());
+    assert_eq!(first.registered.len(), 4);
+    let second = McpRegister::register_all(tmp.path());
+    assert!(
+        second.errors.is_empty(),
+        "second call should produce no errors, got {:?}",
+        second.errors
+    );
+    assert_eq!(
+        second.skipped.len(),
+        4,
+        "second call: all four should be skipped (idempotent), got registered={:?} skipped={:?}",
+        second.registered,
+        second.skipped
+    );
+
+    // Claude config has exactly one runai entry (count occurrences in the
+    // mcpServers object — there can be at most one key per name).
+    let claude_json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(tmp.path().join(".claude.json")).unwrap())
+            .unwrap();
+    let mcp_obj = claude_json["mcpServers"].as_object().unwrap();
+    let runai_keys: Vec<_> = mcp_obj.keys().filter(|k| k.as_str() == "runai").collect();
+    assert_eq!(runai_keys.len(), 1, "exactly one runai entry, no dupes");
+}
+
+/// 3. register_opencode_command_array — OpenCode's `command` MUST be an
+/// array (load-bearing for the OpenCode MCP parser). A string format would
+/// silently break.
+#[test]
+fn mcp_register_opencode_command_is_array_not_string() {
+    let tmp = tempfile::tempdir().unwrap();
+    let result = McpRegister::register_all(tmp.path());
+    assert!(result.errors.is_empty(), "errors={:?}", result.errors);
+
+    let oc_text =
+        std::fs::read_to_string(tmp.path().join(".config/opencode/opencode.json")).unwrap();
+    let oc_json: serde_json::Value = serde_json::from_str(&oc_text).unwrap();
+    let cmd = &oc_json["mcp"]["runai"]["command"];
+    assert!(
+        cmd.is_array(),
+        "OpenCode command must be an array, got {cmd:?}"
+    );
+    let arr = cmd.as_array().unwrap();
+    assert!(!arr.is_empty(), "command array must not be empty");
+    // [0] is the binary; [1..] are args. mcp-serve must appear somewhere
+    // (typically arr[1]).
+    let strs: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
+    assert!(
+        strs.iter().any(|s| *s == "mcp-serve"),
+        "command array must include mcp-serve, got {arr:?}"
+    );
+    assert_eq!(
+        oc_json["mcp"]["runai"]["enabled"], serde_json::json!(true),
+        "OpenCode entry must be enabled by default"
+    );
+    assert_eq!(
+        oc_json["mcp"]["runai"]["type"], serde_json::json!("local"),
+        "OpenCode entry must carry type:local"
+    );
+}
+
+/// 4. register_codex_toml_format — Codex uses TOML (not JSON), with
+/// type="stdio" and string command.
+#[test]
+fn mcp_register_codex_uses_toml_with_type_stdio() {
+    let tmp = tempfile::tempdir().unwrap();
+    let result = McpRegister::register_all(tmp.path());
+    assert!(result.errors.is_empty(), "errors={:?}", result.errors);
+
+    let codex_path = tmp.path().join(".codex/config.toml");
+    assert!(codex_path.exists(), "Codex config.toml must be created");
+    let codex_text = std::fs::read_to_string(&codex_path).unwrap();
+
+    // Must be TOML, not JSON — JSON parse must fail, TOML parse must succeed.
+    assert!(
+        serde_json::from_str::<serde_json::Value>(&codex_text).is_err(),
+        "Codex config must be TOML, not JSON"
+    );
+    let table: toml::Table = codex_text.parse().expect("valid TOML");
+    let servers = table
+        .get("mcp_servers")
+        .and_then(|v| v.as_table())
+        .expect("[mcp_servers] section");
+    let runai = servers
+        .get("runai")
+        .and_then(|v| v.as_table())
+        .expect("[mcp_servers.runai] entry");
+    assert_eq!(
+        runai.get("type").and_then(|v| v.as_str()),
+        Some("stdio"),
+        "Codex entry needs type=\"stdio\""
+    );
+    // command is a STRING in Codex (not array).
+    assert!(
+        runai.get("command").and_then(|v| v.as_str()).is_some(),
+        "Codex command must be a string, got {:?}",
+        runai.get("command")
+    );
+}
+
+/// 5. register_creates_cli_dirs — Gemini needs ~/.gemini/ which doesn't
+/// exist in a fresh home; register_gemini must mkdir-p and create
+/// settings.json.
+#[test]
+fn mcp_register_creates_missing_cli_dirs() {
+    let tmp = tempfile::tempdir().unwrap();
+    // Sanity: dirs absent before register.
+    assert!(!tmp.path().join(".gemini").exists());
+    assert!(!tmp.path().join(".codex").exists());
+    assert!(!tmp.path().join(".config/opencode").exists());
+
+    let result = McpRegister::register_all(tmp.path());
+    assert!(result.errors.is_empty(), "errors={:?}", result.errors);
+
+    // Each directory was created.
+    assert!(
+        tmp.path().join(".gemini").is_dir(),
+        "Gemini dir auto-created"
+    );
+    assert!(
+        tmp.path().join(".gemini/settings.json").is_file(),
+        "Gemini settings.json created with runai entry"
+    );
+    assert!(
+        tmp.path().join(".codex/config.toml").is_file(),
+        "Codex config.toml created"
+    );
+    assert!(
+        tmp.path()
+            .join(".config/opencode/opencode.json")
+            .is_file(),
+        "OpenCode opencode.json created"
+    );
+
+    // Verify the Gemini settings.json actually has the runai entry.
+    let gem_json: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(tmp.path().join(".gemini/settings.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(gem_json["mcpServers"]["runai"].is_object());
+}
+
+/// 6. unregister_all_removes_runai_entry — sanity for the inverse: after
+/// register_all + unregister_all, no runai entry remains in any CLI config.
+#[test]
+fn mcp_register_unregister_removes_entries_in_all_clis() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _ = McpRegister::register_all(tmp.path());
+    McpRegister::unregister_all(tmp.path()).expect("unregister_all should succeed");
+
+    // Claude
+    let claude_text = std::fs::read_to_string(tmp.path().join(".claude.json")).unwrap();
+    let claude_json: serde_json::Value = serde_json::from_str(&claude_text).unwrap();
+    assert!(
+        claude_json["mcpServers"]
+            .as_object()
+            .map(|m| !m.contains_key("runai"))
+            .unwrap_or(true),
+        "Claude runai entry removed"
+    );
+
+    // Gemini
+    let gem_json: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(tmp.path().join(".gemini/settings.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        gem_json["mcpServers"]
+            .as_object()
+            .map(|m| !m.contains_key("runai"))
+            .unwrap_or(true),
+        "Gemini runai entry removed"
+    );
+
+    // Codex
+    let codex_text = std::fs::read_to_string(tmp.path().join(".codex/config.toml")).unwrap();
+    assert!(
+        !codex_text.contains("[mcp_servers.runai]"),
+        "Codex runai section removed:\n{codex_text}"
+    );
+
+    // OpenCode
+    let oc_json: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(tmp.path().join(".config/opencode/opencode.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        oc_json["mcp"]
+            .as_object()
+            .map(|m| !m.contains_key("runai"))
+            .unwrap_or(true),
+        "OpenCode runai entry removed"
+    );
+}
