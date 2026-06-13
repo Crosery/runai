@@ -554,7 +554,9 @@ fn disable_respects_rune_data_dir_no_cross_modify() {
     let managed = make_skill(&alt_skills, "alt-skill");
 
     assert!(
-        env.run_with_rune(alt_data.path(), &["scan"]).status.success(),
+        env.run_with_rune(alt_data.path(), &["scan"])
+            .status
+            .success(),
         "scan with RUNE_DATA_DIR failed"
     );
     assert!(

@@ -136,7 +136,11 @@ fn trash_restore_moves_skill_back() {
     let original_bytes = std::fs::read(&original_md).unwrap();
 
     let scan = env.run(&["scan"]);
-    assert!(scan.status.success(), "{}", String::from_utf8_lossy(&scan.stderr));
+    assert!(
+        scan.status.success(),
+        "{}",
+        String::from_utf8_lossy(&scan.stderr)
+    );
 
     // Uninstall moves the skill into the trash dir + DB trash table.
     let unin = env.run(&["uninstall", name]);
@@ -150,8 +154,14 @@ fn trash_restore_moves_skill_back() {
     // Sanity-check trash now holds a payload dir for this skill.
     let payload = trashed_payload_dir(&env.default_trash_dir(), name)
         .expect("trash payload missing after uninstall");
-    assert!(payload.join("SKILL.md").exists(), "trash payload missing SKILL.md");
-    assert!(env.default_db().exists(), "runai.db should exist after install/uninstall");
+    assert!(
+        payload.join("SKILL.md").exists(),
+        "trash payload missing SKILL.md"
+    );
+    assert!(
+        env.default_db().exists(),
+        "runai.db should exist after install/uninstall"
+    );
 
     // Restore by resource name (CLI maps it to the matching trash entry id).
     let restore = env.run(&["trash", "restore", name]);
@@ -187,8 +197,7 @@ fn trash_restore_moves_skill_back() {
     let trash_list = env.run(&["trash", "list"]);
     let trash_stdout = String::from_utf8_lossy(&trash_list.stdout);
     assert!(
-        trash_stdout.contains("Trash is empty")
-            || !trash_stdout.contains(name),
+        trash_stdout.contains("Trash is empty") || !trash_stdout.contains(name),
         "trash list still references restored skill: {trash_stdout}"
     );
 }
@@ -215,13 +224,21 @@ fn trash_restore_uses_custom_data_dir() {
 
     // Sentinel skill in the DEFAULT location — must not be touched by any
     // step below.
-    let sentinel_dir = make_skill(&env.default_skills_dir(), "sentinel-untouched", "do not move");
+    let sentinel_dir = make_skill(
+        &env.default_skills_dir(),
+        "sentinel-untouched",
+        "do not move",
+    );
     let sentinel_md = sentinel_dir.join("SKILL.md");
     let sentinel_bytes = std::fs::read(&sentinel_md).unwrap();
 
     // scan / uninstall / restore all run with RUNE_DATA_DIR=<custom>.
     let scan = env.run_with_rune_data(custom.path(), &["scan"]);
-    assert!(scan.status.success(), "{}", String::from_utf8_lossy(&scan.stderr));
+    assert!(
+        scan.status.success(),
+        "{}",
+        String::from_utf8_lossy(&scan.stderr)
+    );
 
     let unin = env.run_with_rune_data(custom.path(), &["uninstall", name]);
     dump(&unin, "uninstall (custom data dir)");
@@ -233,8 +250,8 @@ fn trash_restore_uses_custom_data_dir() {
     );
 
     // Payload must live under the custom trash dir, NOT the default trash dir.
-    let payload =
-        trashed_payload_dir(&custom_trash, name).expect("custom-trash payload missing after uninstall");
+    let payload = trashed_payload_dir(&custom_trash, name)
+        .expect("custom-trash payload missing after uninstall");
     assert!(
         payload.starts_with(custom.path()),
         "trash payload {} escaped custom data dir {}",
@@ -311,7 +328,10 @@ fn trash_restore_recreates_symlinks() {
     dump(&en, "enable claude");
     assert!(en.status.success(), "enable failed");
     let link = env.cli_skills_dir("claude").join(name);
-    assert!(link.symlink_metadata().is_ok(), "claude symlink missing pre-trash");
+    assert!(
+        link.symlink_metadata().is_ok(),
+        "claude symlink missing pre-trash"
+    );
 
     // Sanity: the other 3 targets should NOT have a symlink.
     for cli in ["codex", "gemini", "opencode"] {
@@ -358,7 +378,8 @@ fn trash_restore_recreates_symlinks() {
     let canonical_target = std::fs::canonicalize(&target).unwrap_or(target.clone());
     let canonical_restored = std::fs::canonicalize(&restored_dir).unwrap_or(restored_dir.clone());
     assert_eq!(
-        canonical_target, canonical_restored,
+        canonical_target,
+        canonical_restored,
         "claude symlink points at {} but restored dir is {}",
         canonical_target.display(),
         canonical_restored.display()
@@ -464,7 +485,10 @@ fn trash_restore_works_across_all_cli_targets() {
         let name = format!("xtarget-{target}");
 
         let skill_dir = make_skill(&env.default_skills_dir(), &name, "xtarget body");
-        assert!(env.run(&["scan"]).status.success(), "scan failed for {target}");
+        assert!(
+            env.run(&["scan"]).status.success(),
+            "scan failed for {target}"
+        );
 
         let en = env.run(&["enable", &name, "--target", target]);
         dump(&en, &format!("enable {target}"));
@@ -491,7 +515,10 @@ fn trash_restore_works_across_all_cli_targets() {
 
         let restore = env.run(&["trash", "restore", &name]);
         dump(&restore, &format!("trash restore {target}"));
-        assert!(restore.status.success(), "trash restore failed for {target}");
+        assert!(
+            restore.status.success(),
+            "trash restore failed for {target}"
+        );
 
         // Symlink restored for THIS target.
         let md = link
@@ -508,7 +535,8 @@ fn trash_restore_works_across_all_cli_targets() {
         let got = std::fs::canonicalize(std::fs::read_link(&link).unwrap())
             .unwrap_or_else(|_| std::fs::read_link(&link).unwrap());
         assert_eq!(
-            got, want,
+            got,
+            want,
             "{target} symlink points at {} but restored dir is {}",
             got.display(),
             want.display()

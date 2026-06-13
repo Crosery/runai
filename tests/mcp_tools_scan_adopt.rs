@@ -197,11 +197,7 @@ fn scan_refuses_rename_across_data_dirs() {
     let env = TestEnv::new();
 
     // Plant a sentinel skill in the user's DEFAULT data dir (~/.runai/skills/).
-    let sentinel = make_skill(
-        &env.default_skills_dir(),
-        "default-skill",
-        "default body",
-    );
+    let sentinel = make_skill(&env.default_skills_dir(), "default-skill", "default body");
     let sentinel_md = sentinel.join("SKILL.md");
     let original = std::fs::read(&sentinel_md).unwrap();
 
@@ -217,8 +213,11 @@ fn scan_refuses_rename_across_data_dirs() {
     // 2026-04-27 dangerous shape: a CLI symlink pointing into the default
     // data dir, scanned while RUNE_DATA_DIR points elsewhere).
     #[cfg(unix)]
-    std::os::unix::fs::symlink(&sentinel, env.cli_skills_dir("claude").join("default-skill"))
-        .unwrap();
+    std::os::unix::fs::symlink(
+        &sentinel,
+        env.cli_skills_dir("claude").join("default-skill"),
+    )
+    .unwrap();
 
     // Now run scan with RUNE_DATA_DIR pointing somewhere else. Without the
     // cross-data-dir guard, the adopt path would `std::fs::rename` the
@@ -327,7 +326,10 @@ fn scan_covers_all_cli_targets_symmetrically() {
         adopted >= 4,
         "expected adopted>=4 across 4 CLI dirs, got {adopted}"
     );
-    assert_eq!(errors, 0, "scan should not error on valid per-target skills");
+    assert_eq!(
+        errors, 0,
+        "scan should not error on valid per-target skills"
+    );
 
     let list = env.run(&["list"]);
     dump(&list, "list after multi-target scan");

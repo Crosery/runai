@@ -334,7 +334,8 @@ fn enable_clobbers_stale_symlink() {
     // dangling target.
     let resolved = std::fs::read_link(&link).expect("link should exist");
     assert_eq!(
-        resolved, managed,
+        resolved,
+        managed,
         "stale link not clobbered: still pointing at {}",
         resolved.display()
     );
@@ -427,7 +428,10 @@ fn enable_respects_rune_data_dir_dual_run() {
     let scan1 = env.run_with_rune_data(data_dir_1.path(), &["scan"]);
     dump(&scan1, "scan with data_dir_1");
     assert!(scan1.status.success());
-    let en1 = env.run_with_rune_data(data_dir_1.path(), &["enable", "skill1", "--target", "claude"]);
+    let en1 = env.run_with_rune_data(
+        data_dir_1.path(),
+        &["enable", "skill1", "--target", "claude"],
+    );
     dump(&en1, "enable skill1 with data_dir_1");
     assert!(en1.status.success());
 
@@ -444,7 +448,10 @@ fn enable_respects_rune_data_dir_dual_run() {
     let scan2 = env.run_with_rune_data(data_dir_2.path(), &["scan"]);
     dump(&scan2, "scan with data_dir_2");
     assert!(scan2.status.success());
-    let en2 = env.run_with_rune_data(data_dir_2.path(), &["enable", "skill2", "--target", "claude"]);
+    let en2 = env.run_with_rune_data(
+        data_dir_2.path(),
+        &["enable", "skill2", "--target", "claude"],
+    );
     dump(&en2, "enable skill2 with data_dir_2");
     assert!(en2.status.success());
 

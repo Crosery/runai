@@ -120,7 +120,11 @@ fn doctor_prints_all_checks() {
     let env = DoctorEnv::new();
 
     // Plant one valid skill so the symlinks check has something to look at.
-    let skill_dir = make_skill(&env.default_data_dir().join("skills"), "alpha", "alpha desc");
+    let skill_dir = make_skill(
+        &env.default_data_dir().join("skills"),
+        "alpha",
+        "alpha desc",
+    );
     symlink(&skill_dir, &env.cli_skills_dir("claude").join("alpha"));
 
     let out = env.run(&["doctor"]);
@@ -322,11 +326,9 @@ fn doctor_fix_dedupes_db_rows() {
     // The kept row is the newer one (larger installed_at).
     let conn = rusqlite::Connection::open(&db_path).unwrap();
     let kept_id: String = conn
-        .query_row(
-            "SELECT id FROM resources WHERE name = 'dup'",
-            [],
-            |r| r.get(0),
-        )
+        .query_row("SELECT id FROM resources WHERE name = 'dup'", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     assert_eq!(
         kept_id, "local:dup-new",
@@ -461,10 +463,7 @@ fn doctor_respects_rune_data_dir() {
     // Make sure we didn't fall back to the HOME default .runai path.
     let home_default = env.default_data_dir();
     let home_default_str = home_default.to_string_lossy();
-    let data_dir_lines: Vec<&str> = stdout
-        .lines()
-        .filter(|l| l.contains("Data dir"))
-        .collect();
+    let data_dir_lines: Vec<&str> = stdout.lines().filter(|l| l.contains("Data dir")).collect();
     for line in &data_dir_lines {
         assert!(
             !line.contains(home_default_str.as_ref()),

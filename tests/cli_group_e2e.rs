@@ -236,13 +236,7 @@ fn group_create_cross_data_dir_isolation() {
     let out2 = env.run_with_rune_data(
         alt.path(),
         &[
-            "group",
-            "create",
-            "g-alt",
-            "--name",
-            "Alt Pool",
-            "--kind",
-            "custom",
+            "group", "create", "g-alt", "--name", "Alt Pool", "--kind", "custom",
         ],
     );
     dump(&out2, "create g-alt in alt dir");
@@ -305,11 +299,7 @@ fn group_create_symmetric_across_targets() {
         .collect();
     let before: Vec<_> = cli_dirs
         .iter()
-        .map(|d| {
-            std::fs::read_dir(d)
-                .map(|it| it.count())
-                .unwrap_or(0)
-        })
+        .map(|d| std::fs::read_dir(d).map(|it| it.count()).unwrap_or(0))
         .collect();
 
     // Create a single group.
@@ -447,14 +437,7 @@ fn group_add_mcp_sets_correct_type() {
     dump(&create, "create g-mcp");
     assert!(create.status.success());
 
-    let add = env.run(&[
-        "group",
-        "add",
-        "g-mcp",
-        "my-mcp",
-        "--resource-type",
-        "mcp",
-    ]);
+    let add = env.run(&["group", "add", "g-mcp", "my-mcp", "--resource-type", "mcp"]);
     dump(&add, "add my-mcp (mcp type) to g-mcp");
     assert!(add.status.success(), "group add (mcp) should succeed");
 
@@ -489,11 +472,9 @@ fn group_add_cross_data_dir_isolation() {
     make_skill(&env.default_skills_dir(), "default-skill", "default desc");
     assert!(env.run(&["scan"]).status.success());
     assert!(
-        env.run(&[
-            "group", "create", "g1", "--name", "G1", "--kind", "custom"
-        ])
-        .status
-        .success()
+        env.run(&["group", "create", "g1", "--name", "G1", "--kind", "custom"])
+            .status
+            .success()
     );
     let add1 = env.run(&["group", "add", "g1", "default-skill"]);
     dump(&add1, "add default-skill to g1 (default dir)");
@@ -558,7 +539,13 @@ fn group_remove_deletes_from_db_and_toml() {
     assert!(env.run(&["scan"]).status.success());
     assert!(
         env.run(&[
-            "group", "create", "g-rm", "--name", "Remove Group", "--kind", "custom"
+            "group",
+            "create",
+            "g-rm",
+            "--name",
+            "Remove Group",
+            "--kind",
+            "custom"
         ])
         .status
         .success()
@@ -615,17 +602,11 @@ fn group_remove_cross_data_dir() {
     make_skill(&env.default_skills_dir(), "skill-d", "desc-d");
     assert!(env.run(&["scan"]).status.success());
     assert!(
-        env.run(&[
-            "group", "create", "g1", "--name", "G1", "--kind", "custom"
-        ])
-        .status
-        .success()
-    );
-    assert!(
-        env.run(&["group", "add", "g1", "skill-d"])
+        env.run(&["group", "create", "g1", "--name", "G1", "--kind", "custom"])
             .status
             .success()
     );
+    assert!(env.run(&["group", "add", "g1", "skill-d"]).status.success());
 
     // Alt dir: skill2 → g2.
     let alt_skills = alt.path().join("skills");
@@ -694,7 +675,13 @@ fn group_delete_removes_toml() {
     assert!(env.run(&["scan"]).status.success());
     assert!(
         env.run(&[
-            "group", "create", "g-del", "--name", "Delete Group", "--kind", "custom"
+            "group",
+            "create",
+            "g-del",
+            "--name",
+            "Delete Group",
+            "--kind",
+            "custom"
         ])
         .status
         .success()
@@ -753,19 +740,30 @@ fn group_delete_cross_data_dir() {
     // Default dir g1.
     assert!(
         env.run(&[
-            "group", "create", "g1", "--name", "Default G1", "--kind", "custom"
+            "group",
+            "create",
+            "g1",
+            "--name",
+            "Default G1",
+            "--kind",
+            "custom"
         ])
         .status
         .success()
     );
     let default_toml = env.default_groups_dir().join("g1.toml");
-    assert!(default_toml.exists(), "precondition: default g1 TOML exists");
+    assert!(
+        default_toml.exists(),
+        "precondition: default g1 TOML exists"
+    );
 
     // Alt dir g1 (same id, different data dir).
     assert!(
         env.run_with_rune_data(
             alt.path(),
-            &["group", "create", "g1", "--name", "Alt G1", "--kind", "custom"]
+            &[
+                "group", "create", "g1", "--name", "Alt G1", "--kind", "custom"
+            ]
         )
         .status
         .success()

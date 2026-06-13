@@ -87,8 +87,8 @@ fn backup_preserves_symlinks_not_dereferenced() {
     let backup_dir = create_backup(&paths).unwrap();
 
     let backed_up = backup_dir.join("claude-skills").join("link-skill");
-    let meta = std::fs::symlink_metadata(&backed_up)
-        .expect("backup of symlinked CLI skill must exist");
+    let meta =
+        std::fs::symlink_metadata(&backed_up).expect("backup of symlinked CLI skill must exist");
     assert!(
         meta.file_type().is_symlink(),
         "backup must preserve the symlink as a symlink (not dereferenced); found {:?}",

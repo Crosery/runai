@@ -290,7 +290,11 @@ fn skills_dir_cross_target_symmetry() {
             CliTarget::OpenCode.skills_dir(),
             home.join(".opencode/skills"),
         );
-        assert_eq!(seen.len(), 4, "expected exactly 4 distinct skills_dir paths");
+        assert_eq!(
+            seen.len(),
+            4,
+            "expected exactly 4 distinct skills_dir paths"
+        );
     });
 }
 
@@ -319,7 +323,10 @@ fn mcp_config_path_cross_target_symmetry() {
         }
 
         // Pin the exact paths the rest of the codebase depends on.
-        assert_eq!(CliTarget::Claude.mcp_config_path(), home.join(".claude.json"));
+        assert_eq!(
+            CliTarget::Claude.mcp_config_path(),
+            home.join(".claude.json")
+        );
         assert_eq!(
             CliTarget::Codex.mcp_config_path(),
             home.join(".codex/config.toml")
@@ -447,13 +454,7 @@ fn seed_mcp_backup(data_dir: &Path, mcp_name: &str, bin: &str) {
 /// MCP must already be present as a backup file before this is called.
 fn build_group(env: &TestEnv, group_id: &str, skill_names: &[&str], mcp_name: Option<&str>) {
     let create = env.run(&[
-        "group",
-        "create",
-        group_id,
-        "--name",
-        group_id,
-        "--kind",
-        "custom",
+        "group", "create", group_id, "--name", group_id, "--kind", "custom",
     ]);
     assert!(
         create.status.success(),
@@ -461,14 +462,7 @@ fn build_group(env: &TestEnv, group_id: &str, skill_names: &[&str], mcp_name: Op
         String::from_utf8_lossy(&create.stderr)
     );
     for sn in skill_names {
-        let add = env.run(&[
-            "group",
-            "add",
-            group_id,
-            sn,
-            "--resource-type",
-            "skill",
-        ]);
+        let add = env.run(&["group", "add", group_id, sn, "--resource-type", "skill"]);
         assert!(
             add.status.success(),
             "group add skill {sn} failed: stderr={}",
@@ -476,14 +470,7 @@ fn build_group(env: &TestEnv, group_id: &str, skill_names: &[&str], mcp_name: Op
         );
     }
     if let Some(mn) = mcp_name {
-        let add = env.run(&[
-            "group",
-            "add",
-            group_id,
-            mn,
-            "--resource-type",
-            "mcp",
-        ]);
+        let add = env.run(&["group", "add", group_id, mn, "--resource-type", "mcp"]);
         assert!(
             add.status.success(),
             "group add mcp {mn} failed: stderr={}",
@@ -560,11 +547,7 @@ fn sm_enable_group_creates_symlinks_and_mcp_entries() {
     // were never written.
     assert!(!env.home().join(".codex/config.toml").exists());
     assert!(!env.home().join(".gemini/settings.json").exists());
-    assert!(
-        !env.home()
-            .join(".config/opencode/opencode.json")
-            .exists()
-    );
+    assert!(!env.home().join(".config/opencode/opencode.json").exists());
 }
 
 #[test]
@@ -656,11 +639,10 @@ fn sm_enable_group_mcp_sync_only_on_claude() {
     // codex → ~/.codex/config.toml mcp_servers (TOML, not JSON)
     let en = env.run(&["enable", "mcp-only-grp", "--target", "codex"]);
     assert!(en.status.success(), "codex enable failed");
-    let codex_toml: toml::Table =
-        std::fs::read_to_string(env.home().join(".codex/config.toml"))
-            .unwrap()
-            .parse()
-            .unwrap();
+    let codex_toml: toml::Table = std::fs::read_to_string(env.home().join(".codex/config.toml"))
+        .unwrap()
+        .parse()
+        .unwrap();
     let servers = codex_toml
         .get("mcp_servers")
         .and_then(|v| v.as_table())
@@ -703,13 +685,7 @@ fn sm_enable_group_symlink_target_respects_rune_data_dir() {
     };
 
     let create = run_with_alt(&[
-        "group",
-        "create",
-        "alt-grp",
-        "--name",
-        "alt-grp",
-        "--kind",
-        "custom",
+        "group", "create", "alt-grp", "--name", "alt-grp", "--kind", "custom",
     ]);
     assert!(create.status.success(), "group create under alt-dir failed");
     let add = run_with_alt(&[
@@ -781,9 +757,7 @@ fn sm_disable_group_removes_symlinks_and_mcp_entries() {
     );
     // Sanity: both skills' symlinks exist before disable.
     for sn in &["dis-skill-a", "dis-skill-b"] {
-        assert!(
-            std::fs::symlink_metadata(env.cli_skills_dir("claude").join(sn)).is_ok()
-        );
+        assert!(std::fs::symlink_metadata(env.cli_skills_dir("claude").join(sn)).is_ok());
     }
     // And ~/.claude.json carries the MCP entry.
     let claude_path = env.home().join(".claude.json");
@@ -985,7 +959,10 @@ fn sm_disable_group_respects_rune_data_dir_symlink_cleanup() {
 
     let dis = run_with_alt(&["disable", "alt-dis-grp", "--target", "claude"]);
     dump(&dis, "disable alt-dis-grp under alt RUNE_DATA_DIR");
-    assert!(dis.status.success(), "disable under alt RUNE_DATA_DIR failed");
+    assert!(
+        dis.status.success(),
+        "disable under alt RUNE_DATA_DIR failed"
+    );
 
     // Symlink in ~/.claude/skills gone.
     assert!(

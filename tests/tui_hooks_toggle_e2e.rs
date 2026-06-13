@@ -54,8 +54,7 @@ fn count_runai_hook_entries(value: &serde_json::Value) -> usize {
                 .map(|arr| {
                     arr.iter()
                         .filter(|h| {
-                            h.get("command").and_then(|c| c.as_str())
-                                == Some(RUNAI_HOOK_COMMAND)
+                            h.get("command").and_then(|c| c.as_str()) == Some(RUNAI_HOOK_COMMAND)
                         })
                         .count()
                 })
@@ -66,10 +65,9 @@ fn count_runai_hook_entries(value: &serde_json::Value) -> usize {
 
 fn read_settings_json(home: &std::path::Path) -> serde_json::Value {
     let path = home.join(".claude").join("settings.json");
-    let txt = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    serde_json::from_str(&txt)
-        .unwrap_or_else(|e| panic!("parse {} as JSON: {e}", path.display()))
+    let txt =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    serde_json::from_str(&txt).unwrap_or_else(|e| panic!("parse {} as JSON: {e}", path.display()))
 }
 
 /// **[physical_e2e]** Test scenario 1 from plan §2.18.
@@ -206,12 +204,10 @@ fn hooks_toggle_uninstall_preserves_other_hooks() {
 fn hooks_toggle_install_idempotent() {
     let home = tempfile::tempdir().expect("tmp HOME");
 
-    let first =
-        install_claude_hook(home.path()).expect("first install_claude_hook succeeds");
+    let first = install_claude_hook(home.path()).expect("first install_claude_hook succeeds");
     assert_eq!(first, HookInstallStatus::Installed, "first call installs");
 
-    let second =
-        install_claude_hook(home.path()).expect("second install_claude_hook succeeds");
+    let second = install_claude_hook(home.path()).expect("second install_claude_hook succeeds");
     assert_eq!(
         second,
         HookInstallStatus::AlreadyPresent,
@@ -244,8 +240,7 @@ fn hooks_toggle_creates_missing_settings() {
         "precondition: ~/.claude must not exist yet"
     );
 
-    let status =
-        install_claude_hook(home.path()).expect("install_claude_hook creates the tree");
+    let status = install_claude_hook(home.path()).expect("install_claude_hook creates the tree");
     assert_eq!(status, HookInstallStatus::Installed);
 
     assert!(

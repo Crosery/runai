@@ -196,7 +196,10 @@ fn trash_purge_deletes_payload_and_entry() {
 
     // Assert 2: DB trash_entries row deleted (verified via `trash list`).
     let list_after = env.run(&["trash", "list"]);
-    assert!(list_after.status.success(), "post-purge trash list must succeed");
+    assert!(
+        list_after.status.success(),
+        "post-purge trash list must succeed"
+    );
     let list_after_out = String::from_utf8_lossy(&list_after.stdout);
     assert!(
         !list_after_out.contains("purge-me"),
@@ -240,13 +243,18 @@ fn trash_purge_uses_custom_data_dir() {
     let custom_skills = custom_data.join("skills");
     make_skill(&custom_skills, "custom-skill", "custom skill body");
     assert!(
-        env.run_with_rune_data(&custom_data, &["scan"]).status.success(),
+        env.run_with_rune_data(&custom_data, &["scan"])
+            .status
+            .success(),
         "scan under custom data dir must succeed",
     );
 
     let un = env.run_with_rune_data(&custom_data, &["uninstall", "custom-skill"]);
     dump(&un, "uninstall under custom data");
-    assert!(un.status.success(), "uninstall under custom data must succeed");
+    assert!(
+        un.status.success(),
+        "uninstall under custom data must succeed"
+    );
 
     let custom_trash = custom_data.join("trash");
     let custom_payload = single_trash_payload(&custom_trash);
@@ -258,7 +266,10 @@ fn trash_purge_uses_custom_data_dir() {
     // Act: purge against the custom data dir.
     let purge = env.run_with_rune_data(&custom_data, &["trash", "purge", "custom-skill"]);
     dump(&purge, "trash purge against custom data");
-    assert!(purge.status.success(), "purge under custom data must succeed");
+    assert!(
+        purge.status.success(),
+        "purge under custom data must succeed"
+    );
 
     // Assert 1: custom payload gone.
     assert!(
@@ -342,10 +353,9 @@ fn trash_purge_handles_mcp_cleanup() {
     assert!(un.status.success(), "MCP uninstall must succeed");
 
     // The MCP entry should be removed from .claude.json.
-    let post_uninstall: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(&claude_config).expect("read claude config"),
-    )
-    .expect("parse claude config");
+    let post_uninstall: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&claude_config).expect("read claude config"))
+            .expect("parse claude config");
     let still_present = post_uninstall
         .get("mcpServers")
         .and_then(|s| s.get("purge-mcp"))
@@ -419,7 +429,11 @@ fn trash_purge_ignores_cli_target() {
         let env = TestEnv::new();
         let name = format!("purge-{target}");
 
-        make_skill(&env.default_skills_dir(), &name, &format!("body for {target}"));
+        make_skill(
+            &env.default_skills_dir(),
+            &name,
+            &format!("body for {target}"),
+        );
         assert!(
             env.run(&["scan"]).status.success(),
             "scan must succeed for {target}",

@@ -103,12 +103,7 @@ fn dump(out: &std::process::Output, label: &str) {
 ///
 /// Layout matches `core::market::save_cache` exactly (file name is
 /// `<owner>_<repo>.json` inside `<data>/market-cache/`).
-fn plant_market_cache(
-    data_dir: &Path,
-    owner: &str,
-    repo: &str,
-    skills_json: &str,
-) {
+fn plant_market_cache(data_dir: &Path, owner: &str, repo: &str, skills_json: &str) {
     let cache_dir = data_dir.join("market-cache");
     std::fs::create_dir_all(&cache_dir).unwrap();
     let path = cache_dir.join(format!("{owner}_{repo}.json"));
@@ -173,7 +168,6 @@ fn plant_market_cache(
 /// Cross RUNE_DATA_DIR isolation: an alt-data-dir purge must only touch
 /// the alt dir's trash. The default `~/.runai/trash/` must remain intact.
 
-
 #[test]
 fn market_install_fails_on_not_found() {
     let env = TestEnv::new();
@@ -211,7 +205,6 @@ fn market_install_fails_on_not_found() {
         "REGRESSION: market-install left a partial skill dir after a not-found error"
     );
 }
-
 
 #[test]
 fn market_install_respects_source_filter() {
@@ -272,13 +265,10 @@ fn market_install_respects_source_filter() {
 
     // Also assert no partial directory created.
     assert!(
-        !env.default_skills_dir()
-            .join("extras-only-skill")
-            .exists(),
+        !env.default_skills_dir().join("extras-only-skill").exists(),
         "REGRESSION: a partial skill directory was created despite the filter rejecting it"
     );
 }
-
 
 #[test]
 fn market_install_respects_rune_data_dir() {
@@ -312,10 +302,7 @@ fn market_install_respects_rune_data_dir() {
 
     // Run market-install under the alt RUNE_DATA_DIR. Because no cache lives
     // there, "default-only-skill" should be unfindable.
-    let out = env.run_with_rune_data(
-        alt_data,
-        &["market-install", "default-only-skill"],
-    );
+    let out = env.run_with_rune_data(alt_data, &["market-install", "default-only-skill"]);
     dump(&out, "market-install under alt RUNE_DATA_DIR");
 
     assert!(
@@ -336,9 +323,7 @@ fn market_install_respects_rune_data_dir() {
 
     // Nothing should appear under default-only-skill in either location.
     assert!(
-        !env.default_skills_dir()
-            .join("default-only-skill")
-            .exists(),
+        !env.default_skills_dir().join("default-only-skill").exists(),
         "REGRESSION: alt RUNE_DATA_DIR invocation wrote into the default skills dir"
     );
     assert!(
@@ -346,7 +331,6 @@ fn market_install_respects_rune_data_dir() {
         "no skill dir should exist in the alt data dir after a not-found error"
     );
 }
-
 
 #[test]
 fn uninstall_moves_to_trash_and_cleans_symlinks() {
@@ -427,7 +411,6 @@ fn uninstall_moves_to_trash_and_cleans_symlinks() {
     );
 }
 
-
 #[test]
 fn uninstall_preserves_metadata_for_restore() {
     let env = TestEnv::new();
@@ -478,7 +461,6 @@ fn uninstall_preserves_metadata_for_restore() {
     );
 }
 
-
 #[test]
 fn uninstall_respects_rune_data_dir() {
     let env = TestEnv::new();
@@ -499,7 +481,10 @@ fn uninstall_respects_rune_data_dir() {
     // Uninstall in the alt data dir.
     let un = env.run_with_rune_data(alt_data, &["uninstall", "alt-skill"]);
     dump(&un, "uninstall alt-skill (alt data dir)");
-    assert!(un.status.success(), "uninstall in alt data dir must succeed");
+    assert!(
+        un.status.success(),
+        "uninstall in alt data dir must succeed"
+    );
 
     // Alt data dir: skill gone from skills/, trash payload present.
     assert!(
@@ -536,7 +521,6 @@ fn uninstall_respects_rune_data_dir() {
     );
 }
 
-
 #[test]
 fn trash_restore_recovers_skill_and_state() {
     let env = TestEnv::new();
@@ -560,7 +544,10 @@ fn trash_restore_recovers_skill_and_state() {
     let un = env.run(&["uninstall", "victim"]);
     dump(&un, "uninstall victim");
     assert!(un.status.success());
-    assert!(!original.exists(), "managed dir should be gone after uninstall");
+    assert!(
+        !original.exists(),
+        "managed dir should be gone after uninstall"
+    );
 
     // Restore by name.
     let restore = env.run(&["trash", "restore", "victim"]);
@@ -610,7 +597,6 @@ fn trash_restore_recovers_skill_and_state() {
     }
 }
 
-
 #[test]
 fn trash_restore_handles_group_membership() {
     let env = TestEnv::new();
@@ -657,7 +643,6 @@ fn trash_restore_handles_group_membership() {
         "REGRESSION: restored skill not back in original group; show:\n{show_after_out}"
     );
 }
-
 
 #[test]
 fn trash_restore_fails_if_exists() {
@@ -706,7 +691,6 @@ fn trash_restore_fails_if_exists() {
         "REGRESSION: trash entry vanished after a failed restore:\n{list_out}"
     );
 }
-
 
 #[test]
 fn trash_restore_respects_rune_data_dir() {
@@ -761,7 +745,6 @@ fn trash_restore_respects_rune_data_dir() {
     );
 }
 
-
 #[test]
 fn trash_purge_deletes_permanently() {
     let env = TestEnv::new();
@@ -815,7 +798,6 @@ fn trash_purge_deletes_permanently() {
     );
 }
 
-
 #[test]
 fn trash_purge_fails_on_not_found() {
     let env = TestEnv::new();
@@ -848,7 +830,6 @@ fn trash_purge_fails_on_not_found() {
     );
 }
 
-
 #[test]
 fn trash_purge_respects_rune_data_dir() {
     let env = TestEnv::new();
@@ -857,13 +838,13 @@ fn trash_purge_respects_rune_data_dir() {
     std::fs::create_dir_all(alt_data.join("skills")).unwrap();
 
     // Populate default trash with a sentinel — must NOT be touched.
-    make_skill(&env.default_skills_dir(), "default-sentinel", "default body");
-    assert!(env.run(&["scan"]).status.success());
-    assert!(
-        env.run(&["uninstall", "default-sentinel"])
-            .status
-            .success()
+    make_skill(
+        &env.default_skills_dir(),
+        "default-sentinel",
+        "default body",
     );
+    assert!(env.run(&["scan"]).status.success());
+    assert!(env.run(&["uninstall", "default-sentinel"]).status.success());
     let default_trash = env.default_trash_dir();
     let default_payloads_before: Vec<PathBuf> = std::fs::read_dir(&default_trash)
         .unwrap()
@@ -874,11 +855,7 @@ fn trash_purge_respects_rune_data_dir() {
 
     // Populate alt trash.
     make_skill(&alt_data.join("skills"), "alt-purgee", "alt body");
-    assert!(
-        env.run_with_rune_data(alt_data, &["scan"])
-            .status
-            .success()
-    );
+    assert!(env.run_with_rune_data(alt_data, &["scan"]).status.success());
     assert!(
         env.run_with_rune_data(alt_data, &["uninstall", "alt-purgee"])
             .status
@@ -922,4 +899,3 @@ fn trash_purge_respects_rune_data_dir() {
         "REGRESSION: alt-dir purge wiped default trash entry; list:\n{default_list_out}"
     );
 }
-

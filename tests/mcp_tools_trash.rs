@@ -378,8 +378,7 @@ fn delete_mcp_removes_config_entry() {
 
     // Entry removed from ~/.claude.json
     let claude: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(home.join(".claude.json")).unwrap())
-            .unwrap();
+        serde_json::from_str(&std::fs::read_to_string(home.join(".claude.json")).unwrap()).unwrap();
     assert!(
         claude["mcpServers"].get("trash-mcp").is_none(),
         ".claude.json must no longer contain trash-mcp, got:\n{claude:#}"
@@ -526,7 +525,10 @@ fn trash_restore_recovers_skill_files() {
 
     // Files back at original location with intact contents.
     let restored = managed.join("restore-me/SKILL.md");
-    assert!(restored.exists(), "SKILL.md must be restored to managed dir");
+    assert!(
+        restored.exists(),
+        "SKILL.md must be restored to managed dir"
+    );
     assert_eq!(
         std::fs::read(&restored).unwrap(),
         original_md,
@@ -589,7 +591,10 @@ fn trash_restore_respects_rune_data_dir() {
             .read_dir()
             .map(|mut it| it.next().is_some())
             .unwrap_or(false);
-    assert!(!default_dirty, "default trash must remain empty pre-restore");
+    assert!(
+        !default_dirty,
+        "default trash must remain empty pre-restore"
+    );
 
     let restore = run_runai_with_data_dir(home, data_dir, &["trash", "restore", "rd-restore"]);
     dump(&restore, "restore under RUNE_DATA_DIR");
@@ -624,8 +629,7 @@ fn trash_restore_mcp_restores_config() {
     // Delete.
     assert!(run_runai(home, &["uninstall", "restore-mcp"]).2.success());
     let claude_after_del: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(home.join(".claude.json")).unwrap())
-            .unwrap();
+        serde_json::from_str(&std::fs::read_to_string(home.join(".claude.json")).unwrap()).unwrap();
     assert!(claude_after_del["mcpServers"].get("restore-mcp").is_none());
 
     // Restore.
@@ -634,8 +638,7 @@ fn trash_restore_mcp_restores_config() {
     assert!(restore.2.success(), "MCP restore should succeed");
 
     let claude_after_restore: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(home.join(".claude.json")).unwrap())
-            .unwrap();
+        serde_json::from_str(&std::fs::read_to_string(home.join(".claude.json")).unwrap()).unwrap();
     let entry = &claude_after_restore["mcpServers"]["restore-mcp"];
     assert_eq!(
         entry["command"],
@@ -672,15 +675,21 @@ fn trash_restore_by_id_unambiguous() {
     let line = trash
         .0
         .lines()
-        .find(|l| l.contains(" id-skill ") || l.ends_with(" id-skill") || l.contains("— id-skill ") || l.contains("— id-skill\t"))
+        .find(|l| {
+            l.contains(" id-skill ")
+                || l.ends_with(" id-skill")
+                || l.contains("— id-skill ")
+                || l.contains("— id-skill\t")
+        })
         // Fallback: match the line whose name field equals exactly "id-skill"
         // by checking the " — id-skill (" substring that the CLI emits.
         .or_else(|| trash.0.lines().find(|l| l.contains(" — id-skill (")))
         .or_else(|| trash.0.lines().find(|l| l.contains("- id-skill (")))
         .or_else(|| {
-            trash.0.lines().find(|l| {
-                l.contains("id-skill") && !l.contains("id-skill-2")
-            })
+            trash
+                .0
+                .lines()
+                .find(|l| l.contains("id-skill") && !l.contains("id-skill-2"))
         })
         .expect("must find a trash line for id-skill (not id-skill-2)");
     // The CLI format is "  [kind] <id> — <name> (<time ago>)"; pick the second field.
@@ -797,8 +806,10 @@ fn trash_purge_permanently_deletes_files() {
     let trash_pre = run_runai(home, &["trash", "list"]);
     assert!(trash_pre.0.contains("purge-me"));
     let trash_root = home.join(".runai/trash");
-    let mut entries_before: Vec<PathBuf> =
-        std::fs::read_dir(&trash_root).unwrap().filter_map(|e| e.ok().map(|e| e.path())).collect();
+    let mut entries_before: Vec<PathBuf> = std::fs::read_dir(&trash_root)
+        .unwrap()
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .collect();
     entries_before.sort();
     assert!(
         !entries_before.is_empty(),
@@ -970,7 +981,10 @@ fn trash_purge_nonexistent_fails_safely() {
     );
 
     // No filesystem mutation: sentinel intact.
-    assert!(sentinel.exists(), "sentinel file must remain after no-op purge");
+    assert!(
+        sentinel.exists(),
+        "sentinel file must remain after no-op purge"
+    );
     assert_eq!(std::fs::read(&sentinel).unwrap(), b"sentinel");
 }
 
@@ -1036,7 +1050,11 @@ fn trash_purge_group_safe_for_members() {
     make_skill(&managed, "bystander-live", "bystander live body");
     assert!(run_runai(home, &["scan"]).2.success());
     assert!(run_runai(home, &["uninstall", "victim"]).2.success());
-    assert!(run_runai(home, &["uninstall", "bystander-trashed"]).2.success());
+    assert!(
+        run_runai(home, &["uninstall", "bystander-trashed"])
+            .2
+            .success()
+    );
 
     // bystander-live is NOT trashed — its managed dir must survive everything.
     assert!(managed.join("bystander-live/SKILL.md").exists());
@@ -1066,8 +1084,11 @@ fn trash_purge_group_safe_for_members() {
     let trash_root = home.join(".runai/trash");
     let bystander_payload_exists = std::fs::read_dir(&trash_root)
         .map(|it| {
-            it.filter_map(|e| e.ok())
-                .any(|e| e.file_name().to_string_lossy().contains("bystander-trashed"))
+            it.filter_map(|e| e.ok()).any(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .contains("bystander-trashed")
+            })
         })
         .unwrap_or(false);
     assert!(

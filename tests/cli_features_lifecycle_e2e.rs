@@ -359,7 +359,8 @@ fn enable_creates_symlinks_across_cli_targets() {
         let resolved = std::fs::read_link(&link_path).unwrap();
         let expected = env.default_skills_dir().join(skill_name);
         assert_eq!(
-            resolved, expected,
+            resolved,
+            expected,
             "symlink for target={target} points to {} instead of managed dir {}",
             resolved.display(),
             expected.display()
@@ -450,7 +451,8 @@ fn enable_clobbers_stale_symlink() {
     let resolved = std::fs::read_link(&link_path).unwrap();
     let expected = env.default_skills_dir().join(skill_name);
     assert_eq!(
-        resolved, expected,
+        resolved,
+        expected,
         "after clobber, symlink should point at managed skill dir; got {}",
         resolved.display()
     );
@@ -468,13 +470,7 @@ fn enable_group_enables_all_members() {
 
     // Create the group + add both members.
     let create = env.run(&[
-        "group",
-        "create",
-        "my-group",
-        "--name",
-        "My Group",
-        "--kind",
-        "custom",
+        "group", "create", "my-group", "--name", "My Group", "--kind", "custom",
     ]);
     dump(&create, "group create");
     assert!(create.status.success(), "group create must succeed");
@@ -586,7 +582,10 @@ fn enable_respects_rune_data_dir_isolation() {
     let scan = env.run_with_rune_data(alt_data.path(), &["scan"]);
     dump(&scan, "scan against alt data dir");
     assert!(scan.status.success());
-    let en = env.run_with_rune_data(alt_data.path(), &["enable", skill_name, "--target", "claude"]);
+    let en = env.run_with_rune_data(
+        alt_data.path(),
+        &["enable", skill_name, "--target", "claude"],
+    );
     dump(&en, "enable against alt data dir");
     assert!(en.status.success(), "enable against alt data dir failed");
 
@@ -600,11 +599,11 @@ fn enable_respects_rune_data_dir_isolation() {
     // Resolve the symlink and assert it points into the ALT data dir's
     // skills/, not the default `~/.runai/skills/`.
     let resolved = std::fs::read_link(&link_path).unwrap();
-    let canonical_resolved = std::fs::canonicalize(&resolved)
-        .unwrap_or_else(|_| resolved.clone());
+    let canonical_resolved = std::fs::canonicalize(&resolved).unwrap_or_else(|_| resolved.clone());
     let canonical_alt = std::fs::canonicalize(alt_skills.join(skill_name)).unwrap();
     assert_eq!(
-        canonical_resolved, canonical_alt,
+        canonical_resolved,
+        canonical_alt,
         "symlink should resolve to ALT data dir's {} but resolved to {}",
         canonical_alt.display(),
         canonical_resolved.display()

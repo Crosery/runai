@@ -203,7 +203,10 @@ fn install_hook_idempotent_with_backup() {
         post1.iter().any(|c| c == "my-formatter"),
         "unrelated PostToolUse hook must be preserved; cmds={post1:?}"
     );
-    assert_eq!(after1["theme"], "dark", "unrelated top-level keys preserved");
+    assert_eq!(
+        after1["theme"], "dark",
+        "unrelated top-level keys preserved"
+    );
 
     // Backup of original content was written.
     assert!(
@@ -251,7 +254,10 @@ fn install_hook_adds_session_start() {
     // No prior settings.json; binary must create it.
     let out = env.run(&["recommend", "install-hook"]);
     dump(&out, "install-hook fresh");
-    assert!(out.status.success(), "install-hook must exit 0 on fresh home");
+    assert!(
+        out.status.success(),
+        "install-hook must exit 0 on fresh home"
+    );
 
     assert!(
         env.settings_path().exists(),
@@ -498,7 +504,10 @@ fn uninstall_hook_idempotent_preserves_others() {
         post1.iter().any(|c| c == "my-formatter"),
         "unrelated PostToolUse hook must be preserved; cmds={post1:?}"
     );
-    assert_eq!(after1["theme"], "dark", "unrelated top-level keys preserved");
+    assert_eq!(
+        after1["theme"], "dark",
+        "unrelated top-level keys preserved"
+    );
 
     // Snapshot for idempotency comparison.
     let snapshot = std::fs::read_to_string(env.settings_path()).unwrap();

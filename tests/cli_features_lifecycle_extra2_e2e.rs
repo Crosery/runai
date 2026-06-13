@@ -188,7 +188,6 @@ fn newest_backup_dir(data_dir: &Path) -> PathBuf {
 /// the backup from that data dir and restores into the same data dir's
 /// managed skills/ — does not cross over to the default ~/.runai/.
 
-
 #[test]
 fn trash_empty_clears_all() {
     let env = TestEnv::new();
@@ -216,7 +215,8 @@ fn trash_empty_clears_all() {
     );
     let pre_count = count_subdirs(&trash_root);
     assert_eq!(
-        pre_count, 5,
+        pre_count,
+        5,
         "expected 5 trash payload subdirs, found {pre_count} at {}",
         trash_root.display()
     );
@@ -244,7 +244,8 @@ fn trash_empty_clears_all() {
     // Assert: trash payload subdirs all gone.
     let post_count = count_subdirs(&trash_root);
     assert_eq!(
-        post_count, 0,
+        post_count,
+        0,
         "trash payload dirs should be empty after 'trash empty'; found {post_count} subdirs at {}",
         trash_root.display()
     );
@@ -259,7 +260,6 @@ fn trash_empty_clears_all() {
         "expected 'Trash is empty.' after trash empty. Got:\n{la}"
     );
 }
-
 
 #[test]
 fn trash_empty_handles_already_empty() {
@@ -278,7 +278,6 @@ fn trash_empty_handles_already_empty() {
         "expected 'Emptied trash (0 items)' on empty trash. Got:\n{stdout}"
     );
 }
-
 
 #[test]
 fn trash_empty_respects_rune_data_dir() {
@@ -360,7 +359,6 @@ fn trash_empty_respects_rune_data_dir() {
     assert_eq!(count_subdirs(&default_trash), 0);
     assert_eq!(count_subdirs(&alt_trash), 0);
 }
-
 
 #[test]
 fn backup_creates_snapshot() {
@@ -444,7 +442,6 @@ fn backup_creates_snapshot() {
     );
 }
 
-
 #[test]
 fn backup_creates_independent_snapshots() {
     let env = TestEnv::new();
@@ -513,7 +510,6 @@ fn backup_creates_independent_snapshots() {
         "two backups should be independent snapshots"
     );
 }
-
 
 #[test]
 fn backup_respects_rune_data_dir() {
@@ -598,7 +594,6 @@ fn backup_respects_rune_data_dir() {
     );
 }
 
-
 #[test]
 fn restore_recovers_from_latest_backup() {
     let env = TestEnv::new();
@@ -621,8 +616,7 @@ fn restore_recovers_from_latest_backup() {
     // Pre-backup snapshot of the data we expect to come back.
     let original_skill_body =
         std::fs::read_to_string(env.default_skills_dir().join("keep-me/SKILL.md")).unwrap();
-    let original_claude_json =
-        std::fs::read_to_string(env.home().join(".claude.json")).unwrap();
+    let original_claude_json = std::fs::read_to_string(env.home().join(".claude.json")).unwrap();
 
     // Sleep so the explicit backup gets a distinct timestamp from any
     // implicit scan-time backup.
@@ -670,7 +664,6 @@ fn restore_recovers_from_latest_backup() {
         "restore should overwrite ~/.claude.json with the backup copy"
     );
 }
-
 
 #[test]
 fn restore_accepts_timestamp_parameter() {
@@ -742,7 +735,6 @@ fn restore_accepts_timestamp_parameter() {
     );
 }
 
-
 #[test]
 fn restore_handles_existing_skills() {
     let env = TestEnv::new();
@@ -794,7 +786,6 @@ fn restore_handles_existing_skills() {
         "live-mutated content should be replaced by backup. Got:\n{body}"
     );
 }
-
 
 #[test]
 fn restore_respects_rune_data_dir() {
@@ -883,4 +874,3 @@ fn restore_respects_rune_data_dir() {
         "alt-restore body mismatch after restore"
     );
 }
-

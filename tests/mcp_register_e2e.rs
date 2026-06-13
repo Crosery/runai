@@ -51,15 +51,15 @@ fn run_in_home_with_data(home: &Path, data: &Path, args: &[&str]) -> std::proces
 }
 
 fn read_json(path: &Path) -> serde_json::Value {
-    let content = std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    let content =
+        std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
     serde_json::from_str(&content)
         .unwrap_or_else(|e| panic!("parse JSON {}: {}", path.display(), e))
 }
 
 fn read_toml(path: &Path) -> toml::Table {
-    let content = std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    let content =
+        std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
     content
         .parse()
         .unwrap_or_else(|e| panic!("parse TOML {}: {}", path.display(), e))
@@ -113,7 +113,10 @@ fn register_all_symmetric_across_targets() {
         .and_then(|v| v.as_table())
         .expect("Codex config missing [mcp_servers.runai]");
     assert!(
-        codex_runai.get("command").and_then(|v| v.as_str()).is_some(),
+        codex_runai
+            .get("command")
+            .and_then(|v| v.as_str())
+            .is_some(),
         "Codex [mcp_servers.runai] missing command"
     );
 
@@ -264,11 +267,7 @@ fn register_creates_cli_dirs() {
     assert!(home.path().join(".claude.json").exists());
     assert!(home.path().join(".gemini/settings.json").exists());
     assert!(home.path().join(".codex/config.toml").exists());
-    assert!(
-        home.path()
-            .join(".config/opencode/opencode.json")
-            .exists()
-    );
+    assert!(home.path().join(".config/opencode/opencode.json").exists());
 }
 
 // ─── 1.28 register CLI tests (high-risk: spawn real binary) ────────────────
@@ -287,11 +286,7 @@ fn register_writes_to_all_cli_configs() {
     std::fs::create_dir_all(home.path().join(".codex")).unwrap();
     std::fs::write(home.path().join(".codex/config.toml"), "").unwrap();
     std::fs::create_dir_all(home.path().join(".config/opencode")).unwrap();
-    std::fs::write(
-        home.path().join(".config/opencode/opencode.json"),
-        "{}",
-    )
-    .unwrap();
+    std::fs::write(home.path().join(".config/opencode/opencode.json"), "{}").unwrap();
 
     let out = run_in_home(home.path(), &["register"]);
     assert!(
@@ -360,11 +355,7 @@ fn register_creates_missing_dirs_via_cli() {
     assert!(home.path().join(".claude.json").exists());
     assert!(home.path().join(".gemini/settings.json").exists());
     assert!(home.path().join(".codex/config.toml").exists());
-    assert!(
-        home.path()
-            .join(".config/opencode/opencode.json")
-            .exists()
-    );
+    assert!(home.path().join(".config/opencode/opencode.json").exists());
 }
 
 /// 1.28 #3 — register is symmetric across the 4 targets: same binary path,
@@ -462,9 +453,7 @@ fn register_ignores_rune_data_dir() {
         "Codex config must be at HOME/.codex/config.toml"
     );
     assert!(
-        home.path()
-            .join(".config/opencode/opencode.json")
-            .exists(),
+        home.path().join(".config/opencode/opencode.json").exists(),
         "OpenCode config must be at HOME/.config/opencode/opencode.json"
     );
 
@@ -542,8 +531,7 @@ command = "baz"
     // Claude: runai gone, other preserved.
     let claude = read_json(&home.path().join(".claude.json"));
     assert!(
-        claude["mcpServers"].get("runai").is_none()
-            || claude["mcpServers"]["runai"].is_null(),
+        claude["mcpServers"].get("runai").is_none() || claude["mcpServers"]["runai"].is_null(),
         "Claude runai entry should be removed"
     );
     assert!(
@@ -554,8 +542,7 @@ command = "baz"
     // Gemini: runai gone, other preserved.
     let gemini = read_json(&home.path().join(".gemini/settings.json"));
     assert!(
-        gemini["mcpServers"].get("runai").is_none()
-            || gemini["mcpServers"]["runai"].is_null(),
+        gemini["mcpServers"].get("runai").is_none() || gemini["mcpServers"]["runai"].is_null(),
         "Gemini runai entry should be removed"
     );
     assert!(
@@ -581,8 +568,7 @@ command = "baz"
     // OpenCode: runai gone, other preserved.
     let opencode = read_json(&home.path().join(".config/opencode/opencode.json"));
     assert!(
-        opencode["mcp"].get("runai").is_none()
-            || opencode["mcp"]["runai"].is_null(),
+        opencode["mcp"].get("runai").is_none() || opencode["mcp"]["runai"].is_null(),
         "OpenCode runai entry should be removed"
     );
     assert!(
@@ -611,15 +597,13 @@ fn unregister_symmetric_across_targets() {
 
     let claude = read_json(&home.path().join(".claude.json"));
     assert!(
-        claude["mcpServers"].get("runai").is_none()
-            || claude["mcpServers"]["runai"].is_null(),
+        claude["mcpServers"].get("runai").is_none() || claude["mcpServers"]["runai"].is_null(),
         "Claude still has runai entry after unregister"
     );
 
     let gemini = read_json(&home.path().join(".gemini/settings.json"));
     assert!(
-        gemini["mcpServers"].get("runai").is_none()
-            || gemini["mcpServers"]["runai"].is_null(),
+        gemini["mcpServers"].get("runai").is_none() || gemini["mcpServers"]["runai"].is_null(),
         "Gemini still has runai entry after unregister"
     );
 
@@ -635,8 +619,7 @@ fn unregister_symmetric_across_targets() {
 
     let opencode = read_json(&home.path().join(".config/opencode/opencode.json"));
     assert!(
-        opencode["mcp"].get("runai").is_none()
-            || opencode["mcp"]["runai"].is_null(),
+        opencode["mcp"].get("runai").is_none() || opencode["mcp"]["runai"].is_null(),
         "OpenCode still has runai entry after unregister"
     );
 }

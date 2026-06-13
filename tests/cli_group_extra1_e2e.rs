@@ -83,8 +83,7 @@ fn assert_success(out: &std::process::Output, ctx: &str) {
 }
 
 fn read_toml(path: &Path) -> String {
-    std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("read {} failed: {e}", path.display()))
+    std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {} failed: {e}", path.display()))
 }
 
 // ─── 1.24 group update ─────────────────────────────────────────────────────
@@ -101,7 +100,6 @@ fn read_toml(path: &Path) -> String {
 /// physical_e2e (high_risk: cross-RUNE_DATA_DIR isolation). Two independent
 /// data dirs each host their own `g1.toml`; updating one must NOT touch the
 /// other.
-
 
 #[test]
 fn group_update_modifies_toml_and_db() {
@@ -126,8 +124,14 @@ fn group_update_modifies_toml_and_db() {
         toml_path.display()
     );
     let before = read_toml(&toml_path);
-    assert!(before.contains("Original Name"), "pre-update name: {before}");
-    assert!(before.contains("original desc"), "pre-update desc: {before}");
+    assert!(
+        before.contains("Original Name"),
+        "pre-update name: {before}"
+    );
+    assert!(
+        before.contains("original desc"),
+        "pre-update desc: {before}"
+    );
 
     // update both name and description
     let upd = env.run(&[
@@ -184,7 +188,6 @@ fn group_update_modifies_toml_and_db() {
         db_path.display()
     );
 }
-
 
 #[test]
 fn group_update_unit_partial() {
@@ -256,7 +259,6 @@ fn group_update_unit_partial() {
     );
 }
 
-
 #[test]
 fn group_update_unit_no_changes() {
     let env = GroupEnv::new();
@@ -316,7 +318,6 @@ fn group_update_unit_no_changes() {
         }
     }
 }
-
 
 #[test]
 fn group_update_cross_data_dir() {
@@ -418,4 +419,3 @@ fn group_update_cross_data_dir() {
         "default and alt DB paths must be distinct"
     );
 }
-

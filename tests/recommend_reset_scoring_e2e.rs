@@ -77,9 +77,7 @@ fn run_reset_scoring_interactive(
     let mut child = cmd.spawn().expect("spawn recommend reset-scoring");
     {
         let stdin = child.stdin.as_mut().expect("stdin pipe");
-        stdin
-            .write_all(input.as_bytes())
-            .expect("write to stdin");
+        stdin.write_all(input.as_bytes()).expect("write to stdin");
     }
     child
         .wait_with_output()
@@ -144,11 +142,9 @@ fn plant_summaries(db: &Path, count: usize) -> Vec<String> {
 
 fn count_summaries(db: &Path) -> i64 {
     let conn = Connection::open(db).expect("reopen runai.db");
-    conn.query_row(
-        "SELECT COUNT(*) FROM resource_ai_summary",
-        [],
-        |r| r.get::<_, i64>(0),
-    )
+    conn.query_row("SELECT COUNT(*) FROM resource_ai_summary", [], |r| {
+        r.get::<_, i64>(0)
+    })
     .expect("count rows")
 }
 
@@ -353,7 +349,10 @@ fn reset_scoring_respects_rune_data_dir() {
     );
     dump(&out, "reset-scoring --yes RUNE_DATA_DIR=custom");
 
-    assert!(out.status.success(), "reset-scoring on custom dir should succeed");
+    assert!(
+        out.status.success(),
+        "reset-scoring on custom dir should succeed"
+    );
 
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     assert!(
