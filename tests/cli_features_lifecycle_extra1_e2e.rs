@@ -347,3 +347,192 @@ fn market_install_respects_rune_data_dir() {
     );
 }
 
+
+#[test]
+fn uninstall_moves_to_trash_and_cleans_symlinks() {
+    let env = TestEnv::new();
+
+    // Plant a skill in managed dir, register via scan.
+    make_skill(&env.default_skills_dir(), "victim-skill", "victim body");
+    let scan = env.run(&["scan"]);
+    dump(&scan, "scan to register victim-skill");
+    assert!(scan.status.success(), "scan must succeed");
+
+    // Enable on all 4 CLI targets so we can assert symlink cleanup is symmetric.
+    for tgt in ["claude", "codex", "gemini", "opencode"] {
+        let out = env.run(&["enable", "victim-skill", "--target", tgt]);
+        dump(&out, &format!("enable for {tgt}"));
+        assert!(out.status.success(), "enable on {tgt} must succeed");
+        let link = env.cli_skills_dir(tgt).join("victim-skill");
+        assert!(
+            std::fs::symlink_metadata(&link).is_ok(),
+            "expected symlink at {} after enable",
+            link.display()
+        );
+    }
+
+    // Original managed dir present.
+    let managed_dir = env.default_skills_dir().join("victim-skill");
+    assert!(managed_dir.join("SKILL.md").exists());
+
+    // Uninstall.
+    let un = env.run(&["uninstall", "victim-skill"]);
+    dump(&un, "uninstall victim-skill");
+    assert!(un.status.success(), "uninstall must succeed");
+
+    // Managed dir must be gone.
+    assert!(
+        !managed_dir.exists(),
+        "REGRESSION: uninstall left managed dir behind at {}",
+        managed_dir.display()
+    );
+
+    // All 4 CLI symlinks must be gone.
+    for tgt in ["claude", "codex", "gemini", "opencode"] {
+        let link = env.cli_skills_dir(tgt).join("victim-skill");
+        assert!(
+            std::fs::symlink_metadata(&link).is_err(),
+            "REGRESSION: uninstall did not remove symlink on target {} at {}",
+            tgt,
+            link.display()
+        );
+    }
+
+    // Trash should contain SOMETHING (timestamped subdir) — payload preserved.
+    let trash = env.default_trash_dir();
+    assert!(
+        trash.exists(),
+        "trash root should exist after uninstall: {}",
+        trash.display()
+    );
+    let trash_entries: Vec<_> = std::fs::read_dir(&trash)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .collect();
+    assert!(
+        !trash_entries.is_empty(),
+        "REGRESSION: uninstall did not put payload into trash; trash empty at {}",
+        trash.display()
+    );
+
+    // trash list must show victim-skill by name.
+    let list = env.run(&["trash", "list"]);
+    dump(&list, "trash list after uninstall");
+    assert!(list.status.success());
+    let list_out = String::from_utf8_lossy(&list.stdout);
+    assert!(
+        list_out.contains("victim-skill"),
+        "REGRESSION: trash list missing 'victim-skill':\n{list_out}"
+    );
+}
+
+
+#[test]
+fn uninstall_preserves_metadata_for_restore() {
+    let env = TestEnv::new();
+
+    make_skill(&env.default_skills_dir(), "metadata-skill", "metadata body");
+    let scan = env.run(&["scan"]);
+    assert!(scan.status.success());
+    let en = env.run(&["enable", "metadata-skill", "--target", "claude"]);
+    assert!(en.status.success());
+
+    let un = env.run(&["uninstall", "metadata-skill"]);
+    dump(&un, "uninstall metadata-skill");
+    assert!(un.status.success(), "uninstall must succeed");
+
+    let list = env.run(&["trash", "list"]);
+    dump(&list, "trash list");
+    assert!(list.status.success());
+    let stdout = String::from_utf8_lossy(&list.stdout);
+
+    // List output format is "[<kind>] <id> — <name> (<deleted_at>)".
+    assert!(
+        stdout.contains("metadata-skill"),
+        "REGRESSION: trash list missing skill name; output:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("[skill]"),
+        "REGRESSION: trash list missing kind label; output:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Total: 1 trashed"),
+        "REGRESSION: trash list summary line missing; output:\n{stdout}"
+    );
+
+    // A subsequent restore should succeed, proving metadata is sufficient.
+    let restore = env.run(&["trash", "restore", "metadata-skill"]);
+    dump(&restore, "trash restore");
+    assert!(
+        restore.status.success(),
+        "REGRESSION: restore failed, metadata insufficient. stderr:\n{}",
+        String::from_utf8_lossy(&restore.stderr)
+    );
+    assert!(
+        env.default_skills_dir()
+            .join("metadata-skill")
+            .join("SKILL.md")
+            .exists(),
+        "REGRESSION: restore did not recreate SKILL.md"
+    );
+}
+
+
+#[test]
+fn uninstall_respects_rune_data_dir() {
+    let env = TestEnv::new();
+    let alt = tempfile::tempdir().unwrap();
+    let alt_data = alt.path();
+    std::fs::create_dir_all(alt_data.join("skills")).unwrap();
+
+    // Plant a sentinel in the DEFAULT data dir's skills/ — must NOT be touched.
+    let sentinel = make_skill(&env.default_skills_dir(), "sentinel", "sentinel body");
+    let sentinel_bytes = std::fs::read(sentinel.join("SKILL.md")).unwrap();
+
+    // Plant a skill in the ALT data dir's skills/.
+    make_skill(&alt_data.join("skills"), "alt-skill", "alt body");
+    let scan = env.run_with_rune_data(alt_data, &["scan"]);
+    dump(&scan, "scan under alt data dir");
+    assert!(scan.status.success(), "scan in alt data dir must succeed");
+
+    // Uninstall in the alt data dir.
+    let un = env.run_with_rune_data(alt_data, &["uninstall", "alt-skill"]);
+    dump(&un, "uninstall alt-skill (alt data dir)");
+    assert!(un.status.success(), "uninstall in alt data dir must succeed");
+
+    // Alt data dir: skill gone from skills/, trash payload present.
+    assert!(
+        !alt_data.join("skills/alt-skill").exists(),
+        "REGRESSION: alt data dir uninstall left managed dir behind"
+    );
+    let alt_trash = alt_data.join("trash");
+    assert!(
+        alt_trash.exists() && alt_trash.read_dir().unwrap().next().is_some(),
+        "REGRESSION: alt data dir uninstall did not put payload into {}",
+        alt_trash.display()
+    );
+
+    // Default data dir: sentinel intact, default trash empty (or absent).
+    assert!(
+        sentinel.join("SKILL.md").exists(),
+        "REGRESSION: alt-dir uninstall removed sentinel SKILL.md in default dir"
+    );
+    assert_eq!(
+        std::fs::read(sentinel.join("SKILL.md")).unwrap(),
+        sentinel_bytes,
+        "REGRESSION: alt-dir uninstall mutated default sentinel content"
+    );
+    let default_trash = env.default_trash_dir();
+    let default_has_entries = default_trash.exists()
+        && default_trash
+            .read_dir()
+            .map(|mut it| it.next().is_some())
+            .unwrap_or(false);
+    assert!(
+        !default_has_entries,
+        "REGRESSION: alt-dir uninstall wrote into the default trash at {}",
+        default_trash.display()
+    );
+}
+
