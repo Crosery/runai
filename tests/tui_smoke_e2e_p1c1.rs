@@ -397,6 +397,152 @@ fn tab_navigation_cycles_forward_all_tabs() {
     });
 }
 
+// ─── 2.29 Local Scan ─────────────────────────────────────────────────────────
+
+/// Helper: drop a bare-bones skill into `<dir>/<name>/` with a SKILL.md
+/// (scanner doesn't strictly require it for managed-dir adoption but real
+/// skills always have one — keep the fixture realistic).
+fn plant_skill(skills_dir: &Path, name: &str) -> PathBuf {
+    let dir = skills_dir.join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("SKILL.md"),
+        format!("---\nname: {name}\ndescription: planted by test\n---\n# {name}\n"),
+    )
+    .unwrap();
+    dir
+}
+
+#[test]
+fn scan_discovers_new_skills_in_all_cli_dirs() {
+    // Plant a fresh skill directly into the managed skills dir BEFORE the
+    // 's' key is pressed. After scan + reload, the DB should carry it and
+    // visible_items() should include it.
+    let tmp = TempDir::new().unwrap();
+    with_isolated_home(tmp.path(), || {
+        let data = tmp.path().join("data");
+        let mgr = SkillManager::with_base(data.clone()).unwrap();
+        let mut app = App::new(mgr);
+        app.mode = InputMode::Normal;
+        app.active_target = CliTarget::Claude;
+        app.tab = Tab::Skills;
+        app.selected = 0;
+        app.reload();
+
+        // Pre-scan baseline: empty list.
+        assert_eq!(app.items.len(), 0, "fresh DB has zero skills");
+
+        // Plant the skill on disk OUTSIDE the DB.
+        let planted = plant_skill(&data.join("skills"), "test-new-skill");
+        assert!(planted.exists());
+
+        // Trigger the 's' Normal-mode action — it calls mgr.scan() + reload()
+        // + sets the "Scan done" message.
+        app.handle_key(key(KeyCode::Char('s')));
+
+        // Scan should have registered the new row in the DB.
+        let row = app
+            .mgr
+            .db()
+            .get_resource("local:test-new-skill")
+            .unwrap();
+        assert!(row.is_some(), "scan adopts the planted skill into the DB");
+        assert_eq!(row.unwrap().name, "test-new-skill");
+
+        // visible_items() (post-reload) should now contain the new skill.
+        let names: Vec<String> = app.items.iter().map(|r| r.name.clone()).collect();
+        assert!(
+            names.iter().any(|n| n == "test-new-skill"),
+            "reload after scan surfaces the new skill; got {:?}",
+            names
+        );
+
+        // The "Scan done" message must be set (localized — assert non-empty
+        // rather than pinning the exact string, since Zh/En both exist).
+        assert!(
+            app.message.is_some(),
+            "'s' must set the Scan done feedback message"
+        );
+    });
+}
+
+#[test]
+fn scan_respects_rune_data_dir_boundary() {
+    // When `SkillManager::with_base(custom_dir)` roots the app at a
+    // non-default data directory, scan must walk ONLY <custom_dir>/skills/
+    // — never the default ~/.runai/skills/ in HOME. Mirrors the
+    // RUNE_DATA_DIR boundary that destroyed 5 skills on 2026-04-27.
+    let tmp = TempDir::new().unwrap();
+    with_isolated_home(tmp.path(), || {
+        // Default data dir (would be <home>/.runai) — plant skill-default
+        // here. Scan from a non-default dir must NOT see this.
+        let default_skills = tmp.path().join(".runai").join("skills");
+        std::fs::create_dir_all(&default_skills).unwrap();
+        plant_skill(&default_skills, "skill-default");
+
+        // Custom data dir — plant skill-custom here. Scan rooted here must
+        // see exactly this one.
+        let custom_data = tmp.path().join("custom-data");
+        let custom_skills = custom_data.join("skills");
+        std::fs::create_dir_all(&custom_skills).unwrap();
+        plant_skill(&custom_skills, "skill-custom");
+
+        let mgr = SkillManager::with_base(custom_data.clone()).unwrap();
+        let mut app = App::new(mgr);
+        app.mode = InputMode::Normal;
+        app.active_target = CliTarget::Claude;
+        app.tab = Tab::Skills;
+        app.selected = 0;
+        app.reload();
+
+        // Trigger 's' → mgr.scan() + reload().
+        app.handle_key(key(KeyCode::Char('s')));
+
+        // The custom skill must be in the DB.
+        let custom_row = app
+            .mgr
+            .db()
+            .get_resource("local:skill-custom")
+            .unwrap();
+        assert!(
+            custom_row.is_some(),
+            "scan registered skill-custom from the custom data dir"
+        );
+
+        // The default-dir skill MUST NOT be in the DB — that would mean scan
+        // crossed the data-dir boundary.
+        let default_row = app
+            .mgr
+            .db()
+            .get_resource("local:skill-default")
+            .unwrap();
+        assert!(
+            default_row.is_none(),
+            "scan must NOT cross into the default data dir; skill-default \
+             should not appear in the custom DB"
+        );
+
+        // The default skill must still exist on disk (scan did not move
+        // it). This pins the safety contract from AGENTS.md.
+        assert!(
+            default_skills.join("skill-default").exists(),
+            "default-dir skill payload must remain untouched"
+        );
+
+        // visible_items() should contain only skill-custom.
+        let names: Vec<String> = app.items.iter().map(|r| r.name.clone()).collect();
+        assert!(
+            names.iter().any(|n| n == "skill-custom"),
+            "skill-custom must be visible"
+        );
+        assert!(
+            !names.iter().any(|n| n == "skill-default"),
+            "skill-default must NOT be visible from custom data dir; got {:?}",
+            names
+        );
+    });
+}
+
 #[test]
 fn tab_navigation_backward_wraps() {
     // H key moves backward through the tab cycle. From Tab::Skills (index 0)
