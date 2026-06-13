@@ -598,3 +598,289 @@ fn backup_respects_rune_data_dir() {
     );
 }
 
+
+#[test]
+fn restore_recovers_from_latest_backup() {
+    let env = TestEnv::new();
+
+    // Setup: managed skill + claude.json + enable so a CLI symlink exists.
+    make_skill(&env.default_skills_dir(), "keep-me", "keep-me desc");
+    std::fs::write(
+        env.home().join(".claude.json"),
+        r#"{"mcpServers":{},"phase":"before-backup"}"#,
+    )
+    .unwrap();
+
+    assert!(env.run(&["scan"]).status.success());
+    assert!(
+        env.run(&["enable", "keep-me", "--target", "claude"])
+            .status
+            .success()
+    );
+
+    // Pre-backup snapshot of the data we expect to come back.
+    let original_skill_body =
+        std::fs::read_to_string(env.default_skills_dir().join("keep-me/SKILL.md")).unwrap();
+    let original_claude_json =
+        std::fs::read_to_string(env.home().join(".claude.json")).unwrap();
+
+    // Sleep so the explicit backup gets a distinct timestamp from any
+    // implicit scan-time backup.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let b = env.run(&["backup"]);
+    dump(&b, "backup before destruction");
+    assert!(b.status.success());
+
+    // Destruction: nuke the managed skill dir + clobber the claude config.
+    std::fs::remove_dir_all(env.default_skills_dir().join("keep-me")).unwrap();
+    assert!(!env.default_skills_dir().join("keep-me").exists());
+    std::fs::write(
+        env.home().join(".claude.json"),
+        r#"{"mcpServers":{},"phase":"DESTROYED"}"#,
+    )
+    .unwrap();
+
+    // Restore from latest backup.
+    let r = env.run(&["restore"]);
+    dump(&r, "restore (latest)");
+    assert!(r.status.success(), "runai restore should succeed");
+    let stdout = String::from_utf8_lossy(&r.stdout);
+    assert!(
+        stdout.contains("Restoring from backup:") && stdout.contains("Restored"),
+        "expected 'Restoring from backup: <ts>' and 'Restored N items'. Got:\n{stdout}"
+    );
+
+    // Managed skill recovered with original body.
+    let restored_skill = env.default_skills_dir().join("keep-me/SKILL.md");
+    assert!(
+        restored_skill.exists(),
+        "restore should recreate managed skill at {}",
+        restored_skill.display()
+    );
+    assert_eq!(
+        std::fs::read_to_string(&restored_skill).unwrap(),
+        original_skill_body,
+        "restore should bring back the skill's original body"
+    );
+
+    // CLI config rolled back.
+    assert_eq!(
+        std::fs::read_to_string(env.home().join(".claude.json")).unwrap(),
+        original_claude_json,
+        "restore should overwrite ~/.claude.json with the backup copy"
+    );
+}
+
+
+#[test]
+fn restore_accepts_timestamp_parameter() {
+    let env = TestEnv::new();
+
+    // Seed an initial skill.
+    let skill_md = env.default_skills_dir().join("ts-skill/SKILL.md");
+    make_skill(&env.default_skills_dir(), "ts-skill", "version-one");
+    assert!(env.run(&["scan"]).status.success());
+
+    // First explicit backup captures version-one. Sleep to clear scan's
+    // implicit-backup timestamp collision.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let b1 = env.run(&["backup"]);
+    dump(&b1, "backup 1 (version-one)");
+    assert!(b1.status.success());
+
+    // Pick this backup's timestamp from the newest snapshot dir.
+    let ts1 = newest_backup_dir(&env.default_data_dir())
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+
+    // Sleep then mutate the skill to version-two and back up again.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    std::fs::write(
+        &skill_md,
+        "---\nname: ts-skill\ndescription: version-two\n---\n\n# ts-skill\n\nversion-two body\n",
+    )
+    .unwrap();
+    let b2 = env.run(&["backup"]);
+    dump(&b2, "backup 2 (version-two)");
+    assert!(b2.status.success());
+
+    // Sanity: a second backup timestamp distinct from ts1.
+    let ts2 = newest_backup_dir(&env.default_data_dir())
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    assert_ne!(ts1, ts2, "two backups should have distinct timestamps");
+
+    // Mutate to a third version, then restore to ts1.
+    std::fs::write(
+        &skill_md,
+        "---\nname: ts-skill\ndescription: version-three\n---\n\n# ts-skill\n\nv3\n",
+    )
+    .unwrap();
+
+    let r = env.run(&["restore", "--timestamp", &ts1]);
+    dump(&r, "restore --timestamp ts1");
+    assert!(r.status.success(), "restore --timestamp should succeed");
+    let stdout = String::from_utf8_lossy(&r.stdout);
+    assert!(
+        stdout.contains(&ts1),
+        "restore output should echo the chosen timestamp {ts1}. Got:\n{stdout}"
+    );
+
+    // The skill should match version-one, not version-two or version-three.
+    let body = std::fs::read_to_string(&skill_md).unwrap();
+    assert!(
+        body.contains("version-one"),
+        "restore --timestamp ts1 should bring back version-one body. Got:\n{body}"
+    );
+    assert!(
+        !body.contains("version-two") && !body.contains("version-three"),
+        "restore --timestamp ts1 should NOT have version-two/three content. Got:\n{body}"
+    );
+}
+
+
+#[test]
+fn restore_handles_existing_skills() {
+    let env = TestEnv::new();
+
+    // Original skill, scan, backup.
+    let skill_md = env.default_skills_dir().join("conflict/SKILL.md");
+    make_skill(&env.default_skills_dir(), "conflict", "original-body");
+    assert!(env.run(&["scan"]).status.success());
+
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let b = env.run(&["backup"]);
+    dump(&b, "backup conflict (original-body)");
+    assert!(b.status.success());
+
+    // Mutate the live skill — same name, different content.
+    std::fs::write(
+        &skill_md,
+        "---\nname: conflict\ndescription: live-mutated\n---\n\n# conflict\n\nlive-mutated\n",
+    )
+    .unwrap();
+    assert!(
+        std::fs::read_to_string(&skill_md)
+            .unwrap()
+            .contains("live-mutated")
+    );
+
+    // Restore: should NOT bail because skill exists — it overwrites.
+    let r = env.run(&["restore"]);
+    dump(&r, "restore over existing skill");
+    assert!(
+        r.status.success(),
+        "runai restore should not abort when a same-name skill is live"
+    );
+    let stdout = String::from_utf8_lossy(&r.stdout);
+    let stderr = String::from_utf8_lossy(&r.stderr);
+    assert!(
+        !stderr.contains("Restore failed"),
+        "restore should not print 'Restore failed'. Got stderr:\n{stderr}\nstdout:\n{stdout}"
+    );
+
+    // Live skill content should now match the backup (original-body).
+    let body = std::fs::read_to_string(&skill_md).unwrap();
+    assert!(
+        body.contains("original-body"),
+        "restore must overlay the backup body. Got:\n{body}"
+    );
+    assert!(
+        !body.contains("live-mutated"),
+        "live-mutated content should be replaced by backup. Got:\n{body}"
+    );
+}
+
+
+#[test]
+fn restore_respects_rune_data_dir() {
+    let env = TestEnv::new();
+
+    // ── Setup default data dir ──────────────────────────────
+    let default_skill_md = env.default_skills_dir().join("default-restore/SKILL.md");
+    make_skill(&env.default_skills_dir(), "default-restore", "default-body");
+    assert!(env.run(&["scan"]).status.success());
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    assert!(env.run(&["backup"]).status.success());
+
+    // ── Setup alt data dir ──────────────────────────────────
+    let alt = tempfile::tempdir().unwrap();
+    let alt_data = alt.path().to_path_buf();
+    std::fs::create_dir_all(alt_data.join("skills")).unwrap();
+    let alt_skill_md = alt_data.join("skills/alt-restore/SKILL.md");
+    make_skill(&alt_data.join("skills"), "alt-restore", "alt-body");
+    assert!(
+        env.run_with_rune_data(&alt_data, &["scan"])
+            .status
+            .success()
+    );
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    assert!(
+        env.run_with_rune_data(&alt_data, &["backup"])
+            .status
+            .success()
+    );
+
+    // ── Destruction: blow away both managed skill dirs ─────
+    std::fs::remove_dir_all(env.default_skills_dir().join("default-restore")).unwrap();
+    std::fs::remove_dir_all(alt_data.join("skills/alt-restore")).unwrap();
+    assert!(!default_skill_md.exists());
+    assert!(!alt_skill_md.exists());
+
+    // ── Restore default only — alt must stay destroyed. ───
+    let r_default = env.run(&["restore"]);
+    dump(&r_default, "restore (default)");
+    assert!(r_default.status.success());
+    assert!(
+        default_skill_md.exists(),
+        "restore (default) should recreate default-restore at {}",
+        default_skill_md.display()
+    );
+    assert!(
+        !alt_skill_md.exists(),
+        "REGRESSION: restoring default should NOT have touched alt RUNE_DATA_DIR's managed dir"
+    );
+
+    // ── Restore alt — default unaffected since we already restored it. ───
+    let r_alt = env.run_with_rune_data(&alt_data, &["restore"]);
+    dump(&r_alt, "restore (alt)");
+    assert!(r_alt.status.success());
+    assert!(
+        alt_skill_md.exists(),
+        "restore (alt) should recreate alt-restore at {}",
+        alt_skill_md.display()
+    );
+
+    // Cross-contamination check: alt's backup should NOT have planted the
+    // default-restore skill into alt's managed dir.
+    assert!(
+        !alt_data.join("skills/default-restore/SKILL.md").exists(),
+        "REGRESSION: alt restore leaked default-restore into alt managed dir"
+    );
+    // And the default's backup should NOT have planted alt-restore into default.
+    assert!(
+        !env.default_skills_dir()
+            .join("alt-restore/SKILL.md")
+            .exists(),
+        "REGRESSION: default restore leaked alt-restore into default managed dir"
+    );
+
+    // Verify body content matches the source data dir.
+    assert!(
+        std::fs::read_to_string(&default_skill_md)
+            .unwrap()
+            .contains("default-body"),
+        "default-restore body mismatch after restore"
+    );
+    assert!(
+        std::fs::read_to_string(&alt_skill_md)
+            .unwrap()
+            .contains("alt-body"),
+        "alt-restore body mismatch after restore"
+    );
+}
+
