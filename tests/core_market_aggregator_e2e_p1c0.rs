@@ -131,3 +131,79 @@ fn market_load_save_sources_roundtrip() {
          is the expected graceful behaviour)"
     );
 }
+
+// ─── Test 2: cache TTL enforcement ─────────────────────────────────────────
+
+#[test]
+fn market_cache_ttl_enforcement() {
+    let tmp = tempfile::tempdir().expect("tmp data dir");
+    let data_dir = tmp.path();
+
+    let source = mk_source("anthropics", "skills");
+    let cached_skills = vec![
+        mk_skill("brainstorming", "skills/brainstorming", &source),
+        mk_skill("research", "skills/research", &source),
+    ];
+
+    // 1. save_cache must create the cache dir + write a parseable JSON file
+    //    at the expected per-source path.
+    save_cache(data_dir, &source, &cached_skills).expect("save_cache writes JSON");
+    let cache_file = data_dir
+        .join("market-cache")
+        .join(format!("{}_{}.json", source.owner, source.repo));
+    assert!(
+        cache_file.is_file(),
+        "save_cache must write to {}",
+        cache_file.display()
+    );
+
+    // 2. Fresh cache (mtime < 1h): load_cache returns Some(Vec) with the
+    //    original payload.
+    let fresh = load_cache(data_dir, &source).expect("fresh cache must load");
+    assert_eq!(fresh.len(), 2, "cache should preserve all entries");
+    let names: Vec<&str> = fresh.iter().map(|s| s.name.as_str()).collect();
+    assert!(names.contains(&"brainstorming"));
+    assert!(names.contains(&"research"));
+
+    // 3. Force the file to look stale by rewinding its mtime to >1h ago.
+    //    CACHE_MAX_AGE_SECS is 3600; we go to 2h ago to be unambiguous.
+    let two_hours_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(7200);
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&cache_file)
+        .expect("open cache file for mtime edit");
+    file.set_modified(two_hours_ago)
+        .expect("set_modified to 2h ago (Rust 1.75+ API)");
+    drop(file);
+
+    // 4. Stale cache (mtime > 1h): load_cache returns None — the TTL guard
+    //    must reject this file and force a refresh.
+    let stale = load_cache(data_dir, &source);
+    assert!(
+        stale.is_none(),
+        "load_cache must return None for cache older than 1h, got Some"
+    );
+
+    // 5. Re-saving refreshes the mtime and the cache is hot again.
+    save_cache(data_dir, &source, &cached_skills).expect("re-save refreshes cache");
+    let refreshed = load_cache(data_dir, &source);
+    assert!(
+        refreshed.is_some(),
+        "after re-save, load_cache must return Some again"
+    );
+
+    // 6. A wholly missing cache (different source) returns None, no panic.
+    let other = mk_source("vercel-labs", "agent-skills");
+    assert!(
+        load_cache(data_dir, &other).is_none(),
+        "load_cache must return None for a never-written source"
+    );
+
+    // 7. Corrupt cache contents (valid mtime, broken JSON) also returns None.
+    std::fs::write(&cache_file, b"garbage").unwrap();
+    let corrupt = load_cache(data_dir, &source);
+    assert!(
+        corrupt.is_none(),
+        "load_cache must return None for corrupt JSON, not panic"
+    );
+}
