@@ -494,3 +494,290 @@ fn delete_preserves_metadata_for_restore() {
     );
 }
 
+// ─── sm_trash_restore tests (PLANNING test-plan §3.8 P0) ────────────────────
+
+/// 1. `trash_restore_recovers_skill_files` — sm_trash_restore brings skill
+/// files back from trash to original ~/.runai/skills/ location.
+#[test]
+fn trash_restore_recovers_skill_files() {
+    let home_guard = fresh_home();
+    let home = home_guard.path();
+    let managed = home.join(".runai/skills");
+    let skill_dir = make_skill(&managed, "restore-me", "restore body");
+    let original_md = std::fs::read(skill_dir.join("SKILL.md")).unwrap();
+
+    assert!(run_runai(home, &["scan"]).2.success());
+    assert!(
+        run_runai(home, &["enable", "restore-me", "--target", "claude"])
+            .2
+            .success()
+    );
+    assert!(run_runai(home, &["uninstall", "restore-me"]).2.success());
+
+    // Sanity: in trash, not in managed.
+    assert!(!managed.join("restore-me").exists());
+    let trash_pre = run_runai(home, &["trash", "list"]);
+    assert!(trash_pre.0.contains("restore-me"));
+
+    // Restore by name.
+    let restore = run_runai(home, &["trash", "restore", "restore-me"]);
+    dump(&restore, "trash restore restore-me");
+    assert!(restore.2.success(), "trash restore must succeed");
+
+    // Files back at original location with intact contents.
+    let restored = managed.join("restore-me/SKILL.md");
+    assert!(restored.exists(), "SKILL.md must be restored to managed dir");
+    assert_eq!(
+        std::fs::read(&restored).unwrap(),
+        original_md,
+        "restored SKILL.md content must match original"
+    );
+
+    // sm_list shows it again.
+    let list = run_runai(home, &["list"]);
+    assert!(
+        list.0.contains("restore-me"),
+        "list must show restored skill, got:\n{}",
+        list.0
+    );
+
+    // Trash entry gone.
+    let trash_post = run_runai(home, &["trash", "list"]);
+    assert!(
+        !trash_post.0.contains("restore-me"),
+        "trash list must NOT contain restore-me after restore, got:\n{}",
+        trash_post.0
+    );
+}
+
+/// 2. `trash_restore_respects_rune_data_dir` — restore under RUNE_DATA_DIR
+/// override restores to override location, not default home.
+#[test]
+fn trash_restore_respects_rune_data_dir() {
+    let home_guard = fresh_home();
+    let home = home_guard.path();
+    let data_guard = tempfile::tempdir().unwrap();
+    let data_dir = data_guard.path();
+    std::fs::create_dir_all(data_dir.join("skills")).unwrap();
+    make_skill(&data_dir.join("skills"), "rd-restore", "rd body");
+
+    assert!(
+        run_runai_with_data_dir(home, data_dir, &["scan"])
+            .2
+            .success()
+    );
+    assert!(
+        run_runai_with_data_dir(
+            home,
+            data_dir,
+            &["enable", "rd-restore", "--target", "claude"]
+        )
+        .2
+        .success()
+    );
+    assert!(
+        run_runai_with_data_dir(home, data_dir, &["uninstall", "rd-restore"])
+            .2
+            .success()
+    );
+
+    // Pre-restore: payload in override trash, not default.
+    assert!(data_dir.join("trash").exists());
+    let default_trash = home.join(".runai/trash");
+    let default_dirty = default_trash.exists()
+        && default_trash
+            .read_dir()
+            .map(|mut it| it.next().is_some())
+            .unwrap_or(false);
+    assert!(!default_dirty, "default trash must remain empty pre-restore");
+
+    let restore = run_runai_with_data_dir(home, data_dir, &["trash", "restore", "rd-restore"]);
+    dump(&restore, "restore under RUNE_DATA_DIR");
+    assert!(restore.2.success());
+
+    // Restored to override skills/, not default.
+    assert!(
+        data_dir.join("skills/rd-restore/SKILL.md").exists(),
+        "must restore to RUNE_DATA_DIR/skills/, not default"
+    );
+    assert!(
+        !home.join(".runai/skills/rd-restore").exists(),
+        "REGRESSION: restored to DEFAULT home, not override RUNE_DATA_DIR; \
+         path {} should not exist",
+        home.join(".runai/skills/rd-restore").display()
+    );
+}
+
+/// 3. `trash_restore_mcp_restores_config` — restoring an MCP re-adds the
+/// canonical entry to ~/.claude.json.
+#[test]
+fn trash_restore_mcp_restores_config() {
+    let home_guard = fresh_home();
+    let home = home_guard.path();
+    std::fs::write(
+        home.join(".claude.json"),
+        r#"{"mcpServers":{"restore-mcp":{"command":"/bin/restore-mcp","args":["--foo"]}}}"#,
+    )
+    .unwrap();
+    let _ = run_runai(home, &["status"]);
+
+    // Delete.
+    assert!(run_runai(home, &["uninstall", "restore-mcp"]).2.success());
+    let claude_after_del: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.join(".claude.json")).unwrap())
+            .unwrap();
+    assert!(claude_after_del["mcpServers"].get("restore-mcp").is_none());
+
+    // Restore.
+    let restore = run_runai(home, &["trash", "restore", "restore-mcp"]);
+    dump(&restore, "restore MCP");
+    assert!(restore.2.success(), "MCP restore should succeed");
+
+    let claude_after_restore: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.join(".claude.json")).unwrap())
+            .unwrap();
+    let entry = &claude_after_restore["mcpServers"]["restore-mcp"];
+    assert_eq!(
+        entry["command"],
+        serde_json::json!("/bin/restore-mcp"),
+        "restored MCP must have canonical command:string"
+    );
+    assert_eq!(entry["args"], serde_json::json!(["--foo"]));
+
+    // Trash entry gone.
+    let trash = run_runai(home, &["trash", "list"]);
+    assert!(
+        !trash.0.contains("restore-mcp"),
+        "trash list must NOT contain restore-mcp after restore, got:\n{}",
+        trash.0
+    );
+}
+
+/// 4. `trash_restore_by_id_unambiguous` — restoring by trash entry ID picks
+/// the exact entry (not a name-collision sibling).
+#[test]
+fn trash_restore_by_id_unambiguous() {
+    let home_guard = fresh_home();
+    let home = home_guard.path();
+    let managed = home.join(".runai/skills");
+    make_skill(&managed, "id-skill", "id body");
+    make_skill(&managed, "id-skill-2", "id body 2");
+    assert!(run_runai(home, &["scan"]).2.success());
+    assert!(run_runai(home, &["uninstall", "id-skill"]).2.success());
+    assert!(run_runai(home, &["uninstall", "id-skill-2"]).2.success());
+
+    let trash = run_runai(home, &["trash", "list"]);
+    dump(&trash, "trash list with two entries");
+    // Pull the id field from the line for id-skill (not id-skill-2).
+    let line = trash
+        .0
+        .lines()
+        .find(|l| l.contains(" id-skill ") || l.ends_with(" id-skill") || l.contains("— id-skill ") || l.contains("— id-skill\t"))
+        // Fallback: match the line whose name field equals exactly "id-skill"
+        // by checking the " — id-skill (" substring that the CLI emits.
+        .or_else(|| trash.0.lines().find(|l| l.contains(" — id-skill (")))
+        .or_else(|| trash.0.lines().find(|l| l.contains("- id-skill (")))
+        .or_else(|| {
+            trash.0.lines().find(|l| {
+                l.contains("id-skill") && !l.contains("id-skill-2")
+            })
+        })
+        .expect("must find a trash line for id-skill (not id-skill-2)");
+    // The CLI format is "  [kind] <id> — <name> (<time ago>)"; pick the second field.
+    let id = line
+        .split_whitespace()
+        .nth(1)
+        .expect("trash line must have an id field");
+    eprintln!("Resolved trash id for id-skill: {id}");
+
+    // Restore by that exact id.
+    let restore = run_runai(home, &["trash", "restore", id]);
+    dump(&restore, "restore by id");
+    assert!(restore.2.success(), "restore by id failed");
+
+    // id-skill is back, id-skill-2 is still in trash.
+    assert!(
+        managed.join("id-skill/SKILL.md").exists(),
+        "id-skill must be restored"
+    );
+    assert!(
+        !managed.join("id-skill-2/SKILL.md").exists(),
+        "id-skill-2 must NOT be restored (only id-skill was)"
+    );
+    let trash_after = run_runai(home, &["trash", "list"]);
+    assert!(
+        trash_after.0.contains("id-skill-2"),
+        "id-skill-2 must still be in trash, got:\n{}",
+        trash_after.0
+    );
+}
+
+/// 5. `trash_restore_nonexistent_fails` — sm_trash_restore on a missing query
+/// returns a 'Trash entry not found' message (no filesystem mutation).
+#[test]
+fn trash_restore_nonexistent_fails() {
+    let home_guard = fresh_home();
+    let home = home_guard.path();
+    let _ = run_runai(home, &["status"]);
+
+    let (resp, mut child) = mcp_call(
+        home,
+        "sm_trash_restore",
+        serde_json::json!({"query": "doesnt-exist"}),
+    );
+    let _ = child.kill();
+    let _ = child.wait();
+    let text = mcp_text(&resp);
+    eprintln!("sm_trash_restore(nonexistent) → {text}");
+    assert!(
+        text.contains("Trash entry not found") || text.to_lowercase().contains("not found"),
+        "sm_trash_restore(nonexistent) should report 'Trash entry not found'; got: {text}"
+    );
+}
+
+/// 6. `trash_restore_preserves_target_state` — sm_trash_restore re-creates
+/// symlinks for all previously-enabled targets.
+#[test]
+fn trash_restore_preserves_target_state() {
+    let home_guard = fresh_home();
+    let home = home_guard.path();
+    make_skill(&home.join(".runai/skills"), "tgt-state", "tgt body");
+    assert!(run_runai(home, &["scan"]).2.success());
+    for cli in ["claude", "codex"] {
+        let out = run_runai(home, &["enable", "tgt-state", "--target", cli]);
+        assert!(out.2.success(), "enable on {cli} failed: {}", out.1);
+    }
+    assert!(run_runai(home, &["uninstall", "tgt-state"]).2.success());
+    for cli in ["claude", "codex"] {
+        assert!(
+            std::fs::symlink_metadata(home.join(format!(".{cli}/skills/tgt-state"))).is_err(),
+            "pre-restore: {cli} symlink should be removed"
+        );
+    }
+
+    let restore = run_runai(home, &["trash", "restore", "tgt-state"]);
+    dump(&restore, "restore tgt-state");
+    assert!(restore.2.success());
+
+    // Skill back in list.
+    let list = run_runai(home, &["list"]);
+    assert!(list.0.contains("tgt-state"));
+
+    // Both targets had it enabled — restore reinstates the symlinks.
+    for cli in ["claude", "codex"] {
+        let link = home.join(format!(".{cli}/skills/tgt-state"));
+        assert!(
+            std::fs::symlink_metadata(&link).is_ok(),
+            "REGRESSION: restore lost the {cli} target enable state ({} missing)",
+            link.display()
+        );
+    }
+    for cli in ["gemini", "opencode"] {
+        let link = home.join(format!(".{cli}/skills/tgt-state"));
+        assert!(
+            std::fs::symlink_metadata(&link).is_err(),
+            "{cli} was never enabled — restore must not create a symlink there"
+        );
+    }
+}
+
