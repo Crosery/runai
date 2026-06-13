@@ -259,3 +259,61 @@ fn index_cache_control_no_store() {
         );
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// §4.2 GET /app.css
+// ─────────────────────────────────────────────────────────────────────
+
+#[test]
+fn app_css_serves_with_correct_mime() {
+    ensure_bin();
+    let server = ServerHandle::start();
+    let (status, headers, body) = server.get("/app.css").expect("GET /app.css");
+    assert_eq!(status, 200, "status");
+    let ct = header(&headers, "content-type").expect("content-type header");
+    assert!(
+        ct.starts_with("text/css"),
+        "content-type starts with text/css, got {ct}"
+    );
+    assert!(
+        ct.contains("charset=utf-8"),
+        "content-type contains charset=utf-8, got {ct}"
+    );
+    assert!(!body.is_empty(), "body is non-empty");
+    let body_s = String::from_utf8_lossy(&body);
+    assert!(
+        body_s.contains('{') && body_s.contains('}'),
+        "body looks like CSS (contains {{ and }}); first 200 chars: {}",
+        &body_s[..body_s.len().min(200)]
+    );
+    let cc = header(&headers, "cache-control").expect("cache-control header");
+    assert!(
+        cc.contains("no-store"),
+        "Cache-Control contains no-store, got {cc}"
+    );
+    assert!(
+        cc.contains("must-revalidate"),
+        "Cache-Control contains must-revalidate, got {cc}"
+    );
+}
+
+#[test]
+fn app_css_ignores_cache_bust_param() {
+    ensure_bin();
+    let server = ServerHandle::start();
+    let (status1, headers1, body1) = server.get("/app.css").expect("GET /app.css plain");
+    let (status2, headers2, body2) = server
+        .get("/app.css?v=timestamp123")
+        .expect("GET /app.css?v=timestamp123");
+    assert_eq!(status1, 200, "plain status");
+    assert_eq!(status2, 200, "cache-bust status");
+    assert_eq!(body1, body2, "bodies byte-identical regardless of ?v=");
+    // Content-Length may be present from axum's implicit framing; if both
+    // are present they must match. If only one side carries it, the
+    // byte-identical body assertion above is already the stronger check.
+    let cl1 = header(&headers1, "content-length");
+    let cl2 = header(&headers2, "content-length");
+    if let (Some(a), Some(b)) = (cl1, cl2) {
+        assert_eq!(a, b, "Content-Length matches across query variations");
+    }
+}
