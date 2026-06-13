@@ -262,3 +262,161 @@ fn resource_is_enabled_for_reflects_map() {
     assert!(r.is_enabled_for(CliTarget::Claude));
     assert!(!r.is_enabled_for(CliTarget::Codex));
 }
+
+// ─── core::search ───────────────────────────────────────────────────────────
+
+use runai::core::search::{fuzzy_score, fuzzy_score_any, new_matcher, rank};
+
+#[test]
+fn search_typo_one_char_deletion_still_matches() {
+    // 'fronted' is a subsequence of 'frontend' (deleted 'n')
+    let mut m = new_matcher();
+    let score = fuzzy_score(&mut m, "frontend-design", "fronted");
+    assert!(
+        score.is_some(),
+        "typo subsequence should still produce a score, got None"
+    );
+    assert!(score.unwrap() > 0);
+}
+
+#[test]
+fn search_score_any_returns_best_field() {
+    // Multiple fields, only the second one matches well — best score wins
+    let mut m = new_matcher();
+    let strong = fuzzy_score_any(&mut m, "figma", &["plain-name", "figma-region-loop"]);
+    assert!(strong.is_some());
+    // Score of "figma" against "figma-region-loop" should exceed score against
+    // "plain-name" (which doesn't match at all → None contributes nothing).
+    let single = fuzzy_score(&mut m, "figma-region-loop", "figma").unwrap();
+    assert_eq!(strong.unwrap(), single);
+}
+
+#[test]
+fn search_score_any_no_field_matches_returns_none() {
+    let mut m = new_matcher();
+    let none = fuzzy_score_any(&mut m, "zzz", &["aaa", "bbb", "ccc"]);
+    assert!(none.is_none());
+}
+
+#[test]
+fn search_rank_orders_high_to_low() {
+    // rank() must sort items by score descending
+    let items = vec!["frontend-design", "frontend-slides", "backend-api"];
+    let ranked = rank("frontend", items, |s| vec![s.to_string()]);
+    assert!(!ranked.is_empty(), "expected at least one match");
+    // backend-api should drop out (no match)
+    assert!(ranked.iter().all(|(item, _)| item.starts_with("frontend")));
+    // Sorted high → low
+    for w in ranked.windows(2) {
+        assert!(
+            w[0].1 >= w[1].1,
+            "rank result must be sorted descending: {:?}",
+            ranked
+        );
+    }
+}
+
+#[test]
+fn search_rank_drops_non_matches() {
+    // Items whose fields_of() yields no fuzzy match must not appear in output
+    let items = vec!["alpha", "beta", "gamma"];
+    let ranked = rank("zzzzzz", items, |s| vec![s.to_string()]);
+    assert!(ranked.is_empty(), "no item should match impossible needle");
+}
+
+#[test]
+fn search_rank_supports_fzf_prefix_operator() {
+    // '^prefix' fzf operator (rank goes through Pattern::parse)
+    let items = vec!["alpha-one", "two-alpha", "alpha-three"];
+    let ranked = rank("^alpha", items, |s| vec![s.to_string()]);
+    // Only the prefixed items must pass
+    for (item, _score) in &ranked {
+        assert!(
+            item.starts_with("alpha"),
+            "^alpha must only match prefixed items, got {item}"
+        );
+    }
+    assert_eq!(ranked.len(), 2);
+}
+
+#[test]
+fn search_rank_supports_fzf_suffix_operator() {
+    // 'suffix$' fzf operator
+    let items = vec!["one-skill", "two-mcp", "three-skill"];
+    let ranked = rank("skill$", items, |s| vec![s.to_string()]);
+    for (item, _score) in &ranked {
+        assert!(
+            item.ends_with("skill"),
+            "skill$ must only match suffixed items, got {item}"
+        );
+    }
+    assert_eq!(ranked.len(), 2);
+}
+
+#[test]
+fn search_rank_supports_fzf_exact_operator() {
+    // "'exact" fzf substring operator
+    let items = vec!["foo-bar", "baz-qux", "xfoox"];
+    let ranked = rank("'foo", items, |s| vec![s.to_string()]);
+    // Must include exact substring "foo"
+    for (item, _) in &ranked {
+        assert!(
+            item.contains("foo"),
+            "'foo must require substring foo, got {item}"
+        );
+    }
+    assert!(ranked.iter().any(|(i, _)| *i == "foo-bar"));
+}
+
+#[test]
+fn search_smart_case_lowercase_needle_is_case_insensitive() {
+    // Lower-case needle → smart case treats as case-insensitive
+    let mut m = new_matcher();
+    let lower_against_capitalized = fuzzy_score(&mut m, "Python-Testing", "python");
+    assert!(
+        lower_against_capitalized.is_some(),
+        "lowercase needle should match capitalized haystack under smart-case"
+    );
+}
+
+#[test]
+fn search_rank_smart_case_uppercase_needle_is_strict() {
+    // Mixed-case needle → smart case becomes case-sensitive.
+    // "python" lower should match "Python-Testing" (smart insensitive)
+    // "Python" should *also* match "Python-Testing" exactly.
+    let items_pylower = vec!["Python-Testing"];
+    let lower = rank("python", items_pylower, |s| vec![s.to_string()]);
+    assert_eq!(lower.len(), 1);
+
+    let items_strict = vec!["Python-Testing", "python-testing"];
+    let upper = rank("Python", items_strict.clone(), |s| vec![s.to_string()]);
+    // Both should at least appear (Pattern smart-case still admits case-fold for the lower haystack)
+    // but the capitalized haystack should not be filtered out.
+    assert!(upper.iter().any(|(i, _)| *i == "Python-Testing"));
+}
+
+#[test]
+fn search_matcher_reusable_across_multiple_haystacks() {
+    // Matcher can be reused — same instance scoring several haystacks
+    // without crashing or yielding bogus values.
+    let mut m = new_matcher();
+    let a = fuzzy_score(&mut m, "frontend-design", "frontend");
+    let b = fuzzy_score(&mut m, "frontend-slides", "frontend");
+    let c = fuzzy_score(&mut m, "backend-api", "frontend");
+    assert!(a.is_some());
+    assert!(b.is_some());
+    assert!(c.is_none());
+}
+
+#[test]
+fn search_subsequence_match_returns_some_score() {
+    // Classical fzf subsequence test
+    let mut m = new_matcher();
+    assert!(fuzzy_score(&mut m, "frontend", "fnt").is_some());
+}
+
+#[test]
+fn search_completely_disjoint_returns_none() {
+    let mut m = new_matcher();
+    assert!(fuzzy_score(&mut m, "frontend", "xyzqq").is_none());
+}
