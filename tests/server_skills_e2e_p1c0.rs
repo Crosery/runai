@@ -499,3 +499,158 @@ fn skill_files_skill_not_found() {
     assert_eq!(status, 404);
 }
 
+// ─────────────────── /api/skill/{name}/file ────────────────────
+
+#[test]
+fn skill_file_returns_content_for_valid_path() {
+    let srv = Server::spawn();
+    let dir = srv.skills_dir().join("docs");
+    std::fs::create_dir_all(dir.join("scripts")).unwrap();
+    let body_2k = "x".repeat(2048);
+    let md = format!("---\nname: docs\ndescription: x\n---\n\n{body_2k}");
+    let md_len = md.len();
+    std::fs::write(dir.join("SKILL.md"), &md).unwrap();
+    std::fs::write(dir.join("scripts/setup.sh"), "#!/bin/sh\necho hi\n").unwrap();
+    srv.run_scan();
+
+    let (status, body) = http_get(&srv.url("/api/skill/docs/file?path=SKILL.md"));
+    assert_eq!(status, 200, "body: {body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["path"].as_str().unwrap(), "SKILL.md");
+    assert_eq!(v["is_text"].as_bool().unwrap(), true);
+    assert_eq!(v["truncated"].as_bool().unwrap(), false);
+    assert_eq!(v["size"].as_u64().unwrap(), md_len as u64);
+    let content = v["content"].as_str().unwrap();
+    assert_eq!(content.len(), md_len, "full file content returned");
+}
+
+#[test]
+fn skill_file_truncates_large_files() {
+    let srv = Server::spawn();
+    let dir = srv.skills_dir().join("big");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("SKILL.md"),
+        "---\nname: big\ndescription: x\n---\n",
+    )
+    .unwrap();
+    // 100KB pure-ascii so byte count == char count.
+    let big = "a".repeat(100_000);
+    std::fs::write(dir.join("huge.md"), &big).unwrap();
+    srv.run_scan();
+
+    let (status, body) = http_get(&srv.url("/api/skill/big/file?path=huge.md"));
+    assert_eq!(status, 200, "body: {body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["truncated"].as_bool().unwrap(), true);
+    // Server caps at 80_000 chars; ascii so byte count == char count.
+    let content = v["content"].as_str().unwrap();
+    assert!(
+        content.len() <= 80_000,
+        "truncated to <= 80_000 bytes, got {}",
+        content.len()
+    );
+    assert_eq!(
+        v["size"].as_u64().unwrap(),
+        100_000,
+        "size = pre-truncation byte count"
+    );
+}
+
+#[test]
+fn skill_file_path_traversal_prevention() {
+    let srv = Server::spawn();
+    let dir = srv.skills_dir().join("safe");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("SKILL.md"),
+        "---\nname: safe\ndescription: x\n---\n",
+    )
+    .unwrap();
+    // Plant a sibling file outside the skill dir that should NOT be
+    // reachable via ../ traversal.
+    std::fs::write(srv.home().join("secret.txt"), "do-not-leak").unwrap();
+    srv.run_scan();
+
+    let traversals = ["../secret.txt", "../../etc/passwd", "../../.bash_history"];
+    for t in traversals {
+        let url = format!(
+            "/api/skill/safe/file?path={}",
+            urlencoded(t.as_bytes())
+        );
+        let (status, _body) = http_get(&srv.url(&url));
+        assert_eq!(
+            status, 404,
+            "traversal attempt {t} must return 404, got {status}"
+        );
+    }
+}
+
+#[test]
+fn skill_file_handles_binary_files() {
+    let srv = Server::spawn();
+    let dir = srv.skills_dir().join("bin");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("SKILL.md"),
+        "---\nname: bin\ndescription: x\n---\n\n# bin\n",
+    )
+    .unwrap();
+    let png_magic = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01";
+    std::fs::write(dir.join("logo.png"), png_magic).unwrap();
+    srv.run_scan();
+
+    // Binary: is_text=false, content="" (no binary bytes leaked into JSON).
+    let (status, body) = http_get(&srv.url("/api/skill/bin/file?path=logo.png"));
+    assert_eq!(status, 200, "body: {body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["is_text"].as_bool().unwrap(), false);
+    assert_eq!(v["content"].as_str().unwrap(), "");
+    assert_eq!(v["size"].as_u64().unwrap(), png_magic.len() as u64);
+    assert_eq!(v["path"].as_str().unwrap(), "logo.png");
+
+    // Text counterpart returns full content.
+    let (status, body) = http_get(&srv.url("/api/skill/bin/file?path=SKILL.md"));
+    assert_eq!(status, 200);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["is_text"].as_bool().unwrap(), true);
+    assert!(!v["content"].as_str().unwrap().is_empty());
+}
+
+#[test]
+fn skill_file_nonexistent_file_404() {
+    let srv = Server::spawn();
+    let dir = srv.skills_dir().join("exists");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("SKILL.md"),
+        "---\nname: exists\ndescription: x\n---\n",
+    )
+    .unwrap();
+    srv.run_scan();
+
+    let (status, _body) = http_get(&srv.url("/api/skill/exists/file?path=nonexistent.txt"));
+    assert_eq!(status, 404);
+}
+
+// Minimal URL-encoder for path query values. Only encodes the byte set
+// reqwest's blocking client refuses to pass through (specifically `/`
+// and `?` would change semantic meaning — but actually for path
+// traversal probes we want the literal `../` to reach the handler so
+// canonicalize can prove it escaped the skill dir; URL-encoding it
+// would just hide the test from itself). So we only percent-encode
+// space and other obvious shell-unsafe bytes; the test inputs are pure
+// ascii path strings with `..` and `/` and dots, all safe in a URL
+// query value.
+fn urlencoded(bytes: &[u8]) -> String {
+    let mut out = String::new();
+    for &b in bytes {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'.' | b'-' | b'_' | b'~' | b'/' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
+}
