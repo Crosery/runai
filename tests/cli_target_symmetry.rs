@@ -413,3 +413,336 @@ fn cli_target_all_order_stable() {
     assert_eq!(CliTarget::ALL[2], CliTarget::Gemini);
     assert_eq!(CliTarget::ALL[3], CliTarget::OpenCode);
 }
+
+// =============================================================================
+// PLANNING §3.14 — sm_enable (group mode) — P0 high-risk physical e2e
+// =============================================================================
+//
+// `runai enable <group> --target <cli>` dispatches to `mgr.enable_group`,
+// which iterates members and calls `enable_resource` per member. These tests
+// drive the real binary against an isolated HOME and verify that:
+//   - skill members create per-target symlinks
+//   - MCP members get a per-target config entry
+//   - other CLIs are not affected
+//   - RUNE_DATA_DIR propagation reaches the symlink target
+
+/// Seed an MCP "backup" file under `<data>/mcps/<name>.json` in canonical
+/// shape. `find_resource_id` will then recognise the MCP and group `add`
+/// will accept it as `mcp:<name>`.
+fn seed_mcp_backup(data_dir: &Path, mcp_name: &str, bin: &str) {
+    let mcps_dir = data_dir.join("mcps");
+    std::fs::create_dir_all(&mcps_dir).unwrap();
+    let canonical = serde_json::json!({
+        "command": bin,
+        "args": ["--port", "9999"],
+    });
+    std::fs::write(
+        mcps_dir.join(format!("{mcp_name}.json")),
+        serde_json::to_string_pretty(&canonical).unwrap(),
+    )
+    .unwrap();
+}
+
+/// Build a group with the provided skill names and (optionally) one MCP. The
+/// MCP must already be present as a backup file before this is called.
+fn build_group(env: &TestEnv, group_id: &str, skill_names: &[&str], mcp_name: Option<&str>) {
+    let create = env.run(&[
+        "group",
+        "create",
+        group_id,
+        "--name",
+        group_id,
+        "--kind",
+        "custom",
+    ]);
+    assert!(
+        create.status.success(),
+        "group create failed: stderr={}",
+        String::from_utf8_lossy(&create.stderr)
+    );
+    for sn in skill_names {
+        let add = env.run(&[
+            "group",
+            "add",
+            group_id,
+            sn,
+            "--resource-type",
+            "skill",
+        ]);
+        assert!(
+            add.status.success(),
+            "group add skill {sn} failed: stderr={}",
+            String::from_utf8_lossy(&add.stderr)
+        );
+    }
+    if let Some(mn) = mcp_name {
+        let add = env.run(&[
+            "group",
+            "add",
+            group_id,
+            mn,
+            "--resource-type",
+            "mcp",
+        ]);
+        assert!(
+            add.status.success(),
+            "group add mcp {mn} failed: stderr={}",
+            String::from_utf8_lossy(&add.stderr)
+        );
+    }
+}
+
+#[test]
+fn sm_enable_group_creates_symlinks_and_mcp_entries() {
+    let env = TestEnv::new();
+    let skill_dir = env.home().join(".runai/skills");
+    make_skill(&skill_dir, "grp-skill-a");
+    make_skill(&skill_dir, "grp-skill-b");
+    seed_mcp_backup(&env.home().join(".runai"), "grp-mcp", "/bin/grp-mcp");
+
+    assert!(env.run(&["scan"]).status.success());
+    build_group(
+        &env,
+        "test-group",
+        &["grp-skill-a", "grp-skill-b"],
+        Some("grp-mcp"),
+    );
+
+    let en = env.run(&["enable", "test-group", "--target", "claude"]);
+    dump(&en, "enable test-group on claude");
+    assert!(en.status.success(), "group enable failed");
+    let stdout = String::from_utf8_lossy(&en.stdout);
+    assert!(
+        stdout.contains("Group 'test-group' enabled for claude"),
+        "expected success message in stdout, got: {stdout}"
+    );
+
+    // Both skill symlinks land in claude's skills dir.
+    for sn in &["grp-skill-a", "grp-skill-b"] {
+        let link = env.cli_skills_dir("claude").join(sn);
+        assert!(
+            std::fs::symlink_metadata(&link).is_ok(),
+            "expected symlink at {} after group enable",
+            link.display()
+        );
+        let resolved = std::fs::read_link(&link).unwrap();
+        assert_eq!(resolved, skill_dir.join(sn));
+    }
+
+    // MCP entry landed in ~/.claude.json under mcpServers.
+    let claude_json_path = env.home().join(".claude.json");
+    assert!(
+        claude_json_path.exists(),
+        "~/.claude.json should exist after MCP enable"
+    );
+    let claude_json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&claude_json_path).unwrap()).unwrap();
+    let entry = &claude_json["mcpServers"]["grp-mcp"];
+    assert!(
+        entry.is_object(),
+        "mcpServers.grp-mcp missing from ~/.claude.json: {claude_json}"
+    );
+    assert_eq!(entry["command"], serde_json::json!("/bin/grp-mcp"));
+
+    // Other CLI dirs untouched: no skill symlinks, no MCP config files.
+    for other in &["codex", "gemini", "opencode"] {
+        for sn in &["grp-skill-a", "grp-skill-b"] {
+            let link = env.cli_skills_dir(other).join(sn);
+            assert!(
+                std::fs::symlink_metadata(&link).is_err(),
+                "group enable on claude leaked symlink to {}: {}",
+                other,
+                link.display()
+            );
+        }
+    }
+    // ~/.codex/config.toml, ~/.gemini/settings.json, ~/.config/opencode/opencode.json
+    // were never written.
+    assert!(!env.home().join(".codex/config.toml").exists());
+    assert!(!env.home().join(".gemini/settings.json").exists());
+    assert!(
+        !env.home()
+            .join(".config/opencode/opencode.json")
+            .exists()
+    );
+}
+
+#[test]
+fn sm_enable_group_symmetric_across_cli_targets() {
+    let env = TestEnv::new();
+    let skill_dir = env.home().join(".runai/skills");
+    make_skill(&skill_dir, "sym-skill");
+    assert!(env.run(&["scan"]).status.success());
+    build_group(&env, "sym-group", &["sym-skill"], None);
+
+    for target in &["claude", "codex", "gemini", "opencode"] {
+        let en = env.run(&["enable", "sym-group", "--target", target]);
+        assert!(
+            en.status.success(),
+            "enable sym-group on {target} failed: stderr={}",
+            String::from_utf8_lossy(&en.stderr)
+        );
+
+        let link = env.cli_skills_dir(target).join("sym-skill");
+        assert!(
+            std::fs::symlink_metadata(&link).is_ok(),
+            "symlink missing at {} after enable on {target}",
+            link.display()
+        );
+        let resolved = std::fs::read_link(&link).unwrap();
+        assert_eq!(
+            resolved,
+            skill_dir.join("sym-skill"),
+            "symlink on {target} should point to managed skills dir"
+        );
+    }
+
+    // After all 4 enables, every CLI dir should have the symlink simultaneously.
+    for target in &["claude", "codex", "gemini", "opencode"] {
+        let link = env.cli_skills_dir(target).join("sym-skill");
+        assert!(
+            std::fs::symlink_metadata(&link).is_ok(),
+            "after 4-target enable cycle, expected symlink at {}",
+            link.display()
+        );
+    }
+}
+
+#[test]
+fn sm_enable_group_mcp_sync_only_on_claude() {
+    // Sister test of #1 — focuses on the target-discrimination of the MCP
+    // sync logic. Enable a group that contains *only* an MCP on each of the
+    // 4 targets in turn and verify the entry lands in the correct config
+    // file each time.
+    let env = TestEnv::new();
+    seed_mcp_backup(&env.home().join(".runai"), "scope-mcp", "/bin/scope-mcp");
+    build_group(&env, "mcp-only-grp", &[], Some("scope-mcp"));
+
+    // claude → ~/.claude.json mcpServers
+    let en = env.run(&["enable", "mcp-only-grp", "--target", "claude"]);
+    assert!(en.status.success(), "claude enable failed");
+    let claude_json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(env.home().join(".claude.json")).unwrap())
+            .unwrap();
+    assert!(
+        claude_json["mcpServers"]["scope-mcp"].is_object(),
+        "claude config missing MCP entry"
+    );
+
+    // gemini → ~/.gemini/settings.json mcpServers
+    let en = env.run(&["enable", "mcp-only-grp", "--target", "gemini"]);
+    assert!(en.status.success(), "gemini enable failed");
+    let gem: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(env.home().join(".gemini/settings.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        gem["mcpServers"]["scope-mcp"].is_object(),
+        "gemini config missing MCP entry"
+    );
+
+    // opencode → ~/.config/opencode/opencode.json under "mcp"
+    let en = env.run(&["enable", "mcp-only-grp", "--target", "opencode"]);
+    assert!(en.status.success(), "opencode enable failed");
+    let oc: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(env.home().join(".config/opencode/opencode.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        oc["mcp"]["scope-mcp"].is_object(),
+        "opencode config missing MCP entry under key 'mcp'"
+    );
+
+    // codex → ~/.codex/config.toml mcp_servers (TOML, not JSON)
+    let en = env.run(&["enable", "mcp-only-grp", "--target", "codex"]);
+    assert!(en.status.success(), "codex enable failed");
+    let codex_toml: toml::Table =
+        std::fs::read_to_string(env.home().join(".codex/config.toml"))
+            .unwrap()
+            .parse()
+            .unwrap();
+    let servers = codex_toml
+        .get("mcp_servers")
+        .and_then(|v| v.as_table())
+        .expect("codex config must have mcp_servers table");
+    assert!(
+        servers.contains_key("scope-mcp"),
+        "codex config missing MCP entry under mcp_servers: {codex_toml:?}"
+    );
+}
+
+#[test]
+fn sm_enable_group_symlink_target_respects_rune_data_dir() {
+    // Like the e2e tests above, but with RUNE_DATA_DIR pointing at a path
+    // distinct from `<HOME>/.runai`. Verifies the symlink target follows the
+    // active data dir, not the default — this is the 4-27 incident root
+    // cause area.
+    let env = TestEnv::new();
+    let alt_data = tempfile::tempdir().unwrap();
+    let alt_skills = alt_data.path().join("skills");
+    std::fs::create_dir_all(&alt_skills).unwrap();
+    make_skill(&alt_skills, "alt-skill");
+
+    // Build group + scan using RUNE_DATA_DIR.
+    let mut scan = runai();
+    scan.args(["scan"])
+        .env("HOME", env.home())
+        .env("RUNE_DATA_DIR", alt_data.path())
+        .env_remove("SKILL_MANAGER_DATA_DIR");
+    let out = scan.output().unwrap();
+    dump(&out, "scan with alt RUNE_DATA_DIR");
+    assert!(out.status.success(), "scan with alt data dir failed");
+
+    let run_with_alt = |args: &[&str]| -> std::process::Output {
+        let mut cmd = runai();
+        cmd.args(args)
+            .env("HOME", env.home())
+            .env("RUNE_DATA_DIR", alt_data.path())
+            .env_remove("SKILL_MANAGER_DATA_DIR");
+        cmd.output().unwrap()
+    };
+
+    let create = run_with_alt(&[
+        "group",
+        "create",
+        "alt-grp",
+        "--name",
+        "alt-grp",
+        "--kind",
+        "custom",
+    ]);
+    assert!(create.status.success(), "group create under alt-dir failed");
+    let add = run_with_alt(&[
+        "group",
+        "add",
+        "alt-grp",
+        "alt-skill",
+        "--resource-type",
+        "skill",
+    ]);
+    assert!(add.status.success(), "group add under alt-dir failed");
+
+    let en = run_with_alt(&["enable", "alt-grp", "--target", "claude"]);
+    dump(&en, "enable alt-grp under alt RUNE_DATA_DIR");
+    assert!(en.status.success(), "enable failed under alt RUNE_DATA_DIR");
+
+    let link = env.cli_skills_dir("claude").join("alt-skill");
+    assert!(
+        std::fs::symlink_metadata(&link).is_ok(),
+        "symlink missing at {}",
+        link.display()
+    );
+    let resolved = std::fs::read_link(&link).unwrap();
+    assert_eq!(
+        resolved,
+        alt_skills.join("alt-skill"),
+        "symlink must point at alt RUNE_DATA_DIR/skills/<name>, not default HOME/.runai"
+    );
+    // Critically: no rogue `~/.runai/skills/alt-skill` was created — the
+    // sandboxed HOME's .runai/skills was prepared by TestEnv but we never
+    // wrote into it.
+    assert!(
+        !env.home().join(".runai/skills/alt-skill").exists(),
+        "RUNE_DATA_DIR override must not leak into default ~/.runai/skills"
+    );
+}
