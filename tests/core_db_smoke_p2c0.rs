@@ -384,3 +384,297 @@ mod backup_tests {
         });
     }
 }
+
+// ============================================================================
+// core::db
+// ============================================================================
+
+mod db_tests {
+    use runai::core::db::{Database, RouterEvent};
+    use runai::core::resource::{Resource, ResourceKind, Source, TrashEntry};
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    fn open_db() -> (TempDir, Database) {
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("test.db");
+        let db = Database::open(&db_path).unwrap();
+        (tmp, db)
+    }
+
+    #[test]
+    fn db_migrations_idempotent_to_current_schema_version() {
+        // Open the same DB file twice: first open initializes the schema,
+        // second open is a no-op replay. schema_version() must be stable and
+        // be at the current head (>= 14 on this cloud HEAD). Verify the
+        // resources / trash_entries / router_events tables work through the
+        // public API rather than poking the raw sqlite_master view.
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("v_to_v.db");
+
+        let db1 = Database::open(&db_path).unwrap();
+        let v1 = db1.schema_version();
+        assert!(
+            v1 >= 14,
+            "schema_version should be at least 14 (cloud HEAD), got {}",
+            v1
+        );
+        drop(db1);
+
+        // Second open must not re-run migrations destructively
+        let db2 = Database::open(&db_path).unwrap();
+        let v2 = db2.schema_version();
+        assert_eq!(v1, v2, "schema_version should be stable across re-opens");
+
+        // resources table works (empty list w/o error)
+        let listed = db2.list_resources(None, None).unwrap();
+        assert!(listed.is_empty(), "fresh DB has zero resources");
+        let (n_skill, n_mcp) = db2.resource_count().unwrap();
+        assert_eq!(n_skill, 0);
+        assert_eq!(n_mcp, 0);
+
+        // trash_entries table works
+        let trash = db2.list_trash_entries().unwrap();
+        assert!(trash.is_empty(), "fresh DB has empty trash");
+
+        // router_events table works
+        let recent = db2.router_recent_events(10).unwrap();
+        assert!(recent.is_empty(), "fresh DB has no router events");
+    }
+
+    #[test]
+    fn db_insert_get_resource_roundtrip_preserves_fields() {
+        // insert_resource + get_resource roundtrips name, description, kind,
+        // source, installed_at. ON CONFLICT preserves usage_count on re-insert
+        // (so an "adopt" pass doesn't zero usage stats — load-bearing invariant).
+        let (_tmp, db) = open_db();
+        let src = Source::Local {
+            path: PathBuf::from("/tmp/foo"),
+        };
+        let mut res = Resource {
+            id: Resource::generate_id(&src, "alpha"),
+            name: "alpha".into(),
+            kind: ResourceKind::Skill,
+            description: "first version".into(),
+            directory: PathBuf::from("/tmp/foo/alpha"),
+            source: src.clone(),
+            installed_at: 1_700_000_000,
+            enabled: HashMap::new(),
+            usage_count: 0,
+            last_used_at: None,
+        };
+        db.insert_resource(&res).unwrap();
+
+        // Record usage to bump usage_count via the path the manager uses
+        let updated = db.record_usage(&res.id).unwrap();
+        assert_eq!(updated, 1, "record_usage should bump the row");
+
+        // Re-insert with same id but new description; usage_count must persist
+        res.description = "updated description".into();
+        db.insert_resource(&res).unwrap();
+
+        let got = db.get_resource(&res.id).unwrap().expect("resource present");
+        assert_eq!(got.name, "alpha");
+        assert_eq!(got.kind.as_str(), "skill");
+        assert_eq!(got.description, "updated description");
+        assert_eq!(
+            got.usage_count, 1,
+            "ON CONFLICT must NOT zero usage_count, got {}",
+            got.usage_count
+        );
+    }
+
+    #[test]
+    fn db_dedupe_skills_by_name_keeps_newest_installed_at() {
+        // Two skill rows share the same name 'foo' with different installed_at
+        // and different ids (e.g. local vs github). dedupe_skills_by_name
+        // keeps the one with the largest installed_at, deletes the loser,
+        // returns count of rows removed.
+        let (_tmp, db) = open_db();
+        let src_local = Source::Local {
+            path: PathBuf::from("/tmp/loser"),
+        };
+        let src_gh = Source::GitHub {
+            owner: "o".into(),
+            repo: "r".into(),
+            branch: "main".into(),
+        };
+        let loser = Resource {
+            id: Resource::generate_id(&src_local, "foo"),
+            name: "foo".into(),
+            kind: ResourceKind::Skill,
+            description: "loser".into(),
+            directory: PathBuf::from("/tmp/loser"),
+            source: src_local,
+            installed_at: 100,
+            enabled: HashMap::new(),
+            usage_count: 0,
+            last_used_at: None,
+        };
+        let keeper = Resource {
+            id: Resource::generate_id(&src_gh, "foo"),
+            name: "foo".into(),
+            kind: ResourceKind::Skill,
+            description: "keeper".into(),
+            directory: PathBuf::from("/tmp/keeper"),
+            source: src_gh,
+            installed_at: 300,
+            enabled: HashMap::new(),
+            usage_count: 0,
+            last_used_at: None,
+        };
+        assert_ne!(loser.id, keeper.id, "ids must differ for dedupe to trigger");
+        db.insert_resource(&loser).unwrap();
+        db.insert_resource(&keeper).unwrap();
+
+        let removed = db.dedupe_skills_by_name().unwrap();
+        assert!(removed >= 1, "dedupe should remove at least the loser, got {}", removed);
+
+        // Keeper survives, loser is gone
+        assert!(
+            db.get_resource(&keeper.id).unwrap().is_some(),
+            "keeper row must remain"
+        );
+        assert!(
+            db.get_resource(&loser.id).unwrap().is_none(),
+            "loser row must be deleted"
+        );
+
+        // list_resources de-dupes by id but the surviving row's installed_at is 300
+        let listed = db.list_resources(Some(ResourceKind::Skill), None).unwrap();
+        let matched: Vec<_> = listed.iter().filter(|r| r.name == "foo").collect();
+        assert_eq!(matched.len(), 1, "exactly one 'foo' row remains");
+        assert_eq!(matched[0].installed_at, 300, "newest wins");
+    }
+
+    #[test]
+    fn db_trash_entry_serialize_roundtrip_with_serde_default() {
+        // insert_trash_entry serializes the TrashEntry as JSON; get_trash_entry
+        // deserializes back. serde(default) on optional fields like
+        // enabled_targets / group_ids / mcp_configs / disabled_backup makes
+        // legacy JSON (without those fields) safe to decode.
+        let (_tmp, db) = open_db();
+        let src = Source::Local {
+            path: PathBuf::from("/tmp/foo"),
+        };
+        let entry = TrashEntry {
+            id: "trash-1".into(),
+            resource_id: Resource::generate_id(&src, "victim"),
+            name: "victim".into(),
+            kind: ResourceKind::Skill,
+            description: "x".into(),
+            directory: PathBuf::from("/tmp/foo/victim"),
+            source: src,
+            installed_at: 100,
+            usage_count: 7,
+            last_used_at: Some(200),
+            deleted_at: 300,
+            payload_path: Some(PathBuf::from("/tmp/trash/payload")),
+            enabled_targets: Vec::new(),
+            group_ids: Vec::new(),
+            mcp_configs: HashMap::new(),
+            disabled_backup: None,
+        };
+        db.insert_trash_entry(&entry).unwrap();
+
+        let got = db.get_trash_entry("trash-1").unwrap().expect("entry present");
+        assert_eq!(got.id, "trash-1");
+        assert_eq!(got.name, "victim");
+        assert_eq!(got.usage_count, 7);
+        assert_eq!(got.last_used_at, Some(200));
+        assert_eq!(got.deleted_at, 300);
+        assert_eq!(got.directory, PathBuf::from("/tmp/foo/victim"));
+
+        // list_trash_entries also returns it
+        let listed = db.list_trash_entries().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "trash-1");
+
+        // Delete trash row → gone
+        db.delete_trash_entry("trash-1").unwrap();
+        assert!(db.get_trash_entry("trash-1").unwrap().is_none());
+    }
+
+    #[test]
+    fn db_insert_router_event_and_session_dedupe() {
+        // insert_router_event stores telemetry; record_session_adoption is
+        // idempotent on (session_id, skill_name) PK; router_session_routed_skills
+        // returns the deduped adoption set.
+        let (_tmp, db) = open_db();
+        let ev = RouterEvent {
+            id: None,
+            ts: 1_700_000_500,
+            provider: "deepseek".into(),
+            model: "v4-flash".into(),
+            prompt_tokens: 100,
+            completion_tokens: 30,
+            reasoning_tokens: 0,
+            total_tokens: 130,
+            cache_hit_tokens: 0,
+            cache_miss_tokens: 130,
+            latency_ms: 250,
+            chosen_skills_json: r#"["skill1","skill2"]"#.into(),
+            candidate_count: 50,
+            status: "ok".into(),
+            error_msg: None,
+            session_id: "sid_abc".into(),
+            mode: "router".into(),
+            user_prompt: "do something".into(),
+            cwd: "/tmp/work".into(),
+            bm25_kept: 25,
+            llm_raw_response: "<routed>skill1, skill2</routed>".into(),
+            hook_output: "### routed\nskill1\nskill2\n".into(),
+            llm_input: "candidate listing + prompt".into(),
+        };
+        db.insert_router_event(&ev).unwrap();
+
+        // Recent events surface it back
+        let recent = db.router_recent_events(10).unwrap();
+        assert!(
+            recent.iter().any(|e| e.session_id == "sid_abc"),
+            "inserted event should appear in recent list"
+        );
+
+        // Adopt twice → idempotent (no panic) and dedup list = single name
+        db.record_session_adoption("sid_abc", "skill1").unwrap();
+        db.record_session_adoption("sid_abc", "skill1").unwrap();
+        db.record_session_adoption("sid_abc", "skill2").unwrap();
+        let routed = db.router_session_routed_skills("sid_abc").unwrap();
+        assert_eq!(routed.len(), 2, "two unique adopted skills, got {:?}", routed);
+        assert!(routed.contains(&"skill1".to_string()));
+        assert!(routed.contains(&"skill2".to_string()));
+
+        // router_session_recommended_skills returns recommended (chosen_skills_json) names
+        let rec = db.router_session_recommended_skills("sid_abc").unwrap();
+        assert!(
+            rec.contains(&"skill1".to_string()),
+            "recommended should include skill1, got {:?}",
+            rec
+        );
+    }
+
+    #[test]
+    fn db_ai_summary_set_and_read_back() {
+        // set_skill_ai_summary stores a per-skill summary JSON; skill_ai_summary
+        // reads it back. set_skill_ai_summary_scored also stores an llm_score.
+        let (_tmp, db) = open_db();
+        let summary_a = r#"{"task":"做ppt","triggers":["ppt","slides"]}"#;
+        db.set_skill_ai_summary("ppt-anything", summary_a).unwrap();
+        let got = db.skill_ai_summary("ppt-anything").unwrap();
+        assert_eq!(got, summary_a, "summary roundtrips byte-for-byte");
+
+        // scored variant updates the same row + sets a score
+        let summary_b = r#"{"task":"do ppt","triggers":["ppt"]}"#;
+        db.set_skill_ai_summary_scored("ppt-anything", summary_b, 8)
+            .unwrap();
+        let got2 = db.skill_ai_summary("ppt-anything").unwrap();
+        assert_eq!(got2, summary_b);
+        let score = db.skill_llm_score("ppt-anything").unwrap();
+        assert_eq!(score, 8, "score should be persisted");
+
+        // All-summary map returns it
+        let all = db.skill_ai_summary_all().unwrap();
+        assert_eq!(all.get("ppt-anything").map(|s| s.as_str()), Some(summary_b));
+    }
+}
