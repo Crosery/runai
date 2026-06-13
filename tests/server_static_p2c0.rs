@@ -297,6 +297,72 @@ fn app_css_serves_with_correct_mime() {
     );
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// §4.3 GET /app.js
+// ─────────────────────────────────────────────────────────────────────
+
+#[test]
+fn app_js_serves_with_correct_mime() {
+    ensure_bin();
+    let server = ServerHandle::start();
+    let (status, headers, body) = server.get("/app.js").expect("GET /app.js");
+    assert_eq!(status, 200, "status");
+    let ct = header(&headers, "content-type").expect("content-type header");
+    assert!(
+        ct.starts_with("application/javascript"),
+        "content-type starts with application/javascript, got {ct}"
+    );
+    assert!(
+        ct.contains("charset=utf-8"),
+        "content-type contains charset=utf-8, got {ct}"
+    );
+    assert!(!body.is_empty(), "body is non-empty");
+    let body_s = String::from_utf8_lossy(&body);
+    let looks_jsy = body_s.contains("function")
+        || body_s.contains("const ")
+        || body_s.contains("let ")
+        || body_s.contains("var ")
+        || body_s.contains("=>");
+    assert!(
+        looks_jsy,
+        "body has JS markers (function/const/let/var/=>); first 200 chars: {}",
+        &body_s[..body_s.len().min(200)]
+    );
+    let cc = header(&headers, "cache-control").expect("cache-control header");
+    assert!(
+        cc.contains("no-store"),
+        "Cache-Control contains no-store, got {cc}"
+    );
+    assert!(
+        cc.contains("must-revalidate"),
+        "Cache-Control contains must-revalidate, got {cc}"
+    );
+}
+
+#[test]
+fn app_js_immutable_after_restart() {
+    ensure_bin();
+    // First boot
+    let s1 = ServerHandle::start();
+    let (st1, _, body1) = s1.get("/app.js").expect("GET /app.js first boot");
+    assert_eq!(st1, 200);
+    drop(s1); // kills child
+    // Second boot in a fresh tempdir, must serve the SAME bundled bytes
+    // because /app.js is `include_str!`'d at compile time.
+    let s2 = ServerHandle::start();
+    let (st2, _, body2) = s2.get("/app.js").expect("GET /app.js second boot");
+    assert_eq!(st2, 200);
+    assert_eq!(
+        body1.len(),
+        body2.len(),
+        "/app.js body byte length identical across boots"
+    );
+    assert_eq!(
+        body1, body2,
+        "/app.js body byte-identical across server restarts (immutable per binary)"
+    );
+}
+
 #[test]
 fn app_css_ignores_cache_bust_param() {
     ensure_bin();
