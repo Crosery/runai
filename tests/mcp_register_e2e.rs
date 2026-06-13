@@ -270,3 +270,216 @@ fn register_creates_cli_dirs() {
             .exists()
     );
 }
+
+// ─── 1.28 register CLI tests (high-risk: spawn real binary) ────────────────
+
+/// 1.28 #1 — `runai register` writes runai entries to all 4 CLI configs, is
+/// idempotent on a second run.
+#[test]
+fn register_writes_to_all_cli_configs() {
+    let home = TempDir::new().unwrap();
+
+    // Pre-create the four config files with empty JSON / TOML so we exercise
+    // the "merge into existing" path on at least Claude/Gemini/OpenCode.
+    std::fs::write(home.path().join(".claude.json"), "{}").unwrap();
+    std::fs::create_dir_all(home.path().join(".gemini")).unwrap();
+    std::fs::write(home.path().join(".gemini/settings.json"), "{}").unwrap();
+    std::fs::create_dir_all(home.path().join(".codex")).unwrap();
+    std::fs::write(home.path().join(".codex/config.toml"), "").unwrap();
+    std::fs::create_dir_all(home.path().join(".config/opencode")).unwrap();
+    std::fs::write(
+        home.path().join(".config/opencode/opencode.json"),
+        "{}",
+    )
+    .unwrap();
+
+    let out = run_in_home(home.path(), &["register"]);
+    assert!(
+        out.status.success(),
+        "runai register failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // All four config files should now have a runai entry.
+    let claude = read_json(&home.path().join(".claude.json"));
+    assert!(claude["mcpServers"]["runai"]["command"].is_string());
+
+    let gemini = read_json(&home.path().join(".gemini/settings.json"));
+    assert!(gemini["mcpServers"]["runai"]["command"].is_string());
+
+    let codex = read_toml(&home.path().join(".codex/config.toml"));
+    assert!(
+        codex
+            .get("mcp_servers")
+            .and_then(|v| v.as_table())
+            .and_then(|t| t.get("runai"))
+            .is_some(),
+        "Codex config missing [mcp_servers.runai]"
+    );
+
+    let opencode = read_json(&home.path().join(".config/opencode/opencode.json"));
+    assert!(opencode["mcp"]["runai"]["command"].is_array());
+
+    // Second run: idempotent — stdout should mention "already registered" / skip.
+    let out2 = run_in_home(home.path(), &["register"]);
+    assert!(
+        out2.status.success(),
+        "second register failed: stderr={}",
+        String::from_utf8_lossy(&out2.stderr)
+    );
+    let stdout2 = String::from_utf8_lossy(&out2.stdout);
+    assert!(
+        stdout2.contains("already registered") || !stdout2.contains("Registered to"),
+        "second register should be idempotent (no 'Registered to' lines), got: {stdout2}"
+    );
+}
+
+/// 1.28 #2 — `runai register` creates missing CLI config dirs/files.
+#[test]
+fn register_creates_missing_dirs_via_cli() {
+    let home = TempDir::new().unwrap();
+    // Do NOT create any .cli dirs upfront.
+
+    let out = run_in_home(home.path(), &["register"]);
+    assert!(
+        out.status.success(),
+        "runai register failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    assert!(home.path().join(".gemini").is_dir(), "missing .gemini dir");
+    assert!(home.path().join(".codex").is_dir(), "missing .codex dir");
+    assert!(
+        home.path().join(".config/opencode").is_dir(),
+        "missing .config/opencode dir"
+    );
+
+    // All four config files must exist.
+    assert!(home.path().join(".claude.json").exists());
+    assert!(home.path().join(".gemini/settings.json").exists());
+    assert!(home.path().join(".codex/config.toml").exists());
+    assert!(
+        home.path()
+            .join(".config/opencode/opencode.json")
+            .exists()
+    );
+}
+
+/// 1.28 #3 — register is symmetric across the 4 targets: same binary path,
+/// runai entries pointing at mcp-serve in all 4.
+#[test]
+fn register_symmetric_across_targets_via_cli() {
+    let home = TempDir::new().unwrap();
+
+    let out = run_in_home(home.path(), &["register"]);
+    assert!(out.status.success(), "register failed");
+
+    let claude = read_json(&home.path().join(".claude.json"));
+    let gemini = read_json(&home.path().join(".gemini/settings.json"));
+    let codex = read_toml(&home.path().join(".codex/config.toml"));
+    let opencode = read_json(&home.path().join(".config/opencode/opencode.json"));
+
+    let claude_cmd = claude["mcpServers"]["runai"]["command"]
+        .as_str()
+        .expect("Claude runai.command must be string")
+        .to_string();
+    let gemini_cmd = gemini["mcpServers"]["runai"]["command"]
+        .as_str()
+        .expect("Gemini runai.command must be string")
+        .to_string();
+    let codex_cmd = codex["mcp_servers"]["runai"]
+        .as_table()
+        .unwrap()
+        .get("command")
+        .and_then(|v| v.as_str())
+        .expect("Codex runai.command must be string")
+        .to_string();
+    let opencode_cmd = opencode["mcp"]["runai"]["command"][0]
+        .as_str()
+        .expect("OpenCode runai.command[0] must be string")
+        .to_string();
+
+    // All four configs must point at the same binary path.
+    assert_eq!(
+        claude_cmd, gemini_cmd,
+        "Claude vs Gemini binary path mismatch"
+    );
+    assert_eq!(
+        claude_cmd, codex_cmd,
+        "Claude vs Codex binary path mismatch"
+    );
+    assert_eq!(
+        claude_cmd, opencode_cmd,
+        "Claude vs OpenCode binary path mismatch"
+    );
+
+    // All four configs must invoke mcp-serve.
+    assert_eq!(claude["mcpServers"]["runai"]["args"][0], "mcp-serve");
+    assert_eq!(gemini["mcpServers"]["runai"]["args"][0], "mcp-serve");
+    let codex_args = codex["mcp_servers"]["runai"]
+        .as_table()
+        .unwrap()
+        .get("args")
+        .and_then(|v| v.as_array())
+        .expect("Codex args must be array");
+    assert_eq!(
+        codex_args.first().and_then(|v| v.as_str()),
+        Some("mcp-serve")
+    );
+    assert_eq!(opencode["mcp"]["runai"]["command"][1], "mcp-serve");
+}
+
+/// 1.28 #4 — register acts on HOME, not RUNE_DATA_DIR. Changing RUNE_DATA_DIR
+/// must not affect which config files get touched, and the CLI configs must
+/// still be home-rooted.
+#[test]
+fn register_ignores_rune_data_dir() {
+    let home = TempDir::new().unwrap();
+    let alt_data = TempDir::new().unwrap();
+    let alt_path = alt_data.path().join("runai-alt");
+
+    let out = run_in_home_with_data(home.path(), &alt_path, &["register"]);
+    assert!(
+        out.status.success(),
+        "runai register failed under RUNE_DATA_DIR={}: stderr={}",
+        alt_path.display(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // CLI configs MUST be at HOME-rooted paths, not under the alt data dir.
+    assert!(
+        home.path().join(".claude.json").exists(),
+        "Claude config must be at HOME/.claude.json"
+    );
+    assert!(
+        home.path().join(".gemini/settings.json").exists(),
+        "Gemini config must be at HOME/.gemini/settings.json"
+    );
+    assert!(
+        home.path().join(".codex/config.toml").exists(),
+        "Codex config must be at HOME/.codex/config.toml"
+    );
+    assert!(
+        home.path()
+            .join(".config/opencode/opencode.json")
+            .exists(),
+        "OpenCode config must be at HOME/.config/opencode/opencode.json"
+    );
+
+    // RUNE_DATA_DIR must NOT contain any CLI config files: register writes
+    // to HOME-rooted dotfiles, not to the data dir.
+    assert!(
+        !alt_path.join(".claude.json").exists(),
+        "RUNE_DATA_DIR must NOT contain CLI config files"
+    );
+    assert!(
+        !alt_path.join(".gemini").exists(),
+        "RUNE_DATA_DIR must NOT contain .gemini dir"
+    );
+    assert!(
+        !alt_path.join(".codex").exists(),
+        "RUNE_DATA_DIR must NOT contain .codex dir"
+    );
+}
