@@ -326,3 +326,296 @@ fn scan_reports_correct_counters() {
         "adopted count should be >= 1 (foreign skill), saw {n}. stdout:\n{stdout}"
     );
 }
+
+// ─── enable tests (P0 §1.4) ─────────────────────────────────────────────────
+
+/// PLAN §1.4 test 1 — enable creates symlinks symmetrically across all 4 CLI
+/// targets. Each `enable --target {claude,codex,gemini,opencode}` lands a
+/// symlink in the corresponding `~/.{target}/skills/` dir pointing at the
+/// managed skill, and crucially DOES NOT splatter into the other 3 dirs.
+#[test]
+fn enable_creates_symlinks_across_cli_targets() {
+    for target in ["claude", "codex", "gemini", "opencode"] {
+        let env = TestEnv::new();
+        let skill_name = "test-skill";
+        make_skill(&env.default_skills_dir(), skill_name, "desc");
+        assert!(env.run(&["scan"]).status.success(), "scan must succeed");
+
+        let out = env.run(&["enable", skill_name, "--target", target]);
+        dump(&out, &format!("enable on {target}"));
+        assert!(
+            out.status.success(),
+            "enable failed for target={target}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let link_path = env.cli_skills_dir(target).join(skill_name);
+        assert!(
+            std::fs::symlink_metadata(&link_path).is_ok(),
+            "enable did not create symlink at {} for target={target}",
+            link_path.display()
+        );
+
+        let resolved = std::fs::read_link(&link_path).unwrap();
+        let expected = env.default_skills_dir().join(skill_name);
+        assert_eq!(
+            resolved, expected,
+            "symlink for target={target} points to {} instead of managed dir {}",
+            resolved.display(),
+            expected.display()
+        );
+
+        // No collateral splatter to the other 3 CLI targets.
+        for other in ["claude", "codex", "gemini", "opencode"] {
+            if other == target {
+                continue;
+            }
+            let collateral = env.cli_skills_dir(other).join(skill_name);
+            assert!(
+                std::fs::symlink_metadata(&collateral).is_err(),
+                "enable on {target} splattered symlink into {} target dir at {}",
+                other,
+                collateral.display()
+            );
+        }
+    }
+}
+
+/// PLAN §1.4 test 2 — when the target CLI's skills/ dir does not yet exist,
+/// enable creates it (does not abort with "directory missing"). Healthy
+/// first-use behavior: a fresh box has no `~/.claude/skills/` until enable
+/// makes one.
+#[test]
+fn enable_creates_target_dir_if_missing() {
+    let env = TestEnv::new();
+    let skill_name = "auto-mkdir-skill";
+    make_skill(&env.default_skills_dir(), skill_name, "desc");
+    assert!(env.run(&["scan"]).status.success());
+
+    // Remove the pre-created ~/.claude/skills dir so enable has to recreate it.
+    let claude_dir = env.cli_skills_dir("claude");
+    std::fs::remove_dir_all(&claude_dir).unwrap();
+    assert!(
+        !claude_dir.exists(),
+        "preconditions: ~/.claude/skills must be absent before enable"
+    );
+
+    let out = env.run(&["enable", skill_name, "--target", "claude"]);
+    dump(&out, "enable with missing target dir");
+    assert!(
+        out.status.success(),
+        "enable should auto-create missing target dir, got: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let link_path = claude_dir.join(skill_name);
+    assert!(
+        std::fs::symlink_metadata(&link_path).is_ok(),
+        "enable did not create symlink at {} after auto-creating parent",
+        link_path.display()
+    );
+}
+
+/// PLAN §1.4 test 3 — enable clobbers a stale symlink at the link path
+/// rather than failing with EEXIST. Critical for recovery from earlier
+/// broken state (uninstalled source, leftover dangling link).
+///
+/// Mirrors `safety_e2e::enable_succeeds_when_stale_symlink_exists_at_link_path`
+/// but kept here as a P0 lifecycle marker per the plan.
+#[test]
+fn enable_clobbers_stale_symlink() {
+    let env = TestEnv::new();
+    let skill_name = "clobber-skill";
+    make_skill(&env.default_skills_dir(), skill_name, "desc");
+    assert!(env.run(&["scan"]).status.success());
+
+    // Plant a dangling symlink at the link path so enable must clobber it.
+    let nowhere = env.home().join(".runai/nonexistent-target");
+    let link_path = env.cli_skills_dir("claude").join(skill_name);
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&nowhere, &link_path).unwrap();
+    assert!(
+        std::fs::symlink_metadata(&link_path).is_ok(),
+        "stale symlink should exist before enable"
+    );
+
+    let out = env.run(&["enable", skill_name, "--target", "claude"]);
+    dump(&out, "enable over stale symlink");
+    assert!(
+        out.status.success(),
+        "enable should clobber stale symlink, not fail EEXIST. stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let resolved = std::fs::read_link(&link_path).unwrap();
+    let expected = env.default_skills_dir().join(skill_name);
+    assert_eq!(
+        resolved, expected,
+        "after clobber, symlink should point at managed skill dir; got {}",
+        resolved.display()
+    );
+}
+
+/// PLAN §1.4 test 4 — `enable <group>` enables every member of the group.
+/// We seed two skills, create a group containing both, then enable by group
+/// name; both members must end up with symlinks under the target CLI dir.
+#[test]
+fn enable_group_enables_all_members() {
+    let env = TestEnv::new();
+    make_skill(&env.default_skills_dir(), "g-skill1", "a");
+    make_skill(&env.default_skills_dir(), "g-skill2", "b");
+    assert!(env.run(&["scan"]).status.success());
+
+    // Create the group + add both members.
+    let create = env.run(&[
+        "group",
+        "create",
+        "my-group",
+        "--name",
+        "My Group",
+        "--kind",
+        "custom",
+    ]);
+    dump(&create, "group create");
+    assert!(create.status.success(), "group create must succeed");
+
+    for member in ["g-skill1", "g-skill2"] {
+        let add = env.run(&["group", "add", "my-group", member]);
+        dump(&add, &format!("group add {member}"));
+        assert!(add.status.success(), "group add {member} must succeed");
+    }
+
+    let out = env.run(&["enable", "my-group", "--target", "claude"]);
+    dump(&out, "enable group");
+    assert!(
+        out.status.success(),
+        "enable group failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    for member in ["g-skill1", "g-skill2"] {
+        let link = env.cli_skills_dir("claude").join(member);
+        assert!(
+            std::fs::symlink_metadata(&link).is_ok(),
+            "group enable did not symlink member {member} at {}",
+            link.display()
+        );
+        let resolved = std::fs::read_link(&link).unwrap();
+        assert_eq!(
+            resolved,
+            env.default_skills_dir().join(member),
+            "symlink for {member} points to wrong target"
+        );
+    }
+}
+
+/// PLAN §1.4 test 5 — after `enable`, `list --target X` shows the skill as
+/// enabled for that target (DB reflects the new state, used by both `list`
+/// and `status`).
+///
+/// This is the DB-side verification of enable's contract: the symlink is
+/// the runtime source-of-truth, but list/status must agree.
+#[test]
+fn enable_updates_database_enabled_flag() {
+    let env = TestEnv::new();
+    let skill_name = "db-flag-skill";
+    make_skill(&env.default_skills_dir(), skill_name, "desc");
+    assert!(env.run(&["scan"]).status.success());
+
+    // Pre-enable: unfiltered list shows the skill as `[disabled]`.
+    let pre = env.run(&["list"]);
+    dump(&pre, "list pre-enable");
+    let pre_out = String::from_utf8_lossy(&pre.stdout);
+    let pre_row = pre_out
+        .lines()
+        .find(|l| l.contains(skill_name))
+        .unwrap_or_else(|| panic!("list should show {skill_name} pre-enable:\n{pre_out}"));
+    assert!(
+        pre_row.contains("[disabled]"),
+        "pre-enable row should say [disabled], got: {pre_row}"
+    );
+
+    assert!(
+        env.run(&["enable", skill_name, "--target", "claude"])
+            .status
+            .success()
+    );
+
+    // Post-enable: unfiltered list shows `claude` in the enabled-targets segment.
+    let post = env.run(&["list"]);
+    dump(&post, "list post-enable");
+    let post_out = String::from_utf8_lossy(&post.stdout);
+    let row = post_out
+        .lines()
+        .find(|l| l.contains(skill_name))
+        .expect("expected list row for skill");
+    // The row format is `[skill] <name> — <desc> [enabled_targets_csv]`.
+    // We assert "claude" appears in the trailing bracket segment.
+    assert!(
+        row.contains("[claude") || row.contains("claude]") || row.contains("claude,"),
+        "post-enable row should mark claude as enabled. row: {row}"
+    );
+    assert!(
+        !row.contains("[disabled]"),
+        "post-enable row should NOT say [disabled]; row: {row}"
+    );
+
+    // And `list --target claude` (which filters to skills enabled on claude)
+    // now includes the skill — proving the per-target DB flag flipped.
+    let target_list = env.run(&["list", "--target", "claude"]);
+    let target_out = String::from_utf8_lossy(&target_list.stdout);
+    assert!(
+        target_out.contains(skill_name),
+        "list --target claude should include {skill_name} after enable; got:\n{target_out}"
+    );
+}
+
+/// PLAN §1.4 test 6 — enable across `RUNE_DATA_DIR` isolation: the symlink
+/// created under `~/.claude/skills/` must point at the data-dir actually
+/// being used by THAT invocation, not the default `~/.runai/`.
+#[test]
+fn enable_respects_rune_data_dir_isolation() {
+    let env = TestEnv::new();
+    let alt_data = tempfile::tempdir().unwrap();
+    let alt_skills = alt_data.path().join("skills");
+    std::fs::create_dir_all(&alt_skills).unwrap();
+    let skill_name = "alt-skill";
+    make_skill(&alt_skills, skill_name, "alt body");
+
+    // Scan + enable against the alt data dir.
+    let scan = env.run_with_rune_data(alt_data.path(), &["scan"]);
+    dump(&scan, "scan against alt data dir");
+    assert!(scan.status.success());
+    let en = env.run_with_rune_data(alt_data.path(), &["enable", skill_name, "--target", "claude"]);
+    dump(&en, "enable against alt data dir");
+    assert!(en.status.success(), "enable against alt data dir failed");
+
+    let link_path = env.cli_skills_dir("claude").join(skill_name);
+    assert!(
+        std::fs::symlink_metadata(&link_path).is_ok(),
+        "enable did not create symlink at {} under alt data dir",
+        link_path.display()
+    );
+
+    // Resolve the symlink and assert it points into the ALT data dir's
+    // skills/, not the default `~/.runai/skills/`.
+    let resolved = std::fs::read_link(&link_path).unwrap();
+    let canonical_resolved = std::fs::canonicalize(&resolved)
+        .unwrap_or_else(|_| resolved.clone());
+    let canonical_alt = std::fs::canonicalize(alt_skills.join(skill_name)).unwrap();
+    assert_eq!(
+        canonical_resolved, canonical_alt,
+        "symlink should resolve to ALT data dir's {} but resolved to {}",
+        canonical_alt.display(),
+        canonical_resolved.display()
+    );
+
+    // And it must NOT point into the default `~/.runai/skills/`.
+    let default_path = env.default_skills_dir().join(skill_name);
+    assert!(
+        !default_path.exists(),
+        "skill should not exist under default data dir after alt-data-dir enable; \
+         found {}",
+        default_path.display()
+    );
+}
