@@ -536,3 +536,228 @@ fn uninstall_respects_rune_data_dir() {
     );
 }
 
+
+#[test]
+fn trash_restore_recovers_skill_and_state() {
+    let env = TestEnv::new();
+
+    // Plant + register + enable on claude AND codex.
+    let original = make_skill(&env.default_skills_dir(), "victim", "victim body");
+    let original_bytes = std::fs::read(original.join("SKILL.md")).unwrap();
+    assert!(env.run(&["scan"]).status.success());
+    assert!(
+        env.run(&["enable", "victim", "--target", "claude"])
+            .status
+            .success()
+    );
+    assert!(
+        env.run(&["enable", "victim", "--target", "codex"])
+            .status
+            .success()
+    );
+
+    // Uninstall.
+    let un = env.run(&["uninstall", "victim"]);
+    dump(&un, "uninstall victim");
+    assert!(un.status.success());
+    assert!(!original.exists(), "managed dir should be gone after uninstall");
+
+    // Restore by name.
+    let restore = env.run(&["trash", "restore", "victim"]);
+    dump(&restore, "trash restore victim");
+    assert!(restore.status.success(), "restore must succeed");
+
+    // Managed dir recreated with identical bytes.
+    let restored = env.default_skills_dir().join("victim").join("SKILL.md");
+    assert!(
+        restored.exists(),
+        "REGRESSION: restored SKILL.md missing at {}",
+        restored.display()
+    );
+    assert_eq!(
+        std::fs::read(&restored).unwrap(),
+        original_bytes,
+        "REGRESSION: restored SKILL.md bytes differ from original"
+    );
+
+    // `runai list` should show the resource again.
+    let list = env.run(&["list"]);
+    dump(&list, "list after restore");
+    let list_out = String::from_utf8_lossy(&list.stdout);
+    assert!(
+        list_out.contains("victim"),
+        "REGRESSION: restored skill not in `runai list` output:\n{list_out}"
+    );
+
+    // Symlinks on claude AND codex should be back. (gemini/opencode were
+    // never enabled, so absent is correct there.)
+    for tgt in ["claude", "codex"] {
+        let link = env.cli_skills_dir(tgt).join("victim");
+        assert!(
+            std::fs::symlink_metadata(&link).is_ok(),
+            "REGRESSION: restore did not recreate {} symlink at {}",
+            tgt,
+            link.display()
+        );
+    }
+    for tgt in ["gemini", "opencode"] {
+        let link = env.cli_skills_dir(tgt).join("victim");
+        assert!(
+            std::fs::symlink_metadata(&link).is_err(),
+            "REGRESSION: restore created a symlink on {} that was never enabled before uninstall",
+            tgt
+        );
+    }
+}
+
+
+#[test]
+fn trash_restore_handles_group_membership() {
+    let env = TestEnv::new();
+
+    // Plant + register a skill.
+    make_skill(&env.default_skills_dir(), "groupie", "groupie body");
+    assert!(env.run(&["scan"]).status.success());
+
+    // Create a group and add the skill.
+    let g = env.run(&["group", "create", "my-grp", "--name", "My Group"]);
+    dump(&g, "group create");
+    assert!(g.status.success(), "group create must succeed");
+    let add = env.run(&["group", "add", "my-grp", "groupie"]);
+    dump(&add, "group add");
+    assert!(add.status.success(), "group add must succeed");
+
+    // Verify the group lists the skill.
+    let show_before = env.run(&["group", "show", "my-grp"]);
+    let show_out = String::from_utf8_lossy(&show_before.stdout);
+    assert!(
+        show_out.contains("groupie"),
+        "precondition: group should list groupie before uninstall:\n{show_out}"
+    );
+
+    // Uninstall + restore.
+    assert!(env.run(&["uninstall", "groupie"]).status.success());
+    let restore = env.run(&["trash", "restore", "groupie"]);
+    dump(&restore, "trash restore groupie");
+    assert!(restore.status.success(), "restore must succeed");
+
+    // The group still exists; restored skill should belong to it again OR
+    // (acceptable alternative) at least the group itself must be intact.
+    let show_after = env.run(&["group", "show", "my-grp"]);
+    dump(&show_after, "group show after restore");
+    assert!(
+        show_after.status.success(),
+        "group still exists; show should succeed. stderr:\n{}",
+        String::from_utf8_lossy(&show_after.stderr)
+    );
+    // Skill name should reappear in the group's member list.
+    let show_after_out = String::from_utf8_lossy(&show_after.stdout);
+    assert!(
+        show_after_out.contains("groupie"),
+        "REGRESSION: restored skill not back in original group; show:\n{show_after_out}"
+    );
+}
+
+
+#[test]
+fn trash_restore_fails_if_exists() {
+    let env = TestEnv::new();
+
+    // Original skill -> uninstall to trash.
+    make_skill(&env.default_skills_dir(), "shared-name", "v1 body");
+    assert!(env.run(&["scan"]).status.success());
+    assert!(env.run(&["uninstall", "shared-name"]).status.success());
+
+    // Plant a NEW live skill with the same name.
+    make_skill(&env.default_skills_dir(), "shared-name", "v2 NEW body");
+    let v2_bytes = std::fs::read(
+        env.default_skills_dir()
+            .join("shared-name")
+            .join("SKILL.md"),
+    )
+    .unwrap();
+    assert!(env.run(&["scan"]).status.success());
+
+    // Try to restore — should fail (collision).
+    let restore = env.run(&["trash", "restore", "shared-name"]);
+    dump(&restore, "trash restore shared-name (collision)");
+    assert!(
+        !restore.status.success(),
+        "REGRESSION: restore silently overwrote a live same-name resource"
+    );
+
+    // Live skill bytes unchanged.
+    assert_eq!(
+        std::fs::read(
+            env.default_skills_dir()
+                .join("shared-name")
+                .join("SKILL.md")
+        )
+        .unwrap(),
+        v2_bytes,
+        "REGRESSION: live skill content was mutated by failed restore"
+    );
+
+    // Trash entry should still exist.
+    let list = env.run(&["trash", "list"]);
+    let list_out = String::from_utf8_lossy(&list.stdout);
+    assert!(
+        list_out.contains("shared-name"),
+        "REGRESSION: trash entry vanished after a failed restore:\n{list_out}"
+    );
+}
+
+
+#[test]
+fn trash_restore_respects_rune_data_dir() {
+    let env = TestEnv::new();
+    let alt = tempfile::tempdir().unwrap();
+    let alt_data = alt.path();
+    std::fs::create_dir_all(alt_data.join("skills")).unwrap();
+
+    // Sentinel in default dir — must NOT be touched.
+    let sentinel = make_skill(&env.default_skills_dir(), "sentinel", "sentinel body");
+    let sentinel_bytes = std::fs::read(sentinel.join("SKILL.md")).unwrap();
+
+    // Plant + register + uninstall a skill in the alt data dir.
+    make_skill(&alt_data.join("skills"), "alt-skill", "alt body");
+    let scan = env.run_with_rune_data(alt_data, &["scan"]);
+    assert!(scan.status.success(), "alt-dir scan must succeed");
+    assert!(
+        env.run_with_rune_data(alt_data, &["uninstall", "alt-skill"])
+            .status
+            .success(),
+        "alt-dir uninstall must succeed"
+    );
+    assert!(
+        !alt_data.join("skills/alt-skill").exists(),
+        "alt-skill managed dir should be gone before restore"
+    );
+
+    // Restore via alt data dir.
+    let restore = env.run_with_rune_data(alt_data, &["trash", "restore", "alt-skill"]);
+    dump(&restore, "trash restore alt-skill under alt data dir");
+    assert!(restore.status.success(), "alt-dir restore must succeed");
+
+    // Alt data dir got the skill back.
+    assert!(
+        alt_data.join("skills/alt-skill/SKILL.md").exists(),
+        "REGRESSION: alt-dir restore did not recreate the skill in the alt data dir"
+    );
+
+    // Default data dir untouched.
+    assert!(
+        sentinel.join("SKILL.md").exists(),
+        "REGRESSION: alt-dir restore touched the default sentinel"
+    );
+    assert_eq!(
+        std::fs::read(sentinel.join("SKILL.md")).unwrap(),
+        sentinel_bytes,
+        "REGRESSION: alt-dir restore mutated default sentinel content"
+    );
+    assert!(
+        !env.default_skills_dir().join("alt-skill").exists(),
+        "REGRESSION: alt-dir restore wrote alt-skill into the default skills dir"
+    );
+}
+
