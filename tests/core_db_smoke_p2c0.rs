@@ -678,3 +678,204 @@ mod db_tests {
         assert_eq!(all.get("ppt-anything").map(|s| s.as_str()), Some(summary_b));
     }
 }
+
+// ============================================================================
+// core::recommend::enrich
+// ============================================================================
+
+#[cfg(not(target_os = "windows"))]
+mod enrich_tests {
+    use runai::core::manager::SkillManager;
+    use runai::core::recommend::{enrich_skills, EnrichMode, EnrichReport, RecommendConfig};
+    use runai::core::resource::{Resource, ResourceKind, Source};
+    use std::collections::HashMap;
+    use tempfile::TempDir;
+
+    /// Build a SkillManager rooted at a fresh tempdir. The data dir is
+    /// isolated; default RecommendConfig has enabled=false.
+    fn make_mgr() -> (TempDir, SkillManager) {
+        let tmp = TempDir::new().unwrap();
+        let mgr = SkillManager::with_base(tmp.path().join("data")).unwrap();
+        (tmp, mgr)
+    }
+
+    #[test]
+    fn enrich_skills_gate_returns_empty_when_router_disabled() {
+        // Default RecommendConfig has enabled=false. enrich_skills must short-
+        // circuit at the gate, returning EnrichReport::default() — no LLM
+        // request, no DB writes, no errors.
+        let (_tmp, mgr) = make_mgr();
+        let report = enrich_skills(&mgr, None, EnrichMode::MissingOnly, false, 1, None)
+            .expect("gate path must succeed");
+        // EnrichReport::default() is the all-zero report — assert each field
+        let default = EnrichReport::default();
+        assert_eq!(report.generated, default.generated);
+        assert_eq!(report.skipped_have_summary, default.skipped_have_summary);
+        assert_eq!(report.skipped_no_skill_md, default.skipped_no_skill_md);
+        assert_eq!(report.refreshed_stale, default.refreshed_stale);
+        assert!(
+            report.errors.is_empty(),
+            "no errors when gate short-circuits, got {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn enrich_skills_empty_resource_set_returns_empty_report() {
+        // With enabled=true + api_key set but ZERO skills in the DB, enrich
+        // builds no jobs and returns the empty report without any HTTP call.
+        let (_tmp, mgr) = make_mgr();
+        let mut cfg = RecommendConfig::default();
+        cfg.enabled = true;
+        cfg.api_key = "test-key".into();
+        cfg.save(mgr.paths()).unwrap();
+
+        let report = enrich_skills(&mgr, None, EnrichMode::MissingOnly, false, 1, None)
+            .expect("enrich on empty resource set should not error");
+        assert_eq!(report.generated, 0);
+        assert_eq!(report.skipped_have_summary, 0);
+        assert_eq!(report.skipped_no_skill_md, 0);
+        assert!(report.errors.is_empty(), "no errors: {:?}", report.errors);
+    }
+
+    #[test]
+    fn enrich_mode_missing_only_skips_skills_with_existing_summary() {
+        // MissingOnly + existing summary in DB + the resource is registered →
+        // planner says should_process=false → skipped_have_summary counted →
+        // no LLM call (jobs.is_empty() so the worker pool is never spawned).
+        let (_tmp, mgr) = make_mgr();
+        let mut cfg = RecommendConfig::default();
+        cfg.enabled = true;
+        cfg.api_key = "test-key".into();
+        cfg.save(mgr.paths()).unwrap();
+
+        // Register a skill physically + in the DB so list_resources includes it
+        let skill_dir = mgr.paths().skills_dir().join("alpha");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(skill_dir.join("SKILL.md"), "# alpha\n\nbody").unwrap();
+        let src = Source::Local {
+            path: skill_dir.clone(),
+        };
+        let res = Resource {
+            id: Resource::generate_id(&src, "alpha"),
+            name: "alpha".into(),
+            kind: ResourceKind::Skill,
+            description: "alpha skill".into(),
+            directory: skill_dir,
+            source: src,
+            installed_at: 1_700_000_000,
+            enabled: HashMap::new(),
+            usage_count: 0,
+            last_used_at: None,
+        };
+        mgr.db().insert_resource(&res).unwrap();
+
+        // Pre-populate a summary so MissingOnly skips it
+        mgr.db()
+            .set_skill_ai_summary("alpha", r#"{"task":"existing"}"#)
+            .unwrap();
+
+        let report = enrich_skills(&mgr, None, EnrichMode::MissingOnly, false, 1, None)
+            .expect("MissingOnly w/ existing summary should not error");
+        assert_eq!(
+            report.generated, 0,
+            "no LLM call should fire; got generated={}",
+            report.generated
+        );
+        assert_eq!(
+            report.skipped_have_summary, 1,
+            "alpha must be counted as skipped_have_summary, got {}",
+            report.skipped_have_summary
+        );
+        assert!(report.errors.is_empty(), "no errors: {:?}", report.errors);
+
+        // DB summary untouched
+        let got = mgr.db().skill_ai_summary("alpha").unwrap();
+        assert!(got.contains("existing"), "summary should be unchanged: {}", got);
+    }
+
+    #[test]
+    fn enrich_mode_stale_with_fresh_summary_skips_no_llm_call() {
+        // Stale mode: if the SKILL.md mtime is OLDER than the stored summary's
+        // updated_at, the planner says is_stale=false → should_process=false →
+        // skipped_have_summary counted → no LLM call. This proves the mtime
+        // comparison wired up correctly (the wrong-way wiring would re-enrich
+        // unnecessarily and overcost users).
+        let (_tmp, mgr) = make_mgr();
+        let mut cfg = RecommendConfig::default();
+        cfg.enabled = true;
+        cfg.api_key = "test-key".into();
+        cfg.save(mgr.paths()).unwrap();
+
+        let skill_dir = mgr.paths().skills_dir().join("beta");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        let skill_md = skill_dir.join("SKILL.md");
+        std::fs::write(&skill_md, "# beta\n").unwrap();
+
+        let src = Source::Local {
+            path: skill_dir.clone(),
+        };
+        let res = Resource {
+            id: Resource::generate_id(&src, "beta"),
+            name: "beta".into(),
+            kind: ResourceKind::Skill,
+            description: "beta skill".into(),
+            directory: skill_dir,
+            source: src,
+            installed_at: 1_700_000_000,
+            enabled: HashMap::new(),
+            usage_count: 0,
+            last_used_at: None,
+        };
+        mgr.db().insert_resource(&res).unwrap();
+
+        // Sleep briefly so the summary's NOW-stamped updated_at is strictly
+        // greater than the SKILL.md mtime we just wrote. Then write summary:
+        // summary_ts >= skill_md mtime → is_stale = false → skipped.
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        mgr.db()
+            .set_skill_ai_summary("beta", r#"{"task":"beta task"}"#)
+            .unwrap();
+
+        let report = enrich_skills(&mgr, None, EnrichMode::Stale, false, 1, None)
+            .expect("Stale mode should not error");
+        assert_eq!(
+            report.generated, 0,
+            "summary is fresh; no enrich should fire, got generated={}",
+            report.generated
+        );
+        assert_eq!(report.refreshed_stale, 0, "no stale refresh");
+        // The skill counts as skipped_have_summary (planner short-circuit)
+        assert_eq!(
+            report.skipped_have_summary, 1,
+            "beta should be skipped_have_summary, got {}",
+            report.skipped_have_summary
+        );
+        assert!(report.errors.is_empty(), "no errors: {:?}", report.errors);
+    }
+
+    #[test]
+    fn enrich_report_default_is_zero_and_no_errors() {
+        // EnrichReport::default() must produce all-zero counts and an empty
+        // errors vec. This is the contract callers rely on when the gate
+        // short-circuits.
+        let r = EnrichReport::default();
+        assert_eq!(r.generated, 0);
+        assert_eq!(r.skipped_have_summary, 0);
+        assert_eq!(r.skipped_no_skill_md, 0);
+        assert_eq!(r.refreshed_stale, 0);
+        assert!(r.errors.is_empty());
+    }
+
+    #[test]
+    fn enrich_mode_variants_are_distinct() {
+        // Sanity: the three EnrichMode variants are PartialEq distinct.
+        // Guards against accidental enum collapse during refactors.
+        assert_eq!(EnrichMode::MissingOnly, EnrichMode::MissingOnly);
+        assert_eq!(EnrichMode::Stale, EnrichMode::Stale);
+        assert_eq!(EnrichMode::Force, EnrichMode::Force);
+        assert_ne!(EnrichMode::MissingOnly, EnrichMode::Stale);
+        assert_ne!(EnrichMode::Stale, EnrichMode::Force);
+        assert_ne!(EnrichMode::MissingOnly, EnrichMode::Force);
+    }
+}
