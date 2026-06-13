@@ -344,3 +344,197 @@ fn backups_respects_rune_data_dir() {
         "alt listing wrong total:\n{so_alt}"
     );
 }
+
+// ─── feature 3: restore ─────────────────────────────────────────────────────
+
+/// End-to-end: take a backup, mutate / delete the live state, restore from
+/// the (now sole) backup, and assert the live tree was rehydrated. Default
+/// path: no `--timestamp` argument → picks the latest backup.
+#[test]
+fn restore_recovers_from_latest_backup() {
+    let (home_tmp, data) = make_env();
+    let home = home_tmp.path();
+    // Seed a skill + a CLI config so backup has real content.
+    make_skill(&data.join("skills"), "restore-me", "alpha body");
+    std::fs::write(home.join(".claude.json"), r#"{"projects":{"a":1}}"#).unwrap();
+
+    // 1. Backup.
+    let b = run_in(home, &data, &["backup"]);
+    dump(&b, "backup pre-restore");
+    assert!(b.status.success());
+
+    // 2. Nuke live state: delete the skill dir + config.
+    std::fs::remove_dir_all(data.join("skills/restore-me")).unwrap();
+    std::fs::remove_file(home.join(".claude.json")).unwrap();
+    assert!(!data.join("skills/restore-me").exists());
+
+    // 3. Restore (no --timestamp → latest).
+    let r = run_in(home, &data, &["restore"]);
+    dump(&r, "restore latest");
+    assert!(r.status.success());
+    let stdout = String::from_utf8_lossy(&r.stdout);
+    assert!(
+        stdout.contains("Restoring from backup:"),
+        "missing restoring header:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Restored ") && stdout.contains(" items"),
+        "missing Restored N items output:\n{stdout}"
+    );
+
+    // 4. Assert state rehydrated.
+    let restored_skill = data.join("skills/restore-me/SKILL.md");
+    assert!(
+        restored_skill.exists(),
+        "skill missing after restore: {}",
+        restored_skill.display()
+    );
+    let body = std::fs::read_to_string(&restored_skill).unwrap();
+    assert!(
+        body.contains("alpha body"),
+        "skill content not restored: {body:?}"
+    );
+    let claude_cfg = home.join(".claude.json");
+    assert!(claude_cfg.exists(), ".claude.json missing after restore");
+    let cfg_body = std::fs::read_to_string(&claude_cfg).unwrap();
+    assert!(
+        cfg_body.contains(r#""a":1"#) || cfg_body.contains(r#""a": 1"#),
+        "claude.json content not restored: {cfg_body:?}"
+    );
+}
+
+/// `--timestamp <oldest>` restores the older snapshot's content, not the
+/// newest. This proves the flag is honored end-to-end.
+#[test]
+fn restore_accepts_timestamp_parameter() {
+    let (home_tmp, data) = make_env();
+    let home = home_tmp.path();
+    let skill_dir = make_skill(&data.join("skills"), "skill-x", "version one");
+
+    // First backup (older).
+    assert!(run_in(home, &data, &["backup"]).status.success());
+
+    // Sleep > 1s so the second backup has a different timestamp (granularity
+    // is %Y%m%d_%H%M%S).
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+
+    // Mutate then second backup.
+    std::fs::write(skill_dir.join("SKILL.md"), "version TWO\n").unwrap();
+    assert!(run_in(home, &data, &["backup"]).status.success());
+
+    // Pick the oldest timestamp from the backups dir.
+    let mut tses: Vec<String> = std::fs::read_dir(data.join("backups"))
+        .unwrap()
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| e.file_name().to_str().map(String::from))
+        .collect();
+    tses.sort();
+    assert_eq!(tses.len(), 2, "expected exactly two backups");
+    let oldest = tses[0].clone();
+
+    // Nuke live skill.
+    std::fs::remove_dir_all(data.join("skills/skill-x")).unwrap();
+
+    // Restore explicitly from the older timestamp.
+    let out = run_in(home, &data, &["restore", "--timestamp", &oldest]);
+    dump(&out, "restore --timestamp");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains(&oldest),
+        "expected old ts {oldest} in stdout, got:\n{stdout}"
+    );
+
+    let body = std::fs::read_to_string(data.join("skills/skill-x/SKILL.md")).unwrap();
+    assert!(
+        body.contains("version one"),
+        "restored body should be the older version, got: {body:?}"
+    );
+    assert!(
+        !body.contains("version TWO"),
+        "restored body must NOT be newer version, got: {body:?}"
+    );
+}
+
+/// Asking for a nonexistent backup must fail gracefully — the dispatch
+/// layer prints "Restore failed: Backup not found" and exits cleanly
+/// (no panic, no partial mutation of live state).
+#[test]
+fn restore_fails_on_unknown_timestamp() {
+    let (home_tmp, data) = make_env();
+    let home = home_tmp.path();
+    // Pre-existing content that MUST be untouched by a failed restore.
+    let preserved = make_skill(&data.join("skills"), "keep-me", "keep body");
+
+    let out = run_in(home, &data, &["restore", "--timestamp", "20990101_000000"]);
+    dump(&out, "restore bad ts");
+    // Dispatch wrapper swallows the error and just prints to stderr.
+    assert!(out.status.success(), "command must exit 0");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let combined = format!("{stdout}\n{stderr}");
+    assert!(
+        combined.contains("Backup not found")
+            || combined.contains("Restore failed"),
+        "expected failure note in output, got:\nstdout={stdout}\nstderr={stderr}"
+    );
+    // Live state untouched: still there with original body.
+    let body = std::fs::read_to_string(preserved.join("SKILL.md")).unwrap();
+    assert!(
+        body.contains("keep body"),
+        "preserved skill must be untouched, got: {body:?}"
+    );
+}
+
+/// Cross `RUNE_DATA_DIR` isolation: a restore against an alt data dir must
+/// read that dir's backup payload (not the default one) and rehydrate
+/// state into the alt-dir managed paths. The default data dir must NOT
+/// gain or lose any managed skill from the alt restore.
+#[test]
+fn restore_respects_rune_data_dir() {
+    let home_tmp = tempfile::tempdir().unwrap();
+    let home = home_tmp.path();
+    for cli in ["claude", "codex", "gemini", "opencode"] {
+        std::fs::create_dir_all(home.join(format!(".{cli}/skills"))).unwrap();
+    }
+    let default_data = home.join(".runai");
+    std::fs::create_dir_all(default_data.join("skills")).unwrap();
+    // Pre-seed default data with a separate skill — proof it's untouched.
+    let _ = make_skill(&default_data.join("skills"), "default-skill", "default body");
+
+    let alt_root = tempfile::tempdir().unwrap();
+    let alt_data = alt_root.path().join("alt-runai");
+    std::fs::create_dir_all(alt_data.join("skills")).unwrap();
+    make_skill(&alt_data.join("skills"), "alt-skill", "alt body");
+
+    // Backup the alt data dir.
+    let b = run_in(home, &alt_data, &["backup"]);
+    dump(&b, "alt backup");
+    assert!(b.status.success());
+
+    // Wipe the live alt-skill.
+    std::fs::remove_dir_all(alt_data.join("skills/alt-skill")).unwrap();
+
+    // Restore against alt data dir.
+    let r = run_in(home, &alt_data, &["restore"]);
+    dump(&r, "alt restore");
+    assert!(r.status.success());
+
+    // Alt skill is back.
+    let restored = alt_data.join("skills/alt-skill/SKILL.md");
+    assert!(restored.exists(), "alt skill must be restored");
+    let body = std::fs::read_to_string(&restored).unwrap();
+    assert!(body.contains("alt body"), "alt body must be restored");
+
+    // Default data dir untouched — the pre-seeded default-skill is still
+    // there, no alt-skill leaked into it.
+    assert!(
+        default_data.join("skills/default-skill/SKILL.md").exists(),
+        "default data dir's own skill must be preserved"
+    );
+    assert!(
+        !default_data.join("skills/alt-skill").exists(),
+        "alt data dir's skill must NOT leak into default data dir"
+    );
+}
