@@ -382,3 +382,225 @@ fn timeline_default_bucket_calculation() {
     drop(guard);
 }
 
+
+// ─── feature 2: GET /api/events ─────────────────────────────────────────────
+
+#[test]
+fn events_pagination_limit_offset() {
+    let (home, db) = fresh_env();
+    let port = pick_free_port();
+    // Seed 150 events with monotonically descending newest-first timestamps.
+    // We use a unique session_id so a stray older event from db init can't
+    // pollute the count (none in practice, but be defensive).
+    let now = now_ts();
+    for i in 0..150 {
+        let ts = now - i; // newer rows have larger ts (i=0 is newest)
+        let prompt = format!("p{i}");
+        let ev = SeedEvent {
+            ts,
+            user_prompt: &prompt,
+            session_id: "pagination-test",
+            ..SeedEvent::defaults(ts)
+        };
+        seed_event(&db, &ev);
+    }
+    let guard = spawn_server(home, port);
+    let base = format!("http://127.0.0.1:{}/api/events", guard.port);
+
+    let (c1, p1) = http_get_json(&format!("{base}?limit=50&offset=0"));
+    assert_eq!(c1, 200);
+    assert_eq!(p1.get("total").and_then(|x| x.as_i64()).unwrap(), 150);
+    let e1 = p1.get("events").and_then(|x| x.as_array()).unwrap();
+    assert_eq!(e1.len(), 50);
+
+    let (c2, p2) = http_get_json(&format!("{base}?limit=50&offset=50"));
+    assert_eq!(c2, 200);
+    let e2 = p2.get("events").and_then(|x| x.as_array()).unwrap();
+    assert_eq!(e2.len(), 50);
+
+    let (c3, p3) = http_get_json(&format!("{base}?limit=50&offset=100"));
+    assert_eq!(c3, 200);
+    let e3 = p3.get("events").and_then(|x| x.as_array()).unwrap();
+    assert_eq!(e3.len(), 50);
+
+    // Pages are disjoint by id.
+    let ids = |arr: &Vec<serde_json::Value>| -> Vec<i64> {
+        arr.iter()
+            .map(|e| e.get("id").and_then(|x| x.as_i64()).unwrap())
+            .collect()
+    };
+    let i1 = ids(e1);
+    let i2 = ids(e2);
+    let i3 = ids(e3);
+    let all: std::collections::HashSet<i64> =
+        i1.iter().chain(i2.iter()).chain(i3.iter()).copied().collect();
+    assert_eq!(all.len(), 150, "pages must not overlap");
+
+    // Newest-first ordering by ts.
+    let ts_seq: Vec<i64> = e1
+        .iter()
+        .map(|e| e.get("ts").and_then(|x| x.as_i64()).unwrap())
+        .collect();
+    let mut sorted = ts_seq.clone();
+    sorted.sort_by(|a, b| b.cmp(a));
+    assert_eq!(ts_seq, sorted, "first page must be newest-first");
+    drop(guard);
+}
+
+#[test]
+fn events_filter_by_model() {
+    let (home, db) = fresh_env();
+    let port = pick_free_port();
+    let now = now_ts();
+    for i in 0..3 {
+        let ts = now - i;
+        let ev = SeedEvent {
+            ts,
+            model: "claude-3-5-sonnet",
+            ..SeedEvent::defaults(ts)
+        };
+        seed_event(&db, &ev);
+    }
+    for i in 0..2 {
+        let ts = now - 10 - i;
+        let ev = SeedEvent {
+            ts,
+            model: "claude-3-opus",
+            ..SeedEvent::defaults(ts)
+        };
+        seed_event(&db, &ev);
+    }
+    let guard = spawn_server(home, port);
+    let (code, v) = http_get_json(&format!(
+        "http://127.0.0.1:{}/api/events?model=claude-3-5-sonnet",
+        guard.port
+    ));
+    assert_eq!(code, 200);
+    let total = v.get("total").and_then(|x| x.as_i64()).unwrap();
+    assert_eq!(total, 3, "filter-by-model total should be 3, got {total}");
+    let events = v.get("events").and_then(|x| x.as_array()).unwrap();
+    assert_eq!(events.len(), 3);
+    for e in events {
+        assert_eq!(
+            e.get("model").and_then(|x| x.as_str()).unwrap(),
+            "claude-3-5-sonnet"
+        );
+    }
+    drop(guard);
+}
+
+#[test]
+fn events_filter_hit_only() {
+    let (home, db) = fresh_env();
+    let port = pick_free_port();
+    let now = now_ts();
+    // 2 events with non-empty chosen array (hits)
+    for i in 0..2 {
+        let ts = now - i;
+        let ev = SeedEvent {
+            ts,
+            chosen_skills_json: "[\"my-skill\"]",
+            status: "ok",
+            ..SeedEvent::defaults(ts)
+        };
+        seed_event(&db, &ev);
+    }
+    // 2 events with empty chosen array (non-hits)
+    for i in 0..2 {
+        let ts = now - 10 - i;
+        let ev = SeedEvent {
+            ts,
+            chosen_skills_json: "[]",
+            status: "ok",
+            ..SeedEvent::defaults(ts)
+        };
+        seed_event(&db, &ev);
+    }
+    let guard = spawn_server(home, port);
+    let (code, v) = http_get_json(&format!(
+        "http://127.0.0.1:{}/api/events?hit_only=true",
+        guard.port
+    ));
+    assert_eq!(code, 200);
+    let total = v.get("total").and_then(|x| x.as_i64()).unwrap();
+    assert_eq!(total, 2, "hit_only total should be 2, got {total}");
+    let events = v.get("events").and_then(|x| x.as_array()).unwrap();
+    assert_eq!(events.len(), 2);
+    for e in events {
+        let chosen = e.get("chosen").and_then(|x| x.as_array()).unwrap();
+        assert!(!chosen.is_empty(), "hit_only events must have non-empty chosen");
+    }
+    drop(guard);
+}
+
+#[test]
+fn events_time_filtering() {
+    let (home, db) = fresh_env();
+    let port = pick_free_port();
+    let now = now_ts();
+    // Events at: now, -1h, -2h, -25h.
+    let offsets = [0i64, 3600, 7200, 25 * 3600];
+    for off in offsets.iter() {
+        let ts = now - off;
+        seed_event(&db, &SeedEvent::defaults(ts));
+    }
+    let guard = spawn_server(home, port);
+    let (code, v) = http_get_json(&format!(
+        "http://127.0.0.1:{}/api/events?hours=24",
+        guard.port
+    ));
+    assert_eq!(code, 200);
+    // 3 events are within 24h (offsets 0, 3600, 7200); the -25h one is excluded.
+    let total = v.get("total").and_then(|x| x.as_i64()).unwrap();
+    assert_eq!(total, 3, "?hours=24 should return 3, got {total}");
+    let events = v.get("events").and_then(|x| x.as_array()).unwrap();
+    assert_eq!(events.len(), 3);
+    // All returned events are within the window.
+    let cutoff = now - 24 * 3600;
+    for e in events {
+        let ts = e.get("ts").and_then(|x| x.as_i64()).unwrap();
+        assert!(ts >= cutoff, "event ts {ts} older than cutoff {cutoff}");
+    }
+    drop(guard);
+}
+
+#[test]
+fn events_response_schema_completeness() {
+    let (home, db) = fresh_env();
+    let port = pick_free_port();
+    let now = now_ts();
+    let ev = SeedEvent {
+        ts: now,
+        chosen_skills_json: "[\"foo\", \"bar\"]",
+        hook_output: "# injected\nfoo + bar",
+        llm_input: "full llm input here",
+        status: "ok",
+        ..SeedEvent::defaults(now)
+    };
+    seed_event(&db, &ev);
+    let guard = spawn_server(home, port);
+    let (code, v) = http_get_json(&format!(
+        "http://127.0.0.1:{}/api/events?limit=1",
+        guard.port
+    ));
+    assert_eq!(code, 200);
+    let e = &v.get("events").and_then(|x| x.as_array()).unwrap()[0];
+    // chosen is an array (deserialised from JSON string column)
+    let chosen = e.get("chosen").and_then(|x| x.as_array()).unwrap();
+    assert_eq!(chosen.len(), 2);
+    assert_eq!(chosen[0].as_str().unwrap(), "foo");
+    assert_eq!(chosen[1].as_str().unwrap(), "bar");
+    // injected = (status==ok && chosen non-empty) → true here
+    assert_eq!(
+        e.get("injected").and_then(|x| x.as_bool()).unwrap(),
+        true,
+        "injected should be true when status=ok and chosen non-empty"
+    );
+    // hook_output is a string up to 6KB
+    let hook = e.get("hook_output").and_then(|x| x.as_str()).unwrap();
+    assert_eq!(hook, "# injected\nfoo + bar");
+    // llm_input is a string
+    let llm = e.get("llm_input").and_then(|x| x.as_str()).unwrap();
+    assert_eq!(llm, "full llm input here");
+    drop(guard);
+}
