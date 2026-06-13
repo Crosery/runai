@@ -280,3 +280,101 @@ fn cli_target_all_order_stable() {
     assert_eq!(CliTarget::ALL[2], CliTarget::Gemini);
     assert_eq!(CliTarget::ALL[3], CliTarget::OpenCode);
 }
+
+// ---------------------------------------------------------------------
+// core::config_watcher — watch target list + is_watched + missing-path
+// resilience
+// ---------------------------------------------------------------------
+
+#[test]
+fn watch_targets_includes_four_cli_configs() {
+    let g = HomeGuard::new();
+    let targets = watch_targets();
+    for t in CliTarget::ALL {
+        let p = t.mcp_config_path();
+        assert!(
+            targets.contains(&p),
+            "watch_targets missing mcp config for {t}: {p:?}\nall={targets:?}"
+        );
+        assert!(is_watched(&p), "is_watched should return true for {p:?}");
+    }
+    drop(g);
+}
+
+#[test]
+fn watch_targets_includes_four_skill_dirs_and_mcps_dir() {
+    let g = HomeGuard::new();
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap();
+    let targets = watch_targets();
+
+    for t in CliTarget::ALL {
+        let s = t.skills_dir();
+        assert!(
+            targets.contains(&s),
+            "watch_targets missing skills dir for {t}: {s:?}"
+        );
+    }
+    // runai's mcps backup dir must also be watched.
+    let mcps = home.join(".runai").join("mcps");
+    assert!(
+        targets.contains(&mcps),
+        "watch_targets missing ~/.runai/mcps: {mcps:?}\nall={targets:?}"
+    );
+    drop(g);
+}
+
+#[test]
+fn watcher_skips_missing_paths() {
+    // Fresh HOME with no CLI dirs / runai dir on disk: start() must succeed,
+    // and the `watched` list should be empty because every target is missing.
+    let g = HomeGuard::new();
+    let (tx, _rx) = std::sync::mpsc::channel::<()>();
+    let watcher = runai::core::config_watcher::ConfigWatcher::start(tx)
+        .expect("ConfigWatcher::start must not error when paths are missing");
+    assert!(
+        watcher.watched.is_empty(),
+        "watched list must be empty on a virgin HOME, got: {:?}",
+        watcher.watched
+    );
+    drop(watcher);
+    drop(g);
+}
+
+#[test]
+fn watcher_fires_on_file_modify() {
+    // Real notify-debouncer round-trip: write → modify → expect at least
+    // one debounced signal on the mpsc channel.
+    let td = tempfile::tempdir().unwrap();
+    let f = td.path().join("conf.json");
+    std::fs::write(&f, r#"{"v":1}"#).unwrap();
+
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let mut deb = notify_debouncer_mini::new_debouncer(
+        std::time::Duration::from_millis(150),
+        move |_res| {
+            let _ = tx.send(());
+        },
+    )
+    .unwrap();
+    deb.watcher()
+        .watch(&f, notify::RecursiveMode::NonRecursive)
+        .unwrap();
+
+    // Two quick edits — debouncer should coalesce; we still expect ≥ 1 event.
+    std::fs::write(&f, r#"{"v":2}"#).unwrap();
+    std::fs::write(&f, r#"{"v":3}"#).unwrap();
+
+    let start = std::time::Instant::now();
+    let mut got = false;
+    while start.elapsed() < std::time::Duration::from_secs(3) {
+        if rx
+            .recv_timeout(std::time::Duration::from_millis(200))
+            .is_ok()
+        {
+            got = true;
+            break;
+        }
+    }
+    drop(deb);
+    assert!(got, "watcher emitted no event for two file modifies");
+}
