@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use runai::core::cli_target::CliTarget;
 use runai::core::group::{Group, GroupKind};
 use runai::core::manager::SkillManager;
 use runai::core::resource::{Resource, ResourceKind, Source};
@@ -777,4 +778,328 @@ fn remove_member_clamps_cursor() {
         app.handle_key(key(KeyCode::Char('k')));
         assert_eq!(app.detail_idx, 0);
     });
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Feature 2.11 — Group Toggle
+// ───────────────────────────────────────────────────────────────────────────
+
+fn claude_link_path(home: &Path, skill_name: &str) -> PathBuf {
+    home.join(".claude").join("skills").join(skill_name)
+}
+
+fn codex_link_path(home: &Path, skill_name: &str) -> PathBuf {
+    home.join(".codex").join("skills").join(skill_name)
+}
+
+/// True if a symlink (possibly dangling) exists at `path` — matches
+/// `Linker::is_symlink`'s semantics (symlink_metadata).
+fn is_symlink(path: &Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+}
+
+#[test]
+fn toggle_group_enables_all_if_partial() {
+    let tmp = tempfile::tempdir().unwrap();
+    with_home(tmp.path(), || {
+        let mgr = make_manager(tmp.path());
+        plant_skill(&mgr, "alpha");
+        plant_skill(&mgr, "beta");
+        create_group(&mgr, "g1", "G1", &["local:alpha", "local:beta"]);
+
+        // Pre-state: enable 'alpha' only on Claude (partial coverage).
+        mgr.enable_resource("local:alpha", CliTarget::Claude, None)
+            .unwrap();
+        assert!(is_symlink(&claude_link_path(tmp.path(), "alpha")));
+        assert!(!is_symlink(&claude_link_path(tmp.path(), "beta")));
+
+        let mut app = App::new(mgr);
+        app.tab = Tab::Groups;
+        app.active_target = CliTarget::Claude;
+        app.reload();
+        select_group_by_id(&mut app, "g1");
+
+        // visible group row reports 1/2 enabled.
+        let row = app.visible_groups()[app.selected].clone();
+        assert_eq!(row.2, 2, "total members = 2");
+        assert_eq!(row.3, 1, "enabled count = 1 (partial)");
+
+        // Toggle. On the Groups tab, `Enter` opens the detail overlay, so
+        // Space is the toggle binding (see normal_key handler).
+        app.handle_key(key(KeyCode::Char(' ')));
+
+        // Both symlinks now exist.
+        assert!(
+            is_symlink(&claude_link_path(tmp.path(), "alpha")),
+            "alpha symlink must exist after toggle"
+        );
+        assert!(
+            is_symlink(&claude_link_path(tmp.path(), "beta")),
+            "beta symlink must exist after toggle (partial → full)"
+        );
+
+        // reload() ran inside toggle; row now reports 2/2.
+        let after = app.visible_groups()[app.selected].clone();
+        assert_eq!(after.3, 2, "enabled count = 2 after partial→full toggle");
+    });
+}
+
+#[test]
+fn toggle_group_disables_all_if_full() {
+    let tmp = tempfile::tempdir().unwrap();
+    with_home(tmp.path(), || {
+        let mgr = make_manager(tmp.path());
+        plant_skill(&mgr, "alpha");
+        plant_skill(&mgr, "beta");
+        create_group(&mgr, "g1", "G1", &["local:alpha", "local:beta"]);
+
+        // Pre-state: both members enabled.
+        mgr.enable_resource("local:alpha", CliTarget::Claude, None)
+            .unwrap();
+        mgr.enable_resource("local:beta", CliTarget::Claude, None)
+            .unwrap();
+
+        let mut app = App::new(mgr);
+        app.tab = Tab::Groups;
+        app.active_target = CliTarget::Claude;
+        app.reload();
+        select_group_by_id(&mut app, "g1");
+        let row = app.visible_groups()[app.selected].clone();
+        assert_eq!(row.3, 2, "precondition: full coverage 2/2");
+
+        // Toggle → disable all. Space is the toggle binding on Groups tab.
+        app.handle_key(key(KeyCode::Char(' ')));
+
+        assert!(
+            !is_symlink(&claude_link_path(tmp.path(), "alpha")),
+            "alpha symlink should be removed"
+        );
+        assert!(
+            !is_symlink(&claude_link_path(tmp.path(), "beta")),
+            "beta symlink should be removed"
+        );
+        let after = app.visible_groups()[app.selected].clone();
+        assert_eq!(after.3, 0, "enabled count = 0 after full→empty toggle");
+
+        // Idempotent toggle round-trip: pressing Space again must
+        // re-enable both (0/2 → partial branch enables) — confirms the
+        // state machine is not stuck.
+        app.handle_key(key(KeyCode::Char(' ')));
+        let after2 = app.visible_groups()[app.selected].clone();
+        assert_eq!(after2.3, 2, "second toggle restores 2/2");
+    });
+}
+
+#[test]
+fn toggle_group_per_target() {
+    let tmp = tempfile::tempdir().unwrap();
+    with_home(tmp.path(), || {
+        let mgr = make_manager(tmp.path());
+        plant_skill(&mgr, "alpha");
+        create_group(&mgr, "g1", "G1", &["local:alpha"]);
+
+        // Enable for Claude only.
+        mgr.enable_resource("local:alpha", CliTarget::Claude, None)
+            .unwrap();
+        assert!(is_symlink(&claude_link_path(tmp.path(), "alpha")));
+        assert!(!is_symlink(&codex_link_path(tmp.path(), "alpha")));
+
+        let mut app = App::new(mgr);
+        app.tab = Tab::Groups;
+        app.active_target = CliTarget::Claude;
+        app.reload();
+        select_group_by_id(&mut app, "g1");
+
+        // Switch to Codex. group toggle should now operate on Codex only.
+        app.handle_key(key(KeyCode::Char('2')));
+        assert_eq!(app.active_target, CliTarget::Codex);
+        // Codex view: 0/1 enabled → partial branch → enable. Space binds
+        // to toggle on the Groups tab (Enter would open the detail view).
+        app.handle_key(key(KeyCode::Char(' ')));
+
+        // Codex now has a symlink, Claude unchanged.
+        assert!(
+            is_symlink(&codex_link_path(tmp.path(), "alpha")),
+            "alpha must be linked into .codex/skills after toggle on Codex"
+        );
+        assert!(
+            is_symlink(&claude_link_path(tmp.path(), "alpha")),
+            "alpha must still be linked into .claude/skills (unaffected)"
+        );
+    });
+}
+
+#[test]
+fn toggle_member_in_detail_overlay() {
+    let tmp = tempfile::tempdir().unwrap();
+    with_home(tmp.path(), || {
+        let mgr = make_manager(tmp.path());
+        plant_skill(&mgr, "alpha");
+        create_group(&mgr, "g1", "G1", &["local:alpha"]);
+
+        // Enable alpha for Claude.
+        mgr.enable_resource("local:alpha", CliTarget::Claude, None)
+            .unwrap();
+        assert!(is_symlink(&claude_link_path(tmp.path(), "alpha")));
+
+        let mut app = App::new(mgr);
+        app.tab = Tab::Groups;
+        app.active_target = CliTarget::Claude;
+        app.reload();
+        select_group_by_id(&mut app, "g1");
+        open_group_detail(&mut app);
+
+        assert_eq!(app.detail_members.len(), 1);
+        assert!(
+            app.detail_members[0].is_enabled_for(CliTarget::Claude),
+            "precondition: member enabled for Claude"
+        );
+
+        // Press Enter to toggle member → should DISABLE.
+        app.handle_key(key(KeyCode::Enter));
+        assert!(
+            !is_symlink(&claude_link_path(tmp.path(), "alpha")),
+            "symlink should be removed after toggle"
+        );
+        assert!(
+            !app.detail_members[0].is_enabled_for(CliTarget::Claude),
+            "detail_members must reflect post-toggle state (disabled)"
+        );
+
+        // Toggle again → re-enable.
+        app.handle_key(key(KeyCode::Enter));
+        assert!(
+            is_symlink(&claude_link_path(tmp.path(), "alpha")),
+            "symlink should be recreated after second toggle"
+        );
+        assert!(
+            app.detail_members[0].is_enabled_for(CliTarget::Claude),
+            "detail_members must reflect re-enable"
+        );
+    });
+}
+
+#[test]
+fn toggle_group_mixed_kinds() {
+    let tmp = tempfile::tempdir().unwrap();
+    with_home(tmp.path(), || {
+        let mgr = make_manager(tmp.path());
+        // 1 skill + 1 MCP (registered via canonical backup).
+        plant_skill(&mgr, "alpha");
+        let mcp_id = plant_mcp(&mgr, "echo-mcp");
+        // Wire the group: skill ID + the synthetic 'mcp:echo-mcp' id (the
+        // App resolves MCP membership through `mcp:` prefix at toggle
+        // time via `restore_mcp` / `remove_mcp`).
+        create_group(&mgr, "g1", "G1", &[]);
+        mgr.db().add_group_member("g1", "local:alpha").unwrap();
+        mgr.db().add_group_member("g1", &mcp_id).unwrap();
+
+        // Pre-state: skill enabled for Claude; MCP not in any CLI config
+        // (its backup is in mcps/ → disabled state).
+        mgr.enable_resource("local:alpha", CliTarget::Claude, None)
+            .unwrap();
+        assert!(is_symlink(&claude_link_path(tmp.path(), "alpha")));
+
+        let mut app = App::new(mgr);
+        app.tab = Tab::Groups;
+        app.active_target = CliTarget::Claude;
+        app.reload();
+        select_group_by_id(&mut app, "g1");
+
+        let row = app.visible_groups()[app.selected].clone();
+        assert_eq!(row.2, 2, "group has 2 members (1 skill + 1 mcp)");
+        // Partial coverage (skill enabled, mcp disabled) → toggle should
+        // ENABLE all.
+        assert!(row.3 < row.2, "partial coverage triggers full-enable branch");
+
+        // Space, not Enter — Enter opens detail; Space toggles on Groups.
+        app.handle_key(key(KeyCode::Char(' ')));
+
+        // Skill symlink still there (was already enabled, toggle re-enables
+        // it via `create_link_force` → idempotent).
+        assert!(
+            is_symlink(&claude_link_path(tmp.path(), "alpha")),
+            "skill symlink survives toggle"
+        );
+
+        // No panic; group toggle handled both kinds without erroring out.
+        // We can't easily assert the MCP entry landed in ~/.claude.json
+        // without spinning up the full mcp_register pipeline, but the
+        // critical regression-target here is "toggle does not crash on
+        // mixed kinds", which we just exercised.
+    });
+}
+
+#[test]
+fn toggle_group_respects_rune_data_dir() {
+    // Cross-data-dir dual-run: each `SkillManager::with_base(tmp.join("dataN"))`
+    // owns its own DB and groups TOML, and `with_home` mocks HOME so the
+    // CLI link path is sandboxed. We assert that toggling a group in
+    // data_dir_1 lands its symlink **only** in HOME_1/.claude/skills/, and
+    // never crosses into HOME_2's filesystem space.
+    let tmp1 = tempfile::tempdir().unwrap();
+    let tmp2 = tempfile::tempdir().unwrap();
+
+    // --- Run 1: data_dir 1 + HOME 1 ---
+    with_home(tmp1.path(), || {
+        let mgr = SkillManager::with_base(tmp1.path().join("data1")).unwrap();
+        plant_skill(&mgr, "alpha");
+        create_group(&mgr, "g1", "G1", &["local:alpha"]);
+
+        let mut app = App::new(mgr);
+        app.tab = Tab::Groups;
+        app.active_target = CliTarget::Claude;
+        app.reload();
+        select_group_by_id(&mut app, "g1");
+        // Space, not Enter — Enter opens detail; Space toggles on Groups.
+        app.handle_key(key(KeyCode::Char(' ')));
+
+        assert!(
+            is_symlink(&claude_link_path(tmp1.path(), "alpha")),
+            "run1: symlink must land inside tmp1's HOME"
+        );
+    });
+
+    // --- Run 2: data_dir 2 + HOME 2 ---
+    with_home(tmp2.path(), || {
+        let mgr = SkillManager::with_base(tmp2.path().join("data2")).unwrap();
+        plant_skill(&mgr, "beta");
+        create_group(&mgr, "g2", "G2", &["local:beta"]);
+
+        let mut app = App::new(mgr);
+        app.tab = Tab::Groups;
+        app.active_target = CliTarget::Claude;
+        app.reload();
+        select_group_by_id(&mut app, "g2");
+        app.handle_key(key(KeyCode::Char(' ')));
+
+        assert!(
+            is_symlink(&claude_link_path(tmp2.path(), "beta")),
+            "run2: symlink must land inside tmp2's HOME"
+        );
+
+        // Run-1's HOME must NOT have grown a 'beta' symlink because of
+        // run-2 — i.e. no cross-data-dir bleed.
+        assert!(
+            !is_symlink(&claude_link_path(tmp1.path(), "beta")),
+            "run2's toggle must not pollute run1's HOME"
+        );
+        assert!(
+            !is_symlink(&claude_link_path(tmp2.path(), "alpha")),
+            "run1's skill must not appear in run2's HOME"
+        );
+    });
+
+    // Confirm post-condition outside both with_home guards: run1's symlink
+    // for alpha still lives only in tmp1.
+    assert!(
+        is_symlink(&claude_link_path(tmp1.path(), "alpha")),
+        "tmp1's alpha symlink must still exist after run2"
+    );
+    assert!(
+        !is_symlink(&claude_link_path(tmp2.path(), "alpha")),
+        "tmp2 must never have grown alpha"
+    );
 }
