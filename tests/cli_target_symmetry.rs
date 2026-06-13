@@ -746,3 +746,265 @@ fn sm_enable_group_symlink_target_respects_rune_data_dir() {
         "RUNE_DATA_DIR override must not leak into default ~/.runai/skills"
     );
 }
+
+// =============================================================================
+// PLANNING §3.15 — sm_disable (group mode) — P0 high-risk physical e2e
+// =============================================================================
+
+#[test]
+fn sm_disable_group_removes_symlinks_and_mcp_entries() {
+    let env = TestEnv::new();
+    let skill_dir = env.home().join(".runai/skills");
+    make_skill(&skill_dir, "dis-skill-a");
+    make_skill(&skill_dir, "dis-skill-b");
+    seed_mcp_backup(&env.home().join(".runai"), "dis-mcp", "/bin/dis-mcp");
+
+    assert!(env.run(&["scan"]).status.success());
+    build_group(
+        &env,
+        "dis-group",
+        &["dis-skill-a", "dis-skill-b"],
+        Some("dis-mcp"),
+    );
+
+    // Enable on claude only — and also pre-enable on codex to verify the
+    // disable on claude leaves codex untouched.
+    assert!(
+        env.run(&["enable", "dis-group", "--target", "claude"])
+            .status
+            .success()
+    );
+    assert!(
+        env.run(&["enable", "dis-skill-a", "--target", "codex"])
+            .status
+            .success()
+    );
+    // Sanity: both skills' symlinks exist before disable.
+    for sn in &["dis-skill-a", "dis-skill-b"] {
+        assert!(
+            std::fs::symlink_metadata(env.cli_skills_dir("claude").join(sn)).is_ok()
+        );
+    }
+    // And ~/.claude.json carries the MCP entry.
+    let claude_path = env.home().join(".claude.json");
+    let pre: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&claude_path).unwrap()).unwrap();
+    assert!(pre["mcpServers"]["dis-mcp"].is_object());
+
+    let dis = env.run(&["disable", "dis-group", "--target", "claude"]);
+    dump(&dis, "disable dis-group on claude");
+    assert!(dis.status.success(), "group disable failed");
+    let stdout = String::from_utf8_lossy(&dis.stdout);
+    assert!(
+        stdout.contains("Group 'dis-group' disabled for claude"),
+        "expected success message in stdout, got: {stdout}"
+    );
+
+    // Both skill symlinks gone from ~/.claude/skills.
+    for sn in &["dis-skill-a", "dis-skill-b"] {
+        let link = env.cli_skills_dir("claude").join(sn);
+        assert!(
+            std::fs::symlink_metadata(&link).is_err(),
+            "symlink at {} should be gone after group disable",
+            link.display()
+        );
+    }
+    // MCP entry removed from ~/.claude.json.
+    let post: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&claude_path).unwrap()).unwrap();
+    let mcp_servers = post["mcpServers"].as_object();
+    let mcp_present = mcp_servers
+        .map(|m| m.contains_key("dis-mcp"))
+        .unwrap_or(false);
+    assert!(
+        !mcp_present,
+        "mcpServers.dis-mcp should be gone from ~/.claude.json after disable, got: {post}"
+    );
+
+    // Codex was independently enabled for dis-skill-a — that symlink must stay.
+    assert!(
+        std::fs::symlink_metadata(env.cli_skills_dir("codex").join("dis-skill-a")).is_ok(),
+        "disable on claude must not affect codex's symlink"
+    );
+
+    // Skill source files untouched.
+    for sn in &["dis-skill-a", "dis-skill-b"] {
+        assert!(
+            skill_dir.join(sn).exists(),
+            "source skill dir must remain after disable: {sn}"
+        );
+    }
+}
+
+#[test]
+fn sm_disable_group_symmetric_cleanup_across_targets() {
+    let env = TestEnv::new();
+    let skill_dir = env.home().join(".runai/skills");
+    make_skill(&skill_dir, "scl-skill");
+    assert!(env.run(&["scan"]).status.success());
+    build_group(&env, "scl-grp", &["scl-skill"], None);
+
+    // Enable on all 4 targets first.
+    for target in &["claude", "codex", "gemini", "opencode"] {
+        assert!(
+            env.run(&["enable", "scl-grp", "--target", target])
+                .status
+                .success(),
+            "pre-enable on {target} failed"
+        );
+        assert!(
+            std::fs::symlink_metadata(env.cli_skills_dir(target).join("scl-skill")).is_ok(),
+            "pre-enable did not create symlink on {target}"
+        );
+    }
+
+    // Disable one target at a time and verify per-target cleanup is isolated.
+    let order = ["claude", "codex", "gemini", "opencode"];
+    for (i, target) in order.iter().enumerate() {
+        let dis = env.run(&["disable", "scl-grp", "--target", target]);
+        dump(&dis, &format!("disable scl-grp on {target}"));
+        assert!(
+            dis.status.success(),
+            "disable on {target} failed: stderr={}",
+            String::from_utf8_lossy(&dis.stderr)
+        );
+        // This target's symlink gone.
+        assert!(
+            std::fs::symlink_metadata(env.cli_skills_dir(target).join("scl-skill")).is_err(),
+            "symlink on {target} should be gone after disable"
+        );
+        // Later-in-order targets must still be enabled.
+        for later in &order[i + 1..] {
+            assert!(
+                std::fs::symlink_metadata(env.cli_skills_dir(later).join("scl-skill")).is_ok(),
+                "disable on {target} accidentally removed symlink on {later}"
+            );
+        }
+    }
+}
+
+#[test]
+fn sm_disable_group_idempotent_on_already_disabled() {
+    // Create a group + skill but NEVER enable. `disable` should be a no-op
+    // that returns success.
+    let env = TestEnv::new();
+    let skill_dir = env.home().join(".runai/skills");
+    make_skill(&skill_dir, "idem-skill");
+    assert!(env.run(&["scan"]).status.success());
+    build_group(&env, "idem-grp", &["idem-skill"], None);
+
+    let link = env.cli_skills_dir("claude").join("idem-skill");
+    assert!(
+        std::fs::symlink_metadata(&link).is_err(),
+        "precondition: symlink should not exist before disable"
+    );
+
+    // First disable on a never-enabled group.
+    let dis1 = env.run(&["disable", "idem-grp", "--target", "claude"]);
+    dump(&dis1, "first disable (never-enabled)");
+    assert!(
+        dis1.status.success(),
+        "first disable on never-enabled group should succeed (idempotent); stderr={}",
+        String::from_utf8_lossy(&dis1.stderr)
+    );
+    assert!(
+        std::fs::symlink_metadata(&link).is_err(),
+        "disable on never-enabled group must not create anything at {}",
+        link.display()
+    );
+
+    // Second disable — still idempotent.
+    let dis2 = env.run(&["disable", "idem-grp", "--target", "claude"]);
+    dump(&dis2, "second disable (idempotent)");
+    assert!(
+        dis2.status.success(),
+        "second disable should also succeed (idempotent); stderr={}",
+        String::from_utf8_lossy(&dis2.stderr)
+    );
+    assert!(
+        std::fs::symlink_metadata(&link).is_err(),
+        "second disable must not have created anything at {}",
+        link.display()
+    );
+}
+
+#[test]
+fn sm_disable_group_respects_rune_data_dir_symlink_cleanup() {
+    let env = TestEnv::new();
+    let alt_data = tempfile::tempdir().unwrap();
+    let alt_skills = alt_data.path().join("skills");
+    std::fs::create_dir_all(&alt_skills).unwrap();
+    make_skill(&alt_skills, "alt-dis-skill");
+
+    let run_with_alt = |args: &[&str]| -> std::process::Output {
+        let mut cmd = runai();
+        cmd.args(args)
+            .env("HOME", env.home())
+            .env("RUNE_DATA_DIR", alt_data.path())
+            .env_remove("SKILL_MANAGER_DATA_DIR");
+        cmd.output().unwrap()
+    };
+
+    assert!(run_with_alt(&["scan"]).status.success(), "scan failed");
+    let create = run_with_alt(&[
+        "group",
+        "create",
+        "alt-dis-grp",
+        "--name",
+        "alt-dis-grp",
+        "--kind",
+        "custom",
+    ]);
+    assert!(create.status.success());
+    let add = run_with_alt(&[
+        "group",
+        "add",
+        "alt-dis-grp",
+        "alt-dis-skill",
+        "--resource-type",
+        "skill",
+    ]);
+    assert!(add.status.success());
+
+    // Enable then disable on claude under alt RUNE_DATA_DIR.
+    assert!(
+        run_with_alt(&["enable", "alt-dis-grp", "--target", "claude"])
+            .status
+            .success()
+    );
+    let link = env.cli_skills_dir("claude").join("alt-dis-skill");
+    assert!(
+        std::fs::symlink_metadata(&link).is_ok(),
+        "precondition: symlink should exist after enable"
+    );
+    assert_eq!(
+        std::fs::read_link(&link).unwrap(),
+        alt_skills.join("alt-dis-skill"),
+        "precondition: symlink should target alt RUNE_DATA_DIR"
+    );
+
+    let dis = run_with_alt(&["disable", "alt-dis-grp", "--target", "claude"]);
+    dump(&dis, "disable alt-dis-grp under alt RUNE_DATA_DIR");
+    assert!(dis.status.success(), "disable under alt RUNE_DATA_DIR failed");
+
+    // Symlink in ~/.claude/skills gone.
+    assert!(
+        std::fs::symlink_metadata(&link).is_err(),
+        "symlink at {} should be gone after disable",
+        link.display()
+    );
+    // Source skill dir at the alt data dir is preserved.
+    assert!(
+        alt_skills.join("alt-dis-skill").exists(),
+        "disable must NOT remove the source skill dir at alt RUNE_DATA_DIR"
+    );
+    // No collateral writes to the other CLI dirs.
+    for other in &["codex", "gemini", "opencode"] {
+        let collateral = env.cli_skills_dir(other).join("alt-dis-skill");
+        assert!(
+            std::fs::symlink_metadata(&collateral).is_err(),
+            "disable on claude should not touch {} skill dir",
+            other
+        );
+    }
+}
