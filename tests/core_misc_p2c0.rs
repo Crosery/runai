@@ -181,3 +181,102 @@ fn member_type_correctly_tagged() {
     let kinds: Vec<_> = back.members.iter().map(|m| m.member_type).collect();
     assert_eq!(kinds, vec![MemberType::Skill, MemberType::Mcp]);
 }
+
+// ---------------------------------------------------------------------
+// core::cli_target — per-target dir + config-path symmetry
+// ---------------------------------------------------------------------
+
+#[test]
+fn skills_dir_cross_target_symmetry() {
+    let g = HomeGuard::new();
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap();
+
+    // Verify that each target maps to a unique, well-formed skills_dir().
+    let mut seen: Vec<PathBuf> = Vec::new();
+    for t in CliTarget::ALL {
+        let dir = t.skills_dir();
+        let expect = home
+            .join(format!(".{}", t.name()))
+            .join("skills");
+        assert_eq!(dir, expect, "skills_dir mismatch for {t}");
+        assert!(!dir.as_os_str().is_empty(), "empty skills_dir for {t}");
+        assert!(
+            !seen.contains(&dir),
+            "duplicate skills_dir across targets: {dir:?}"
+        );
+        seen.push(dir);
+    }
+    assert_eq!(seen.len(), 4);
+    drop(g);
+}
+
+#[test]
+fn mcp_config_path_cross_target_symmetry() {
+    let g = HomeGuard::new();
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap();
+
+    assert_eq!(
+        CliTarget::Claude.mcp_config_path(),
+        home.join(".claude.json")
+    );
+    assert_eq!(
+        CliTarget::Codex.mcp_config_path(),
+        home.join(".codex").join("config.toml")
+    );
+    assert_eq!(
+        CliTarget::Gemini.mcp_config_path(),
+        home.join(".gemini").join("settings.json")
+    );
+    assert_eq!(
+        CliTarget::OpenCode.mcp_config_path(),
+        home.join(".config").join("opencode").join("opencode.json")
+    );
+
+    // Codex is the only TOML-formatted target.
+    assert!(CliTarget::Codex.uses_toml());
+    for t in [CliTarget::Claude, CliTarget::Gemini, CliTarget::OpenCode] {
+        assert!(!t.uses_toml(), "{t} must not be TOML");
+    }
+    drop(g);
+}
+
+#[test]
+fn format_predicates_match_targets() {
+    // uses_toml() — only Codex.
+    assert!(CliTarget::Codex.uses_toml());
+    assert!(!CliTarget::Claude.uses_toml());
+    assert!(!CliTarget::Gemini.uses_toml());
+    assert!(!CliTarget::OpenCode.uses_toml());
+
+    // uses_opencode_format() — only OpenCode.
+    assert!(CliTarget::OpenCode.uses_opencode_format());
+    assert!(!CliTarget::Claude.uses_opencode_format());
+    assert!(!CliTarget::Codex.uses_opencode_format());
+    assert!(!CliTarget::Gemini.uses_opencode_format());
+}
+
+#[test]
+fn cli_target_display_fromstr_roundtrip() {
+    use std::str::FromStr;
+    for t in CliTarget::ALL {
+        let printed = t.to_string();
+        let parsed = CliTarget::from_str(&printed).expect("parse own Display");
+        assert_eq!(&parsed, t);
+        // .name() must equal Display.
+        assert_eq!(t.name(), printed);
+    }
+    // Unknown / wrong-case strings return Err.
+    assert!(CliTarget::from_str("CLAUDE").is_err());
+    assert!(CliTarget::from_str("unknown").is_err());
+    assert!(CliTarget::from_str("").is_err());
+}
+
+#[test]
+fn cli_target_all_order_stable() {
+    // TUI tab indexing depends on this exact order.
+    assert_eq!(CliTarget::ALL.len(), 4);
+    assert_eq!(CliTarget::ALL[0], CliTarget::Claude);
+    assert_eq!(CliTarget::ALL[1], CliTarget::Codex);
+    assert_eq!(CliTarget::ALL[2], CliTarget::Gemini);
+    assert_eq!(CliTarget::ALL[3], CliTarget::OpenCode);
+}
