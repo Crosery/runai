@@ -1,0 +1,223 @@
+//! P2 extra coverage for `runai backup` / `runai backups` / `runai restore`
+//! CLI commands. Each test spawns the installed `runai` binary at
+//! `/Users/crosery/.cargo/bin/runai` in an isolated HOME and `RUNE_DATA_DIR`
+//! so it touches **nothing** outside the per-test tempdirs.
+//!
+//! These are physical e2e tests as required by the safety contract — backup
+//! writes / reads `~/.runai/{skills,mcps,backups}/` plus the four CLI config
+//! roots, and restore over-writes them, so all assertions are made on real
+//! file-system contents rather than mocked paths.
+#![cfg(not(target_os = "windows"))]
+
+use std::path::{Path, PathBuf};
+use std::process::Output;
+use tempfile::TempDir;
+
+const RUNAI_BIN: &str = "/Users/crosery/.cargo/bin/runai";
+
+fn run_in(home: &Path, rune_data: &Path, args: &[&str]) -> Output {
+    let mut cmd = std::process::Command::new(RUNAI_BIN);
+    cmd.args(args)
+        .env("HOME", home)
+        .env("RUNAI_NO_AUTOSPAWN", "1")
+        .env("RUNE_DATA_DIR", rune_data)
+        .env_remove("SKILL_MANAGER_DATA_DIR");
+    cmd.output().expect("runai binary spawn")
+}
+
+fn dump(out: &Output, label: &str) {
+    eprintln!(
+        "--- {label} (exit={}) ---\n[stdout]\n{}\n[stderr]\n{}\n--- end ---",
+        out.status,
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+}
+
+/// Build a tempdir HOME with managed `~/.runai/{skills,mcps}` plus the four
+/// CLI skill dirs pre-created. Returns (home_tmp, data_dir, home_path).
+fn make_env() -> (TempDir, PathBuf) {
+    let home = tempfile::tempdir().expect("create tmp HOME");
+    for cli in ["claude", "codex", "gemini", "opencode"] {
+        std::fs::create_dir_all(home.path().join(format!(".{cli}/skills")))
+            .expect("pre-create CLI skills dir");
+    }
+    let data = home.path().join(".runai");
+    std::fs::create_dir_all(data.join("skills")).unwrap();
+    std::fs::create_dir_all(data.join("mcps")).unwrap();
+    (home, data)
+}
+
+fn make_skill(parent: &Path, name: &str, body: &str) -> PathBuf {
+    let dir = parent.join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("SKILL.md"),
+        format!("---\nname: {name}\ndescription: {body}\n---\n\n# {name}\n\n{body}\n"),
+    )
+    .unwrap();
+    dir
+}
+
+// ─── feature 1: backup ──────────────────────────────────────────────────────
+
+/// backup snapshots managed skills + mcps, the timestamp marker, and any
+/// existing CLI config files. Output line announces the destination dir.
+#[test]
+fn backup_creates_snapshot_of_managed_data_and_configs() {
+    let (home_tmp, data) = make_env();
+    let home = home_tmp.path();
+    // Pre-load managed skill + canonical MCP backup so backup picks it up.
+    make_skill(&data.join("skills"), "skill-a", "alpha skill");
+    std::fs::write(
+        data.join("mcps/echo.json"),
+        r#"{"command":"echo","args":["hi"]}"#,
+    )
+    .unwrap();
+    // Pre-load a CLI config so it gets snapshotted.
+    std::fs::write(home.join(".claude.json"), r#"{"projects":{}}"#).unwrap();
+
+    let out = run_in(home, &data, &["backup"]);
+    dump(&out, "backup");
+    assert!(out.status.success(), "backup exit");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("Backup created:"),
+        "expected 'Backup created:' in stdout, got: {stdout}"
+    );
+
+    // Locate the newly-created backup timestamp dir.
+    let backups_root = data.join("backups");
+    assert!(backups_root.exists(), "backups root must exist");
+    let entries: Vec<_> = std::fs::read_dir(&backups_root)
+        .unwrap()
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .collect();
+    assert_eq!(entries.len(), 1, "exactly one backup directory expected");
+    let ts_dir = entries[0].path();
+
+    // managed-skills/skill-a/SKILL.md must exist inside the backup
+    let backed_skill = ts_dir.join("managed-skills/skill-a/SKILL.md");
+    assert!(
+        backed_skill.exists(),
+        "managed-skills payload missing: {}",
+        backed_skill.display()
+    );
+    // managed-mcps copy is present
+    assert!(
+        ts_dir.join("managed-mcps/echo.json").exists(),
+        "managed-mcps payload missing"
+    );
+    // Timestamp marker file
+    assert!(
+        ts_dir.join("timestamp").exists(),
+        "timestamp marker missing"
+    );
+    // CLI config (claude) preserved
+    assert!(
+        ts_dir.join("claude.json").exists(),
+        "claude.json config copy missing"
+    );
+}
+
+/// Two consecutive backups (with a `--force`-style content mutation in
+/// between) must be independent snapshots: editing the live skill after the
+/// first backup should NOT retroactively change the first backup's content.
+#[test]
+fn backup_creates_independent_snapshots() {
+    let (home_tmp, data) = make_env();
+    let home = home_tmp.path();
+    let skill_dir = make_skill(&data.join("skills"), "snap-skill", "v1 body");
+
+    // First backup.
+    let out1 = run_in(home, &data, &["backup"]);
+    dump(&out1, "first backup");
+    assert!(out1.status.success());
+
+    // Force a unique second timestamp by sleeping past one whole second
+    // (backup timestamp granularity is %Y%m%d_%H%M%S).
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+
+    // Mutate the live skill — overwrite SKILL.md body.
+    std::fs::write(skill_dir.join("SKILL.md"), "VERSION TWO\n").unwrap();
+
+    let out2 = run_in(home, &data, &["backup"]);
+    dump(&out2, "second backup");
+    assert!(out2.status.success());
+
+    // Expect exactly two timestamp dirs.
+    let mut backups: Vec<_> = std::fs::read_dir(data.join("backups"))
+        .unwrap()
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .map(|e| e.path())
+        .collect();
+    backups.sort();
+    assert_eq!(backups.len(), 2, "two backups expected, got {backups:?}");
+
+    let first_body =
+        std::fs::read_to_string(backups[0].join("managed-skills/snap-skill/SKILL.md")).unwrap();
+    let second_body =
+        std::fs::read_to_string(backups[1].join("managed-skills/snap-skill/SKILL.md")).unwrap();
+
+    assert!(
+        first_body.contains("v1 body"),
+        "first backup should still hold v1 body, got: {first_body:?}"
+    );
+    assert!(
+        second_body.contains("VERSION TWO"),
+        "second backup should reflect v2 mutation, got: {second_body:?}"
+    );
+    assert_ne!(
+        first_body, second_body,
+        "two snapshots must be independent"
+    );
+}
+
+/// A custom `RUNE_DATA_DIR` must place its backup under that directory and
+/// must NOT spill into the default `~/.runai/backups/` (cross-data-dir
+/// isolation is the root-cause area of the 4-20 / 4-27 incidents).
+#[test]
+fn backup_respects_rune_data_dir() {
+    let home_tmp = tempfile::tempdir().unwrap();
+    let home = home_tmp.path();
+    for cli in ["claude", "codex", "gemini", "opencode"] {
+        std::fs::create_dir_all(home.join(format!(".{cli}/skills"))).unwrap();
+    }
+    let default_data = home.join(".runai");
+    std::fs::create_dir_all(default_data.join("skills")).unwrap();
+
+    let alt_root = tempfile::tempdir().unwrap();
+    let alt_data = alt_root.path().join("alt-runai");
+    std::fs::create_dir_all(alt_data.join("skills")).unwrap();
+    make_skill(&alt_data.join("skills"), "alt-skill", "alt body");
+
+    // Run backup pointed at the alt data dir.
+    let out = run_in(home, &alt_data, &["backup"]);
+    dump(&out, "alt backup");
+    assert!(out.status.success(), "alt backup must succeed");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Backup created:"));
+    assert!(
+        stdout.contains(alt_data.to_string_lossy().as_ref()),
+        "alt backup path must include alt data dir, got: {stdout}"
+    );
+
+    // Alt backups dir should now hold one timestamp.
+    let alt_backups: Vec<_> = std::fs::read_dir(alt_data.join("backups"))
+        .unwrap()
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .collect();
+    assert_eq!(alt_backups.len(), 1, "alt backup must exist under alt dir");
+
+    // Default data dir must NOT have grown a backups subdir.
+    assert!(
+        !default_data.join("backups").exists()
+            || std::fs::read_dir(default_data.join("backups"))
+                .map(|d| d.flatten().next().is_none())
+                .unwrap_or(true),
+        "default data dir must NOT receive any backup when RUNE_DATA_DIR is set"
+    );
+}
