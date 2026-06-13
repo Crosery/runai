@@ -422,3 +422,188 @@ fn trash_list_formats_deletion_time_relative() {
         "expected minute-resolution relative-time `Xm ago` for fresh deletion, got:\n{out}"
     );
 }
+
+// ─── feature: `runai trash empty` ───────────────────────────────────────────
+
+/// `trash empty` must delete every trash entry (both DB row and on-disk
+/// payload), and afterwards `trash list` reports an empty trash.
+#[test]
+fn trash_empty_clears_all() {
+    let env = TestEnv::new();
+
+    // Seed 5 skills, scan, uninstall them all so trash holds 5 entries.
+    let names = [
+        "empty-1", "empty-2", "empty-3", "empty-4", "empty-5",
+    ];
+    for n in &names {
+        make_skill(&env.skills_dir(), n, &format!("payload for {n}"));
+    }
+    assert!(env.run(&["scan"]).status.success());
+    for n in &names {
+        let out = env.run(&["uninstall", n]);
+        dump(&out, &format!("uninstall {n}"));
+        assert!(out.status.success());
+    }
+
+    // Sanity: trash dir has 5 payload subdirs.
+    let trash_dir = env.data_dir().join("trash");
+    let before: Vec<_> = std::fs::read_dir(&trash_dir)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .filter(|e| e.path().is_dir())
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        before.len() >= 5,
+        "expected >=5 trash payload dirs before empty, found {}: {:?}",
+        before.len(),
+        before.iter().map(|e| e.file_name()).collect::<Vec<_>>()
+    );
+
+    // Run empty.
+    let emptied = env.run(&["trash", "empty"]);
+    dump(&emptied, "trash empty (5 entries)");
+    assert!(emptied.status.success(), "trash empty must succeed");
+    let eo = stdout_of(&emptied);
+    assert!(
+        eo.contains("Emptied trash (5 items)"),
+        "expected `Emptied trash (5 items)`, got:\n{eo}"
+    );
+
+    // trash list now reports empty.
+    let list = env.run(&["trash", "list"]);
+    dump(&list, "trash list after empty");
+    assert!(list.status.success());
+    let lo = stdout_of(&list);
+    assert!(
+        lo.contains("Trash is empty."),
+        "after `trash empty`, list must report `Trash is empty.`, got:\n{lo}"
+    );
+
+    // Physical: trash payload subdirs are gone (the trash root itself may
+    // still exist as an empty directory).
+    let after_dirs: Vec<_> = std::fs::read_dir(&trash_dir)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .filter(|e| e.path().is_dir())
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        after_dirs.is_empty(),
+        "after `trash empty`, trash dir must not contain payload subdirs, found: {:?}",
+        after_dirs.iter().map(|e| e.file_name()).collect::<Vec<_>>()
+    );
+}
+
+/// Running `trash empty` on an already-empty trash must succeed and report
+/// `Emptied trash (0 items)`.
+#[test]
+fn trash_empty_handles_already_empty() {
+    let env = TestEnv::new();
+    // Seed a skill so the DB is initialised; never uninstall it.
+    make_skill(&env.skills_dir(), "stay-installed", "remains");
+    assert!(env.run(&["scan"]).status.success());
+
+    let out = env.run(&["trash", "empty"]);
+    dump(&out, "trash empty (already empty)");
+    assert!(out.status.success(), "empty on empty trash must succeed");
+    let so = stdout_of(&out);
+    assert!(
+        so.contains("Emptied trash (0 items)"),
+        "expected `Emptied trash (0 items)`, got:\n{so}"
+    );
+}
+
+/// `trash empty` must respect `RUNE_DATA_DIR`: when pointed at a custom data
+/// dir, it only clears trash entries in that dir. Trash entries in the *other*
+/// data dir must remain untouched.
+///
+/// Setup:
+///   - default data dir under HOME (~/.runai): seed + uninstall "default-A"
+///   - alternate data dir under HOME/alt-data: seed + uninstall "alt-A"
+///   - run `trash empty` against the alternate data dir only
+///   - assert: alternate trash is empty, default trash still has its entry
+#[test]
+fn trash_empty_respects_rune_data_dir() {
+    let env = TestEnv::new();
+
+    // Default data dir leg.
+    make_skill(&env.skills_dir(), "default-A", "default payload");
+    assert!(env.run(&["scan"]).status.success());
+    let un_def = env.run(&["uninstall", "default-A"]);
+    dump(&un_def, "uninstall default-A (default data dir)");
+    assert!(un_def.status.success());
+
+    // Alternate data dir leg.
+    let alt_data = env.home().join("alt-data");
+    std::fs::create_dir_all(alt_data.join("skills")).unwrap();
+    make_skill(&alt_data.join("skills"), "alt-A", "alt payload");
+    let alt_scan = env.run_with_data(&alt_data, &["scan"]);
+    dump(&alt_scan, "scan (alt data dir)");
+    assert!(alt_scan.status.success());
+    let un_alt = env.run_with_data(&alt_data, &["uninstall", "alt-A"]);
+    dump(&un_alt, "uninstall alt-A (alt data dir)");
+    assert!(un_alt.status.success());
+
+    // Sanity: each trash has 1 payload dir.
+    let default_trash = env.data_dir().join("trash");
+    let alt_trash = alt_data.join("trash");
+    let count_dirs = |p: &Path| -> usize {
+        std::fs::read_dir(p)
+            .map(|rd| rd.filter_map(|e| e.ok()).filter(|e| e.path().is_dir()).count())
+            .unwrap_or(0)
+    };
+    assert!(
+        count_dirs(&default_trash) >= 1,
+        "default trash must have a payload before empty"
+    );
+    assert!(
+        count_dirs(&alt_trash) >= 1,
+        "alt trash must have a payload before empty"
+    );
+
+    // Empty only the alternate trash.
+    let emptied = env.run_with_data(&alt_data, &["trash", "empty"]);
+    dump(&emptied, "trash empty (alt data dir only)");
+    assert!(emptied.status.success());
+    let eo = stdout_of(&emptied);
+    assert!(
+        eo.contains("Emptied trash (1 items)"),
+        "expected `Emptied trash (1 items)` for alt, got:\n{eo}"
+    );
+
+    // Alt trash is now empty; default trash still holds its entry.
+    let alt_list = env.run_with_data(&alt_data, &["trash", "list"]);
+    dump(&alt_list, "trash list (alt after empty)");
+    assert!(alt_list.status.success());
+    assert!(
+        stdout_of(&alt_list).contains("Trash is empty."),
+        "alt trash must be empty after `trash empty` on alt data dir"
+    );
+
+    let default_list = env.run(&["trash", "list"]);
+    dump(&default_list, "trash list (default after alt empty)");
+    assert!(default_list.status.success());
+    let dlist = stdout_of(&default_list);
+    assert!(
+        dlist.contains("default-A"),
+        "default trash must still contain `default-A` (was NOT emptied):\n{dlist}"
+    );
+    assert!(
+        !dlist.contains("alt-A"),
+        "default trash listing must NOT see alt-A (different data dir):\n{dlist}"
+    );
+
+    // Physical: alt trash has no payload subdirs left; default still does.
+    assert_eq!(
+        count_dirs(&alt_trash),
+        0,
+        "alt trash payload dirs must be gone after empty"
+    );
+    assert!(
+        count_dirs(&default_trash) >= 1,
+        "default trash payload dirs must be preserved"
+    );
+}
