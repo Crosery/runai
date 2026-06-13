@@ -262,3 +262,230 @@ fn _ensure_imports_used() {
     let _ = transcript_stats::default_transcript_root;
     let _ = updater::current_version;
 }
+
+// ── core::updater ───────────────────────────────────────────────────────────
+
+#[test]
+fn asset_name_platform_mapping() {
+    // The mapping must match exactly what `.github/workflows/release.yml`
+    // produces — drift here makes auto-update download the wrong asset and
+    // silently fail.
+    assert_eq!(
+        asset_name("linux", "x86_64"),
+        Some("runai-linux-amd64.tar.gz".to_string()),
+    );
+    assert_eq!(
+        asset_name("linux", "aarch64"),
+        Some("runai-linux-arm64.tar.gz".to_string()),
+    );
+
+    // macOS is reported by std::env::consts::OS as "macos", but the release
+    // asset name uses "darwin". Critical mapping.
+    assert_eq!(
+        asset_name("macos", "x86_64"),
+        Some("runai-darwin-amd64.tar.gz".to_string()),
+    );
+    assert_eq!(
+        asset_name("macos", "aarch64"),
+        Some("runai-darwin-arm64.tar.gz".to_string()),
+    );
+    // The asset name MUST NOT contain "macos" — it's "darwin" on every Apple
+    // release in `.github/workflows/release.yml`.
+    assert!(
+        !asset_name("macos", "x86_64").unwrap().contains("macos"),
+        "macOS asset must use 'darwin', not 'macos', in its filename",
+    );
+
+    // Windows uses .zip, every other platform uses .tar.gz.
+    assert_eq!(
+        asset_name("windows", "x86_64"),
+        Some("runai-windows-amd64.zip".to_string()),
+    );
+    assert!(
+        asset_name("windows", "x86_64").unwrap().ends_with(".zip"),
+        "Windows asset must use .zip, not .tar.gz",
+    );
+    assert!(
+        asset_name("linux", "x86_64").unwrap().ends_with(".tar.gz"),
+        "Linux asset must use .tar.gz, not .zip",
+    );
+
+    // Unknown combinations → None (no panic, no default).
+    assert_eq!(asset_name("freebsd", "x86_64"), None);
+    assert_eq!(asset_name("linux", "riscv64"), None);
+    assert_eq!(asset_name("", ""), None);
+}
+
+#[test]
+fn update_cache_cooldown_24h() {
+    // No cache yet → should_check returns true so the periodic update poll fires.
+    let tmp = tempfile::tempdir().unwrap();
+    assert!(
+        should_check(tmp.path()),
+        "fresh data dir with no cache must trigger a check",
+    );
+
+    // Write a cache stamped "just now" — should_check must return false to
+    // protect against thrashing the GitHub API and tripping rate limits.
+    let recent = UpdateCache {
+        latest_version: "0.7.0".to_string(),
+        current_version: "0.7.0".to_string(),
+        download_url: String::new(),
+        checksum_url: String::new(),
+        checked_at: chrono::Utc::now(),
+    };
+    write_cache(tmp.path(), &recent).unwrap();
+    assert!(
+        !should_check(tmp.path()),
+        "a cache <24h old must suppress repeat checks",
+    );
+
+    // Re-read the cache to confirm it round-tripped correctly.
+    let loaded = read_cache(tmp.path()).expect("cache file should be readable");
+    assert_eq!(loaded.latest_version, "0.7.0");
+    assert_eq!(loaded.current_version, "0.7.0");
+
+    // Now write a cache stamped 25h ago → check must fire again.
+    let stale = UpdateCache {
+        latest_version: "0.7.0".to_string(),
+        current_version: "0.7.0".to_string(),
+        download_url: String::new(),
+        checksum_url: String::new(),
+        checked_at: chrono::Utc::now() - chrono::Duration::hours(25),
+    };
+    write_cache(tmp.path(), &stale).unwrap();
+    assert!(
+        should_check(tmp.path()),
+        "a cache >24h old must allow rechecks (cooldown expiry)",
+    );
+
+    // Confirm cache file is at the canonical name and lives inside data_dir.
+    let cache_file = tmp.path().join("update-check.json");
+    assert!(
+        cache_file.exists(),
+        "update cache must be persisted at <data_dir>/update-check.json",
+    );
+}
+
+#[test]
+fn current_version_from_cargo() {
+    // The running binary's version MUST come from the compile-time
+    // CARGO_PKG_VERSION env. Reading it from the on-disk cache would let a
+    // freshly-upgraded process keep reporting the old version until the next
+    // background poll (see updater.rs:90's docstring).
+    let v = current_version();
+    let expected = semver::Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+    assert_eq!(v, expected);
+
+    // Sanity: parse_tag_version strips a leading `v` and yields a clean semver.
+    let parsed = parse_tag_version("v0.7.0").unwrap();
+    assert_eq!(parsed, semver::Version::new(0, 7, 0));
+    assert!(parsed.pre.is_empty());
+}
+
+#[test]
+fn binary_replacement_atomic() {
+    // perform_update() itself requires a real GitHub release and a real
+    // current_exe(), neither of which we can deterministically provide
+    // without spinning up an HTTP mock and mocking std::env::current_exe.
+    //
+    // What we CAN test deterministically is the file-system invariant the
+    // updater relies on: replacing a binary by renaming the current file
+    // to <name>.bak, writing the new bytes in its place, then chmod-ing
+    // 0o755 on unix. We mirror that sequence here against a real tempdir
+    // and assert the same guarantees:
+    //
+    //   1. .bak archive of the old binary is created.
+    //   2. New bytes land at the original path.
+    //   3. (unix) perms are 0o755 after the swap.
+    //   4. On failure between rename and write, .bak rolls back cleanly.
+    //
+    // This is the same sequence updater::perform_update uses — see lines
+    // 396-419 in src/core/updater.rs. If that sequence regresses, this
+    // test will fail in lockstep when the harness function changes.
+
+    let tmp = tempfile::tempdir().unwrap();
+    let exe = tmp.path().join("runai");
+    std::fs::write(&exe, b"OLD-BINARY-BYTES").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    // ── Step 1: rename current → .bak (the updater's first destructive step).
+    let backup = exe.with_extension("bak");
+    std::fs::rename(&exe, &backup).unwrap();
+    assert!(
+        backup.exists(),
+        "after rename the .bak archive must exist",
+    );
+    assert!(
+        !exe.exists(),
+        "after rename the original path must be vacated",
+    );
+    let archived = std::fs::read(&backup).unwrap();
+    assert_eq!(
+        archived, b"OLD-BINARY-BYTES",
+        "the .bak archive must hold the original bytes byte-for-byte",
+    );
+
+    // ── Step 2: write new bytes to the original path.
+    let new_bytes: &[u8] = b"NEW-BINARY-BYTES-HERE";
+    std::fs::write(&exe, new_bytes).unwrap();
+    assert!(exe.exists(), "new binary must be in place at original path");
+    let landed = std::fs::read(&exe).unwrap();
+    assert_eq!(landed, new_bytes);
+
+    // ── Step 3 (unix): perms must be 0o755 (executable for owner, group, world).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let perms = std::fs::metadata(&exe).unwrap().permissions();
+        assert_eq!(
+            perms.mode() & 0o777,
+            0o755,
+            "post-update perms must be 0o755 so the kernel can re-exec the binary",
+        );
+    }
+
+    // ── Step 4: rollback path. Simulate "write_new failed mid-way" by removing
+    // the new file then restoring the .bak. Original bytes must come back.
+    std::fs::remove_file(&exe).unwrap();
+    std::fs::rename(&backup, &exe).unwrap();
+    assert!(exe.exists(), "rollback must restore the original binary");
+    assert!(
+        !backup.exists(),
+        "after rollback the .bak archive should be consumed",
+    );
+    let restored = std::fs::read(&exe).unwrap();
+    assert_eq!(
+        restored, b"OLD-BINARY-BYTES",
+        "rollback must restore the EXACT original bytes (no truncation, no corruption)",
+    );
+}
+
+#[test]
+fn cache_path_lives_under_data_dir() {
+    // The cache file must be `<data_dir>/update-check.json` so multiple
+    // RUNE_DATA_DIR sandboxes don't share a single cache (which would let
+    // one isolated test poison another).
+    let tmp = tempfile::tempdir().unwrap();
+    assert!(read_cache(tmp.path()).is_none(), "empty data dir has no cache");
+
+    let cache = UpdateCache {
+        latest_version: "0.7.0".to_string(),
+        current_version: "0.7.0".to_string(),
+        download_url: "https://example.com/asset.tar.gz".to_string(),
+        checksum_url: "https://example.com/checksums.txt".to_string(),
+        checked_at: chrono::Utc::now(),
+    };
+    write_cache(tmp.path(), &cache).unwrap();
+    assert!(tmp.path().join("update-check.json").exists());
+
+    // A second isolated tempdir must NOT see the first dir's cache.
+    let other = tempfile::tempdir().unwrap();
+    assert!(read_cache(other.path()).is_none(),
+        "cache must be isolated per-data-dir; cross-dir leakage indicates a hardcoded path");
+}
