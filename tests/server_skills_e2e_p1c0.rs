@@ -271,3 +271,108 @@ fn skills_lists_planted_skills_with_metadata() {
     assert_eq!(names, vec!["planted"]);
 }
 
+// ──────────────────── /api/skill/{name} ────────────────────────
+
+#[test]
+fn skill_detail_returns_skill_md_content() {
+    let srv = Server::spawn();
+    let body_text = "x".repeat(10_000);
+    let md = format!(
+        "---\nname: test-skill\ndescription: small\n---\n\n# test-skill\n\n{body_text}\n"
+    );
+    let md_len = md.len();
+    srv.plant_skill_with_md_body("test-skill", &md);
+
+    let (status, body) = http_get(&srv.url("/api/skill/test-skill"));
+    assert_eq!(status, 200, "body: {body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert!(
+        !v["skill_md_content"].as_str().unwrap().is_empty(),
+        "expected SKILL.md content"
+    );
+    assert_eq!(v["skill_md_truncated"].as_bool().unwrap(), false);
+    assert_eq!(
+        v["skill_md_size"].as_u64().unwrap(),
+        md_len as u64,
+        "skill_md_size = exact bytes"
+    );
+}
+
+#[test]
+fn skill_detail_truncates_large_skill_md() {
+    let srv = Server::spawn();
+    // 100KB body of ascii so byte len == char count and the > 60_000
+    // truncation branch is provably hit.
+    let big_body = "a".repeat(100_000);
+    let md = format!("---\nname: big\ndescription: big skill\n---\n\n{big_body}\n");
+    let md_len = md.len();
+    assert!(md_len > 60_000);
+    srv.plant_skill_with_md_body("big", &md);
+
+    let (status, body) = http_get(&srv.url("/api/skill/big"));
+    assert_eq!(status, 200, "body: {body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["skill_md_truncated"].as_bool().unwrap(), true);
+    let content = v["skill_md_content"].as_str().unwrap();
+    // Server cuts at 60_000 chars; ascii ⇒ len == char count.
+    assert!(
+        content.len() <= 60_000,
+        "truncated content must be <= 60_000 bytes, got {}",
+        content.len()
+    );
+    assert_eq!(
+        v["skill_md_size"].as_u64().unwrap(),
+        md_len as u64,
+        "original (pre-truncation) byte count surfaces in skill_md_size"
+    );
+}
+
+#[test]
+fn skill_detail_includes_related_events() {
+    let srv = Server::spawn();
+    srv.plant_skill("hot", "hot skill");
+
+    // Insert 3 router_events where 'hot' was in chosen_skills_json,
+    // ascending ts so we can verify "newest first" ordering.
+    srv.insert_router_event(1_000, &["hot", "other"]);
+    srv.insert_router_event(2_000, &["hot"]);
+    srv.insert_router_event(3_000, &["hot", "another"]);
+
+    let (status, body) = http_get(&srv.url("/api/skill/hot"));
+    assert_eq!(status, 200, "body: {body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let events = v["events"].as_array().expect("events array");
+    assert_eq!(v["events_total"].as_u64().unwrap(), 3);
+    assert_eq!(events.len(), 3);
+
+    // Each event's chosen_skills must include 'hot'.
+    for ev in events {
+        // RouterEvent serialises chosen_skills_json into the "chosen"
+        // field as a Vec<String> (see EventJson::from in src/server.rs:335).
+        let chosen = ev["chosen"].as_array().expect("chosen array");
+        let chosen_names: Vec<&str> = chosen.iter().map(|s| s.as_str().unwrap()).collect();
+        assert!(
+            chosen_names.contains(&"hot"),
+            "event {ev:?} should contain 'hot'"
+        );
+    }
+
+    // Newest-first ordering: ts descending.
+    let ts_values: Vec<i64> = events
+        .iter()
+        .map(|e| e["ts"].as_i64().expect("ts is i64"))
+        .collect();
+    let mut sorted = ts_values.clone();
+    sorted.sort_by(|a, b| b.cmp(a));
+    assert_eq!(ts_values, sorted, "events must be ts-descending");
+}
+
+#[test]
+fn skill_detail_not_found() {
+    let srv = Server::spawn();
+    srv.plant_skill("exists", "real one");
+
+    let (status, _body) = http_get(&srv.url("/api/skill/nonexistent"));
+    assert_eq!(status, 404, "missing skill ⇒ 404");
+}
+
