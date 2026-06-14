@@ -214,6 +214,7 @@ impl SkillManager {
                     usage_count: entry.usage_count,
                     last_used_at: entry.last_used_at,
                     owner_user_id: entry.owner_user_id.clone(),
+                    publish_status: "draft".to_string(),
                 };
                 self.db.insert_resource(&resource)?;
                 for group_id in &entry.group_ids {

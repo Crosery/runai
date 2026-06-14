@@ -42,6 +42,7 @@ use super::prefs::{
     api_activate_provider, api_delete_provider, api_get_prefs, api_get_settings, api_post_prefs,
     api_post_settings, api_test_provider, api_upsert_provider,
 };
+use super::private_upload::api_user_skills_upload;
 use super::recommend::{handle_feedback, handle_recommend};
 use super::skills::{
     api_skill_detail, api_skill_file, api_skill_files, api_skills, handle_skill_bundle,
@@ -275,6 +276,14 @@ pub async fn serve_with(
         .route(
             "/api/community/install/{uid}/{name}",
             post(api_community_install),
+        )
+        // PLANNING §1.4 rewrite — private skill upload entry point.
+        // Multipart name+bundle, lands at <data>/users/<uid>/skills/<name>/
+        // with publish_status='draft'. team mode only; owner mode 403.
+        // Body limit 64 MiB to match community/upload.
+        .route(
+            "/api/users/me/skills/upload",
+            post(api_user_skills_upload).layer(DefaultBodyLimit::max(64 * 1024 * 1024)),
         )
         // PLANNING §2.3 item 4 — explicitly reject the canonical
         // self-describing-API paths an automated agent would probe to map

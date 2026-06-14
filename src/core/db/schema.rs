@@ -360,6 +360,28 @@ impl Database {
             )?;
         }
 
+        if version < 17 {
+            // PLANNING §1.4 rewrite — private upload → enrich → publish-request
+            // → admin approve workflow. publish_status tracks the state for
+            // private skills (owner_user_id IS NOT NULL):
+            //   - 'draft'    fresh upload, hasn't been submitted yet
+            //   - 'pending'  user called publish-request, awaiting admin
+            //   - 'approved' admin signed off + copied to community pool
+            //   - 'rejected' admin declined, reason stored in publish_reason
+            //
+            // Public-pool rows (owner_user_id IS NULL) are stamped 'draft'
+            // and ignored by the publish workflow.
+            self.conn.execute_batch(
+                "ALTER TABLE resources ADD COLUMN publish_status TEXT NOT NULL DEFAULT 'draft';
+                 ALTER TABLE resources ADD COLUMN publish_reason TEXT;
+                 CREATE INDEX IF NOT EXISTS idx_resources_publish_status
+                   ON resources(publish_status);
+
+                 DELETE FROM schema_version;
+                 INSERT INTO schema_version VALUES (17);",
+            )?;
+        }
+
         Ok(())
     }
 }

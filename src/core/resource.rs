@@ -126,6 +126,13 @@ pub struct Resource {
     /// private to that user (physically at `<data>/users/<uid>/skills/<name>/`).
     /// Introduced in v15 schema; auto-defaulted to `None` for pre-v15 rows.
     pub owner_user_id: Option<String>,
+    /// Publish-to-community workflow state (v17 schema, PLANNING §1.4 rewrite).
+    /// Only meaningful for private skills (owner_user_id is Some). Values:
+    /// `"draft"` (fresh upload, not submitted), `"pending"` (user clicked
+    /// publish-request, awaiting admin review), `"approved"` (admin signed
+    /// off + skill copied to community pool), `"rejected"` (admin declined).
+    /// Public-pool rows are always `"draft"` and ignore this field.
+    pub publish_status: String,
 }
 
 impl Resource {

@@ -29,7 +29,7 @@ impl Database {
 
     pub fn get_group_members(&self, group_id: &str) -> Result<Vec<Resource>> {
         let mut stmt = self.conn.prepare(
-            "SELECT r.id, r.name, r.kind, r.description, r.directory, r.source_type, r.source_meta, r.installed_at, r.usage_count, r.last_used_at, r.owner_user_id
+            "SELECT r.id, r.name, r.kind, r.description, r.directory, r.source_type, r.source_meta, r.installed_at, r.usage_count, r.last_used_at, r.owner_user_id, r.publish_status
              FROM resources r JOIN group_members gm ON r.id = gm.resource_id
              WHERE gm.group_id = ?1 ORDER BY r.name"
         )?;

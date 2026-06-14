@@ -87,6 +87,7 @@ impl Scanner {
                 usage_count: 0,
                 last_used_at: None,
                 owner_user_id: None,
+                publish_status: "draft".to_string(),
             };
 
             match db.insert_resource(&resource) {
@@ -150,6 +151,7 @@ impl Scanner {
                 usage_count: 0,
                 last_used_at: None,
                 owner_user_id: None,
+                publish_status: "draft".to_string(),
             };
             let adopted_name = resource.name.clone();
             match db.insert_resource(&resource) {

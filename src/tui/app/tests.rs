@@ -46,6 +46,7 @@ fn app_with_skill(tmp: &std::path::Path) -> (App, PathBuf) {
         usage_count: 0,
         last_used_at: None,
         owner_user_id: None,
+        publish_status: "draft".to_string(),
     };
     mgr.db().insert_resource(&resource).unwrap();
 

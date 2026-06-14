@@ -5,7 +5,7 @@
 //! this file (and in `groups.rs`, which reuses `collect_resources`) lists the
 //! columns in the exact order:
 //! id, name, kind, description, directory, source_type, source_meta,
-//! installed_at, usage_count, last_used_at, owner_user_id.
+//! installed_at, usage_count, last_used_at, owner_user_id, publish_status.
 
 use super::Database;
 use crate::core::cli_target::CliTarget;
@@ -18,8 +18,8 @@ use std::path::PathBuf;
 impl Database {
     pub fn insert_resource(&self, res: &Resource) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO resources (id, name, kind, description, directory, source_type, source_meta, installed_at, usage_count, last_used_at, owner_user_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            "INSERT INTO resources (id, name, kind, description, directory, source_type, source_meta, installed_at, usage_count, last_used_at, owner_user_id, publish_status)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 description = excluded.description,
@@ -39,9 +39,23 @@ impl Database {
                 res.usage_count as i64,
                 res.last_used_at,
                 res.owner_user_id,
+                res.publish_status,
             ],
         )?;
         Ok(())
+    }
+
+    /// Set the `publish_status` of an existing private skill row. Returns
+    /// `Ok(true)` when the row exists and was updated, `Ok(false)` when no
+    /// row matched the id (callers map this to NotFound). Public-pool rows
+    /// can technically be updated too but the publish workflow ignores them.
+    /// PLANNING §1.4 rewrite.
+    pub fn set_publish_status(&self, resource_id: &str, status: &str) -> Result<bool> {
+        let n = self.conn.execute(
+            "UPDATE resources SET publish_status = ?1 WHERE id = ?2",
+            params![status, resource_id],
+        )?;
+        Ok(n > 0)
     }
 
     /// Collapse duplicate skill rows that share the same `name`.
@@ -115,7 +129,7 @@ impl Database {
 
     pub fn get_resource(&self, id: &str) -> Result<Option<Resource>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, kind, description, directory, source_type, source_meta, installed_at, usage_count, last_used_at, owner_user_id
+            "SELECT id, name, kind, description, directory, source_type, source_meta, installed_at, usage_count, last_used_at, owner_user_id, publish_status
              FROM resources WHERE id = ?1"
         )?;
 
@@ -143,6 +157,9 @@ impl Database {
             usage_count: row.get::<_, Option<i64>>(8)?.unwrap_or(0) as u64,
             last_used_at: row.get(9)?,
             owner_user_id: row.get::<_, Option<String>>(10)?,
+            publish_status: row
+                .get::<_, Option<String>>(11)?
+                .unwrap_or_else(|| "draft".into()),
         }))
     }
 
@@ -154,14 +171,14 @@ impl Database {
         let mut resources = match kind {
             Some(k) => {
                 let mut stmt = self.conn.prepare(
-                    "SELECT id, name, kind, description, directory, source_type, source_meta, installed_at, usage_count, last_used_at, owner_user_id
+                    "SELECT id, name, kind, description, directory, source_type, source_meta, installed_at, usage_count, last_used_at, owner_user_id, publish_status
                      FROM resources WHERE kind = ?1 ORDER BY name"
                 )?;
                 self.collect_resources(&mut stmt, params![k.as_str()])?
             }
             None => {
                 let mut stmt = self.conn.prepare(
-                    "SELECT id, name, kind, description, directory, source_type, source_meta, installed_at, usage_count, last_used_at, owner_user_id
+                    "SELECT id, name, kind, description, directory, source_type, source_meta, installed_at, usage_count, last_used_at, owner_user_id, publish_status
                      FROM resources ORDER BY name"
                 )?;
                 self.collect_resources(&mut stmt, params![])?
@@ -193,7 +210,7 @@ impl Database {
         let mut resources = match kind {
             Some(k) => {
                 let sql = format!(
-                    "SELECT id, name, kind, description, directory, source_type, source_meta, installed_at, usage_count, last_used_at, owner_user_id
+                    "SELECT id, name, kind, description, directory, source_type, source_meta, installed_at, usage_count, last_used_at, owner_user_id, publish_status
                      FROM resources WHERE kind = ?1 AND {owner_pred} ORDER BY name"
                 );
                 let mut stmt = self.conn.prepare(&sql)?;
@@ -206,7 +223,7 @@ impl Database {
             }
             None => {
                 let sql = format!(
-                    "SELECT id, name, kind, description, directory, source_type, source_meta, installed_at, usage_count, last_used_at, owner_user_id
+                    "SELECT id, name, kind, description, directory, source_type, source_meta, installed_at, usage_count, last_used_at, owner_user_id, publish_status
                      FROM resources WHERE {} ORDER BY name",
                     owner_pred.replace("?2", "?1")
                 );
@@ -237,7 +254,7 @@ impl Database {
         match owner {
             None => {
                 let mut stmt = self.conn.prepare(
-                    "SELECT id, name, kind, description, directory, source_type, source_meta, installed_at, usage_count, last_used_at, owner_user_id
+                    "SELECT id, name, kind, description, directory, source_type, source_meta, installed_at, usage_count, last_used_at, owner_user_id, publish_status
                      FROM resources
                      WHERE kind = ?1 AND name = ?2 AND owner_user_id IS NULL
                      ORDER BY installed_at DESC LIMIT 1",
@@ -251,7 +268,7 @@ impl Database {
                 // row so the dashboard "drill into a skill" picks the
                 // freshest copy (private installs win over an older public).
                 let mut stmt = self.conn.prepare(
-                    "SELECT id, name, kind, description, directory, source_type, source_meta, installed_at, usage_count, last_used_at, owner_user_id
+                    "SELECT id, name, kind, description, directory, source_type, source_meta, installed_at, usage_count, last_used_at, owner_user_id, publish_status
                      FROM resources
                      WHERE kind = ?1 AND name = ?2
                      ORDER BY CASE WHEN owner_user_id IS NULL THEN 1 ELSE 0 END, installed_at DESC LIMIT 1",
@@ -262,7 +279,7 @@ impl Database {
             }
             Some(uid) => {
                 let mut stmt = self.conn.prepare(
-                    "SELECT id, name, kind, description, directory, source_type, source_meta, installed_at, usage_count, last_used_at, owner_user_id
+                    "SELECT id, name, kind, description, directory, source_type, source_meta, installed_at, usage_count, last_used_at, owner_user_id, publish_status
                      FROM resources
                      WHERE kind = ?1 AND name = ?2 AND (owner_user_id IS NULL OR owner_user_id = ?3)
                      ORDER BY CASE WHEN owner_user_id IS NULL THEN 1 ELSE 0 END, installed_at DESC LIMIT 1",
@@ -300,6 +317,9 @@ impl Database {
                 usage_count: row.get::<_, Option<i64>>(8)?.unwrap_or(0) as u64,
                 last_used_at: row.get(9)?,
                 owner_user_id: row.get::<_, Option<String>>(10)?,
+                publish_status: row
+                    .get::<_, Option<String>>(11)?
+                    .unwrap_or_else(|| "draft".into()),
             })
         })?;
 

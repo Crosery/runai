@@ -42,6 +42,7 @@ impl SkillManager {
             usage_count: 0,
             last_used_at: None,
             owner_user_id: owner_user_id.map(String::from),
+            publish_status: "draft".to_string(),
         };
 
         self.db.insert_resource(&resource)?;

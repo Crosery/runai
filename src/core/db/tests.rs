@@ -13,7 +13,7 @@ fn migration_creates_schema_version() {
         .conn
         .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 16);
+    assert_eq!(version, 17);
 }
 
 #[test]
@@ -39,6 +39,7 @@ fn migration_v3_adds_usage_columns() {
         usage_count: 0,
         last_used_at: None,
         owner_user_id: None,
+        publish_status: "draft".to_string(),
     };
     db.insert_resource(&res).unwrap();
 
@@ -67,6 +68,7 @@ fn record_usage_increments_count() {
         usage_count: 0,
         last_used_at: None,
         owner_user_id: None,
+        publish_status: "draft".to_string(),
     };
     db.insert_resource(&res).unwrap();
 
@@ -108,6 +110,7 @@ fn get_usage_stats_sorted_by_count() {
             usage_count: 0,
             last_used_at: None,
             owner_user_id: None,
+            publish_status: "draft".to_string(),
         };
         db.insert_resource(&res).unwrap();
     }
@@ -148,6 +151,7 @@ fn insert_resource_preserves_usage_on_conflict() {
         usage_count: 0,
         last_used_at: None,
         owner_user_id: None,
+        publish_status: "draft".to_string(),
     };
     db.insert_resource(&res).unwrap();
 
@@ -168,6 +172,7 @@ fn insert_resource_preserves_usage_on_conflict() {
         usage_count: 0,
         last_used_at: None,
         owner_user_id: None,
+        publish_status: "draft".to_string(),
     };
     db.insert_resource(&res2).unwrap();
 
@@ -262,11 +267,12 @@ fn schema_at_v15_after_open() {
         .conn
         .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
         .unwrap();
-    // After v16 added community_skills the freshly-opened DB should report
-    // the current head, not the v15 snapshot. The name of this test is kept
-    // for git-blame continuity; the v15 tables it spot-checks below are
-    // still there post-v16, just behind a higher version number.
-    assert_eq!(version, 16);
+    // After v17 added resources.publish_status the freshly-opened DB
+    // should report the current head, not the v15 snapshot. The name of
+    // this test is kept for git-blame continuity; the v15 tables it
+    // spot-checks below are still there post-v17, just behind a higher
+    // version number.
+    assert_eq!(version, 17);
 
     // Tables must exist
     for tbl in &["users", "user_skill_library"] {
@@ -421,6 +427,7 @@ fn mk_skill(id: &str, name: &str, owner: Option<&str>) -> Resource {
         usage_count: 0,
         last_used_at: None,
         owner_user_id: owner.map(String::from),
+        publish_status: "draft".to_string(),
     }
 }
 

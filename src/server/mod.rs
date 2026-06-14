@@ -24,6 +24,7 @@ mod market_github;
 mod market_preview;
 mod middleware;
 mod prefs;
+mod private_upload;
 mod recommend;
 mod skills;
 mod state;

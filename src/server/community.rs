@@ -59,7 +59,7 @@ fn require_team_mode(state: &AppState) -> Result<(), ApiError> {
 ///   - non-empty, ≤ 64 chars
 ///   - ascii alphanumeric + `_` + `-` + `.`
 ///   - no leading dot (would hide the dir on unix listings)
-fn is_safe_skill_name(s: &str) -> bool {
+pub(super) fn is_safe_skill_name(s: &str) -> bool {
     if s.is_empty() || s.len() > 64 {
         return false;
     }
@@ -89,7 +89,7 @@ fn tar_gz_dir(dir: &std::path::Path, archive_prefix: &str) -> Result<Vec<u8>> {
 /// Extract a gzipped tar into `dest`. Errors propagate. The caller is
 /// responsible for verifying the extracted content (e.g. presence of
 /// `SKILL.md`).
-fn extract_targz(bytes: &[u8], dest: &std::path::Path) -> Result<()> {
+pub(super) fn extract_targz(bytes: &[u8], dest: &std::path::Path) -> Result<()> {
     let gz = flate2::read::GzDecoder::new(bytes);
     let mut archive = tar::Archive::new(gz);
     archive
@@ -123,7 +123,10 @@ fn find_skill_root(dest: &std::path::Path) -> Option<std::path::PathBuf> {
 /// subdirectory (the common case — the user `tar -czf bundle.tar.gz <name>/`).
 /// If the SKILL.md lives one level down, we move that subdir's contents up
 /// so the on-disk layout matches what every other code path expects.
-fn move_skill_payload(staging: &std::path::Path, final_dir: &std::path::Path) -> Result<()> {
+pub(super) fn move_skill_payload(
+    staging: &std::path::Path,
+    final_dir: &std::path::Path,
+) -> Result<()> {
     let skill_root = find_skill_root(staging)
         .ok_or_else(|| anyhow::anyhow!("uploaded archive does not contain SKILL.md"))?;
     if final_dir.exists() {

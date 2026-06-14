@@ -51,6 +51,7 @@ impl SkillManager {
                     usage_count: 0,
                     last_used_at: None,
                     owner_user_id: None,
+                    publish_status: "draft".to_string(),
                 });
             }
 
@@ -87,6 +88,7 @@ impl SkillManager {
                         usage_count: 0,
                         last_used_at: None,
                         owner_user_id: None,
+                        publish_status: "draft".to_string(),
                     });
                 }
             }

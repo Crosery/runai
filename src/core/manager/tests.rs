@@ -996,6 +996,7 @@ fn list_resources_deduplicates_by_name() {
             usage_count: 0,
             last_used_at: None,
             owner_user_id: None,
+            publish_status: "draft".to_string(),
         };
         mgr.db().insert_resource(&res).unwrap();
 
@@ -1262,6 +1263,7 @@ fn status_counts_dangling_symlink_as_enabled() {
                 usage_count: 0,
                 last_used_at: None,
                 owner_user_id: None,
+                publish_status: "draft".to_string(),
             })
             .unwrap();
 
@@ -1305,6 +1307,7 @@ fn enable_resource_clobbers_dangling_symlink() {
                 usage_count: 0,
                 last_used_at: None,
                 owner_user_id: None,
+                publish_status: "draft".to_string(),
             })
             .unwrap();
 
@@ -1349,6 +1352,7 @@ fn dedupe_skills_by_name_keeps_newest_and_redirects_groups() {
                     usage_count: 0,
                     last_used_at: None,
                     owner_user_id: None,
+                    publish_status: "draft".to_string(),
                 })
                 .unwrap();
         }
