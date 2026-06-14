@@ -1,9 +1,9 @@
   // ------------------------------------------------------------------
-  //  PLANNING §1.7 — Help tab user manual
+  //  PLANNING §1.7 — Setup tab (命令清单 + 一键复制)
   // ------------------------------------------------------------------
   // The dashboard avoids external JS deps (single-binary contract), so
   // this is a minimal Markdown → HTML converter scoped to the subset of
-  // syntax used in web/help.md: H1/H2/H3, paragraphs, fenced code blocks
+  // syntax used in web/setup.md: H1/H2/H3, paragraphs, fenced code blocks
   // (```), inline code (`x`), bold (**x**), unordered (`- `) + ordered
   // (`1. `) lists, pipe tables, horizontal rules (`---`).
   //
@@ -11,7 +11,7 @@
   // inject script tags via the rendered output, even though the source
   // is server-controlled today.
 
-  function helpMdToHtml(md) {
+  function setupMdToHtml(md) {
     const lines = md.split('\n');
     const out = [];
     let inCode = false;
@@ -141,18 +141,67 @@
     return out.join('\n');
   }
 
-  let helpLoaded = false;
-  async function loadHelp() {
-    if (helpLoaded) return;
-    const el = $('#help-content');
+  let setupLoaded = false;
+  async function loadSetup() {
+    if (setupLoaded) return;
+    const el = $('#setup-content');
     if (!el) return;
     try {
-      const res = await fetch('/help.md', { credentials: 'same-origin' });
+      const res = await fetch('/setup.md', { credentials: 'same-origin' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const md = await res.text();
-      el.innerHTML = helpMdToHtml(md);
-      helpLoaded = true;
+      el.innerHTML = setupMdToHtml(md);
+      attachCopyButtons(el);
+      setupLoaded = true;
     } catch (e) {
-      el.innerHTML = `<p class="muted">手册加载失败:${escapeHTML(e.message)}</p>`;
+      el.innerHTML = `<p class="muted">Setup 加载失败:${escapeHTML(e.message)}</p>`;
     }
+  }
+
+  // Inject a copy button into every `<pre><code>` block so users can grab
+  // the command without selecting text. Uses the async clipboard API; falls
+  // back to `document.execCommand('copy')` on the rare browser that still
+  // lacks it (older Safari in non-secure contexts). The button label flips
+  // to a success state for 1.5s before reverting so the click registers
+  // visibly without a modal toast.
+  function attachCopyButtons(container) {
+    container.querySelectorAll('pre').forEach((pre) => {
+      if (pre.querySelector('.copy-btn')) return;
+      const code = pre.querySelector('code');
+      if (!code) return;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'copy-btn';
+      btn.textContent = '复制';
+      btn.addEventListener('click', async (ev) => {
+        ev.stopPropagation();
+        const text = code.innerText;
+        try {
+          if (navigator.clipboard && window.isSecureContext) {
+            await navigator.clipboard.writeText(text);
+          } else {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.left = '-9999px';
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+          }
+          btn.textContent = '已复制';
+          btn.classList.add('copied');
+          setTimeout(() => {
+            btn.textContent = '复制';
+            btn.classList.remove('copied');
+          }, 1500);
+        } catch (e) {
+          btn.textContent = '复制失败';
+          setTimeout(() => {
+            btn.textContent = '复制';
+          }, 1500);
+        }
+      });
+      pre.appendChild(btn);
+    });
   }

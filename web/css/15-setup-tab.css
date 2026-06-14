@@ -1,13 +1,13 @@
 /* ──────────────────────────────────────────────────────────────────────
- *  PLANNING §1.7 — Help tab user manual
+ *  PLANNING §1.7 — Setup tab (命令清单)
  *
- *  Markdown rendered to HTML inside `.help-content`. Typography aims for
+ *  Markdown rendered to HTML inside `.setup-content`. Typography aims for
  *  comfortable long-form reading (75–85ch line length) while staying
  *  inside the dashboard's overall mono/serif rhythm. Code blocks reuse
  *  the same monospace family the rest of the panels do.
  * ──────────────────────────────────────────────────────────────────── */
 
-.help-content {
+.setup-content {
   max-width: 85ch;
   font-size: 14px;
   line-height: 1.7;
@@ -15,14 +15,14 @@
   padding-bottom: 64px;
 }
 
-.help-content h1 {
+.setup-content h1 {
   font-size: 28px;
   font-weight: 500;
   margin: 0 0 24px;
   color: var(--ink);
 }
 
-.help-content h2 {
+.setup-content h2 {
   font-size: 20px;
   font-weight: 500;
   margin: 40px 0 12px;
@@ -31,12 +31,12 @@
   color: var(--ink);
 }
 
-.help-content h2:first-of-type {
+.setup-content h2:first-of-type {
   border-top: none;
   padding-top: 0;
 }
 
-.help-content h3 {
+.setup-content h3 {
   font-size: 15px;
   font-family: var(--mono);
   text-transform: uppercase;
@@ -45,28 +45,28 @@
   margin: 24px 0 12px;
 }
 
-.help-content p {
+.setup-content p {
   margin: 12px 0;
   color: var(--ink-2);
 }
 
-.help-content strong {
+.setup-content strong {
   color: var(--ink);
   font-weight: 500;
 }
 
-.help-content ul,
-.help-content ol {
+.setup-content ul,
+.setup-content ol {
   margin: 12px 0;
   padding-left: 24px;
 }
 
-.help-content li {
+.setup-content li {
   margin: 6px 0;
   color: var(--ink-2);
 }
 
-.help-content code {
+.setup-content code {
   font-family: var(--mono);
   font-size: 12px;
   background: rgba(0, 0, 0, 0.04);
@@ -76,16 +76,46 @@
   color: var(--ink);
 }
 
-.help-content pre {
+.setup-content pre {
   background: #f6f8fa;
   border: 1px solid var(--line);
   border-radius: 4px;
   padding: 12px 14px;
+  padding-right: 64px;
   overflow-x: auto;
   margin: 12px 0;
+  position: relative;
 }
 
-.help-content pre code {
+/* Per-block copy button — appears top-right of every fenced code block. */
+.setup-content pre .copy-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 4px 10px;
+  background: var(--bg, #fff);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  color: var(--ink-2);
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+
+.setup-content pre .copy-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.setup-content pre .copy-btn.copied {
+  color: #1a7f37;
+  border-color: #1a7f37;
+}
+
+.setup-content pre code {
   background: none;
   border: none;
   padding: 0;
@@ -94,22 +124,22 @@
   white-space: pre;
 }
 
-.help-content table {
+.setup-content table {
   width: 100%;
   border-collapse: collapse;
   margin: 16px 0;
   font-size: 13px;
 }
 
-.help-content th,
-.help-content td {
+.setup-content th,
+.setup-content td {
   text-align: left;
   padding: 8px 12px;
   border-bottom: 1px solid var(--line);
   vertical-align: top;
 }
 
-.help-content th {
+.setup-content th {
   font-family: var(--mono);
   font-size: 11px;
   text-transform: uppercase;
@@ -118,31 +148,31 @@
   background: rgba(0, 0, 0, 0.025);
 }
 
-.help-content hr {
+.setup-content hr {
   border: none;
   border-top: 1px solid var(--line);
   margin: 32px 0;
 }
 
-.help-content a {
+.setup-content a {
   color: var(--accent);
   text-decoration: none;
   border-bottom: 1px solid transparent;
   transition: border-bottom-color 0.18s;
 }
 
-.help-content a:hover {
+.setup-content a:hover {
   border-bottom-color: var(--accent);
 }
 
-[data-theme="dark"] .help-content pre {
+[data-theme="dark"] .setup-content pre {
   background: rgba(255, 255, 255, 0.04);
 }
 
-[data-theme="dark"] .help-content code {
+[data-theme="dark"] .setup-content code {
   background: rgba(255, 255, 255, 0.06);
 }
 
-[data-theme="dark"] .help-content th {
+[data-theme="dark"] .setup-content th {
   background: rgba(255, 255, 255, 0.03);
 }

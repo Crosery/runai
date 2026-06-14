@@ -9,7 +9,7 @@
     if (h === 'settings') return { view: 'settings' };
     if (h === 'admin') return { view: 'admin' };
     if (h === 'market') return { view: 'market' };
-    if (h === 'help') return { view: 'help' };
+    if (h === 'setup') return { view: 'setup' };
     const m = h.match(/^skill\/(.+)$/);
     if (m) return { view: 'detail', name: decodeURIComponent(m[1]) };
     return { view: 'overview' };
@@ -30,7 +30,7 @@
     else if (route === 'settings') navRoute = 'settings';
     else if (route === 'admin') navRoute = 'admin';
     else if (route === 'market') navRoute = 'market';
-    else if (route === 'help') navRoute = 'help';
+    else if (route === 'setup') navRoute = 'setup';
     else navRoute = '';
     const target = document.querySelector(`.side .nav-item[data-route="${navRoute}"]`);
     if (target) target.classList.add('active');
@@ -84,13 +84,13 @@
         setActiveNav('market');
         loadMarket();
         break;
-      case 'help':
-        // PLANNING §1.7: Help tab is open to all viewers (logged-in or
+      case 'setup':
+        // PLANNING §1.7: Setup tab is open to all viewers (logged-in or
         // not) — owner mode, team-mode admin, team-mode user, anonymous
         // pre-login all need to read it to know how to install / upload.
-        setActivePane('help');
-        setActiveNav('help');
-        loadHelp();
+        setActivePane('setup');
+        setActiveNav('setup');
+        loadSetup();
         break;
       case 'overview':
       default:

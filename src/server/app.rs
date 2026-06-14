@@ -49,7 +49,7 @@ use super::skills::{
 };
 use super::state::AppState;
 use super::telemetry::{api_event_by_id, api_events, api_summary, api_timeline};
-use super::{APP_CSS, APP_JS, HELP_MD, INDEX_HTML};
+use super::{APP_CSS, APP_JS, INDEX_HTML, SETUP_MD};
 
 /// Result of `ensure_running`. `AlreadyRunning` is the hot path for repeat
 /// invocations (hook / SessionStart); `Started` happens once per machine boot.
@@ -161,9 +161,10 @@ pub async fn serve_with(
         .route("/", get(serve_index))
         .route("/app.js", get(serve_app_js))
         .route("/app.css", get(serve_app_css))
-        // PLANNING §1.7 Help tab content. Plain markdown; the dashboard
-        // JS fetches it on first nav to #/help and renders inline.
-        .route("/help.md", get(serve_help_md))
+        // PLANNING §1.7 Setup tab content. Plain markdown; the dashboard
+        // JS fetches it on first nav to #/setup, renders inline, attaches
+        // per-block copy buttons so users can grab CLI commands directly.
+        .route("/setup.md", get(serve_setup_md))
         .route("/api/summary", get(api_summary))
         .route("/api/timeline", get(api_timeline))
         .route("/api/events", get(api_events))
@@ -424,8 +425,8 @@ async fn serve_app_js() -> Response {
 async fn serve_app_css() -> Response {
     static_response(APP_CSS, "text/css; charset=utf-8")
 }
-async fn serve_help_md() -> Response {
-    static_response(HELP_MD, "text/markdown; charset=utf-8")
+async fn serve_setup_md() -> Response {
+    static_response(SETUP_MD, "text/markdown; charset=utf-8")
 }
 
 fn static_response(body: &'static str, content_type: &'static str) -> Response {
