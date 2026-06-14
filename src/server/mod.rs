@@ -33,6 +33,10 @@ mod tls;
 pub use app::{EnsureStatus, ensure_running, serve, serve_with};
 
 const INDEX_HTML: &str = include_str!("../../web/index.html");
+/// Help tab content (PLANNING §1.7). Authored as plain markdown so the
+/// content stays version-controlled + diffable; the JS in `18-help-tab.js`
+/// fetches `/help.md` and renders to HTML on first navigation to `#/help`.
+const HELP_MD: &str = include_str!("../../web/help.md");
 // app.js / app.css are split into safe-boundary parts under web/{js,css}/.
 // concat! over include_str! in sorted order rebuilds the exact byte stream the
 // dashboard used to serve — the served /app.js and /app.css routes stay
@@ -55,6 +59,7 @@ const APP_JS: &str = concat!(
     include_str!("../../web/js/14-market-list.js"),
     include_str!("../../web/js/15-market-detail-github.js"),
     include_str!("../../web/js/17-community-market.js"),
+    include_str!("../../web/js/18-help-tab.js"),
     include_str!("../../web/js/16-boot.js"),
 );
 const APP_CSS: &str = concat!(
@@ -72,6 +77,7 @@ const APP_CSS: &str = concat!(
     include_str!("../../web/css/12-community-market.css"),
     include_str!("../../web/css/13-owner-mode.css"),
     include_str!("../../web/css/14-userlib-admin.css"),
+    include_str!("../../web/css/15-help-tab.css"),
 );
 /// Client-side install / uninstall scripts. The server serves these from
 /// GET /install and GET /uninstall after replacing the `{SERVER_URL}`

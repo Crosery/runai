@@ -75,6 +75,13 @@
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
       if (e.key === 'o') { location.hash = '#/'; }
       else if (e.key === 'l') { location.hash = '#/skills'; }
+      else if (e.key === 'm') { location.hash = '#/market'; }
+      else if (e.key === 'a') { location.hash = '#/activity'; }
+      else if (e.key === 's') { location.hash = '#/settings'; }
+      else if (e.key === 'h') { location.hash = '#/help'; }
+      else if (e.key === 'd' && account.me && account.me.is_admin) {
+        location.hash = '#/admin';
+      }
     });
   }
 
