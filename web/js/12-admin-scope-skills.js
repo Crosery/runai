@@ -231,3 +231,160 @@
     }
   }
 
+  // ------------------------------------------------------------------
+  //  PLANNING §1.6 Model B C6b — admin userlib sub-tab (browse only)
+  // ------------------------------------------------------------------
+  function fmtRelativeTime(tsSec) {
+    if (!tsSec) return '—';
+    const diff = (Date.now() / 1000) - tsSec;
+    if (diff < 60) return '刚刚';
+    if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`;
+    if (diff < 2592000) return `${Math.floor(diff / 86400)} 天前`;
+    const d = new Date(tsSec * 1000);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+
+  async function loadAdminUserlib() {
+    if (!account.me || !account.me.is_admin) return;
+    const listEl = $('#userlib-list');
+    const statusEl = $('#userlib-status');
+    const countEl = $('#lib-sub-userlib-count');
+    if (!listEl) return;
+    statusEl.textContent = '加载中 …';
+    listEl.innerHTML = '';
+    try {
+      const data = await api('GET', '/api/admin/userlib');
+      if (countEl) countEl.textContent = data.total;
+      statusEl.textContent = `共 ${data.total} 个非 admin 用户 · 排序: 最近活跃降`;
+      const head = document.createElement('div');
+      head.className = 'userlib-row head';
+      head.innerHTML = '<div>用户名</div><div>私有</div><div>导入公共</div><div>上次活跃</div><div></div>';
+      listEl.appendChild(head);
+      for (const u of data.items) {
+        const row = document.createElement('div');
+        row.className = 'userlib-row data' + (u.disabled ? ' disabled' : '');
+        row.dataset.uid = u.user_id;
+        row.innerHTML = `
+          <div class="uname">${escapeHTML(u.username)}${u.disabled ? '<span class="badge-disabled">DISABLED</span>' : ''}</div>
+          <div class="num">${u.private_count}</div>
+          <div class="num">${u.imported_count}</div>
+          <div class="when">${escapeHTML(fmtRelativeTime(u.last_active_ts))}</div>
+          <div class="open-arrow">›</div>
+        `;
+        row.addEventListener('click', () => openUserlibDetail(u.user_id));
+        listEl.appendChild(row);
+      }
+      if (data.items.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'muted userlib-empty';
+        empty.textContent = '还没有非 admin 用户注册';
+        listEl.appendChild(empty);
+      }
+    } catch (e) {
+      statusEl.textContent = `加载失败:${e.message}`;
+    }
+  }
+
+  async function openUserlibDetail(userId) {
+    const detail = $('#userlib-detail');
+    const list = $('#userlib-list');
+    const status = $('#userlib-status');
+    if (!detail) return;
+    list.classList.add('hide');
+    status.classList.add('hide');
+    detail.classList.remove('hide');
+    detail.setAttribute('aria-hidden', 'false');
+    $('#userlib-detail-name').textContent = '加载中 …';
+    $('#userlib-detail-meta').textContent = '';
+    try {
+      const d = await api('GET', `/api/admin/userlib/${encodeURIComponent(userId)}`);
+      $('#userlib-detail-name').textContent = d.username + (d.disabled ? ' (已禁用)' : '');
+      $('#userlib-detail-meta').textContent = `${d.recent_events_count} 次调用 · 上次活跃 ${fmtRelativeTime(d.last_active_ts)}`;
+      renderUserlibSection('private', d.private);
+      renderUserlibSection('imported', d.imported);
+    } catch (e) {
+      $('#userlib-detail-name').textContent = '加载失败';
+      $('#userlib-detail-meta').textContent = e.message;
+    }
+  }
+
+  function renderUserlibSection(kind, items) {
+    const rowsEl = $(`#userlib-detail-${kind}`);
+    const emptyEl = $(`#userlib-detail-${kind}-empty`);
+    const countEl = $(`#userlib-detail-${kind}-count`);
+    if (!rowsEl) return;
+    rowsEl.innerHTML = '';
+    if (countEl) countEl.textContent = items.length;
+    if (items.length === 0) {
+      if (emptyEl) emptyEl.hidden = false;
+      return;
+    }
+    if (emptyEl) emptyEl.hidden = true;
+    for (const s of items) {
+      const row = document.createElement('div');
+      row.className = 'userlib-skill-row';
+      row.innerHTML = `
+        <div class="nm">${escapeHTML(s.name)}</div>
+        <div class="desc" title="${escapeHTML(s.description || '')}">${escapeHTML(s.description || '—')}</div>
+        <div class="used">${s.usage_count} 次</div>
+      `;
+      rowsEl.appendChild(row);
+    }
+  }
+
+  function closeUserlibDetail() {
+    $('#userlib-detail')?.classList.add('hide');
+    $('#userlib-list')?.classList.remove('hide');
+    $('#userlib-status')?.classList.remove('hide');
+  }
+
+  // Sub-tab switcher between 「已安装」 and 「用户库」 panels.
+  // Toggles ad-hoc instead of using a `.lib-pane` wrapper because the
+  // installed view is the original markup that has no wrapper — adding
+  // one would shift every related selector. The element list is the
+  // authoritative set of "installed view" chrome that has to flip.
+  const INSTALLED_VIEW_SELECTORS = [
+    '#library-scope-bar',
+    '.library-filter',
+    '.skill-rows-head',
+    '#skill-rows',
+    '#skills-empty',
+  ];
+
+  function switchLibrarySubTab(sub) {
+    document.querySelectorAll('.lib-sub').forEach((a) => {
+      a.classList.toggle('active', a.dataset.sub === sub);
+    });
+    const userlibPanel = $('#userlib-panel');
+    if (sub === 'userlib') {
+      INSTALLED_VIEW_SELECTORS.forEach((s) =>
+        document.querySelectorAll(s).forEach((e) => e.classList.add('hide')),
+      );
+      userlibPanel?.classList.remove('hide');
+      userlibPanel?.setAttribute('aria-hidden', 'false');
+      closeUserlibDetail();
+      loadAdminUserlib();
+    } else {
+      INSTALLED_VIEW_SELECTORS.forEach((s) =>
+        document.querySelectorAll(s).forEach((e) => e.classList.remove('hide')),
+      );
+      userlibPanel?.classList.add('hide');
+      userlibPanel?.setAttribute('aria-hidden', 'true');
+    }
+  }
+
+  function bindLibrarySubTabs() {
+    document.querySelectorAll('.lib-sub[data-sub]').forEach((a) => {
+      a.addEventListener('click', (ev) => {
+        if (a.dataset.sub === 'userlib') {
+          ev.preventDefault();
+          switchLibrarySubTab('userlib');
+        } else if (a.dataset.sub === 'installed') {
+          switchLibrarySubTab('installed');
+        }
+      });
+    });
+    $('#userlib-back')?.addEventListener('click', closeUserlibDetail);
+  }
+

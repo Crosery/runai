@@ -77,6 +77,13 @@
     await refreshPrefs();
     renderSettingsUser();
     renderScopeBar();
+    // PLANNING §1.6 Model B: prime the admin userlib sub-tab count so it
+    // reads "用户库 N" before the admin first clicks the tab. Skip in
+    // owner mode (synthetic owner is admin but the sub-tab is hidden by
+    // CSS) so we don't fire a wasted /api/admin/userlib request.
+    if (account.me && account.me.is_admin && account.me.mode !== 'owner') {
+      if (typeof loadAdminUserlib === 'function') loadAdminUserlib();
+    }
     // re-render rows so the in-library "●" indicator + selection state
     // reflect the freshly-loaded library set.
     if (typeof renderSkillsRows === 'function' && skillsState.cache.length) {

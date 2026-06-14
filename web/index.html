@@ -284,6 +284,10 @@
 
           <div class="library-sub">
             <a href="#/skills" class="lib-sub active" data-sub="installed">已安装<em id="lib-sub-installed-count">—</em></a>
+            <!-- PLANNING §1.6 Model B: admin-only userlib sub-tab.
+                 Default hidden via CSS; body.is-admin (non-owner mode)
+                 unhides it. Counts non-admin users. -->
+            <a href="#" class="lib-sub admin-only" data-sub="userlib">用户库<em id="lib-sub-userlib-count">—</em></a>
           </div>
 
           <!-- v15 multi-user: scope filter + select-mode + library quick actions (requires login). -->
@@ -341,6 +345,36 @@
             </div>
             <div class="skill-rows" id="skill-rows"></div>
             <div class="skills-empty muted" id="skills-empty" hidden>没有匹配的 skill</div>
+          </div>
+
+          <!-- PLANNING §1.6 Model B C6b — admin userlib panel.
+               Two-layer view: layer 1 lists every non-admin user with
+               headline stats (private / imported / last_active); click
+               a user to drill into layer 2 (their private + imported
+               skill list). Default hide; JS toggles via sub-tab click. -->
+          <div id="userlib-panel" class="hide" aria-hidden="true">
+            <div class="userlib-toolbar muted">
+              <span id="userlib-status">加载中 …</span>
+            </div>
+            <div class="userlib-list" id="userlib-list"></div>
+
+            <div id="userlib-detail" class="hide" aria-hidden="true">
+              <div class="userlib-detail-head">
+                <button type="button" class="btn-small" id="userlib-back">← 返回用户列表</button>
+                <h2 id="userlib-detail-name">—</h2>
+                <span class="muted" id="userlib-detail-meta">—</span>
+              </div>
+              <div class="userlib-detail-section">
+                <h3>私有 skill <em id="userlib-detail-private-count">0</em></h3>
+                <div class="userlib-skill-rows" id="userlib-detail-private"></div>
+                <div class="muted userlib-empty" id="userlib-detail-private-empty" hidden>该用户没有私有 skill</div>
+              </div>
+              <div class="userlib-detail-section">
+                <h3>导入公共 skill <em id="userlib-detail-imported-count">0</em></h3>
+                <div class="userlib-skill-rows" id="userlib-detail-imported"></div>
+                <div class="muted userlib-empty" id="userlib-detail-imported-empty" hidden>该用户没有导入任何公共 skill</div>
+              </div>
+            </div>
           </div>
         </section>
 

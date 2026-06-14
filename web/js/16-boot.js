@@ -8,6 +8,7 @@
   bindAccountUI();
   bindMarketUI();
   bindCommunityUI();
+  bindLibrarySubTabs();
   refreshMe();
   applyRoute();
   startPolling();

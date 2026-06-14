@@ -71,6 +71,7 @@ const APP_CSS: &str = concat!(
     include_str!("../../web/css/11-v15-market-github.css"),
     include_str!("../../web/css/12-community-market.css"),
     include_str!("../../web/css/13-owner-mode.css"),
+    include_str!("../../web/css/14-userlib-admin.css"),
 );
 /// Client-side install / uninstall scripts. The server serves these from
 /// GET /install and GET /uninstall after replacing the `{SERVER_URL}`
