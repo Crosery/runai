@@ -457,13 +457,23 @@ async fn serve_setup_md(State(state): State<Arc<AppState>>, headers: HeaderMap) 
 }
 
 /// Strip the `<!-- runai:<drop_audience>-start --> ... <!-- end -->` block
-/// PLUS every other `<!-- runai:* -->` marker line that survived (keep-side
-/// markers), so the rendered markdown never shows raw HTML comments. The
-/// matcher is line-anchored (trimmed) — a marker buried in a paragraph
-/// wouldn't be a real marker anyway.
+/// PLUS the matching keep-side audience marker comment lines (user-only
+/// or admin-only) so the rendered markdown shows neither raw side's
+/// comments. Other marker families (notably `<!-- runai:os-* -->`) are
+/// LEFT in place because the client (18-setup-tab.js) does its own OS-
+/// aware strip based on `navigator.userAgent` — the server doesn't see
+/// that signal. The matcher is line-anchored (trimmed); a marker buried
+/// in a paragraph wouldn't be a real marker anyway.
 fn strip_setup_marker_section(md: &str, drop_audience: &str) -> String {
     let drop_begin = format!("<!-- runai:{drop_audience}-start -->");
     let drop_end = format!("<!-- runai:{drop_audience}-end -->");
+    let keep_audience = match drop_audience {
+        "user-only" => "admin-only",
+        "admin-only" => "user-only",
+        _ => "",
+    };
+    let keep_begin = format!("<!-- runai:{keep_audience}-start -->");
+    let keep_end = format!("<!-- runai:{keep_audience}-end -->");
     let mut out = String::with_capacity(md.len());
     let mut in_drop = false;
     for line in md.split('\n') {
@@ -479,7 +489,7 @@ fn strip_setup_marker_section(md: &str, drop_audience: &str) -> String {
         if in_drop {
             continue;
         }
-        if t.starts_with("<!-- runai:") && t.ends_with("-->") {
+        if !keep_audience.is_empty() && (t == keep_begin || t == keep_end) {
             continue;
         }
         out.push_str(line);

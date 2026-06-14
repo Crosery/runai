@@ -4,7 +4,9 @@
 
 <!-- runai:user-only-start -->
 
-## 装客户端 + 配 hook(用户必装)
+<!-- runai:os-posix-only-start -->
+
+## 装客户端 + 配 hook(Mac / Linux)
 
 把你这台 Claude Code 接到 runai 服务器,自动写 `~/.runai-identity` + 配 UserPromptSubmit hook。脚本会先去 `~/.runai-identity` 复用 api_key,没有再 prompt 注册 / 登录。
 
@@ -27,6 +29,36 @@ bash <(curl -fsSL {SERVER_URL}/install)
 ```
 
 > 提示:不要用 `curl ... | bash` 形式 — pipe 占用 stdin 后 prompt 拿不到键盘,会报 `username cannot be empty`。如果一定要用 pipe,必须配 `RUNAI_USERNAME=` / `RUNAI_PASSWORD=` 环境变量。
+
+<!-- runai:os-posix-only-end -->
+
+<!-- runai:os-windows-only-start -->
+
+## 装客户端 + 配 hook(Windows / PowerShell)
+
+把你这台 Claude Code 接到 runai 服务器,自动写 `~\.runai-identity` + 配 UserPromptSubmit hook。脚本会先复用 `~\.runai-identity` 的 api_key,没有再 prompt 注册 / 登录。
+
+首次装(会提示输入用户名 + 密码):
+
+```powershell
+iwr -useb {SERVER_URL}/install.ps1 | iex
+```
+
+非交互(CI / 脚本 / 已有账号):
+
+```powershell
+$env:RUNAI_USERNAME='your-name'; $env:RUNAI_PASSWORD='your-pw'; iwr -useb {SERVER_URL}/install.ps1 | iex
+```
+
+重装 / 换机(`~\.runai-identity` 还在直接复用):
+
+```powershell
+iwr -useb {SERVER_URL}/install.ps1 | iex
+```
+
+> 提示:`iwr` = `Invoke-WebRequest`,`iex` = `Invoke-Expression`。需要 PowerShell 5+(Win10 / Win11 自带)。
+
+<!-- runai:os-windows-only-end -->
 
 ## 装 skill 到「我的库」
 

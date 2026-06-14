@@ -217,6 +217,51 @@
     });
   }
 
+  // OS detection — coarse but reliable for picking install command
+  // syntax. Windows -> PowerShell, everything else -> POSIX shell
+  // (Mac / Linux / *BSD / WSL). The detection happens client-side AFTER
+  // fetch because the same /setup.md body serves every client; we strip
+  // the non-matching OS block before rendering.
+  function detectClientOS() {
+    const ua = (navigator.userAgent || '').toLowerCase();
+    const plat = ((navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || '').toLowerCase();
+    if (ua.includes('windows') || plat.includes('win')) return 'windows';
+    return 'posix';
+  }
+
+  // Strip every <!-- runai:<aud>-start --> ... <!-- ...-end --> block
+  // where <aud> is in dropList, plus every leftover keep-side marker
+  // comment line so rendered markdown never shows raw HTML comments.
+  // Mirror of the server-side strip_setup_marker_section in app.rs.
+  function stripOsMarkerBlocks(md, dropList) {
+    const dropStarts = new Set(dropList.map((a) => `<!-- runai:${a}-start -->`));
+    const dropEnds = new Set(dropList.map((a) => `<!-- runai:${a}-end -->`));
+    const lines = md.split('\n');
+    const out = [];
+    let inDrop = false;
+    let activeEnd = null;
+    for (const line of lines) {
+      const t = line.trim();
+      if (!inDrop && dropStarts.has(t)) {
+        inDrop = true;
+        // Find matching end marker by replacing -start- with -end-
+        activeEnd = t.replace('-start -->', '-end -->');
+        continue;
+      }
+      if (inDrop) {
+        if (t === activeEnd || dropEnds.has(t)) {
+          inDrop = false;
+          activeEnd = null;
+        }
+        continue;
+      }
+      // Strip any surviving OS marker line (the keep-side has them too).
+      if (/^<!-- runai:os-[a-z]+-only-(start|end) -->$/.test(t)) continue;
+      out.push(line);
+    }
+    return out.join('\n');
+  }
+
   // No cache: the server tailors /setup.md per user (admin vs user vs
   // anonymous) AND substitutes {SERVER_URL} per request, so a stale copy
   // after login/logout would show the wrong commands. Re-fetching on
@@ -228,7 +273,10 @@
     try {
       const res = await fetch('/setup.md', { credentials: 'same-origin' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const md = await res.text();
+      let md = await res.text();
+      const os = detectClientOS();
+      const drop = os === 'windows' ? ['os-posix-only'] : ['os-windows-only'];
+      md = stripOsMarkerBlocks(md, drop);
       el.innerHTML = setupMdToHtml(md);
       highlightCodeBlocks(el);
       attachCopyButtons(el);

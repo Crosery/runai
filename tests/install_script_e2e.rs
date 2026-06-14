@@ -262,19 +262,23 @@ fn non_interactive_install_registers_user_via_env_vars() {
         .expect("install body");
     assert!(body.contains("/auth/login"));
 
-    // `guess_server_url` rewrites a loopback Host header to the box's
-    // LAN IPv4 so teammate-facing scripts get a URL their machine can
-    // reach. In the test runner the server is only bound to 127.0.0.1,
-    // so we have to point the script back at the actual loopback URL
-    // before executing — without this, `curl http://<LAN-IP>:<port>`
-    // hangs/fails. The substitution stays on a stable anchor (the
-    // `SERVER_URL=` assignment near the top of the template) so a
-    // future docstring rewrite doesn't accidentally match.
+    // Install script substitution switched from `guess_server_url`
+    // (loopback → LAN IPv4) to `request_origin` (verbatim Host header),
+    // so when the test curls 127.0.0.1:port the rendered SERVER_URL is
+    // already the loopback URL — no rewrite needed. We assert the new
+    // contract directly here AND keep `rewrite_server_url` available for
+    // sites that may still need fixups (it's a no-op when the URL already
+    // matches).
     let loopback_url = server.base_url();
+    assert!(
+        body.contains(&format!("SERVER_URL=\"{loopback_url}\"")),
+        "install script must echo request origin (loopback) into SERVER_URL; got body excerpt:\n{}",
+        body.lines().take(30).collect::<Vec<_>>().join("\n")
+    );
     let script_body = rewrite_server_url(&body, &loopback_url);
     assert!(
         script_body.contains(&format!("SERVER_URL=\"{loopback_url}\"")),
-        "test rewrite_server_url failed: script body did not contain expected loopback URL",
+        "post-rewrite SERVER_URL guard",
     );
 
     // Persist to a temp file and run under a fully isolated HOME so this

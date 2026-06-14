@@ -248,6 +248,37 @@ fn team_mode_anonymous_serves_user_setup() {
     assert!(!body.contains("启动 server"));
 }
 
+// ─── server keeps BOTH OS blocks; JS strips one client-side ──────────
+
+#[test]
+fn setup_md_server_keeps_both_os_blocks() {
+    // OS-aware stripping (Mac/Linux vs Windows install commands) lives in
+    // the dashboard JS — `navigator.userAgent` is the source of truth and
+    // the server doesn't see it. So the wire body must contain BOTH OS
+    // blocks plus the marker comment lines that tell the client which
+    // block to drop. Mirror of the `<!-- runai:os-* -->` contract.
+    let s = spawn_server("team");
+    let body = http()
+        .get(format!("{}/setup.md", s.base_url()))
+        .send()
+        .unwrap()
+        .text()
+        .unwrap();
+    assert!(body.contains("Mac / Linux"), "missing posix OS block");
+    assert!(
+        body.contains("Windows / PowerShell"),
+        "missing windows OS block"
+    );
+    assert!(
+        body.contains("<!-- runai:os-posix-only-start -->"),
+        "missing posix marker for client-side strip"
+    );
+    assert!(
+        body.contains("<!-- runai:os-windows-only-start -->"),
+        "missing windows marker for client-side strip"
+    );
+}
+
 // ─── common section (三个池子) is in BOTH variants ───────────────────
 
 #[test]

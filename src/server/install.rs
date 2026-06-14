@@ -32,7 +32,7 @@ use std::sync::Arc;
 
 use crate::core::server_mode::ServerMode;
 
-use super::recommend::guess_server_url;
+use super::recommend::request_origin;
 use super::state::AppState;
 use super::{CLIENT_INSTALL_PS1, CLIENT_INSTALL_SH, CLIENT_UNINSTALL_PS1, CLIENT_UNINSTALL_SH};
 
@@ -132,7 +132,7 @@ pub(super) async fn handle_install_script(
     if state.mode == ServerMode::Owner {
         return (StatusCode::NOT_FOUND, "").into_response();
     }
-    let server_url = guess_server_url(&headers);
+    let server_url = request_origin(&headers);
     let body = render_install_script(CLIENT_INSTALL_SH, state.mode, &server_url);
     (
         [(header::CONTENT_TYPE, "text/x-shellscript; charset=utf-8")],
@@ -165,7 +165,7 @@ pub(super) async fn handle_install_ps1(
     if state.mode == ServerMode::Owner {
         return (StatusCode::NOT_FOUND, "").into_response();
     }
-    let server_url = guess_server_url(&headers);
+    let server_url = request_origin(&headers);
     let body = render_install_script(CLIENT_INSTALL_PS1, state.mode, &server_url);
     ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], body).into_response()
 }
