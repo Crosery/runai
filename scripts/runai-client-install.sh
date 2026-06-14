@@ -644,13 +644,21 @@ Usage:
   runai-client <subcommand> [options]
 
 Subcommands:
-  upload      Pack a skill dir to tar.gz, POST to /api/community/upload.
-              Defaults to TUI selection (fzf required); use --path / --name
-              for non-interactive mode.
-  list        List skills currently on the server's community pool.
-  install     Install a community skill into the server's private copy
-              of your account: runai-client install <uploader_uid> <name>
-  --help, -h  Print this help and exit.
+  upload         Pack a skill dir to tar.gz, POST to the server's private
+                 upload endpoint. Defaults to TUI multi-select (fzf
+                 required); use --path / --name for non-interactive mode.
+                 PLANNING §1.4 rewrite: lands in YOUR private pool with
+                 publish_status='draft'; admin must approve before
+                 community visibility.
+  list-mine      List skills you've uploaded + their workflow state:
+                   uploaded_at / enrich_status / publish_status.
+  publish        Request publication of your draft skill to community:
+                   runai-client publish <skill-name>
+                 Pre-condition: enrich must be 'done'.
+  list           List skills currently on the server's community pool.
+  install        Install a community skill into the server's private copy
+                 of your account: runai-client install <uploader_uid> <name>
+  --help, -h     Print this help and exit.
 
 Environment:
   RUNAI_SERVER     Server base URL (overrides ~/.runai-identity).
@@ -696,6 +704,101 @@ ensure_creds() {
   if [[ -z "$SERVER" ]]; then
     echo "runai-client: no server URL — set RUNAI_SERVER or run install script first" >&2
     exit 1
+  fi
+}
+
+cmd_list_mine() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --help|-h)
+        echo "runai-client list-mine — list your uploaded skills + workflow state."
+        echo
+        echo "Usage:"
+        echo "  runai-client list-mine"
+        return 0
+        ;;
+      *)
+        echo "runai-client list-mine: 未知参数: $1" >&2
+        return 1
+        ;;
+    esac
+  done
+  ensure_creds
+  local AUTH=()
+  [[ -n "$API_KEY" ]] && AUTH=(-H "Authorization: Bearer $API_KEY")
+  local RESP
+  RESP=$(curl -sS -w '\n__HTTP_CODE__%{http_code}' "${AUTH[@]}" "$SERVER/api/users/me/skills")
+  local HTTP="${RESP##*__HTTP_CODE__}"
+  local BODY="${RESP%__HTTP_CODE__*}"
+  if [[ "$HTTP" != "200" ]]; then
+    echo "runai-client list-mine: server 返回 HTTP $HTTP" >&2
+    echo "$BODY" >&2
+    return 1
+  fi
+  python3 - "$BODY" <<'PY'
+import json, sys, datetime
+data = json.loads(sys.argv[1])
+items = data.get('items', [])
+total = data.get('total', 0)
+print(f"{'NAME':<28} {'UPLOADED':<19} {'ENRICH':<8} {'PUBLISH':<10} {'REASON'}")
+print('-' * 90)
+for s in items:
+    name = (s.get('name') or '')[:26]
+    ts = s.get('uploaded_at') or 0
+    when = datetime.datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M') if ts else '-'
+    enrich = s.get('enrich_status') or ''
+    pub = s.get('publish_status') or ''
+    reason = (s.get('publish_reason') or '')[:30]
+    print(f"{name:<28} {when:<19} {enrich:<8} {pub:<10} {reason}")
+print('-' * 90)
+print(f"total: {total}")
+PY
+}
+
+cmd_publish() {
+  local NAME_ARG=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --help|-h)
+        echo "runai-client publish <skill-name>"
+        echo
+        echo "Request review by the server admin to publish your draft skill"
+        echo "to the community pool. Pre-condition: enrich_status='done'."
+        return 0
+        ;;
+      *)
+        if [[ -z "$NAME_ARG" ]]; then NAME_ARG="$1"; shift; continue; fi
+        echo "runai-client publish: 未知参数: $1" >&2
+        return 1
+        ;;
+    esac
+  done
+  if [[ -z "$NAME_ARG" ]]; then
+    echo "runai-client publish: 需要指定 skill name" >&2
+    echo "用法: runai-client publish <skill-name>" >&2
+    return 1
+  fi
+  ensure_creds
+  local AUTH=()
+  [[ -n "$API_KEY" ]] && AUTH=(-H "Authorization: Bearer $API_KEY")
+  local URL="$SERVER/api/users/me/skills/$NAME_ARG/publish-request"
+  local RESP
+  RESP=$(curl -sS -w '\n__HTTP_CODE__%{http_code}' -X POST "${AUTH[@]}" "$URL")
+  local HTTP="${RESP##*__HTTP_CODE__}"
+  local BODY="${RESP%__HTTP_CODE__*}"
+  if [[ "$HTTP" == "200" ]]; then
+    echo "已申请发布 — admin 将审核"
+    echo "$BODY"
+  elif [[ "$HTTP" == "400" ]]; then
+    echo "申请失败:$BODY" >&2
+    return 1
+  elif [[ "$HTTP" == "404" ]]; then
+    echo "找不到该 skill — 用 runai-client list-mine 看自己上传过哪些" >&2
+    return 1
+  else
+    echo "runai-client publish: HTTP $HTTP" >&2
+    echo "$BODY" >&2
+    return 1
   fi
 }
 
@@ -830,7 +933,9 @@ do_single_upload() {
   tar -czf "$TARFILE" -C "$(dirname "$PATH_ARG")" "$(basename "$PATH_ARG")"
   local AUTH=()
   [[ -n "$API_KEY" ]] && AUTH=(-H "Authorization: Bearer $API_KEY")
-  local URL="$SERVER/api/community/upload"
+  # PLANNING §1.4 rewrite: default upload target is the caller's private
+  # pool (publish_status='draft'); admin can later approve to community.
+  local URL="$SERVER/api/users/me/skills/upload"
   local SIZE
   SIZE=$(wc -c <"$TARFILE" | tr -d ' ')
   echo "  打包 $NAME_ARG ($SIZE bytes),上传到 $URL …"
@@ -961,6 +1066,14 @@ case "${1:-}" in
   upload)
     shift
     cmd_upload "$@"
+    ;;
+  list-mine)
+    shift
+    cmd_list_mine "$@"
+    ;;
+  publish)
+    shift
+    cmd_publish "$@"
     ;;
   list)
     shift

@@ -220,8 +220,11 @@ fn runai_client_help_lists_subcommands() {
 }
 
 /// `runai-client upload --path <dir> --name <name>` runs non-interactively
-/// (no fzf needed) and uploads the skill to /api/community/upload. After
-/// upload the skill must be visible to `runai-client list`.
+/// (no fzf needed) and uploads the skill to the caller's PRIVATE pool
+/// (PLANNING §1.4 rewrite — default is no longer community/upload).
+/// After upload the skill must be visible to `runai-client list-mine`.
+/// The community-list endpoint is not exercised here because that flow
+/// now requires admin approval (covered by admin_publish_approve_e2e).
 #[test]
 fn runai_client_upload_then_list_roundtrip() {
     let server_home = tempfile::tempdir().expect("server HOME");
@@ -255,29 +258,35 @@ fn runai_client_upload_then_list_roundtrip() {
         String::from_utf8_lossy(&upload_out.stderr),
     );
 
-    // List should now show the freshly-uploaded skill.
+    // list-mine should now show the freshly-uploaded skill (PLANNING
+    // §1.4 rewrite — `list` is the community-pool view which now
+    // requires admin approval; `list-mine` is the per-user view).
     let list_out = Command::new("bash")
         .arg(&bin)
-        .arg("list")
+        .arg("list-mine")
         .env("HOME", home.path())
         .env("RUNAI_SERVER", server.base_url())
         .env("RUNAI_API_KEY", &api_key)
         .output()
-        .expect("run runai-client list");
+        .expect("run runai-client list-mine");
     assert!(
         list_out.status.success(),
-        "list should succeed: stdout=\n{}\nstderr=\n{}",
+        "list-mine should succeed: stdout=\n{}\nstderr=\n{}",
         String::from_utf8_lossy(&list_out.stdout),
         String::from_utf8_lossy(&list_out.stderr),
     );
     let stdout = String::from_utf8_lossy(&list_out.stdout);
     assert!(
         stdout.contains("upload-test-skill"),
-        "list output should contain the uploaded skill name:\n{stdout}"
+        "list-mine output should contain the uploaded skill name:\n{stdout}"
     );
     assert!(
         stdout.contains("NAME"),
-        "list output should contain a header row:\n{stdout}"
+        "list-mine output should contain a header row:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("draft"),
+        "fresh upload must show publish_status='draft':\n{stdout}"
     );
 }
 
