@@ -235,10 +235,34 @@ if [[ "$DO_AUTH" -eq 1 ]]; then
       exit 1
     fi
 
-    # Password: same dual-mode resolution.
+    # Password: same dual-mode resolution. We read char-by-char so the
+    # user gets a `*` echo per keystroke (`read -rs` is fully silent and
+    # makes it impossible to tell whether a keypress registered, which
+    # was the most common cause of "password too short" failures).
     if [[ -z "${RUNAI_PASSWORD:-}" ]]; then
       printf "  ${B}password${R}  "
-      read -rs RUNAI_PASSWORD
+      RUNAI_PASSWORD=''
+      while IFS= read -rsn1 _ch; do
+        # Enter / EOF terminates input.
+        if [[ -z "$_ch" || "$_ch" == $'\n' ]]; then
+          break
+        fi
+        # Backspace (DEL 0x7f) — pop last char + visually erase the star.
+        if [[ "$_ch" == $'\177' ]]; then
+          if [[ -n "$RUNAI_PASSWORD" ]]; then
+            RUNAI_PASSWORD="${RUNAI_PASSWORD%?}"
+            printf '\b \b'
+          fi
+          continue
+        fi
+        # Ignore other ctrl chars (Ctrl+C interrupts the script naturally).
+        if [[ "$_ch" < $' ' ]]; then
+          continue
+        fi
+        RUNAI_PASSWORD+="$_ch"
+        printf '*'
+      done
+      unset _ch
       printf "\n"
     else
       ok "using RUNAI_PASSWORD from env"
