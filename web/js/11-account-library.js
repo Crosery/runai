@@ -63,6 +63,15 @@
     } else {
       document.body.classList.remove('mode-owner');
     }
+    // PLANNING §1.6 model B: sync `is-admin` body class so CSS can hide
+    // chrome that's meaningless to an admin (the per-user scope segment
+    // 全部 / 我的库 / 仅公共 collapses to one number for admin — the
+    // public pool — so the segmentation is just visual noise).
+    if (account.me && account.me.is_admin) {
+      document.body.classList.add('is-admin');
+    } else {
+      document.body.classList.remove('is-admin');
+    }
     renderAccountPill();
     await refreshLibraryNames();
     await refreshPrefs();
