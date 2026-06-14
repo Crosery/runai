@@ -13,7 +13,7 @@ fn migration_creates_schema_version() {
         .conn
         .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 17);
+    assert_eq!(version, 20);
 }
 
 #[test]
@@ -272,7 +272,7 @@ fn schema_at_v15_after_open() {
     // this test is kept for git-blame continuity; the v15 tables it
     // spot-checks below are still there post-v17, just behind a higher
     // version number.
-    assert_eq!(version, 17);
+    assert_eq!(version, 20);
 
     // Tables must exist
     for tbl in &["users", "user_skill_library"] {

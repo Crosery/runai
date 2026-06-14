@@ -360,7 +360,7 @@ impl Database {
             )?;
         }
 
-        if version < 17 {
+        if version < 20 {
             // PLANNING §1.4 rewrite — private upload → enrich → publish-request
             // → admin approve workflow. publish_status tracks the state for
             // private skills (owner_user_id IS NOT NULL):
@@ -371,14 +371,29 @@ impl Database {
             //
             // Public-pool rows (owner_user_id IS NULL) are stamped 'draft'
             // and ignored by the publish workflow.
+            //
+            // Version jump 16 → 20 covers DBs that previously rode an
+            // ahead-of-schema binary (e.g. a feature branch that wrote
+            // schema_version=19 with enrich_in_flight / enrich_started_at
+            // / enrich_last_error columns) — the gap doesn't break us
+            // because those rogue columns are orthogonal to publish_status.
+            // ALTER will fail if a stray run of this exact migration
+            // already added the columns, so we tolerate the per-statement
+            // error and only trust the index + version bump as the
+            // canonical "we ran" marker.
+            let _ = self.conn.execute(
+                "ALTER TABLE resources ADD COLUMN publish_status TEXT NOT NULL DEFAULT 'draft'",
+                [],
+            );
+            let _ = self
+                .conn
+                .execute("ALTER TABLE resources ADD COLUMN publish_reason TEXT", []);
             self.conn.execute_batch(
-                "ALTER TABLE resources ADD COLUMN publish_status TEXT NOT NULL DEFAULT 'draft';
-                 ALTER TABLE resources ADD COLUMN publish_reason TEXT;
-                 CREATE INDEX IF NOT EXISTS idx_resources_publish_status
+                "CREATE INDEX IF NOT EXISTS idx_resources_publish_status
                    ON resources(publish_status);
 
                  DELETE FROM schema_version;
-                 INSERT INTO schema_version VALUES (17);",
+                 INSERT INTO schema_version VALUES (20);",
             )?;
         }
 
