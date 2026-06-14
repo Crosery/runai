@@ -1016,7 +1016,10 @@ EOF
     --delimiter=$'\t' \
     --with-nth='1,3' \
     --prompt='选 skill 上传 > ' \
-    --header='Tab 切换选中  ·  Ctrl-A 全选  ·  Ctrl-D 全清  ·  Enter 确认' \
+    --header='Space / Tab 切换选中  ·  Ctrl-A 全选  ·  Ctrl-D 全清  ·  Enter 确认' \
+    --pointer='▶' \
+    --marker='◉' \
+    --bind='space:toggle' \
     --bind='ctrl-a:select-all' \
     --bind='ctrl-d:deselect-all' \
     --height=60% \
