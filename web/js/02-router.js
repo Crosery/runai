@@ -73,6 +73,9 @@
         setActiveNav('admin');
         loadSettings();
         loadAdminUsers();
+        if (typeof loadAdminPublishRequests === 'function') {
+          loadAdminPublishRequests();
+        }
         break;
       case 'market':
         if (!account.me) {

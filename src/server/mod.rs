@@ -62,6 +62,7 @@ const APP_JS: &str = concat!(
     include_str!("../../web/js/15-market-detail-github.js"),
     include_str!("../../web/js/17-community-market.js"),
     include_str!("../../web/js/18-setup-tab.js"),
+    include_str!("../../web/js/19-admin-publish-review.js"),
     include_str!("../../web/js/16-boot.js"),
 );
 const APP_CSS: &str = concat!(

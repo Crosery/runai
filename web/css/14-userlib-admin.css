@@ -224,3 +224,57 @@ body.is-admin:not(.mode-owner) .lib-sub.admin-only {
   padding: 12px 8px;
   font-size: 13px;
 }
+
+/* ─── C9g admin publish-review table ────────────────────────────────── */
+.admin-publish-table {
+  display: flex;
+  flex-direction: column;
+}
+
+.admin-publish-head,
+.admin-publish-row {
+  display: grid;
+  grid-template-columns: 0.7fr 0.8fr 1.4fr 0.7fr 1fr;
+  gap: 14px;
+  padding: 10px 8px;
+  border-bottom: 1px solid var(--line);
+  align-items: center;
+  font-size: 13px;
+}
+
+.admin-publish-head {
+  font-family: var(--mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--ink-3);
+}
+
+.admin-publish-row .nm {
+  font-weight: 500;
+}
+
+.admin-publish-row .desc {
+  color: var(--ink-2);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-publish-row .when {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+.admin-publish-row .actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.admin-publish-empty {
+  padding: 12px 8px;
+  font-size: 13px;
+}
