@@ -141,6 +141,82 @@
     return out.join('\n');
   }
 
+  // Minimal bash/shell syntax highlighter. The dashboard ships zero
+  // external JS deps (single-binary contract), so a 50-line tokenizer is
+  // the right size — full Prism / highlight.js would be 60+ KB for one
+  // tab. Tokens recognized per line:
+  //   - comment    : starts with `#` (rest of line, italic gray)
+  //   - env var    : `FOO=bar` form at command position (red)
+  //   - string     : 'single' / "double" quoted (green)
+  //   - placeholder: <name-like> tokens (orange) — runai docs use these
+  //   - long flag  : `--name` (blue)
+  //   - short flag : `-fsSL` after whitespace (blue)
+  //   - keyword    : one of the well-known shell heads (purple, bold)
+  // The output of `code.innerText` is still the raw text (spans are
+  // inline), so the copy button keeps grabbing the verbatim command.
+  const BASH_KEYWORDS = new Set([
+    'curl', 'runai', 'runai-client', 'bash', 'cargo', 'kill', 'nohup',
+    'launchctl', 'systemctl', 'sudo', 'export', 'set', 'cd', 'ls',
+    'cp', 'mv', 'rm', 'mkdir', 'echo', 'cat',
+  ]);
+
+  function highlightBashLine(line) {
+    // Whole-line comment.
+    if (/^\s*#/.test(line)) {
+      return '<span class="hl-c">' + escapeHTML(line) + '</span>';
+    }
+    let head = line;
+    let tail = '';
+    // Trailing comment (` # text`) — split off before tokenizing.
+    const cIdx = line.search(/(?:^|\s)#/);
+    if (cIdx > 0 && line[cIdx] !== '#') {
+      head = line.slice(0, cIdx + 1);
+      tail = '<span class="hl-c">' + escapeHTML(line.slice(cIdx + 1)) + '</span>';
+    }
+    const re =
+      /([A-Z_][A-Z0-9_]*)=|(--[a-zA-Z][a-zA-Z0-9-]*)|(?:^|\s)(-[a-zA-Z]+)(?=\s|$)|('[^']*')|("[^"]*")|(<[a-zA-Z_][a-zA-Z0-9_-]*>)|\b([a-z][a-zA-Z0-9_-]*)\b/g;
+    let out = '';
+    let last = 0;
+    let m;
+    while ((m = re.exec(head)) !== null) {
+      out += escapeHTML(head.slice(last, m.index));
+      if (m[1]) {
+        out += '<span class="hl-v">' + escapeHTML(m[1]) + '</span>=';
+      } else if (m[2]) {
+        out += '<span class="hl-f">' + escapeHTML(m[2]) + '</span>';
+      } else if (m[3]) {
+        // Re-emit the leading whitespace from the lookahead match.
+        const lead = head.slice(m.index, m.index + (m[0].length - m[3].length));
+        out += escapeHTML(lead) + '<span class="hl-f">' + escapeHTML(m[3]) + '</span>';
+      } else if (m[4]) {
+        out += '<span class="hl-s">' + escapeHTML(m[4]) + '</span>';
+      } else if (m[5]) {
+        out += '<span class="hl-s">' + escapeHTML(m[5]) + '</span>';
+      } else if (m[6]) {
+        out += '<span class="hl-p">' + escapeHTML(m[6]) + '</span>';
+      } else if (m[7]) {
+        if (BASH_KEYWORDS.has(m[7])) {
+          out += '<span class="hl-k">' + escapeHTML(m[7]) + '</span>';
+        } else {
+          out += escapeHTML(m[7]);
+        }
+      }
+      last = re.lastIndex;
+    }
+    out += escapeHTML(head.slice(last));
+    return out + tail;
+  }
+
+  function highlightBash(text) {
+    return text.split('\n').map(highlightBashLine).join('\n');
+  }
+
+  function highlightCodeBlocks(container) {
+    container.querySelectorAll('pre code').forEach((code) => {
+      code.innerHTML = highlightBash(code.textContent);
+    });
+  }
+
   // No cache: the server tailors /setup.md per user (admin vs user vs
   // anonymous) AND substitutes {SERVER_URL} per request, so a stale copy
   // after login/logout would show the wrong commands. Re-fetching on
@@ -154,6 +230,7 @@
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const md = await res.text();
       el.innerHTML = setupMdToHtml(md);
+      highlightCodeBlocks(el);
       attachCopyButtons(el);
     } catch (e) {
       el.innerHTML = `<p class="muted">Setup 加载失败:${escapeHTML(e.message)}</p>`;

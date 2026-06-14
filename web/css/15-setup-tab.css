@@ -98,6 +98,57 @@
   white-space: pre;
 }
 
+/* ─── bash syntax highlight tokens (set by 18-setup-tab.js) ─────────── */
+.setup-content pre code .hl-c {
+  color: #6e7781;
+  font-style: italic;
+}
+
+.setup-content pre code .hl-v {
+  color: #cf222e;
+}
+
+.setup-content pre code .hl-f {
+  color: #0550ae;
+}
+
+.setup-content pre code .hl-s {
+  color: #0a6225;
+}
+
+.setup-content pre code .hl-p {
+  color: #bc4c00;
+}
+
+.setup-content pre code .hl-k {
+  color: #8250df;
+  font-weight: 600;
+}
+
+[data-theme="dark"] .setup-content pre code .hl-c {
+  color: #7d8590;
+}
+
+[data-theme="dark"] .setup-content pre code .hl-v {
+  color: #ff7b72;
+}
+
+[data-theme="dark"] .setup-content pre code .hl-f {
+  color: #79c0ff;
+}
+
+[data-theme="dark"] .setup-content pre code .hl-s {
+  color: #7ee787;
+}
+
+[data-theme="dark"] .setup-content pre code .hl-p {
+  color: #ffa657;
+}
+
+[data-theme="dark"] .setup-content pre code .hl-k {
+  color: #d2a8ff;
+}
+
 /* Per-block copy button. Floats top-right inside the pre, defaults to a
  * dimmed icon-only look so it doesn't draw attention until the user
  * hovers the code block. Click flips to a green check + opacity 1 for
