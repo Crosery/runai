@@ -183,6 +183,13 @@
     $('#bulk-select-all')?.classList.toggle('hide', !inSelectMode);
     $('#bulk-clear-sel')?.classList.toggle('hide', !inSelectMode);
     $('#bulk-sel-count')?.classList.toggle('hide', !inSelectMode);
+    // PLANNING §1.6 Model B C7c: admin-only batch trash. Visible only
+    // when admin is in select-mode AND has at least one row selected.
+    // CSS belt-and-braces hides it from non-admin / owner mode regardless.
+    const showTrash = !!(
+      account.me?.is_admin && inSelectMode && account.bulkSelect.size > 0
+    );
+    $('#bulk-trash')?.classList.toggle('hide', !showTrash);
     updateBulkCount();
   }
 

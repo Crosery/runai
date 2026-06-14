@@ -31,6 +31,26 @@ body.is-admin:not(.mode-owner) #library-quick-actions {
   display: none !important;
 }
 
+/* C7c: admin batch「移到垃圾桶」按钮 — visible only when admin (not
+ * owner mode). Inside that scope, JS still toggles `.hide` based on
+ * select mode + having a selection. Danger styling matches the existing
+ * `.admin-users-row .btn-danger` palette so admin's destructive actions
+ * speak the same visual language across panes. */
+body:not(.is-admin) #bulk-trash,
+body.mode-owner #bulk-trash {
+  display: none !important;
+}
+
+#bulk-trash {
+  color: #dc2626;
+  border-color: #dc2626;
+}
+
+#bulk-trash:hover {
+  background: #dc2626;
+  color: #fff;
+}
+
 /* …unhide for an admin (in any mode that isn't owner). */
 body.is-admin:not(.mode-owner) .lib-sub.admin-only {
   display: inline;

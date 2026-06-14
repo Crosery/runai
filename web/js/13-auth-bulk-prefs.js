@@ -185,6 +185,39 @@
       renderScopeBar();
       return;
     }
+    if (kind === 'trash') {
+      // PLANNING §1.6 Model B C7c: admin-only batch trash public-pool
+      // skills via POST /api/admin/skills/trash. The button only appears
+      // when admin + select-mode + selection exists (renderScopeBar
+      // gate), so we just confirm + fire here.
+      if (!account.me?.is_admin) return;
+      const names = Array.from(account.bulkSelect);
+      if (names.length === 0) {
+        alert('请先选中要操作的 skill');
+        return;
+      }
+      const ok = await showConfirm({
+        title: '移到垃圾桶',
+        body: `把选中的 ${names.length} 个公共 skill 移到垃圾桶。不是 hard delete,可在垃圾桶视图 restore。继续?`,
+        ok: '移到垃圾桶',
+        cancel: '取消',
+        danger: true,
+      });
+      if (!ok) return;
+      try {
+        const res = await api('POST', '/api/admin/skills/trash', { names });
+        account.bulkSelect.clear();
+        if (typeof loadSkills === 'function') await loadSkills();
+        renderScopeBar();
+        renderSkills();
+        if (res.failed && res.failed.length > 0) {
+          alert(`已移到垃圾桶 ${res.trashed} 个,${res.failed.length} 个失败:\n` + res.failed.join('\n'));
+        }
+      } catch (e) {
+        alert('批量删除失败: ' + e.message);
+      }
+      return;
+    }
     if (kind !== 'add' && kind !== 'remove') return;
     if (account.bulkSelect.size === 0) {
       alert('请先选中要操作的 skill');

@@ -305,6 +305,10 @@
               <button type="button" class="btn-small hide" data-bulk="remove" id="bulk-remove">移出我的库</button>
               <button type="button" class="btn-small hide" data-bulk="select-all" id="bulk-select-all">全选可见</button>
               <button type="button" class="btn-small hide" data-bulk="clear-sel" id="bulk-clear-sel">取消全选</button>
+              <!-- PLANNING §1.6 Model B C7c: admin-only batch trash.
+                   Hidden by CSS for non-admin / owner mode and by JS
+                   when select-mode is off or no row is selected. -->
+              <button type="button" class="btn-small btn-danger hide" data-bulk="trash" id="bulk-trash">移到垃圾桶</button>
             </div>
             <div class="scope-quick hide" id="library-quick-actions">
               <button type="button" class="btn-small" id="lib-import-github">从 GitHub 导入</button>
