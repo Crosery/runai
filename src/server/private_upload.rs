@@ -32,6 +32,7 @@ use crate::core::server_mode::ServerMode;
 
 use super::community::{extract_targz, is_safe_skill_name, move_skill_payload};
 use super::error::ApiError;
+use super::market::spawn_enrich;
 use super::state::{AppState, require_user};
 
 #[derive(Serialize)]
@@ -127,6 +128,16 @@ pub(super) async fn api_user_skills_upload(
         let mgr = SkillManager::with_base(data_root).map_err(ApiError::Internal)?;
         mgr.register_local_skill_for(&name, Some(&uid))
             .map_err(ApiError::Internal)?;
+
+        // Best-effort enrich (BM25 summary + LLM score). Same fire-and-
+        // forget spawn used by the github install flow — failure here
+        // does NOT roll the upload back; the user can re-fire enrich
+        // later via `runai recommend enrich --name <name>` if needed.
+        // PLANNING §1.4 publish workflow gates publish-request on
+        // enrich completion, so a draft sitting at "no summary" is
+        // visible to the user but cannot be submitted for review until
+        // enrich actually lands.
+        spawn_enrich(&[name.clone()]);
 
         Ok(PrivateUploadResp {
             name,
