@@ -42,7 +42,7 @@ use super::prefs::{
     api_activate_provider, api_delete_provider, api_get_prefs, api_get_settings, api_post_prefs,
     api_post_settings, api_test_provider, api_upsert_provider,
 };
-use super::private_upload::api_user_skills_upload;
+use super::private_upload::{api_publish_request, api_user_skills_upload};
 use super::recommend::{handle_feedback, handle_recommend};
 use super::skills::{
     api_skill_detail, api_skill_file, api_skill_files, api_skills, handle_skill_bundle,
@@ -284,6 +284,13 @@ pub async fn serve_with(
         .route(
             "/api/users/me/skills/upload",
             post(api_user_skills_upload).layer(DefaultBodyLimit::max(64 * 1024 * 1024)),
+        )
+        // PLANNING §1.4 C9c — user requests their draft skill be reviewed
+        // for publication to the community pool. Pre-condition: enrich
+        // must have produced a non-empty resource_ai_summary row.
+        .route(
+            "/api/users/me/skills/{name}/publish-request",
+            post(api_publish_request),
         )
         // PLANNING §2.3 item 4 — explicitly reject the canonical
         // self-describing-API paths an automated agent would probe to map

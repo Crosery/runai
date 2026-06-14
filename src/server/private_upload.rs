@@ -20,7 +20,7 @@
 use anyhow::Result;
 use axum::{
     Json,
-    extract::{Multipart, State},
+    extract::{Multipart, Path, State},
     http::HeaderMap,
 };
 use serde::Serialize;
@@ -28,6 +28,7 @@ use std::sync::Arc;
 
 use crate::core::manager::SkillManager;
 use crate::core::paths::AppPaths;
+use crate::core::resource::ResourceKind;
 use crate::core::server_mode::ServerMode;
 
 use super::community::{extract_targz, is_safe_skill_name, move_skill_payload};
@@ -149,5 +150,85 @@ pub(super) async fn api_user_skills_upload(
     .await
     .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))??;
 
+    Ok(Json(resp))
+}
+
+#[derive(Serialize)]
+pub(super) struct PublishRequestResp {
+    name: String,
+    publish_status: String,
+}
+
+/// POST /api/users/me/skills/{name}/publish-request — user-driven flow:
+/// flip a draft private skill to `pending` so the admin can review +
+/// approve / reject. Pre-conditions enforced:
+///   - team mode only (owner mode 403 — single-user self-serve, no community).
+///   - caller must own the skill (private row with matching owner_user_id).
+///     Resolves via `find_resource_by_name_for_user(uid)`; if no such row
+///     exists OR the row is public-pool (owner None) we 404 to avoid
+///     leaking the existence of someone else's private skill name.
+///   - enrich must be done (`resource_ai_summary` non-empty). If not, 400
+///     with `富集 (enrich) 还未完成` so the user knows to wait / re-fire.
+///
+/// Idempotent: re-submitting a pending or approved skill silently no-ops
+/// (returns 200 with the existing status). Re-submitting a `rejected`
+/// row flips it back to `pending` so the user can iterate after fixing
+/// whatever the admin flagged.
+pub(super) async fn api_publish_request(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<PublishRequestResp>, ApiError> {
+    if state.mode == ServerMode::Owner {
+        return Err(ApiError::Forbidden);
+    }
+    let resp = tokio::task::spawn_blocking(move || -> Result<PublishRequestResp, ApiError> {
+        let db = state.db().map_err(ApiError::Internal)?;
+        let user = require_user(&headers, &db)?;
+
+        let resource = db
+            .find_resource_by_name_for_user(ResourceKind::Skill, &name, Some(&user.user_id))
+            .map_err(ApiError::Internal)?
+            .ok_or(ApiError::NotFound)?;
+
+        // Hard-gate: the row must be the caller's PRIVATE skill, not a
+        // shadowed public row. find_resource_by_name_for_user can return
+        // public rows when the caller has no private of that name; reject
+        // those by checking owner_user_id matches.
+        if resource.owner_user_id.as_deref() != Some(&user.user_id) {
+            return Err(ApiError::NotFound);
+        }
+
+        // Idempotent short-circuits.
+        if resource.publish_status == "pending" || resource.publish_status == "approved" {
+            return Ok(PublishRequestResp {
+                name,
+                publish_status: resource.publish_status,
+            });
+        }
+
+        // Enrich gate: resource_ai_summary must have a non-empty summary
+        // before we let the user submit. Until enrich lands, the LLM
+        // doesn't know what the skill is about and the admin has nothing
+        // to review beyond the user-provided description.
+        let summary = db.skill_ai_summary(&name).map_err(ApiError::Internal)?;
+        if summary.trim().is_empty() {
+            return Err(ApiError::BadRequest(
+                "富集 (enrich) 还未完成,暂不能申请发布。等几分钟再试 — \
+                 或运行 `runai recommend enrich --name <name>` 手动触发。"
+                    .into(),
+            ));
+        }
+
+        db.set_publish_status(&resource.id, "pending")
+            .map_err(ApiError::Internal)?;
+
+        Ok(PublishRequestResp {
+            name,
+            publish_status: "pending".to_string(),
+        })
+    })
+    .await
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))??;
     Ok(Json(resp))
 }
