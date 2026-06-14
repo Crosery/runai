@@ -108,9 +108,48 @@
 - `src/core/prefs.rs` 加 `prompt_injection_flags: HashMap<String, bool>` 字段
 - `src/server/api_prefs.rs`（或现有 prefs 路由）暴露 GET/POST 读写
 
-### 1.4 社区市场（team 模式核心）
+### 1.4 社区市场（team 模式核心 — 2026-06 重写)
 
-**定稿决策**：team 模式服务端运营一个用户互享 skill 池，承载上传、下载、浏览、安装。dashboard market tab 现有 skills.sh 数据不变；新增"社区"子 tab 接社区市场端点。TUI 是否加见 1.5。
+**定稿决策(rewrite)**：默认 upload 不直接进社区池,而是 **「私有池 → 自动富集 → 用户申请 publish → admin 审核 → 社区池」** 四段工作流。这避免任何 user 都能把没经审核的 skill 推到全员共享池里。原 §1.4 直传社区池的描述见 §4 已完成第一波 (C6/C7);本段是 publish workflow 第二波 (C9a-C9h) 的最终设计。
+
+**核心数据**:
+- `resources.publish_status TEXT NOT NULL DEFAULT 'draft'` (schema v17),可选值 `draft` / `pending` / `approved` / `rejected`。
+- `resources.publish_reason TEXT` 存 admin 拒绝时的理由。
+- public-pool row(`owner_user_id IS NULL`)的 publish_status 永远 'draft' 被工作流忽略。
+
+**新端点**(C9a/C9c/C9d/C9e 后端):
+- `POST /api/users/me/skills/upload` (multipart name + bundle) → 落 `<data>/users/<uid>/skills/<name>/` + `resources` 行 owner_user_id=uid + publish_status='draft' + spawn_enrich(name)。
+- `POST /api/users/me/skills/{name}/publish-request` → draft → pending。pre-condition: `resource_ai_summary.summary` 非空(enrich 已完成)。
+- `GET /api/users/me/skills` → 当前用户的私有 skill 表 + workflow 状态 (uploaded_at / enrich_status / publish_status / publish_reason)。
+- `GET /api/admin/publish-requests` → admin-gated 列所有 pending,JOIN users + ai_summary。
+- `POST /api/admin/publish-requests/{resource_id}/approve` → pending → approved + 复制 `<data>/users/<uid>/skills/<name>/` 到 `<data>/community/<uid>/<name>/` + community_skills upsert。
+- `POST /api/admin/publish-requests/{resource_id}/reject` `{reason}` → pending → rejected + 写 publish_reason (空 reason 400)。
+
+**保留的旧端点**(C6 一波 — 社区池浏览 / 安装,仍是 read 路径):
+- `GET /api/community/list` 社区池排序分页。
+- `GET /api/community/skill/{uid}/{name}` 社区池详情。
+- `POST /api/community/install/{uid}/{name}` 安装到自己私有池。
+- `DELETE /api/community/skill/{uid}/{name}` 仅 uploader / admin。
+
+**已废弃**:`POST /api/community/upload` 不再是 user-facing 入口(底层路径仍在被 C9d approve 内部复用,但 user 走 publish-request,admin 走 approve)。
+
+**runai-client CLI 接面**(C9f):
+- `runai-client upload` 默认走 `/api/users/me/skills/upload`(私有,publish_status='draft')。
+- `runai-client list-mine` 拉自己的私有 skill 表。
+- `runai-client publish <name>` 提交 publish-request。
+- `runai-client list` 浏览社区池(仍是原 `/api/community/list` 路径)。
+- `runai-client install <uid> <name>` 装社区 skill 到自己私有池。
+
+**dashboard 接面**(C9g):
+- 用户库 sub-tab (C6b/c) 显示每用户私有 + 导入。
+- Admin tab 加「待审核发布」section,approve / reject 按钮,reject 弹 `window.prompt` 收理由。
+- 普通用户上传 / 申请发布走 CLI(浏览器不打包 tar 路径)。
+
+**安全 / 不变量**:
+- 上传始终落自己私有池,不会动其他用户私有 row(`owner_user_id != uid` → 不存在,因为 `register_local_skill_for(name, Some(uid))` 唯一 owner 写入路径)。
+- publish-request 前端 / CLI 都不能跳过 enrich gate(server 端 `resource_ai_summary` 非空校验是唯一可信线)。
+- admin reject 必须给 reason,空 reason 400(让用户能改后再申请)。
+- approve 复制后用户私有副本仍保留(双份),uploader 想撤销可走 `runai uninstall`(只动私有 row),社区池行靠 admin trash。
 
 **新端点**：
 - `POST /api/community/upload` —— 上传 skill 包（gz tar，沿用现有 `/skills/bundle/{name}` 的反向）
@@ -275,6 +314,7 @@ skill 上传到社区市场前自动跑：SKILL.md 字段完整性、frontmatter
 - market dashboard 翻页闪烁修复（`fix/market-pagination-flicker` 分支，commit `2d2c01d`）
 - §1.1 owner 模式 dashboard 后端裁剪：进程级 `SERVER_MODE` atomic + `synthetic_owner()`（implicit admin sentinel `user_id="owner"`） + `state::current_user` owner 短路 + `state::private_data_locked` owner 恒 `false` + `MeResp.mode` 字段 + `serve_index` 注入 `body class="mode-owner"`；41 个 `require_user`/`require_admin`/`current_owner_id` 调用点零改动。`tests/server_mode_dashboard_e2e.rs` 7 fn 物理 e2e 守。
 - §1.1 owner 模式 dashboard 前端裁剪：`web/css/13-owner-mode.css` 一刀切 hide `#account-pill` / `#auth-modal` / `#library-scope-bar` / market 社区 tab btn / `#market-community-pane` / `#community-detail-modal` / `:has(#admin-users-rows)` 用户管理 section；保留路由总闸门 + 运营商配置（owner 本人隐式 admin）。`11-account-library.js::refreshMe` 每次同步 body `mode-owner` class；`12-admin-scope-skills.js::loadAdminUsers` owner 模式 short-circuit return。真浏览器渲染断言 spec 入 issue #20（Playwright harness 待重建）。
+- §1.4 重写 publish 工作流(C9a-C9h 8 commit): schema v17 加 resources.publish_status + publish_reason; POST /api/users/me/skills/upload 私有上传 + spawn_enrich; publish-request 端点 + enrich gate; admin GET /publish-requests + approve(copy 到社区池 + community_skills) / reject(reason 必填); GET /api/users/me/skills list-mine + workflow 状态; runai-client 加 list-mine / publish 子命令,默认 upload 走 private; dashboard Admin tab 新增「待审核发布」section + approve/reject 按钮。tests: private_skill_upload_e2e (5 fn) / publish_request_e2e (4 fn) / admin_publish_approve_e2e (7 fn) / list_mine_e2e (4 fn)。
 
 ---
 
