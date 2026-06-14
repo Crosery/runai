@@ -19,7 +19,10 @@ use crate::core::server_mode::{self, ServerMode};
 
 use super::middleware::rate_limit;
 
-use super::admin::{api_admin_users_delete, api_admin_users_list, api_admin_users_update};
+use super::admin::{
+    api_admin_userlib_detail, api_admin_userlib_list, api_admin_users_delete, api_admin_users_list,
+    api_admin_users_update,
+};
 use super::auth::{api_login, api_logout, api_me, api_register};
 use super::community::{
     api_community_delete, api_community_download, api_community_install, api_community_list,
@@ -212,6 +215,14 @@ pub async fn serve_with(
         .route(
             "/api/admin/users/{user_id}",
             post(api_admin_users_update).delete(api_admin_users_delete),
+        )
+        // PLANNING §1.6 model B — admin userlib browse: list non-admin
+        // users with private/imported counts, then drill into a single
+        // user's split library.
+        .route("/api/admin/userlib", get(api_admin_userlib_list))
+        .route(
+            "/api/admin/userlib/{user_id}",
+            get(api_admin_userlib_detail),
         )
         // v15 marketplace: any logged-in user can browse / install. Newly
         // installed skills go to the public pool AND are auto-subscribed
