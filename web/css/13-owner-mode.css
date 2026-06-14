@@ -1,0 +1,46 @@
+/* ──────────────────────────────────────────────────────────────────────
+ *  PLANNING §1.1 — owner mode dashboard cut
+ *  Single source of truth for "hide team-only chrome when the server
+ *  runs in owner mode". The server stamps `mode-owner` on <body class>
+ *  via app.rs::serve_index; 11-account-library.js::refreshMe re-applies
+ *  it on every /api/me refresh so SPA boot can't drop it.
+ *
+ *  Owner mode = single-user self-serve. There is no login flow, no
+ *  second user, no library scope segmentation, no community pool. The
+ *  local user is the implicit admin of their own deployment, so the
+ *  router/providers settings ARE still visible — only the team-only
+ *  surfaces (account pill, login modal, scope bar, community tab,
+ *  user-management table) are hidden.
+ * ──────────────────────────────────────────────────────────────────── */
+
+/* Top bar: login/register pill + login modal. */
+body.mode-owner #account-pill,
+body.mode-owner #auth-modal {
+  display: none !important;
+}
+
+/* Skill tab: scope segmentation (全部 / 我的库 / 仅公共) makes no sense
+ * for a single user with a single (public) pool. Hide the whole scope
+ * bar — including select-mode-group + library-quick-actions which only
+ * make sense alongside per-user library subscription. */
+body.mode-owner #library-scope-bar {
+  display: none !important;
+}
+
+/* Market tab: the community pool is team-mode only (server returns 404
+ * for /api/community/* under owner mode anyway). Hide the source tab
+ * button, the community pane, and the community detail modal so a
+ * misclick can't surface dead UI. */
+body.mode-owner .market-source-tab-btn[data-mtsource="community"],
+body.mode-owner #market-community-pane,
+body.mode-owner #community-detail-modal {
+  display: none !important;
+}
+
+/* Admin tab: the owner IS the implicit admin and wants the router/
+ * providers panes (路由总闸门 / 运营商), but "用户管理" is meaningless
+ * with a single user. The section that holds #admin-users-rows is
+ * picked via `:has()` (Chromium / Firefox / Safari all ship it). */
+body.mode-owner .settings-section.admin-block:has(#admin-users-rows) {
+  display: none !important;
+}

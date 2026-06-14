@@ -52,6 +52,17 @@
     } catch (e) {
       account.me = null;
     }
+    // PLANNING §1.1: keep the `mode-owner` body class in sync with the
+    // runtime mode the server reports via /api/me. serve_index injects
+    // it server-side on first paint; this re-applies it after every SPA
+    // refreshMe so a swap to/from owner mode (e.g. after a server
+    // restart with a different --mode flag) updates the visible chrome
+    // without a hard reload.
+    if (account.me && account.me.mode === 'owner') {
+      document.body.classList.add('mode-owner');
+    } else {
+      document.body.classList.remove('mode-owner');
+    }
     renderAccountPill();
     await refreshLibraryNames();
     await refreshPrefs();

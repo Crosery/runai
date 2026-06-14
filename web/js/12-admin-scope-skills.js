@@ -3,6 +3,11 @@
   // ------------------------------------------------------------------
   async function loadAdminUsers() {
     if (!account.me || !account.me.is_admin) return;
+    // PLANNING §1.1: owner mode is single-user self-serve — the user-
+    // management table is hidden by CSS (13-owner-mode.css) and the
+    // /api/admin/users data has nowhere to render. Skip the request so
+    // we don't spam the server log with admin queries the UI ignores.
+    if (account.me.mode === 'owner') return;
     const rowsEl = $('#admin-users-rows');
     const countEl = $('#admin-users-count');
     if (!rowsEl) return;

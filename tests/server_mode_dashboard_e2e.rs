@@ -226,6 +226,36 @@ fn team_root_body_does_not_carry_mode_owner_class() {
     );
 }
 
+// ─── bundled CSS carries owner-mode rules ────────────────────────────────
+
+#[test]
+fn app_css_carries_mode_owner_rules() {
+    // The owner-mode chrome cut only works if 13-owner-mode.css is wired
+    // into APP_CSS concat (src/server/mod.rs). Verifying the served
+    // /app.css bytes contain the load-bearing `.mode-owner` selectors
+    // protects against an accidental drop from the concat list when the
+    // dashboard is restructured.
+    let s = spawn_server("owner");
+    let r = http()
+        .get(format!("{}/app.css", s.base_url()))
+        .send()
+        .expect("GET /app.css");
+    assert_eq!(r.status().as_u16(), 200);
+    let css = r.text().expect("css body");
+    for needle in &[
+        ".mode-owner #account-pill",
+        ".mode-owner #auth-modal",
+        ".mode-owner #library-scope-bar",
+        ".mode-owner #market-community-pane",
+        ":has(#admin-users-rows)",
+    ] {
+        assert!(
+            css.contains(needle),
+            "/app.css missing `{needle}` — 13-owner-mode.css must be in APP_CSS concat"
+        );
+    }
+}
+
 #[test]
 fn team_me_with_bearer_returns_mode_team() {
     let s = spawn_server("team");
