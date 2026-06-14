@@ -1,45 +1,101 @@
 # Setup
 
-新人从零上手 runai。所有命令直接复制粘贴。
+新人从零上手 runai。命令直接复制粘贴。
 
-## 装客户端 / 配置 hook
+<!-- runai:user-only-start -->
 
-远程用户没装 runai binary,curl 一行装好(自动写 `~/.runai-identity`、配 Claude Code UserPromptSubmit hook)。
+## 装客户端 + 配 hook(用户必装)
 
-```bash
-curl -fsSL http://<server>:<port>/install | bash
-```
-
-非交互(免 TTY,适合脚本):
+把你这台 Claude Code 接到 runai 服务器,自动写 `~/.runai-identity` + 配 UserPromptSubmit hook。
 
 ```bash
-curl -fsSL http://<server>:<port>/install | RUNAI_USERNAME=alice RUNAI_PASSWORD='your-pw' bash
+curl -fsSL {SERVER_URL}/install | bash
 ```
 
-## 装 skill 到公共池(CLI)
+非交互(脚本里用):
 
-本机有 runai binary,装到所有人共享的公共池。
+```bash
+curl -fsSL {SERVER_URL}/install | RUNAI_USERNAME=your-name RUNAI_PASSWORD='your-pw' bash
+```
+
+## 装 skill 到「我的库」
+
+仪表板顶栏 → Market → 搜索 / 浏览 → 点「安装到我的库」。落到你自己的私有池,自动订阅。
+
+## 移出「我的库」
+
+仪表板 Library → 进入选中模式 → 勾 skill → 点「移出我的库」。只取消订阅,skill 本体仍在,可随时重装。
+
+## 上传 skill 到社区市场
+
+`runai-client` 是 install 脚本装到 `~/.local/bin/` 的客户端,不需要装 runai binary。
+
+```bash
+runai-client upload
+```
+
+非交互:
+
+```bash
+runai-client upload --path ./my-skill --name my-skill
+```
+
+浏览社区池 / 装别人上传的 skill:
+
+```bash
+runai-client list --sort installs
+runai-client install <uploader_uid> <skill_name>
+```
+
+## 装失败常见解法
+
+```bash
+# CDN 全 404 时跳过镜像,直连 raw.githubusercontent
+RUNAI_GH_MIRROR=raw runai-client install <uploader_uid> <skill_name>
+```
+
+```bash
+# 验证仓库 SKILL.md 真的存在
+curl -I https://raw.githubusercontent.com/<owner>/<repo>/main/SKILL.md
+```
+
+<!-- runai:user-only-end -->
+
+<!-- runai:admin-only-start -->
+
+## 启动 server
+
+owner 模式(单机自用,免登录):
+
+```bash
+runai server --mode owner --host 127.0.0.1 --port 17888
+```
+
+team 模式(对外开放,要 TLS):
+
+```bash
+runai server --mode team --host 127.0.0.1 --port 17888
+runai server --mode team --host 0.0.0.0 --port 17888 --tls-cert ./cert.pem --tls-key ./key.pem
+```
+
+## 装 skill 到公共池(所有人共享)
 
 ```bash
 runai install owner/repo
 runai install owner/repo@branch
 ```
 
-## 装 skill 到「我的库」(仪表板)
+## 移到垃圾桶 / 卸载
 
-仪表板顶栏 → Market → 搜索或浏览 → 点「安装到我的库」。落到当前登录用户的私有池,自动订阅到「我的库」。
+仪表板 Library 进选中模式 → 勾 skill → 点红色「移到垃圾桶」(可批量,可恢复)。
 
-## 移出 / 卸载
-
-仪表板 Library → 进入选中模式 → 勾 skill → 点「移出我的库」(只是取消订阅,skill 本体不动)。
-
-软删除到垃圾桶(可恢复):
+CLI 单删:
 
 ```bash
 runai uninstall <name>
 ```
 
-垃圾桶管理:
+## 垃圾桶管理
 
 ```bash
 runai trash list
@@ -48,31 +104,7 @@ runai trash purge <name>
 runai trash empty
 ```
 
-## 上传 skill 到社区市场(team 模式)
-
-本机 binary:
-
-```bash
-runai community upload --path ./my-skill --name my-skill
-```
-
-远程用户(install 脚本会在 `~/.local/bin/` 放一个 `runai-client`):
-
-```bash
-runai-client upload                                    # TUI,fzf 选 skill
-runai-client upload --path ./my-skill --name my-skill  # 非交互
-```
-
-浏览社区池并装到自己私有池:
-
-```bash
-runai community list --sort installs
-runai community install <uploader_uid> <skill_name>
-```
-
-## 装失败排错
-
-仓库 SKILL.md 不在默认探测路径(`<name>/SKILL.md`、`skills/<name>/SKILL.md`、`agent-skills/<name>/SKILL.md`、根 `SKILL.md`),或 CDN 镜像全 404。
+## 装失败完整排错
 
 ```bash
 # 跳过 jsdelivr / ghfast.top,直连 raw.githubusercontent
@@ -80,24 +112,37 @@ RUNAI_GH_MIRROR=raw runai install owner/repo
 ```
 
 ```bash
-# 私有仓库 / GitHub API 限流(无 token 60 req/h)
+# 私有仓库 / GitHub API 限流(无 token 60 req/h,有 token 5000 req/h)
 GITHUB_TOKEN=ghp_xxx runai install owner/repo
 ```
 
 ```bash
 # 验证仓库 SKILL.md 真的存在
-curl -I https://raw.githubusercontent.com/owner/repo/main/SKILL.md
+curl -I https://raw.githubusercontent.com/<owner>/<repo>/main/SKILL.md
 ```
 
 ```bash
-# 刷新市场缓存
+# 刷新市场缓存(skills.sh leaderboard + sitemap)
 runai market --search <skill-name>
 ```
 
-## 三个池子的区别
+## admin 管理用户
+
+仪表板顶栏 → Admin → 用户管理(列表 / 启用禁用 / 提升 admin / 删除)。
+仪表板 Library → 「用户库」sub-tab → 看每个非 admin 用户的私有 + 导入。
+
+## 升级 binary
+
+```bash
+cargo install --path . --force
+```
+
+<!-- runai:admin-only-end -->
+
+## 三个池子(所有人都该懂)
 
 - **公共池** — 所有人可见,`runai install` 默认落点,本机 `~/.claude/skills/` 有 symlink。
 - **私有池** — 仅本人可见,仪表板 Market 安装的落点,跨用户隔离。
-- **我的库** — 订阅列表,`/recommend` hook 默认只在这里挑候选。
+- **我的库** — 订阅列表(只是指针),`/recommend` hook 默认只在这里挑候选。
 
 让 hook 在公共池里也能选:仪表板 Settings → 我的偏好 → 打开 `allow_public_recommend`。

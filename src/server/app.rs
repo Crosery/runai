@@ -5,7 +5,7 @@ use anyhow::{Context, Result, bail};
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, State},
-    http::{StatusCode, header},
+    http::{HeaderMap, StatusCode, header},
     middleware as axum_middleware,
     response::{IntoResponse, Response},
     routing::{any, delete, get, post},
@@ -425,8 +425,63 @@ async fn serve_app_js() -> Response {
 async fn serve_app_css() -> Response {
     static_response(APP_CSS, "text/css; charset=utf-8")
 }
-async fn serve_setup_md() -> Response {
-    static_response(SETUP_MD, "text/markdown; charset=utf-8")
+/// GET /setup.md — Setup tab content, rendered per request because:
+///   1. `{SERVER_URL}` placeholder is substituted with the actual request
+///      origin so users can copy-paste the commands verbatim.
+///   2. ADMIN-only / USER-only marker sections are stripped based on who
+///      is asking — owner mode synthetic owner + team-mode admin see the
+///      admin variant (启动 server + 公共池 + 垃圾桶 + 用户管理); team-
+///      mode regular user + anonymous see the user variant (装客户端 +
+///      配 hook + 装到「我的库」+ 上传社区).
+async fn serve_setup_md(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    let body = tokio::task::spawn_blocking(move || -> String {
+        let is_admin = state
+            .db()
+            .ok()
+            .and_then(|db| super::state::current_user(&headers, &db).ok().flatten())
+            .map(|u| u.is_admin)
+            .unwrap_or(false);
+        let server_url = super::recommend::guess_server_url(&headers);
+        let mut md = SETUP_MD.replace("{SERVER_URL}", &server_url);
+        let drop = if is_admin { "user-only" } else { "admin-only" };
+        md = strip_setup_marker_section(&md, drop);
+        md
+    })
+    .await
+    .unwrap_or_else(|_| String::new());
+    dynamic_response(body, "text/markdown; charset=utf-8")
+}
+
+/// Strip the `<!-- runai:<drop_audience>-start --> ... <!-- end -->` block
+/// PLUS every other `<!-- runai:* -->` marker line that survived (keep-side
+/// markers), so the rendered markdown never shows raw HTML comments. The
+/// matcher is line-anchored (trimmed) — a marker buried in a paragraph
+/// wouldn't be a real marker anyway.
+fn strip_setup_marker_section(md: &str, drop_audience: &str) -> String {
+    let drop_begin = format!("<!-- runai:{drop_audience}-start -->");
+    let drop_end = format!("<!-- runai:{drop_audience}-end -->");
+    let mut out = String::with_capacity(md.len());
+    let mut in_drop = false;
+    for line in md.split('\n') {
+        let t = line.trim();
+        if t == drop_begin {
+            in_drop = true;
+            continue;
+        }
+        if t == drop_end {
+            in_drop = false;
+            continue;
+        }
+        if in_drop {
+            continue;
+        }
+        if t.starts_with("<!-- runai:") && t.ends_with("-->") {
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
 }
 
 fn static_response(body: &'static str, content_type: &'static str) -> Response {

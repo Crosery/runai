@@ -141,29 +141,43 @@
     return out.join('\n');
   }
 
-  let setupLoaded = false;
+  // No cache: the server tailors /setup.md per user (admin vs user vs
+  // anonymous) AND substitutes {SERVER_URL} per request, so a stale copy
+  // after login/logout would show the wrong commands. Re-fetching on
+  // every nav to #/setup is one tiny markdown body — not worth caching.
   async function loadSetup() {
-    if (setupLoaded) return;
     const el = $('#setup-content');
     if (!el) return;
+    el.innerHTML = '<p class="muted">加载中 …</p>';
     try {
       const res = await fetch('/setup.md', { credentials: 'same-origin' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const md = await res.text();
       el.innerHTML = setupMdToHtml(md);
       attachCopyButtons(el);
-      setupLoaded = true;
     } catch (e) {
       el.innerHTML = `<p class="muted">Setup 加载失败:${escapeHTML(e.message)}</p>`;
     }
   }
 
+  // SVG icons — kept inline so they ship with the bundle (no extra
+  // network round-trip). 14x14 viewBox lines up with the .copy-btn slot.
+  const COPY_ICON_SVG =
+    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<rect x="5" y="5" width="9" height="9" rx="1.5"/>' +
+    '<path d="M11 5V2.5A1 1 0 0 0 10 1.5H2.5A1 1 0 0 0 1.5 2.5V10A1 1 0 0 0 2.5 11H5"/>' +
+    '</svg>';
+  const CHECK_ICON_SVG =
+    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<path d="M3 8L7 12L13 4"/>' +
+    '</svg>';
+
   // Inject a copy button into every `<pre><code>` block so users can grab
-  // the command without selecting text. Uses the async clipboard API; falls
-  // back to `document.execCommand('copy')` on the rare browser that still
-  // lacks it (older Safari in non-secure contexts). The button label flips
-  // to a success state for 1.5s before reverting so the click registers
-  // visibly without a modal toast.
+  // the command without selecting text. Uses the async clipboard API;
+  // falls back to `document.execCommand('copy')` on the rare browser that
+  // still lacks it (older Safari in non-secure contexts). The button icon
+  // flips to a green check for 1.5s before reverting so the click
+  // registers visibly without a modal toast.
   function attachCopyButtons(container) {
     container.querySelectorAll('pre').forEach((pre) => {
       if (pre.querySelector('.copy-btn')) return;
@@ -172,7 +186,9 @@
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'copy-btn';
-      btn.textContent = '复制';
+      btn.title = '复制';
+      btn.setAttribute('aria-label', '复制命令');
+      btn.innerHTML = COPY_ICON_SVG;
       btn.addEventListener('click', async (ev) => {
         ev.stopPropagation();
         const text = code.innerText;
@@ -189,17 +205,16 @@
             document.execCommand('copy');
             document.body.removeChild(ta);
           }
-          btn.textContent = '已复制';
+          btn.innerHTML = CHECK_ICON_SVG;
           btn.classList.add('copied');
+          btn.title = '已复制';
           setTimeout(() => {
-            btn.textContent = '复制';
+            btn.innerHTML = COPY_ICON_SVG;
             btn.classList.remove('copied');
+            btn.title = '复制';
           }, 1500);
         } catch (e) {
-          btn.textContent = '复制失败';
-          setTimeout(() => {
-            btn.textContent = '复制';
-          }, 1500);
+          btn.title = '复制失败';
         }
       });
       pre.appendChild(btn);
