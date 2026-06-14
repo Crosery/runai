@@ -123,6 +123,12 @@ pub async fn serve_with(
 ) -> Result<()> {
     server_mode::validate_startup(mode, host, tls_cert.as_deref(), tls_key.as_deref())?;
 
+    // PLANNING §1.1: stash the runtime mode into the process-global atomic
+    // so `state::current_user` / `private_data_locked` / `auth::api_me` /
+    // `serve_index` can short-circuit without threading `mode` through
+    // every wrapper signature.
+    super::state::set_server_mode(mode);
+
     let paths = AppPaths::default_path();
     let state = Arc::new(AppState {
         db_path: paths.db_path(),
@@ -377,9 +383,21 @@ async fn serve_index() -> Response {
     // string so cached entries from a prior server boot can never satisfy
     // a request for this boot's assets.
     let bid = build_id();
-    let patched = INDEX_HTML
+    let mut patched = INDEX_HTML
         .replace("\"/app.css\"", &format!("\"/app.css?v={bid}\""))
         .replace("\"/app.js\"", &format!("\"/app.js?v={bid}\""));
+    // PLANNING §1.1: owner mode dashboard cut. Inject a `mode-owner` body
+    // class so the bundled CSS can hide the team-only chrome (account
+    // pill, login modal, scope segments, userlib tab, community tab, the
+    // admin user-management pane). Team mode body class is left untouched
+    // so existing rendering is byte-identical (regression-safe).
+    if super::state::server_mode() == ServerMode::Owner {
+        patched = patched.replacen(
+            "<body class=\"theme-github\"",
+            "<body class=\"theme-github mode-owner\"",
+            1,
+        );
+    }
     dynamic_response(patched, "text/html; charset=utf-8")
 }
 async fn serve_app_js() -> Response {

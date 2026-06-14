@@ -19,7 +19,7 @@ use crate::core::auth as authmod;
 use crate::core::server_mode::ServerMode;
 
 use super::error::ApiError;
-use super::state::{AppState, require_user};
+use super::state::{AppState, require_user, server_mode};
 
 #[derive(Deserialize)]
 pub(super) struct RegisterReq {
@@ -229,9 +229,20 @@ pub(super) struct MeResp {
     username: String,
     is_admin: bool,
     library_size: usize,
+    /// Runtime server mode (`"owner"` or `"team"`). Frontend reads this on
+    /// boot to set the `mode-owner` body class and skip the login UI when
+    /// the server runs in single-user self-serve mode. PLANNING §1.1.
+    mode: String,
 }
 
 /// GET /api/me — current user info. 401 when unauthenticated.
+///
+/// Owner-mode short circuit: `require_user` returns the synthetic owner
+/// identity via `state::current_user` regardless of credential, so this
+/// endpoint succeeds with `is_admin: true` + `library_size: 0` on every
+/// owner-mode request. The synthetic `user_id = "owner"` is a reserved
+/// sentinel — `library_count` on it returns 0 because the row doesn't
+/// exist in `users` table.
 pub(super) async fn api_me(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -239,12 +250,18 @@ pub(super) async fn api_me(
     let resp = tokio::task::spawn_blocking(move || -> Result<MeResp, ApiError> {
         let db = state.db().map_err(ApiError::Internal)?;
         let u = require_user(&headers, &db)?;
-        let size = db.library_count(&u.user_id).map_err(ApiError::Internal)?;
+        // Synthetic owner has no DB row → library_count would fail; default to 0.
+        let size = if u.user_id == "owner" {
+            0
+        } else {
+            db.library_count(&u.user_id).map_err(ApiError::Internal)?
+        };
         Ok(MeResp {
             user_id: u.user_id,
             username: u.username,
             is_admin: u.is_admin,
             library_size: size,
+            mode: server_mode().as_str().to_string(),
         })
     })
     .await

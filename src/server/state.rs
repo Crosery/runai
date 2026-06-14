@@ -9,12 +9,62 @@
 use anyhow::Result;
 use axum::http::{HeaderMap, header};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use crate::core::auth as authmod;
 use crate::core::db::{Database, User};
 use crate::core::server_mode::ServerMode;
 
 use super::error::ApiError;
+
+/// Process-global runtime server mode. Set once at `serve_with` boot, read
+/// by `current_user` / `private_data_locked` / `app.rs::serve_index` /
+/// `auth.rs::api_me`. The atomic-vs-`AppState` split keeps the 41
+/// `require_user` / `require_admin` / `current_owner_id` call sites
+/// unchanged — those auth helpers can short-circuit on mode without
+/// requiring every downstream signature to thread `mode: ServerMode`
+/// through. PLANNING §1.1 dashboard-cut path.
+///
+/// Encoding: `0` = `Owner` (default — matches `ServerMode::default()`
+/// so an unset atomic still behaves correctly), `1` = `Team`.
+static SERVER_MODE_VAL: AtomicU8 = AtomicU8::new(0);
+
+pub(super) fn set_server_mode(mode: ServerMode) {
+    let v = match mode {
+        ServerMode::Owner => 0,
+        ServerMode::Team => 1,
+    };
+    SERVER_MODE_VAL.store(v, Ordering::SeqCst);
+}
+
+pub(super) fn server_mode() -> ServerMode {
+    match SERVER_MODE_VAL.load(Ordering::SeqCst) {
+        0 => ServerMode::Owner,
+        _ => ServerMode::Team,
+    }
+}
+
+/// Synthetic implicit-admin identity used when owner mode skips real auth.
+/// Never persisted to the DB — `user_id = "owner"` is a reserved sentinel
+/// that downstream helpers (`require_user` / `require_admin` /
+/// `current_owner_id` / `resolve_view_user`) treat as a logged-in admin
+/// without ever calling into `users` table lookup.
+///
+/// PLANNING §1.1 owner-mode dashboard cut: this lets the single-user
+/// self-serve deployment skip the login modal + render the implicit-admin
+/// view straight away, while the 41 auth call sites stay untouched.
+fn synthetic_owner() -> User {
+    User {
+        user_id: "owner".to_string(),
+        username: "owner".to_string(),
+        password_hash: String::new(),
+        api_key_hash: String::new(),
+        is_admin: true,
+        disabled: false,
+        prefs_json: String::new(),
+        created_at: 0,
+    }
+}
 
 /// Shared state for handlers. Holds only the DB path (and AppPaths if needed
 /// later for other resources) — rusqlite `Connection` is `!Sync`, so each
@@ -47,7 +97,16 @@ impl AppState {
 /// Resolve the current user from request headers. Returns None when no
 /// credential is presented, or when the credential doesn't match any
 /// non-disabled user. Used by every authenticated route.
+///
+/// Owner-mode short circuit (PLANNING §1.1): when the server boots in
+/// `owner` mode, this returns a `Some(synthetic_owner())` regardless of
+/// whether any credential is supplied. The local user is the implicit
+/// admin of their own single-user deployment — there is no login flow,
+/// no second user, no notion of "anonymous" access at this layer.
 pub(super) fn current_user(headers: &HeaderMap, db: &Database) -> Result<Option<User>> {
+    if server_mode() == ServerMode::Owner {
+        return Ok(Some(synthetic_owner()));
+    }
     // 1. Bearer header (hook path)
     let auth = headers
         .get(header::AUTHORIZATION)
@@ -143,6 +202,12 @@ pub(super) fn require_admin(headers: &HeaderMap, db: &Database) -> Result<User, 
 /// when an owner-mode server has been running and accumulating events
 /// without ever registering a user.
 pub(super) fn private_data_locked(db: &Database) -> bool {
+    // Owner-mode short circuit (PLANNING §1.1): the local user is the
+    // implicit admin of their own deployment, so the carve-out is
+    // permanent — they read all telemetry without ever needing to log in.
+    if server_mode() == ServerMode::Owner {
+        return false;
+    }
     if db
         .list_users()
         .map_err(|_| ())
