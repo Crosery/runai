@@ -11,6 +11,26 @@
   display: none;
 }
 
+/* ──────────────────────────────────────────────────────────────────────
+ *  admin 已安装 tab 内的「我的库」操作面也是噪音
+ *
+ *  Bulk buttons 「加入我的库」/「移出我的库」对 admin 无意义 —
+ *  admin 的「库」就是公共池,加入 / 移出语义不对位。隐藏。
+ *
+ *  Library quick actions 「从 GitHub 导入(到我的库)」/「一键填充
+ *  top 50」/「从使用记录导入」/「清空我的库」对 admin 全部无意义,
+ *  整段 hide。admin 装公共 skill 走 Market tab 的 + GitHub 入口。
+ *
+ *  保留:`#select-mode-btn` / `#bulk-select-all` / `#bulk-clear-sel` /
+ *  `#bulk-sel-count`(全选 / 取消全选 / 已选 N)。下一波 C7b/C7c 会
+ *  在这同一行加 admin 专用的「移到垃圾桶」批量按钮。
+ * ──────────────────────────────────────────────────────────────────── */
+body.is-admin:not(.mode-owner) #bulk-add,
+body.is-admin:not(.mode-owner) #bulk-remove,
+body.is-admin:not(.mode-owner) #library-quick-actions {
+  display: none !important;
+}
+
 /* …unhide for an admin (in any mode that isn't owner). */
 body.is-admin:not(.mode-owner) .lib-sub.admin-only {
   display: inline;
