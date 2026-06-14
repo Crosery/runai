@@ -17,6 +17,8 @@ use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+use crate::core::paths::AppPaths;
+
 use super::error::ApiError;
 use super::state::{AppState, require_admin};
 
@@ -152,6 +154,211 @@ pub(super) async fn api_admin_users_update(
 pub(super) struct AdminDeleteResp {
     user_id: String,
     deleted_library: usize,
+}
+
+// ─── publish-request workflow (PLANNING §1.4 C9d) ───────────────────────
+
+#[derive(Serialize)]
+pub(super) struct AdminPublishRow {
+    resource_id: String,
+    name: String,
+    description: String,
+    owner_user_id: String,
+    /// Username denormalized from users.username for the dashboard so the
+    /// admin doesn't have to second-look-up an opaque user_id.
+    uploader_username: String,
+    /// Unix seconds when the row was uploaded (resources.installed_at).
+    uploaded_at: i64,
+    /// AI-generated summary content (whatever `recommend enrich` wrote).
+    /// Empty string if enrich never landed — the publish-request gate
+    /// would have rejected the request, so empty summaries shouldn't
+    /// appear in pending listings, but defensively render the empty case.
+    ai_summary: String,
+}
+
+#[derive(Serialize)]
+pub(super) struct AdminPublishListResp {
+    total: usize,
+    items: Vec<AdminPublishRow>,
+}
+
+/// GET /api/admin/publish-requests — list every private skill in the
+/// `pending` publish_status. Joins users to surface the uploader's
+/// username + ai_summary so the admin has enough context to approve /
+/// reject without a follow-up round trip. Sorted by upload time desc.
+pub(super) async fn api_admin_publish_list(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<AdminPublishListResp>, ApiError> {
+    let resp = tokio::task::spawn_blocking(move || -> Result<AdminPublishListResp, ApiError> {
+        let db = state.db().map_err(ApiError::Internal)?;
+        require_admin(&headers, &db)?;
+        let mut stmt = db
+            .conn_ref()
+            .prepare(
+                "SELECT r.id, r.name, COALESCE(r.description, ''), r.owner_user_id, \
+                        COALESCE(u.username, ''), r.installed_at, \
+                        COALESCE(s.summary, '') \
+                 FROM resources r \
+                 LEFT JOIN users u ON u.user_id = r.owner_user_id \
+                 LEFT JOIN resource_ai_summary s ON s.name = r.name \
+                 WHERE r.publish_status = 'pending' AND r.kind = 'skill' \
+                 ORDER BY r.installed_at DESC",
+            )
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?;
+        let items: Vec<AdminPublishRow> = stmt
+            .query_map([], |row| {
+                Ok(AdminPublishRow {
+                    resource_id: row.get::<_, String>(0)?,
+                    name: row.get::<_, String>(1)?,
+                    description: row.get::<_, String>(2)?,
+                    owner_user_id: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                    uploader_username: row.get::<_, String>(4)?,
+                    uploaded_at: row.get::<_, i64>(5)?,
+                    ai_summary: row.get::<_, String>(6)?,
+                })
+            })
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?;
+        Ok(AdminPublishListResp {
+            total: items.len(),
+            items,
+        })
+    })
+    .await
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))??;
+    Ok(Json(resp))
+}
+
+#[derive(Serialize)]
+pub(super) struct AdminPublishActionResp {
+    resource_id: String,
+    publish_status: String,
+}
+
+/// Recursive directory copy. Used by approve to clone the private skill
+/// tree into the community pool without depending on a `cp` subprocess.
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let path = entry.path();
+        let target = dst.join(entry.file_name());
+        if path.is_dir() {
+            copy_dir_recursive(&path, &target)?;
+        } else {
+            std::fs::copy(&path, &target)?;
+        }
+    }
+    Ok(())
+}
+
+/// POST /api/admin/publish-requests/{resource_id}/approve — admin signs
+/// off on a pending publish-request:
+///   1. Copy `<data>/users/<uid>/skills/<name>/` → `<data>/community/<uid>/<name>/`
+///   2. Upsert a `community_skills` row with a monotonic version.
+///   3. Flip publish_status pending → approved (clearing publish_reason).
+///
+/// 404 when the resource_id doesn't exist; 400 when the resource isn't
+/// in `pending` state (drafts can't skip the user submission step, and
+/// re-approving is a no-op the caller would benefit from knowing about).
+pub(super) async fn api_admin_publish_approve(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(resource_id): Path<String>,
+) -> Result<Json<AdminPublishActionResp>, ApiError> {
+    let resp = tokio::task::spawn_blocking(move || -> Result<AdminPublishActionResp, ApiError> {
+        let db = state.db().map_err(ApiError::Internal)?;
+        require_admin(&headers, &db)?;
+        let res = db
+            .get_resource(&resource_id)
+            .map_err(ApiError::Internal)?
+            .ok_or(ApiError::NotFound)?;
+        if res.publish_status != "pending" {
+            return Err(ApiError::BadRequest(format!(
+                "resource is in publish_status='{}', only 'pending' rows can be approved",
+                res.publish_status
+            )));
+        }
+        let owner = res.owner_user_id.clone().ok_or_else(|| {
+            ApiError::BadRequest("public-pool row has no owner to publish".into())
+        })?;
+
+        let data_root = state
+            .db_path
+            .parent()
+            .expect("db_path has parent")
+            .to_path_buf();
+        let paths = AppPaths::with_base(data_root);
+        let dst = paths
+            .community_skill_dir(&owner, &res.name)
+            .map_err(ApiError::Internal)?;
+        if dst.exists() {
+            std::fs::remove_dir_all(&dst).map_err(|e| ApiError::Internal(e.into()))?;
+        }
+        copy_dir_recursive(&res.directory, &dst).map_err(|e| ApiError::Internal(e.into()))?;
+
+        let version = format!("v{}", chrono::Utc::now().timestamp());
+        db.upsert_community_skill(&owner, &res.name, &version)
+            .map_err(ApiError::Internal)?;
+
+        db.set_publish_status_with_reason(&resource_id, "approved", None)
+            .map_err(ApiError::Internal)?;
+
+        Ok(AdminPublishActionResp {
+            resource_id,
+            publish_status: "approved".to_string(),
+        })
+    })
+    .await
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))??;
+    Ok(Json(resp))
+}
+
+#[derive(Deserialize)]
+pub(super) struct AdminPublishRejectReq {
+    reason: String,
+}
+
+/// POST /api/admin/publish-requests/{resource_id}/reject — admin declines
+/// the pending request and records a free-text reason the user can read
+/// from list-mine. Flips pending → rejected; non-pending rows return 400.
+pub(super) async fn api_admin_publish_reject(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(resource_id): Path<String>,
+    Json(req): Json<AdminPublishRejectReq>,
+) -> Result<Json<AdminPublishActionResp>, ApiError> {
+    let resp = tokio::task::spawn_blocking(move || -> Result<AdminPublishActionResp, ApiError> {
+        let db = state.db().map_err(ApiError::Internal)?;
+        require_admin(&headers, &db)?;
+        let res = db
+            .get_resource(&resource_id)
+            .map_err(ApiError::Internal)?
+            .ok_or(ApiError::NotFound)?;
+        if res.publish_status != "pending" {
+            return Err(ApiError::BadRequest(format!(
+                "resource is in publish_status='{}', only 'pending' rows can be rejected",
+                res.publish_status
+            )));
+        }
+        let reason = req.reason.trim();
+        if reason.is_empty() {
+            return Err(ApiError::BadRequest(
+                "reject reason cannot be empty — give the user something to act on".into(),
+            ));
+        }
+        db.set_publish_status_with_reason(&resource_id, "rejected", Some(reason))
+            .map_err(ApiError::Internal)?;
+        Ok(AdminPublishActionResp {
+            resource_id,
+            publish_status: "rejected".to_string(),
+        })
+    })
+    .await
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))??;
+    Ok(Json(resp))
 }
 
 // ─── admin batch trash (public pool maintenance) ────────────────────────

@@ -58,6 +58,23 @@ impl Database {
         Ok(n > 0)
     }
 
+    /// Same as `set_publish_status` but also stores a free-text reason in
+    /// `publish_reason`. Used by admin reject (to record why) and by
+    /// admin approve (which can clear any leftover rejection reason).
+    /// Pass `reason = None` to clear the column.
+    pub fn set_publish_status_with_reason(
+        &self,
+        resource_id: &str,
+        status: &str,
+        reason: Option<&str>,
+    ) -> Result<bool> {
+        let n = self.conn.execute(
+            "UPDATE resources SET publish_status = ?1, publish_reason = ?2 WHERE id = ?3",
+            params![status, reason, resource_id],
+        )?;
+        Ok(n > 0)
+    }
+
     /// Collapse duplicate skill rows that share the same `name`.
     ///
     /// Background: a skill can accumulate multiple DB rows over time (e.g.

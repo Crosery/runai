@@ -20,6 +20,7 @@ use crate::core::server_mode::{self, ServerMode};
 use super::middleware::rate_limit;
 
 use super::admin::{
+    api_admin_publish_approve, api_admin_publish_list, api_admin_publish_reject,
     api_admin_skills_trash, api_admin_userlib_detail, api_admin_userlib_list,
     api_admin_users_delete, api_admin_users_list, api_admin_users_update,
 };
@@ -233,6 +234,18 @@ pub async fn serve_with(
         // Returns 200 with per-name failed list rather than aborting on the
         // first unknown name so the dashboard can render outcomes per row.
         .route("/api/admin/skills/trash", post(api_admin_skills_trash))
+        // PLANNING §1.4 C9d — admin reviews pending publish-requests,
+        // either approves (copies to community pool) or rejects (with
+        // a reason the user can see in list-mine).
+        .route("/api/admin/publish-requests", get(api_admin_publish_list))
+        .route(
+            "/api/admin/publish-requests/{resource_id}/approve",
+            post(api_admin_publish_approve),
+        )
+        .route(
+            "/api/admin/publish-requests/{resource_id}/reject",
+            post(api_admin_publish_reject),
+        )
         // v15 marketplace: any logged-in user can browse / install. Newly
         // installed skills go to the public pool AND are auto-subscribed
         // to the installing user's library.
