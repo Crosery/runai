@@ -20,8 +20,8 @@ use crate::core::server_mode::{self, ServerMode};
 use super::middleware::rate_limit;
 
 use super::admin::{
-    api_admin_userlib_detail, api_admin_userlib_list, api_admin_users_delete, api_admin_users_list,
-    api_admin_users_update,
+    api_admin_skills_trash, api_admin_userlib_detail, api_admin_userlib_list,
+    api_admin_users_delete, api_admin_users_list, api_admin_users_update,
 };
 use super::auth::{api_login, api_logout, api_me, api_register};
 use super::community::{
@@ -224,6 +224,10 @@ pub async fn serve_with(
             "/api/admin/userlib/{user_id}",
             get(api_admin_userlib_detail),
         )
+        // PLANNING §1.6 Model B C7b: admin batch-trash public-pool skills.
+        // Returns 200 with per-name failed list rather than aborting on the
+        // first unknown name so the dashboard can render outcomes per row.
+        .route("/api/admin/skills/trash", post(api_admin_skills_trash))
         // v15 marketplace: any logged-in user can browse / install. Newly
         // installed skills go to the public pool AND are auto-subscribed
         // to the installing user's library.

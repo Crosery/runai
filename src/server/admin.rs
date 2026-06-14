@@ -154,6 +154,58 @@ pub(super) struct AdminDeleteResp {
     deleted_library: usize,
 }
 
+// ─── admin batch trash (public pool maintenance) ────────────────────────
+
+#[derive(Deserialize)]
+pub(super) struct AdminSkillsTrashReq {
+    /// Skill names to move to trash. Names are matched against the public
+    /// pool only (`SkillManager::find_resource_id` is public-pool-only by
+    /// design), so this CANNOT accidentally trash a private skill owned by
+    /// another user — admin's per-user delete path lives in the userlib
+    /// detail panel instead (PLANNING §1.6 Model B C6c/C6d).
+    names: Vec<String>,
+}
+
+#[derive(Serialize)]
+pub(super) struct AdminSkillsTrashResp {
+    trashed: usize,
+    failed: Vec<String>,
+}
+
+/// POST /api/admin/skills/trash — admin bulk-trash N public-pool skills
+/// in one call. Delegates to `SkillManager::batch_delete` so the per-name
+/// failure granularity (and the trash-not-hard-delete semantic) match the
+/// CLI / TUI / MCP flavors of the same operation. Returns `200` even when
+/// every name fails — the caller needs `failed` to render per-row outcomes
+/// on the dashboard.
+pub(super) async fn api_admin_skills_trash(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<AdminSkillsTrashReq>,
+) -> Result<Json<AdminSkillsTrashResp>, ApiError> {
+    let resp = tokio::task::spawn_blocking(move || -> Result<AdminSkillsTrashResp, ApiError> {
+        let db = state.db().map_err(ApiError::Internal)?;
+        require_admin(&headers, &db)?;
+        // Empty batch is a no-op rather than a 400 — callers will hit this
+        // when the user clicks "trash" with zero rows selected after a
+        // race against a concurrent refresh.
+        if req.names.is_empty() {
+            return Ok(AdminSkillsTrashResp {
+                trashed: 0,
+                failed: Vec::new(),
+            });
+        }
+        let manager = crate::core::manager::SkillManager::new().map_err(ApiError::Internal)?;
+        let (trashed, failed) = manager
+            .batch_delete(&req.names)
+            .map_err(ApiError::Internal)?;
+        Ok(AdminSkillsTrashResp { trashed, failed })
+    })
+    .await
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))??;
+    Ok(Json(resp))
+}
+
 // ─── userlib (Model B): list + detail ───────────────────────────────────
 
 #[derive(Serialize)]
