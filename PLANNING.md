@@ -273,6 +273,8 @@ skill 上传到社区市场前自动跑：SKILL.md 字段完整性、frontmatter
 - 启动期 `cleanup_orphan_library_entries`
 - `tests/multiuser_owner_e2e.rs` 6 个测试覆盖 owner-pool 契约
 - market dashboard 翻页闪烁修复（`fix/market-pagination-flicker` 分支，commit `2d2c01d`）
+- §1.1 owner 模式 dashboard 后端裁剪：进程级 `SERVER_MODE` atomic + `synthetic_owner()`（implicit admin sentinel `user_id="owner"`） + `state::current_user` owner 短路 + `state::private_data_locked` owner 恒 `false` + `MeResp.mode` 字段 + `serve_index` 注入 `body class="mode-owner"`；41 个 `require_user`/`require_admin`/`current_owner_id` 调用点零改动。`tests/server_mode_dashboard_e2e.rs` 7 fn 物理 e2e 守。
+- §1.1 owner 模式 dashboard 前端裁剪：`web/css/13-owner-mode.css` 一刀切 hide `#account-pill` / `#auth-modal` / `#library-scope-bar` / market 社区 tab btn / `#market-community-pane` / `#community-detail-modal` / `:has(#admin-users-rows)` 用户管理 section；保留路由总闸门 + 运营商配置（owner 本人隐式 admin）。`11-account-library.js::refreshMe` 每次同步 body `mode-owner` class；`12-admin-scope-skills.js::loadAdminUsers` owner 模式 short-circuit return。真浏览器渲染断言 spec 入 issue #20（Playwright harness 待重建）。
 
 ---
 
