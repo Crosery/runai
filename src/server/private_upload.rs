@@ -154,6 +154,81 @@ pub(super) async fn api_user_skills_upload(
 }
 
 #[derive(Serialize)]
+pub(super) struct MySkillRow {
+    name: String,
+    description: String,
+    uploaded_at: i64,
+    /// `"done"` (ai_summary present) or `"pending"` (waiting / failed).
+    /// MVP per PLANNING §1.4 C9e — distinguishes "still cooking" from
+    /// "ready to submit for publish".
+    enrich_status: String,
+    publish_status: String,
+    /// Set only when publish_status == "rejected". Free-text reason the
+    /// admin gave so the user knows what to fix before re-submitting.
+    publish_reason: Option<String>,
+}
+
+#[derive(Serialize)]
+pub(super) struct MySkillsResp {
+    total: usize,
+    items: Vec<MySkillRow>,
+}
+
+/// GET /api/users/me/skills — list every skill the caller owns
+/// (resources.owner_user_id = caller). Sorted by upload time desc so
+/// recent uploads appear first. Each row carries the publish workflow
+/// state (draft / pending / approved / rejected + reason) and the
+/// enrich status so the CLI / dashboard can render guidance like
+/// "still being summarized; can't publish yet".
+pub(super) async fn api_user_skills_list(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<MySkillsResp>, ApiError> {
+    let resp = tokio::task::spawn_blocking(move || -> Result<MySkillsResp, ApiError> {
+        let db = state.db().map_err(ApiError::Internal)?;
+        let user = require_user(&headers, &db)?;
+        let mut stmt = db
+            .conn_ref()
+            .prepare(
+                "SELECT r.name, COALESCE(r.description, ''), r.installed_at, \
+                        r.publish_status, r.publish_reason, COALESCE(s.summary, '') \
+                 FROM resources r \
+                 LEFT JOIN resource_ai_summary s ON s.name = r.name \
+                 WHERE r.owner_user_id = ?1 AND r.kind = 'skill' \
+                 ORDER BY r.installed_at DESC",
+            )
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?;
+        let items: Vec<MySkillRow> = stmt
+            .query_map(rusqlite::params![&user.user_id], |row| {
+                let summary: String = row.get(5)?;
+                let enrich_status = if summary.trim().is_empty() {
+                    "pending".to_string()
+                } else {
+                    "done".to_string()
+                };
+                Ok(MySkillRow {
+                    name: row.get::<_, String>(0)?,
+                    description: row.get::<_, String>(1)?,
+                    uploaded_at: row.get::<_, i64>(2)?,
+                    enrich_status,
+                    publish_status: row.get::<_, String>(3)?,
+                    publish_reason: row.get::<_, Option<String>>(4)?,
+                })
+            })
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?;
+        Ok(MySkillsResp {
+            total: items.len(),
+            items,
+        })
+    })
+    .await
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))??;
+    Ok(Json(resp))
+}
+
+#[derive(Serialize)]
 pub(super) struct PublishRequestResp {
     name: String,
     publish_status: String,
