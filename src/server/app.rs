@@ -441,7 +441,11 @@ async fn serve_setup_md(State(state): State<Arc<AppState>>, headers: HeaderMap) 
             .and_then(|db| super::state::current_user(&headers, &db).ok().flatten())
             .map(|u| u.is_admin)
             .unwrap_or(false);
-        let server_url = super::recommend::guess_server_url(&headers);
+        // Use the request origin verbatim (NOT guess_server_url) — see
+        // recommend::request_origin docs. The Setup reader is the curl
+        // client themself, so the URL that got them here is exactly the
+        // URL their copy-pasted commands must hit.
+        let server_url = super::recommend::request_origin(&headers);
         let mut md = SETUP_MD.replace("{SERVER_URL}", &server_url);
         let drop = if is_admin { "user-only" } else { "admin-only" };
         md = strip_setup_marker_section(&md, drop);

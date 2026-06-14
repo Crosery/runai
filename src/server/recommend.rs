@@ -209,6 +209,31 @@ pub(super) fn guess_server_url(headers: &HeaderMap) -> String {
     format!("{scheme}://{host}")
 }
 
+/// Setup-page variant of `guess_server_url`. Returns the request origin
+/// verbatim (scheme + Host header) — does NOT translate loopback to LAN
+/// IP, because the user reading the Setup tab IS the curl client. They
+/// got to the page via `127.0.0.1:17888`, so showing them
+/// `curl http://192.168.0.93:17888/install | bash` would fail when the
+/// server is bound to `127.0.0.1` (LAN IP isn't listening). Use Host
+/// header as-is: whatever URL got them here will work for the snippets
+/// they're about to copy-paste back into their own terminal.
+///
+/// `install.rs` keeps using `guess_server_url` because the install
+/// script is the OUTPUT — meant for OTHER machines that need a routable
+/// URL, not loopback. Setup is the INPUT view; loopback is fine because
+/// the reader is already on the loopback.
+pub(super) fn request_origin(headers: &HeaderMap) -> String {
+    let scheme = headers
+        .get("x-forwarded-proto")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("http");
+    let host = headers
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("127.0.0.1:17888");
+    format!("{scheme}://{host}")
+}
+
 #[derive(Deserialize)]
 pub(super) struct FeedbackBody {
     skill: String,

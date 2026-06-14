@@ -117,6 +117,33 @@ fn setup_md_substitutes_server_url_placeholder() {
     );
 }
 
+#[test]
+fn setup_md_uses_request_host_not_lan_ip() {
+    // The Setup tab is consumed by the SAME user who reached the
+    // dashboard — if they reached `127.0.0.1:17888`, the commands they
+    // copy must hit `127.0.0.1:17888`. The old guess_server_url
+    // translated loopback Host to LAN IP, which broke `curl` when the
+    // server was bound to loopback (LAN IP not listening). This pins
+    // the fix: setup substitution echoes the request host verbatim.
+    //
+    // Use team mode + anonymous so the user variant (which contains the
+    // {SERVER_URL} substitution in the curl install command) is what
+    // gets rendered.
+    let s = spawn_server("team");
+    let body = http()
+        .get(format!("{}/setup.md", s.base_url()))
+        .send()
+        .unwrap()
+        .text()
+        .unwrap();
+    let expected_origin = format!("http://127.0.0.1:{}", s.port);
+    assert!(
+        body.contains(&expected_origin),
+        "setup.md must contain the request origin verbatim ({expected_origin}); body excerpt: {}",
+        body.lines().take(20).collect::<Vec<_>>().join("\n")
+    );
+}
+
 // ─── owner mode → admin variant ─────────────────────────────────────
 
 #[test]

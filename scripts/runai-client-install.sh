@@ -209,6 +209,19 @@ if [[ "$DO_AUTH" -eq 1 ]]; then
   else
     printf "  ${D}new device — register or sign in to %s${R}\n" "$SERVER_URL"
 
+    # Early TTY guard: if both username + password env vars are unset AND
+    # stdin is a pipe (the classic `curl ... | bash` case), `read` will
+    # immediately return an empty string and the run will fail with the
+    # cryptic "username cannot be empty" message. Surface the real cause
+    # instead so the user knows how to fix it.
+    if [[ -z "${RUNAI_USERNAME:-}" || -z "${RUNAI_PASSWORD:-}" ]] && [[ ! -t 0 ]]; then
+      fail "stdin is a pipe — can't prompt for username / password"
+      printf "  ${D}use one of these forms instead:${R}\n\n"
+      printf "    ${B}bash <(curl -fsSL %s/install)${R}        # interactive prompt\n" "$SERVER_URL"
+      printf "    ${B}RUNAI_USERNAME=x RUNAI_PASSWORD=y curl -fsSL %s/install | bash${R}\n\n" "$SERVER_URL"
+      exit 1
+    fi
+
     # Username: env first, then TTY prompt. Env wins so RUNAI_USERNAME=x
     # works in CI / agent contexts where there is no terminal.
     if [[ -z "${RUNAI_USERNAME:-}" ]]; then

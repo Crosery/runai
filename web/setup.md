@@ -6,17 +6,27 @@
 
 ## 装客户端 + 配 hook(用户必装)
 
-把你这台 Claude Code 接到 runai 服务器,自动写 `~/.runai-identity` + 配 UserPromptSubmit hook。
+把你这台 Claude Code 接到 runai 服务器,自动写 `~/.runai-identity` + 配 UserPromptSubmit hook。脚本会先去 `~/.runai-identity` 复用 api_key,没有再 prompt 注册 / 登录。
+
+首次装(会提示输入用户名 + 密码):
 
 ```bash
-curl -fsSL {SERVER_URL}/install | bash
+bash <(curl -fsSL {SERVER_URL}/install)
 ```
 
-非交互(脚本里用):
+非交互(CI / 脚本 / 已有账号):
 
 ```bash
-curl -fsSL {SERVER_URL}/install | RUNAI_USERNAME=your-name RUNAI_PASSWORD='your-pw' bash
+RUNAI_USERNAME=your-name RUNAI_PASSWORD='your-pw' bash <(curl -fsSL {SERVER_URL}/install)
 ```
+
+重装 / 换机(`~/.runai-identity` 还在直接复用):
+
+```bash
+bash <(curl -fsSL {SERVER_URL}/install)
+```
+
+> 提示:不要用 `curl ... | bash` 形式 — pipe 占用 stdin 后 prompt 拿不到键盘,会报 `username cannot be empty`。如果一定要用 pipe,必须配 `RUNAI_USERNAME=` / `RUNAI_PASSWORD=` 环境变量。
 
 ## 装 skill 到「我的库」
 
