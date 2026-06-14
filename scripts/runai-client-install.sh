@@ -172,13 +172,25 @@ hr() {
 
 printf "\n"
 hr
-printf "${C1}┃${R}  ${B}runai${R} ${D}skill router${R}    ${D}client install${R}\n"
+printf "${C1}┃${R}  ${B}runai${R} ${D}skill router${R}    ${D}客户端安装${R}\n"
 hr
 printf "${D}  server   ${R}%s\n" "$SERVER_URL"
 printf "${D}  identity ${R}%s\n" "$IDENTITY_PATH"
 printf "${D}  hook     ${R}%s\n" "$HOOK_PATH"
 printf "${D}  config   ${R}%s\n" "$SETTINGS_PATH"
 hr
+printf "\n"
+
+# Disclosure — what this script will actually do, before it asks for a
+# password. Users have a right to know what their machine is signing up
+# for. Keep concise; long warnings get skipped over.
+printf "${C3}┃${R} ${B}本次安装会:${R}\n"
+printf "  1. 把用户名 / 密码发到 ${B}%s${R} 注册或登录 — 服务器只存 argon2 哈希\n" "$SERVER_URL"
+printf "  2. 把 api_key 写到 ${B}%s${R} (mode 600,${C4}内含明文密钥不要分享${R})\n" "$IDENTITY_PATH"
+printf "  3. 装 hook 脚本 ${B}%s${R} + 修改 Claude Code 的 ${B}%s${R}\n" "$HOOK_PATH" "$SETTINGS_PATH"
+printf "  4. 已有 ${B}%s${R} 直接复用,不会重复注册\n" "$IDENTITY_PATH"
+printf "\n"
+printf "${D}  Ctrl-C 随时退出。卸载:curl -fsSL %s/uninstall | bash${R}\n" "$SERVER_URL"
 printf "\n"
 
 # === RUNAI_SECTION:owner-only START ===
@@ -202,12 +214,12 @@ printf "\n"
 #    If ~/.runai-identity already exists with a valid key, skip the prompt
 #    entirely — re-running the installer should not force a re-login.
 if [[ "$DO_AUTH" -eq 1 ]]; then
-  step "1/3" "account setup"
+  step "1/3" "账号注册 / 登录"
   if [[ -f "$IDENTITY_PATH" ]] && grep -q '"api_key"' "$IDENTITY_PATH" 2>/dev/null; then
-    ok "found existing identity, reusing stored api_key"
-    printf "  ${D}(rm %s to switch user)${R}\n\n" "$IDENTITY_PATH"
+    ok "复用已有 ${B}$IDENTITY_PATH${R} 里的 api_key"
+    printf "  ${D}(想换账号 → rm %s 后重跑)${R}\n\n" "$IDENTITY_PATH"
   else
-    printf "  ${D}new device — register or sign in to %s${R}\n" "$SERVER_URL"
+    printf "  ${D}新机器 — 注册或登录到 %s${R}\n" "$SERVER_URL"
 
     # Early TTY guard: if both username + password env vars are unset AND
     # stdin is a pipe (the classic `curl ... | bash` case), `read` will
@@ -215,23 +227,23 @@ if [[ "$DO_AUTH" -eq 1 ]]; then
     # cryptic "username cannot be empty" message. Surface the real cause
     # instead so the user knows how to fix it.
     if [[ -z "${RUNAI_USERNAME:-}" || -z "${RUNAI_PASSWORD:-}" ]] && [[ ! -t 0 ]]; then
-      fail "stdin is a pipe — can't prompt for username / password"
-      printf "  ${D}use one of these forms instead:${R}\n\n"
-      printf "    ${B}bash <(curl -fsSL %s/install)${R}        # interactive prompt\n" "$SERVER_URL"
-      printf "    ${B}RUNAI_USERNAME=x RUNAI_PASSWORD=y curl -fsSL %s/install | bash${R}\n\n" "$SERVER_URL"
+      fail "stdin 是 pipe,拿不到键盘 — 没法 prompt 用户名 / 密码"
+      printf "  ${D}换成下面任一种形式重跑:${R}\n\n"
+      printf "    ${B}bash <(curl -fsSL %s/install)${R}        # 交互模式,会 prompt\n" "$SERVER_URL"
+      printf "    ${B}RUNAI_USERNAME=x RUNAI_PASSWORD=y curl -fsSL %s/install | bash${R}  # 非交互\n\n" "$SERVER_URL"
       exit 1
     fi
 
     # Username: env first, then TTY prompt. Env wins so RUNAI_USERNAME=x
     # works in CI / agent contexts where there is no terminal.
     if [[ -z "${RUNAI_USERNAME:-}" ]]; then
-      printf "  ${B}username${R}  "
+      printf "  ${B}用户名${R}  "
       read -r RUNAI_USERNAME
     else
-      ok "using RUNAI_USERNAME from env"
+      ok "用 RUNAI_USERNAME 环境变量"
     fi
     if [[ -z "${RUNAI_USERNAME// /}" ]]; then
-      fail "username cannot be empty (set RUNAI_USERNAME or answer the prompt)"
+      fail "用户名不能为空(设 RUNAI_USERNAME 或在 prompt 里输入)"
       exit 1
     fi
 
@@ -240,7 +252,7 @@ if [[ "$DO_AUTH" -eq 1 ]]; then
     # makes it impossible to tell whether a keypress registered, which
     # was the most common cause of "password too short" failures).
     if [[ -z "${RUNAI_PASSWORD:-}" ]]; then
-      printf "  ${B}password${R}  "
+      printf "  ${B}密码${R}    "
       RUNAI_PASSWORD=''
       while IFS= read -rsn1 _ch; do
         # Enter / EOF terminates input.
@@ -265,10 +277,10 @@ if [[ "$DO_AUTH" -eq 1 ]]; then
       unset _ch
       printf "\n"
     else
-      ok "using RUNAI_PASSWORD from env"
+      ok "用 RUNAI_PASSWORD 环境变量"
     fi
     if [[ -z "$RUNAI_PASSWORD" ]]; then
-      fail "password cannot be empty (set RUNAI_PASSWORD or answer the prompt)"
+      fail "密码不能为空(设 RUNAI_PASSWORD 或在 prompt 里输入)"
       exit 1
     fi
 
@@ -277,30 +289,30 @@ if [[ "$DO_AUTH" -eq 1 ]]; then
       "$(printf '%s' "$RUNAI_PASSWORD" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read())[1:-1])')")
 
     # Try login first. Any HTTP 2xx → logged in. Otherwise fall through to register.
-    warn "trying sign-in as ${B}${RUNAI_USERNAME}${R}"
+    warn "用 ${B}${RUNAI_USERNAME}${R} 登录中"
     LOGIN_HTTP=$(curl -s -o /tmp/runai-login-resp.$$ -w '%{http_code}' \
       -X POST "$SERVER_URL/auth/login" \
       -H 'Content-Type: application/json' \
       -d "$AUTH_BODY" || echo 000)
     if [[ "$LOGIN_HTTP" == "200" ]]; then
-      ok "signed in as ${B}${RUNAI_USERNAME}${R}"
+      ok "登录成功 — ${B}${RUNAI_USERNAME}${R}"
       RESP_FILE=/tmp/runai-login-resp.$$
     elif [[ "$LOGIN_ONLY" -eq 1 ]]; then
-      fail "sign-in failed (HTTP $LOGIN_HTTP) and --login-only is set"
+      fail "登录失败 (HTTP $LOGIN_HTTP),且 --login-only 已开,不自动注册"
       rm -f /tmp/runai-login-resp.$$
       exit 1
     else
-      warn "user does not exist, registering"
+      warn "账号不存在,改用注册流程"
       REG_HTTP=$(curl -s -o /tmp/runai-reg-resp.$$ -w '%{http_code}' \
         -X POST "$SERVER_URL/users/register" \
         -H 'Content-Type: application/json' \
         -d "$AUTH_BODY" || echo 000)
       if [[ "$REG_HTTP" == "201" || "$REG_HTTP" == "200" ]]; then
-        ok "registered ${B}${RUNAI_USERNAME}${R}"
+        ok "注册成功 — ${B}${RUNAI_USERNAME}${R}"
         RESP_FILE=/tmp/runai-reg-resp.$$
       else
-        fail "auth failed (login=$LOGIN_HTTP register=$REG_HTTP)"
-        printf "  ${D}server says:${R} " >&2
+        fail "登录 + 注册都失败 (login=$LOGIN_HTTP register=$REG_HTTP)"
+        printf "  ${D}server 返回:${R} " >&2
         cat /tmp/runai-reg-resp.$$ >&2 || true
         printf "\n" >&2
         rm -f /tmp/runai-login-resp.$$ /tmp/runai-reg-resp.$$
@@ -332,7 +344,7 @@ d['server'] = '$SERVER_URL'
 print(json.dumps(d, indent=2))" > "$IDENTITY_PATH"
     chmod 600 "$IDENTITY_PATH"
     rm -f /tmp/runai-login-resp.$$ /tmp/runai-reg-resp.$$
-    ok "wrote ${D}${IDENTITY_PATH}${R} ${D}(mode 600)${R}"
+    ok "已写入 ${D}${IDENTITY_PATH}${R} ${D}(mode 600)${R}"
   fi
   printf "\n"
 
@@ -350,7 +362,7 @@ print(json.dumps(d, indent=2))" > "$IDENTITY_PATH"
   #     the hook talks to plain HTTP. Documented compromise so loopback /
   #     owner-mode setups don't need TLS to function.
   if [[ "$SERVER_URL" == https://* ]]; then
-    warn "fetching server cert fingerprint for pinning"
+    warn "拉 server TLS 指纹做 pinning"
     FP_HTTP=$(curl -sS -o /tmp/runai-fp-resp.$$ -w '%{http_code}' \
       "$SERVER_URL/api/tls/fingerprint" 2>/dev/null || echo 000)
     if [[ "$FP_HTTP" == "200" ]]; then
@@ -361,7 +373,7 @@ try:
 except Exception:
   print('')" 2>/dev/null || true)
       if [[ -z "$FINGERPRINT" ]]; then
-        fail "server returned 200 but no fingerprint field — refusing to pin a blank"
+        fail "server 返回 200 但没 fingerprint 字段 — 不能 pin 空值"
         rm -f /tmp/runai-fp-resp.$$
         exit 1
       fi
@@ -370,9 +382,9 @@ import json
 out = {'version': 1, 'server': '$SERVER_URL', 'scheme': 'https', 'fingerprint': '$FINGERPRINT'}
 print(json.dumps(out, indent=2))" > "$SERVER_PIN_PATH"
       chmod 600 "$SERVER_PIN_PATH"
-      ok "pinned server fingerprint ${D}(${FINGERPRINT:0:16}…)${R}"
+      ok "已 pin server 指纹 ${D}(${FINGERPRINT:0:16}…)${R}"
     else
-      fail "could not fetch /api/tls/fingerprint (HTTP $FP_HTTP); aborting before any client config goes out"
+      fail "拉 /api/tls/fingerprint 失败 (HTTP $FP_HTTP);中断,客户端不写任何配置"
       rm -f /tmp/runai-fp-resp.$$
       exit 1
     fi
@@ -387,7 +399,7 @@ import json
 out = {'version': 1, 'server': '$SERVER_URL', 'scheme': 'http', 'fingerprint': None}
 print(json.dumps(out, indent=2))" > "$SERVER_PIN_PATH"
     chmod 600 "$SERVER_PIN_PATH"
-    warn "server is HTTP — no fingerprint pinning possible"
+    warn "server 走 HTTP — 没法做 TLS 指纹 pinning"
   fi
   printf "\n"
 fi
@@ -398,10 +410,10 @@ if [[ "$DO_HOOK" -eq 1 ]]; then
   # into the legacy unauth compat lane, which is not what --hook-only
   # callers want.
   if [[ "$DO_AUTH" -eq 0 && ! -f "$IDENTITY_PATH" ]]; then
-    fail "--hook-only requires an existing $IDENTITY_PATH; run without --hook-only first"
+    fail "--hook-only 需要先有 $IDENTITY_PATH;请先不带 --hook-only 跑一次"
     exit 1
   fi
-  step "2/3" "install hook wrapper"
+  step "2/3" "装 hook 脚本"
   # Reads api_key from ~/.runai-identity at
   #    runtime so the hook keeps working even if the identity gets rotated.
   #    Falls back gracefully when the file is missing or unreadable —
@@ -496,19 +508,19 @@ HOOK
   # above can stay literal and not require manual escaping of $RUNAI_SERVER).
   sed -i.bak "s|__SERVER_URL__|$SERVER_URL|" "$HOOK_PATH" && rm -f "$HOOK_PATH.bak"
   chmod +x "$HOOK_PATH"
-  ok "wrote ${D}${HOOK_PATH}${R}"
+  ok "已写入 ${D}${HOOK_PATH}${R}"
   printf "\n"
 fi
 
 if [[ "$DO_SETTINGS" -eq 1 ]]; then
-  step "3/3" "patch Claude Code settings"
+  step "3/3" "改 Claude Code settings.json"
   mkdir -p "$(dirname "$SETTINGS_PATH")"
   if [[ -f "$SETTINGS_PATH" ]]; then
     cp "$SETTINGS_PATH" "${SETTINGS_PATH}.runai-bak"
-    ok "backed up to ${D}${SETTINGS_PATH}.runai-bak${R}"
+    ok "已备份到 ${D}${SETTINGS_PATH}.runai-bak${R}"
   else
     echo '{}' > "$SETTINGS_PATH"
-    warn "no settings.json found — created empty one"
+    warn "没找到 settings.json — 新建一个空的"
   fi
 
   PATCH_RESULT=$(python3 - "$SETTINGS_PATH" "$HOOK_PATH" <<'PY'
@@ -548,9 +560,9 @@ print('__RUNAI_PATCHED__' if not already else '__RUNAI_NOOP__')
 PY
   )
   if echo "$PATCH_RESULT" | grep -q '__RUNAI_PATCHED__'; then
-    ok "patched UserPromptSubmit hook"
+    ok "已挂上 UserPromptSubmit hook"
   elif echo "$PATCH_RESULT" | grep -q '__RUNAI_NOOP__'; then
-    ok "hook already present (no-op)"
+    ok "hook 已经在了 — 跳过"
   else
     echo "$PATCH_RESULT"
   fi
@@ -767,7 +779,10 @@ cmd_install() {
   echo
 }
 
-# Scan candidate dirs (TUI mode). Prints one absolute path per line.
+# Scan candidate dirs (TUI mode). Prints tab-separated rows so fzf can
+# show skill name + description as the user-visible columns, while the
+# absolute path stays in column 2 for the upload step. Columns:
+#   <name>\t<absolute-path>\t<description-from-SKILL.md-frontmatter>
 scan_candidates() {
   local roots=()
   [[ -d "$HOME/.claude/skills" ]] && roots+=("$HOME/.claude/skills")
@@ -775,10 +790,67 @@ scan_candidates() {
   for root in "${roots[@]}"; do
     while IFS= read -r d; do
       if [[ -f "$d/SKILL.md" ]]; then
-        printf '%s\n' "$d"
+        local name desc
+        name=$(basename "$d")
+        # Pull the `description:` line out of the YAML frontmatter (stops
+        # at the closing `---`). Strip surrounding quotes; collapse to
+        # one line so it fits the fzf row.
+        desc=$(awk '
+          BEGIN { delim = 0 }
+          /^---[[:space:]]*$/ { delim++; if (delim == 2) exit; next }
+          delim == 1 && /^description:/ {
+            sub(/^description:[[:space:]]*/, "")
+            gsub(/^["'\''](.*)["'\'']$/, "\\1", $0)
+            print
+            exit
+          }
+        ' "$d/SKILL.md" 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+        printf '%s\t%s\t%s\n' "$name" "$d" "${desc:-(无描述)}"
       fi
     done < <(find "$root" -mindepth 1 -maxdepth 1 -type d 2>/dev/null)
   done
+}
+
+# Upload ONE skill dir. Used both by --path single-upload and by the
+# TUI multi-select loop. Returns 0 on success, 1 on any failure.
+do_single_upload() {
+  local PATH_ARG="$1"
+  local NAME_ARG="$2"
+  if [[ ! -d "$PATH_ARG" ]]; then
+    echo "  [!!] 路径不是目录:$PATH_ARG" >&2
+    return 1
+  fi
+  if [[ ! -f "$PATH_ARG/SKILL.md" ]]; then
+    echo "  [!!] $PATH_ARG 内不含 SKILL.md" >&2
+    return 1
+  fi
+  local TMPDIR
+  TMPDIR=$(mktemp -d)
+  local TARFILE="$TMPDIR/$NAME_ARG.tar.gz"
+  tar -czf "$TARFILE" -C "$(dirname "$PATH_ARG")" "$(basename "$PATH_ARG")"
+  local AUTH=()
+  [[ -n "$API_KEY" ]] && AUTH=(-H "Authorization: Bearer $API_KEY")
+  local URL="$SERVER/api/community/upload"
+  local SIZE
+  SIZE=$(wc -c <"$TARFILE" | tr -d ' ')
+  echo "  打包 $NAME_ARG ($SIZE bytes),上传到 $URL …"
+  local RESP HTTP BODY
+  RESP=$(curl -sS -w '\n__HTTP_CODE__%{http_code}' \
+    -X POST "${AUTH[@]}" \
+    -F "name=$NAME_ARG" \
+    -F "bundle=@$TARFILE" \
+    "$URL")
+  rm -rf "$TMPDIR"
+  HTTP="${RESP##*__HTTP_CODE__}"
+  BODY="${RESP%__HTTP_CODE__*}"
+  if [[ "$HTTP" != "200" ]]; then
+    echo "  [!!] 服务器返回 HTTP $HTTP" >&2
+    echo "  $BODY" >&2
+    return 1
+  fi
+  echo "  $BODY"
+  echo "  [OK] 上传成功"
+  return 0
 }
 
 cmd_upload() {
@@ -790,8 +862,8 @@ cmd_upload() {
       --name) NAME_ARG="$2"; shift 2 ;;
       --help|-h) usage_upload; return 0 ;;
       *)
-        echo "runai-client upload: unknown arg: $1" >&2
-        echo "run 'runai-client upload --help' for usage" >&2
+        echo "runai-client upload: 未知参数: $1" >&2
+        echo "运行 'runai-client upload --help' 查看用法" >&2
         return 1
         ;;
     esac
@@ -799,76 +871,86 @@ cmd_upload() {
 
   ensure_creds
 
-  if [[ -z "$PATH_ARG" ]]; then
-    # TUI path. Require fzf or print install hint + fallback message.
-    if ! command -v fzf >/dev/null 2>&1; then
-      cat >&2 <<'EOF'
-runai-client upload: fzf not installed — needed for interactive selection.
+  if [[ -n "$PATH_ARG" ]]; then
+    # Non-interactive single-upload path.
+    [[ -z "$NAME_ARG" ]] && NAME_ARG=$(basename "$PATH_ARG")
+    echo "[1/1] $(basename "$PATH_ARG")"
+    do_single_upload "$PATH_ARG" "$NAME_ARG"
+    return $?
+  fi
 
-Install fzf:
+  # TUI multi-select. fzf required.
+  if ! command -v fzf >/dev/null 2>&1; then
+    cat >&2 <<'EOF'
+runai-client upload: 选 skill 需要 fzf,但未安装。
+
+装 fzf:
   macOS:   brew install fzf
   Debian:  sudo apt install fzf
   Fedora:  sudo dnf install fzf
   Arch:    sudo pacman -S fzf
 
-Or skip fzf entirely and use non-interactive mode:
+或者跳过 fzf 直接走非交互模式:
   runai-client upload --path <skill-dir> --name <skill-name>
 EOF
-      return 1
-    fi
-    local CANDIDATES
-    CANDIDATES=$(scan_candidates)
-    if [[ -z "$CANDIDATES" ]]; then
-      echo "runai-client upload: no candidate skills found under ~/.claude/skills/ or $(pwd)/.claude/skills/" >&2
-      echo "  pass --path <dir> to upload a specific directory instead" >&2
-      return 1
-    fi
-    PATH_ARG=$(printf '%s' "$CANDIDATES" | fzf --prompt='select skill dir > ' --height=40%)
-    if [[ -z "$PATH_ARG" ]]; then
-      echo "runai-client upload: nothing selected" >&2
-      return 1
-    fi
-  fi
-
-  if [[ ! -d "$PATH_ARG" ]]; then
-    echo "runai-client upload: --path is not a directory: $PATH_ARG" >&2
     return 1
   fi
-  if [[ ! -f "$PATH_ARG/SKILL.md" ]]; then
-    echo "runai-client upload: $PATH_ARG does not contain SKILL.md" >&2
+  local CANDIDATES
+  CANDIDATES=$(scan_candidates)
+  if [[ -z "$CANDIDATES" ]]; then
+    echo "runai-client upload: 在 ~/.claude/skills/ 和 $(pwd)/.claude/skills/ 都没找到 skill" >&2
+    echo "  传 --path <dir> 直接指定 skill 目录" >&2
     return 1
   fi
 
-  if [[ -z "$NAME_ARG" ]]; then
-    NAME_ARG=$(basename "$PATH_ARG")
-  fi
-
-  local TMPDIR
-  TMPDIR=$(mktemp -d)
-  local TARFILE="$TMPDIR/$NAME_ARG.tar.gz"
-  tar -czf "$TARFILE" -C "$(dirname "$PATH_ARG")" "$(basename "$PATH_ARG")"
-
-  local AUTH=()
-  [[ -n "$API_KEY" ]] && AUTH=(-H "Authorization: Bearer $API_KEY")
-  local URL="$SERVER/api/community/upload"
-  echo "uploading $PATH_ARG ($(wc -c <"$TARFILE" | tr -d ' ') bytes) as name=$NAME_ARG"
-  local RESP
-  RESP=$(curl -sS -w '\n__HTTP_CODE__%{http_code}' \
-    -X POST "${AUTH[@]}" \
-    -F "name=$NAME_ARG" \
-    -F "bundle=@$TARFILE" \
-    "$URL")
-  rm -rf "$TMPDIR"
-  local HTTP="${RESP##*__HTTP_CODE__}"
-  local BODY="${RESP%__HTTP_CODE__*}"
-  if [[ "$HTTP" != "200" ]]; then
-    echo "runai-client upload: server returned HTTP $HTTP" >&2
-    echo "$BODY" >&2
+  # fzf 多选:展示 skill 名 + 描述(列 1 + 3),路径(列 2)藏起来。
+  # Tab 切换选中,Enter 确认。--bind 让 ctrl-a 全选 / ctrl-d 全清。
+  local SELECTED
+  SELECTED=$(printf '%s' "$CANDIDATES" | fzf \
+    --multi \
+    --delimiter=$'\t' \
+    --with-nth='1,3' \
+    --prompt='选 skill 上传 > ' \
+    --header='Tab 切换选中  ·  Ctrl-A 全选  ·  Ctrl-D 全清  ·  Enter 确认' \
+    --bind='ctrl-a:select-all' \
+    --bind='ctrl-d:deselect-all' \
+    --height=60% \
+    --reverse)
+  if [[ -z "$SELECTED" ]]; then
+    echo "runai-client upload: 没有选中任何 skill,放弃" >&2
     return 1
   fi
-  echo "$BODY"
+
+  # 拆出所有选中的路径(列 2)。fzf --multi 用换行分隔多行结果。
+  local PATHS=()
+  while IFS=$'\t' read -r _name _path _desc; do
+    [[ -n "$_path" ]] && PATHS+=("$_path")
+  done <<< "$SELECTED"
+
+  local total=${#PATHS[@]}
   echo
-  echo "OK uploaded."
+  echo "准备上传 $total 个 skill 到 $SERVER:"
+  local p
+  for p in "${PATHS[@]}"; do
+    echo "  - $(basename "$p")"
+  done
+  echo
+
+  local ok=0 fail=0 i=0
+  for p in "${PATHS[@]}"; do
+    ((i++))
+    local nm
+    nm=$(basename "$p")
+    echo "[$i/$total] $nm"
+    if do_single_upload "$p" "$nm"; then
+      ((ok++))
+    else
+      ((fail++))
+    fi
+    echo
+  done
+  echo "完成 — 成功 $ok / 失败 $fail / 共 $total"
+  [[ $fail -eq 0 ]]
 }
 
 case "${1:-}" in
@@ -896,15 +978,15 @@ case "${1:-}" in
 esac
 CLIENT
 chmod +x "$RUNAI_CLIENT_PATH"
-ok "installed ${D}${RUNAI_CLIENT_PATH}${R}"
+ok "已装 ${D}${RUNAI_CLIENT_PATH}${R}"
 printf "${D}  add it to PATH if needed:${R} export PATH=\"\$HOME/.local/bin:\$PATH\"\n\n"
 
 # === RUNAI_SECTION:team-only END ===
 
 hr
-printf "  ${C2}${B}all set.${R}  open a ${B}new${R} Claude Code session and your prompts\n"
-printf "  will route through ${C1}%s${R}\n" "$SERVER_URL"
+printf "  ${C2}${B}装好了。${R}  打开一个${B}新的${R} Claude Code session,你的 prompt 就会自动\n"
+printf "  路由到 ${C1}%s${R}\n" "$SERVER_URL"
 hr
-printf "${D}  dashboard${R}  %s\n" "$SERVER_URL"
-printf "${D}  uninstall${R}  curl -fsSL %s/uninstall | bash\n" "$SERVER_URL"
-printf "${D}  switch user${R}  rm %s && rerun this script\n\n" "$IDENTITY_PATH"
+printf "${D}  仪表板${R}  %s\n" "$SERVER_URL"
+printf "${D}  卸载  ${R}  curl -fsSL %s/uninstall | bash\n" "$SERVER_URL"
+printf "${D}  换账号${R}  rm %s 后重跑本脚本\n\n" "$IDENTITY_PATH"
