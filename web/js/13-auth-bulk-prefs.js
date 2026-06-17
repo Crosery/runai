@@ -161,6 +161,30 @@
     await reloadCurrentView();
   }
 
+  // E1: rotate the api_key server-side (invalidates every existing copy —
+  // other browsers, proxies, the stored ~/.runai-identity) then clear this
+  // browser. Unlike plain logout this truly ends all sessions.
+  async function doLogoutEverywhere() {
+    const ok = await showConfirm({
+      title: '全端退出',
+      body: '将轮换你的 api_key：所有已登录设备、已安装的 hook 客户端会立即失效，需要重新登录 / 重装客户端。继续？',
+      ok: '全端退出',
+      cancel: '取消',
+      danger: true,
+    });
+    if (!ok) return;
+    try { await api('POST', '/api/me/logout-everywhere'); } catch (_) {}
+    setStoredApiKey('');
+    account.me = null;
+    account.libraryNames.clear();
+    account.prefs = null;
+    renderAccountPill();
+    renderSettingsUser();
+    renderScopeBar();
+    renderSkills();
+    await reloadCurrentView();
+  }
+
   async function bulkAction(kind) {
     if (!account.me) { showAuthModal('login'); return; }
     if (kind === 'select-all') {
@@ -307,6 +331,7 @@
   function bindAccountUI() {
     $('#account-login-btn')?.addEventListener('click', () => showAuthModal('login'));
     $('#account-logout-btn')?.addEventListener('click', doLogout);
+    $('#account-logout-all-btn')?.addEventListener('click', doLogoutEverywhere);
     $('#auth-close')?.addEventListener('click', hideAuthModal);
     $('#auth-form')?.addEventListener('submit', submitAuth);
     $('#auth-toggle')?.addEventListener('click', () => {

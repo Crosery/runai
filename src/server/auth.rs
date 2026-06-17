@@ -223,6 +223,43 @@ pub(super) async fn api_logout() -> Response {
         .into_response()
 }
 
+/// Log out EVERYWHERE (E1): plain `api_logout` only forgets the current
+/// browser's cookie — but the cookie value IS the long-lived api_key, so a copy
+/// captured before logout (devtools / a proxy / `~/.runai-identity`) keeps
+/// authenticating. This rotates the api_key (invalidating every existing copy,
+/// incl. the caller's own cookie) then clears the cookie. The user must log in
+/// again for a fresh key; previously-installed hook clients must re-run the
+/// install script. Requires an authenticated caller.
+pub(super) async fn api_logout_everywhere(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    let join = tokio::task::spawn_blocking(move || -> Result<(), ApiError> {
+        let db = state.db()?;
+        let user = require_user(&headers, &db)?;
+        let new_key = authmod::new_api_key();
+        let new_hash = authmod::key_hash(&authmod::BearerToken(new_key));
+        db.rotate_api_key(&user.user_id, &new_hash)
+            .map_err(ApiError::Internal)?;
+        Ok(())
+    })
+    .await;
+    match join {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => return e.into_response(),
+        Err(e) => return ApiError::Internal(anyhow::anyhow!(e)).into_response(),
+    }
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "application/json".to_string()),
+            (header::SET_COOKIE, authmod::build_logout_cookie()),
+        ],
+        r#"{"ok":true}"#.to_string(),
+    )
+        .into_response()
+}
+
 #[derive(Serialize)]
 pub(super) struct MeResp {
     user_id: String,

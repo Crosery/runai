@@ -24,7 +24,7 @@ use super::admin::{
     api_admin_skills_trash, api_admin_userlib_detail, api_admin_userlib_list,
     api_admin_users_delete, api_admin_users_list, api_admin_users_update,
 };
-use super::auth::{api_login, api_logout, api_me, api_register};
+use super::auth::{api_login, api_logout, api_logout_everywhere, api_me, api_register};
 use super::community::{
     api_community_delete, api_community_download, api_community_install, api_community_list,
     api_community_skill_detail, api_community_upload,
@@ -280,6 +280,7 @@ pub async fn serve_with(
         // /auth/login is mounted via the `login_router` sub-router below so it
         // picks up the 5/min/IP rate limit (PLANNING §2.3 item 6).
         .route("/auth/logout", post(api_logout))
+        .route("/api/me/logout-everywhere", post(api_logout_everywhere))
         .route("/api/me", get(api_me))
         .route("/api/prefs", get(api_get_prefs).post(api_post_prefs))
         .route(

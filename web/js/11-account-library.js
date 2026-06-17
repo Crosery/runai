@@ -12,24 +12,21 @@
     prefs: null,          // UserPrefs from /api/prefs
   };
 
-  // localStorage-backed api_key fallback. Cookies expire / get cleared
-  // by browser hygiene tools; the bearer survives across browser
-  // restarts so the dashboard stays signed in.
+  // E1: the api_key is NO LONGER cached in localStorage. A stored bearer is
+  // readable by any script (XSS) and partially defeats the HttpOnly session
+  // cookie. The dashboard authenticates via the same-origin `runai_session`
+  // cookie only; the hook reads `~/.runai-identity`, never localStorage. We
+  // proactively delete any legacy key a prior build left behind.
   const RUNAI_KEY_STORE = 'runai_api_key';
-  function getStoredApiKey() {
-    try { return localStorage.getItem(RUNAI_KEY_STORE) || ''; } catch (_) { return ''; }
-  }
-  function setStoredApiKey(key) {
-    try {
-      if (key) localStorage.setItem(RUNAI_KEY_STORE, key);
-      else localStorage.removeItem(RUNAI_KEY_STORE);
-    } catch (_) {}
+  try { localStorage.removeItem(RUNAI_KEY_STORE); } catch (_) {}
+  function getStoredApiKey() { return ''; }
+  function setStoredApiKey(_key) {
+    try { localStorage.removeItem(RUNAI_KEY_STORE); } catch (_) {}
   }
 
   async function api(method, path, body) {
     const headers = {};
-    const key = getStoredApiKey();
-    if (key) headers['Authorization'] = `Bearer ${key}`;
+    // Cookie-only auth (same-origin); no Authorization header from storage.
     if (body !== undefined) headers['Content-Type'] = 'application/json';
     const opts = { method, credentials: 'same-origin', headers };
     if (body !== undefined) opts.body = JSON.stringify(body);
