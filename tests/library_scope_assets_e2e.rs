@@ -200,6 +200,23 @@ fn app_js_renders_enrich_tag_and_live_refreshes_library() {
 }
 
 #[test]
+fn admin_private_scope_relabeled_and_prefill_noted() {
+    let s = spawn_server();
+    // C1: admin's 私有库 bucket = every tenant's private → relabeled.
+    let js = get_text(&s, "/app.js");
+    assert!(
+        js.contains("全部用户私有"),
+        "admin's private scope must be relabeled (cross-tenant), not '私有库'"
+    );
+    // C3: the registration auto-seed is made explicit.
+    let html = get_text(&s, "/");
+    assert!(
+        html.contains("library-prefill-note"),
+        "the 我的库 prefill note must ship so a seeded library isn't read as fixed"
+    );
+}
+
+#[test]
 fn app_css_has_enrich_tag_styles() {
     let s = spawn_server();
     let css = get_text(&s, "/app.css");

@@ -147,6 +147,25 @@
       b.classList.toggle('active', b.dataset.scope === account.scope);
     });
 
+    // C1: for an ADMIN (scope "*") the 私有库 bucket is EVERY tenant's private
+    // skill, not "mine" — relabel so the cross-tenant meaning is explicit and
+    // the count stops reading like a personal allotment.
+    const loggedIn = !!account.me;
+    const isAdmin = !!account.me?.is_admin;
+    const privBtn = document.querySelector('.scope-btn[data-scope="private"]');
+    if (privBtn && privBtn.firstChild) {
+      privBtn.firstChild.nodeValue = (isAdmin ? '全部用户私有 ' : '私有库 ');
+      privBtn.title = isAdmin
+        ? '全体用户的私有 skill（跨租户视图）'
+        : '我的私有 skill';
+    }
+    // C2: anon has no identity → 我的库 / 私有库 have no referent. Hide them in
+    // JS (not just CSS) so they never render misleading counts pre-login.
+    document
+      .querySelector('.scope-btn[data-scope="my"]')
+      ?.classList.toggle('hide', !loggedIn);
+    privBtn?.classList.toggle('hide', !loggedIn);
+
     // Bulk-button visibility — only show the action that actually applies
     // to what's currently selected (avoids the "in 全部 scope you can hit
     // 移出我的库 even on skills that aren't in your library" surprise).
