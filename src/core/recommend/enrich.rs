@@ -12,8 +12,9 @@ use anyhow::{Context, Result, bail};
 use std::fs;
 use std::path::PathBuf;
 
+use crate::core::db::Database;
 use crate::core::manager::SkillManager;
-use crate::core::resource::ResourceKind;
+use crate::core::resource::{Resource, ResourceKind};
 
 use super::config::{Provider, RecommendConfig};
 use super::lang_validation::summary_matches_lang;
@@ -50,6 +51,23 @@ struct EnrichJob {
     description: String,
     skill_md_path: PathBuf,
     has_summary: bool,
+}
+
+/// Owner-aware enrich candidate enumeration: the public pool PLUS every user's
+/// private skills (scope `"*"`). The old `mgr.list_resources(None, None)` was
+/// public-pool only, so private uploads at `<data>/users/<uid>/skills/` never
+/// got summarized — they sat permanently "未富集". This is the single source
+/// of skills the enricher (and the feedback re-enrich path) considers.
+pub(super) fn enrich_candidates(db: &Database) -> Result<Vec<Resource>> {
+    db.list_resources_for_user(Some(ResourceKind::Skill), Some("*"))
+}
+
+/// SKILL.md path for a skill row — its OWN directory, never the public pool.
+/// Private skills live at `<data>/users/<uid>/skills/<name>/`, so resolving via
+/// `skills_dir().join(name)` (the old behavior) pointed at a non-existent public
+/// path and the enrich silently skipped the skill (`skipped_no_skill_md`).
+pub(super) fn enrich_skill_md_path(r: &Resource) -> PathBuf {
+    r.directory.join("SKILL.md")
 }
 
 /// Generate AI summaries for skills. Uses the configured router LLM (same
@@ -97,7 +115,7 @@ pub fn enrich_skills(
     let existing = mgr.db().skill_ai_summary_all().unwrap_or_default();
     let existing_ts: std::collections::HashMap<String, i64> =
         mgr.db().skill_ai_summary_timestamps().unwrap_or_default();
-    let resources = mgr.list_resources(None, None)?;
+    let resources = enrich_candidates(mgr.db())?;
     let only_set: Option<std::collections::HashSet<String>> =
         only_names.map(|v| v.iter().cloned().collect());
     let skills: Vec<_> = resources
@@ -121,7 +139,7 @@ pub fn enrich_skills(
     let mut report = EnrichReport::default();
     let mut jobs: Vec<EnrichJob> = Vec::new();
     for r in &skills {
-        let skill_md = mgr.paths().skills_dir().join(&r.name).join("SKILL.md");
+        let skill_md = enrich_skill_md_path(r);
         let has_summary = existing.contains_key(&r.name);
         let is_stale = if has_summary {
             match fs::metadata(&skill_md).and_then(|m| m.modified()) {
@@ -362,16 +380,12 @@ pub fn reevaluate_skill(
         bail!("--note is empty; pass concrete feedback text");
     }
 
-    let resources = mgr.list_resources(None, None)?;
+    let resources = enrich_candidates(mgr.db())?;
     let resource = resources
         .into_iter()
         .find(|r| r.kind == ResourceKind::Skill && r.name == skill_name)
         .ok_or_else(|| anyhow::anyhow!("skill not found: {skill_name}"))?;
-    let skill_md_path = mgr
-        .paths()
-        .skills_dir()
-        .join(&resource.name)
-        .join("SKILL.md");
+    let skill_md_path = enrich_skill_md_path(&resource);
     let skill_md_body = fs::read_to_string(&skill_md_path)
         .with_context(|| format!("read {}", skill_md_path.display()))?;
 
@@ -493,4 +507,74 @@ pub(super) fn rewrite_query_for_bm25(
     // Sanity cap to bound the prefilter input.
     let capped: String = line.chars().take(800).collect();
     Some(capped)
+}
+
+#[cfg(test)]
+mod owner_aware_tests {
+    use super::*;
+    use crate::core::db::Database;
+    use crate::core::resource::Source;
+    use std::collections::HashMap;
+
+    fn mk(id: &str, name: &str, dir: &str, owner: Option<&str>) -> Resource {
+        Resource {
+            id: id.into(),
+            name: name.into(),
+            kind: ResourceKind::Skill,
+            description: "d".into(),
+            directory: PathBuf::from(dir),
+            source: Source::Local {
+                path: PathBuf::from(dir),
+            },
+            installed_at: 0,
+            enabled: HashMap::new(),
+            usage_count: 0,
+            last_used_at: None,
+            owner_user_id: owner.map(String::from),
+            publish_status: "draft".into(),
+        }
+    }
+
+    #[test]
+    fn enrich_candidates_includes_private_rows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = Database::open(&tmp.path().join("t.db")).unwrap();
+        db.insert_resource(&mk("local:pub", "pubskill", "/data/skills/pubskill", None))
+            .unwrap();
+        db.insert_resource(&mk(
+            "u:usr_a:local:priv",
+            "privskill",
+            "/data/users/usr_a/skills/privskill",
+            Some("usr_a"),
+        ))
+        .unwrap();
+        let names: Vec<String> = enrich_candidates(&db)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.name)
+            .collect();
+        assert!(
+            names.contains(&"pubskill".to_string()),
+            "public skill must be an enrich candidate"
+        );
+        assert!(
+            names.contains(&"privskill".to_string()),
+            "PRIVATE skill must be an enrich candidate (the bug: was public-pool only)"
+        );
+    }
+
+    #[test]
+    fn enrich_skill_md_path_uses_row_directory_not_public_pool() {
+        let r = mk(
+            "u:usr_a:local:priv",
+            "privskill",
+            "/data/users/usr_a/skills/privskill",
+            Some("usr_a"),
+        );
+        assert_eq!(
+            enrich_skill_md_path(&r),
+            PathBuf::from("/data/users/usr_a/skills/privskill/SKILL.md"),
+            "enrich must read SKILL.md from the row's own directory, not skills_dir()"
+        );
+    }
 }

@@ -81,8 +81,12 @@ pub(super) async fn api_market_refresh(
     Ok(Json(resp))
 }
 
-/// Best-effort background enrich for freshly installed skills. Mirrors
-/// `cli::spawn_targeted_enrich` — `recommend enrich --name N1 --name N2 ...`.
+/// Best-effort background enrich for freshly installed / changed skills.
+/// Mirrors `cli::spawn_targeted_enrich` — `recommend enrich --name N1 ...`.
+///
+/// stderr is INHERITED, not nulled — the enrich child's `# runai recommend
+/// skipped:` / progress lines land in the server log instead of vanishing.
+/// (memory: spawn_enrich 永不吞日志.) stdout stays null (it's chatty progress).
 pub(super) fn spawn_enrich(names: &[String]) {
     if names.is_empty() {
         return;
@@ -97,8 +101,10 @@ pub(super) fn spawn_enrich(names: &[String]) {
     }
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    let _ = cmd.spawn();
+        .stderr(std::process::Stdio::inherit());
+    if let Err(e) = cmd.spawn() {
+        tracing::warn!("spawn_enrich failed for {names:?}: {e}");
+    }
 }
 
 #[derive(Serialize)]
