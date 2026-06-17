@@ -89,32 +89,47 @@ impl Database {
     /// to dodge PK conflicts), then delete `resource_targets` and `resources`
     /// rows for losers. Returns the number of rows removed.
     pub fn dedupe_skills_by_name(&self) -> Result<usize> {
+        // Owner-aware: collapse duplicate skill rows ONLY within the same
+        // owner pool. Grouping by name alone would merge a public skill and a
+        // different user's same-named private skill (or two users' privates)
+        // into one row, permanently deleting the loser's directory reference —
+        // cross-owner data loss that violates the owner-pool invariant. Public
+        // rows (owner_user_id IS NULL) still collapse together, the legitimate
+        // case (local install + later adopt of the same public skill).
+        //
+        // `owner_user_id IS ?` uses SQLite's null-safe `IS` operator: a bound
+        // NULL param matches NULL rows, a bound uid matches that uid exactly.
         let mut stmt = self.conn.prepare(
-            "SELECT name FROM resources WHERE kind = 'skill' \
-             GROUP BY name HAVING COUNT(*) > 1",
+            "SELECT name, owner_user_id FROM resources WHERE kind = 'skill' \
+             GROUP BY name, owner_user_id HAVING COUNT(*) > 1",
         )?;
-        let dup_names: Vec<String> = stmt
-            .query_map([], |row| row.get::<_, String>(0))?
+        let dups: Vec<(String, Option<String>)> = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            })?
             .filter_map(|r| r.ok())
             .collect();
         drop(stmt);
 
         let mut total_removed = 0usize;
-        for name in dup_names {
+        for (name, owner) in dups {
             // Pick keeper = max(installed_at), tiebreak by id (stable).
             let keeper_id: String = self.conn.query_row(
                 "SELECT id FROM resources WHERE kind = 'skill' AND name = ?1 \
-                 ORDER BY installed_at DESC, id ASC LIMIT 1",
-                params![name],
+                 AND owner_user_id IS ?2 ORDER BY installed_at DESC, id ASC LIMIT 1",
+                params![name, owner],
                 |row| row.get(0),
             )?;
 
-            // Loser ids = same name, not the keeper.
+            // Loser ids = same (name, owner), not the keeper.
             let mut id_stmt = self.conn.prepare(
-                "SELECT id FROM resources WHERE kind = 'skill' AND name = ?1 AND id != ?2",
+                "SELECT id FROM resources WHERE kind = 'skill' AND name = ?1 \
+                 AND owner_user_id IS ?2 AND id != ?3",
             )?;
             let loser_ids: Vec<String> = id_stmt
-                .query_map(params![name, keeper_id], |row| row.get::<_, String>(0))?
+                .query_map(params![name, owner, keeper_id], |row| {
+                    row.get::<_, String>(0)
+                })?
                 .filter_map(|r| r.ok())
                 .collect();
             drop(id_stmt);

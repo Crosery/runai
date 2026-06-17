@@ -51,7 +51,7 @@ As of the v0.11 decoupling, the former 2507-line `db.rs` is a directory: a thin 
 | `users.rs` | `users` CRUD + auth lookups | `row_to_user` (positional) |
 | `library.rs` | `user_skill_library` CRUD | `top_public_skills` |
 | `community.rs` | `community_skills` CRUD (v16+) | `row_to_community_skill` (positional), `CommunitySort` query enum |
-| `tests.rs` | migration / users / library / resources fixtures | unit suite (18 tests) |
+| `tests.rs` | migration / users / library / resources fixtures | unit suite (20 tests) |
 
 ## Invariants (load-bearing — do not break silently)
 - **`schema.rs` keeps `init_schema` + every v1–v16 migration MONOLITHIC.** Migrations run on every `open()` with no version lock; splitting them across files risks a half-applied schema. Do not factor per-version files.
@@ -60,6 +60,7 @@ As of the v0.11 decoupling, the former 2507-line `db.rs` is a directory: a thin 
 - Schema version `4` adds `trash_entries`; version `15` adds `users`, `user_skill_library`, `resources.owner_user_id`, `router_events.user_id`. Owner-aware separation: `owner_user_id IS NULL` = public pool, `Some(uid)` = uid's private. Version `16` adds `community_skills` (PK `(uploader_uid, name)`) for the team-mode community market; the on-disk payload sits at `<data>/community/<uploader_uid>/<name>/`.
 - Legacy table names (from the `skill-manager` era) are **kept alive** for rollback safety; new code writes only to the renamed tables.
 - `insert_resource` round-trips `Source` via `to_meta_json` / `from_meta_json` and preserves usage columns on conflict — re-scan/update paths must not zero usage. PK `id` already encodes the owner (`u:<uid>:` prefix from `Resource::generate_id`) so same `(source, name)` across users do not collide.
+- **`dedupe_skills_by_name` groups by `(name, owner_user_id)`, never `name` alone.** Name-only grouping would collapse a public skill and a different user's same-named private skill (or two users' privates) into one row and delete the loser's directory reference — cross-owner data loss against the owner-pool invariant. Uses SQLite's null-safe `owner_user_id IS ?` so a bound NULL matches public rows and a bound uid matches that user exactly. Public same-name rows still collapse together (the legitimate local-install + later-adopt case).
 - Trash payloads are stored as JSON `TrashEntry` blobs; new `TrashEntry` fields must stay serde backward-compatible. `owner_user_id` was added with `#[serde(default)]` so pre-v15 payloads still decode (owner surfaces as `None`).
 - `Database::conn` is `pub(super)` — sibling submodules' `impl Database` blocks access `self.conn`; it is NOT part of the public API. Use `conn_ref()` for the (rare) crate-internal raw-SQL escape hatch.
 
@@ -74,4 +75,4 @@ As of the v0.11 decoupling, the former 2507-line `db.rs` is a directory: a thin 
 - `schema_version()` is the contract between the app and the DB — bump it whenever you change the schema.
 
 ## Tests
-- `tests.rs` (`#[cfg(test)] mod tests`, no platform gate) — 18 tests: migration to v15, group-member migration, resource usage/conflict round-trips, trash round-trips (incl. pre-v15 payload decode), user CRUD, library CRUD, owner-aware list/find. Physical owner-pool contract lives in the workspace integration suite `tests/multiuser_owner_e2e.rs`.
+- `tests.rs` (`#[cfg(test)] mod tests`, no platform gate) — 20 tests: migration to v15, group-member migration, resource usage/conflict round-trips, trash round-trips (incl. pre-v15 payload decode), user CRUD, library CRUD, owner-aware list/find, owner-aware dedupe (no cross-owner merge + same-owner collapse). Physical owner-pool contract lives in the workspace integration suite `tests/multiuser_owner_e2e.rs`.

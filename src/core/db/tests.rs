@@ -781,3 +781,67 @@ fn community_sort_parses_query_strings() {
         CommunitySort::Installs
     );
 }
+
+// =========================================================================
+//  Owner-aware dedupe — same skill NAME owned by different users must NOT
+//  be collapsed into one row (that would delete the loser's directory
+//  reference, a cross-owner data-loss against the owner-pool invariant).
+// =========================================================================
+
+#[test]
+fn dedupe_skills_by_name_does_not_merge_across_owners() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(&tmp.path().join("test.db")).unwrap();
+
+    // alice + bob each own a private skill named "shared"; a public "shared"
+    // also exists. Three distinct owners, one shared name → no duplicates
+    // within any single owner pool, so dedupe must remove nothing.
+    db.insert_resource(&mk_skill("local:shared", "shared", None))
+        .unwrap();
+    db.insert_resource(&mk_skill(
+        "u:usr_alice:local:shared",
+        "shared",
+        Some("usr_alice"),
+    ))
+    .unwrap();
+    db.insert_resource(&mk_skill(
+        "u:usr_bob:local:shared",
+        "shared",
+        Some("usr_bob"),
+    ))
+    .unwrap();
+
+    let removed = db.dedupe_skills_by_name().unwrap();
+    assert_eq!(
+        removed, 0,
+        "owner-distinct same-name rows must not be merged"
+    );
+
+    assert!(db.get_resource("local:shared").unwrap().is_some());
+    assert!(
+        db.get_resource("u:usr_alice:local:shared")
+            .unwrap()
+            .is_some()
+    );
+    assert!(db.get_resource("u:usr_bob:local:shared").unwrap().is_some());
+}
+
+#[test]
+fn dedupe_skills_by_name_still_collapses_within_one_owner() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(&tmp.path().join("test.db")).unwrap();
+
+    // Two PUBLIC rows of the same name (e.g. local install + later adopt) —
+    // the legitimate dedupe case. Keeper = newest installed_at.
+    let mut older = mk_skill("local:dup", "dup", None);
+    older.installed_at = 100;
+    let mut newer = mk_skill("adopted:dup", "dup", None);
+    newer.installed_at = 200;
+    db.insert_resource(&older).unwrap();
+    db.insert_resource(&newer).unwrap();
+
+    let removed = db.dedupe_skills_by_name().unwrap();
+    assert_eq!(removed, 1, "same-owner same-name dup must still collapse");
+    assert!(db.get_resource("adopted:dup").unwrap().is_some());
+    assert!(db.get_resource("local:dup").unwrap().is_none());
+}
