@@ -9,12 +9,18 @@
 //!   `enum CheckStatus { Ok, Warn, Fail }`, `CheckResult::icon() -> &str`
 //!   (`✓` / `△` / `✘`).
 //! - `run_doctor() -> Vec<CheckResult>` — read-only; safe to run anytime.
-//! - `run_doctor_fix() -> FixReport { broken_symlinks_removed, dedupe_rows_removed }`
-//!   — the `--fix` repair pass: walks the CLI skills dirs
-//!   (`~/.{claude,codex,gemini,opencode}/skills/` plus both `.opencode/skills`
-//!   and `.config/opencode/skills`), removes symlinks whose target no longer
-//!   exists (`path.exists() == false` — a stale "was enabled" marker), then
-//!   re-runs `Database::dedupe_skills_by_name()` for the count.
+//! - `run_doctor_fix() -> FixReport { broken_symlinks_removed, dedupe_rows_removed,
+//!   orphan_users_reaped, missing_dir_rows_removed }` — the `--fix` repair pass.
+//!   It (1) walks the CLI skills dirs (`~/.{claude,codex,gemini,opencode}/skills/`
+//!   plus both `.opencode/skills` and `.config/opencode/skills`), removing
+//!   symlinks whose target no longer exists; (2) re-runs
+//!   `Database::dedupe_skills_by_name()`; (3) **reconciles orphan-user residue**
+//!   (PLANNING owner/auth cleanup): for every `owner_user_id` / physical
+//!   `<data>/users/<uid>/` dir whose user no longer exists, runs
+//!   `SkillManager::delete_user_cascade` (trash-first, guarded — recoverable);
+//!   and (4) removes public skill rows whose `directory` vanished out-of-band.
+//!   Steps 3-4 are DESTRUCTIVE (move dirs to trash / delete rows) — gated behind
+//!   the explicit `--fix` flag, never run by the read-only `run_doctor`.
 //!
 //! ## Invariants
 //! - `run_doctor` is read-only. `run_doctor_fix` is the ONLY mutating surface
@@ -115,6 +121,11 @@ pub fn run_doctor() -> Vec<CheckResult> {
 pub struct FixReport {
     pub broken_symlinks_removed: Vec<String>,
     pub dedupe_rows_removed: usize,
+    /// Deleted-user owners whose orphan skills + per-user subtree were reaped
+    /// via `SkillManager::delete_user_cascade` (PLANNING owner/auth cleanup).
+    pub orphan_users_reaped: Vec<String>,
+    /// Public skill rows whose `directory` had vanished — DB rows removed.
+    pub missing_dir_rows_removed: Vec<String>,
 }
 
 pub fn run_doctor_fix() -> FixReport {
@@ -161,9 +172,52 @@ pub fn run_doctor_fix() -> FixReport {
         Err(_) => 0,
     };
 
+    // Orphan-user reconciliation (PLANNING owner/auth cleanup B5/D2). Reaps the
+    // residue the pre-cascade delete path left: skills/dirs owned by a deleted
+    // user, and public skill rows whose directory vanished out-of-band. The
+    // owner reap reuses the tested `delete_user_cascade` (trash-first, guarded).
+    let mut orphan_users_reaped = Vec::new();
+    let mut missing_dir_rows_removed = Vec::new();
+    if let Ok(mgr) = crate::core::manager::SkillManager::with_base(data_dir.clone()) {
+        let mut orphan_uids: std::collections::BTreeSet<String> = Default::default();
+        if let Ok(ids) = mgr.db().orphan_owner_user_ids() {
+            orphan_uids.extend(ids);
+        }
+        // Physical <data>/users/<uid>/ dirs whose user no longer exists.
+        if let Ok(rd) = std::fs::read_dir(data_dir.join("users")) {
+            for e in rd.flatten() {
+                if e.path().is_dir()
+                    && let Some(uid) = e.file_name().to_str().map(String::from)
+                    && mgr.db().find_user_by_id(&uid).ok().flatten().is_none()
+                {
+                    orphan_uids.insert(uid);
+                }
+            }
+        }
+        for uid in &orphan_uids {
+            if mgr.delete_user_cascade(uid).is_ok() {
+                orphan_users_reaped.push(uid.clone());
+            }
+        }
+        // Public skill rows whose directory vanished (e.g. removed out-of-band).
+        if let Ok(rows) = mgr
+            .db()
+            .list_resources_for_user(Some(crate::core::resource::ResourceKind::Skill), None)
+        {
+            for r in rows {
+                if !r.directory.exists() && mgr.db().delete_resource(&r.id).is_ok() {
+                    let _ = mgr.db().library_remove_for_all(&r.name);
+                    missing_dir_rows_removed.push(r.name);
+                }
+            }
+        }
+    }
+
     FixReport {
         broken_symlinks_removed: removed,
         dedupe_rows_removed,
+        orphan_users_reaped,
+        missing_dir_rows_removed,
     }
 }
 

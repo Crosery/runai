@@ -55,6 +55,21 @@ impl Database {
         Ok(n)
     }
 
+    /// Sweep `user_skill_library` for subscriptions owned by users that no
+    /// longer exist in `users`. Returns the row count removed. Deleting a user
+    /// used to leave their whole library set behind (the delete path only did
+    /// `library_clear` + `DELETE users` before the cascade landed, and older
+    /// DBs predate the cascade entirely) — those rows are never read but inflate
+    /// nothing-good, so sweep them at startup alongside the skill-orphan pass.
+    pub fn cleanup_orphan_library_for_deleted_users(&self) -> Result<usize> {
+        let n = self.conn.execute(
+            "DELETE FROM user_skill_library
+             WHERE user_id NOT IN (SELECT user_id FROM users)",
+            [],
+        )?;
+        Ok(n)
+    }
+
     pub fn library_list(&self, user_id: &str) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare(
             "SELECT skill_name FROM user_skill_library

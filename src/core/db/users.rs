@@ -121,6 +121,20 @@ impl Database {
         Ok(())
     }
 
+    /// Distinct `owner_user_id`s on `resources` that no longer exist in
+    /// `users` — orphan owners left by the pre-cascade delete path (or a DB
+    /// imported from an older release). `doctor --fix` reaps each via
+    /// `SkillManager::delete_user_cascade`.
+    pub fn orphan_owner_user_ids(&self) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT owner_user_id FROM resources
+             WHERE owner_user_id IS NOT NULL
+               AND owner_user_id NOT IN (SELECT user_id FROM users)",
+        )?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
     /// Null out `router_events.user_id` for a (being-deleted) user so their
     /// telemetry survives for aggregate stats but is no longer attributable.
     pub fn anonymize_router_events_for_user(&self, user_id: &str) -> Result<usize> {

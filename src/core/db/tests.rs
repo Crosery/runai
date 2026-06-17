@@ -789,6 +789,24 @@ fn community_sort_parses_query_strings() {
 // =========================================================================
 
 #[test]
+fn cleanup_orphan_library_for_deleted_users_sweeps_ghosts() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(&tmp.path().join("test.db")).unwrap();
+
+    // u1 exists; u_ghost was deleted but left library rows behind.
+    db.create_user("u1", "alice", "p", "k", false).unwrap();
+    db.library_add("u1", "alpha").unwrap();
+    db.library_add("u1", "beta").unwrap();
+    db.library_add("u_ghost", "alpha").unwrap();
+    db.library_add("u_ghost", "gamma").unwrap();
+
+    let removed = db.cleanup_orphan_library_for_deleted_users().unwrap();
+    assert_eq!(removed, 2, "both ghost rows must be swept");
+    assert_eq!(db.library_count("u1").unwrap(), 2, "u1's rows are kept");
+    assert_eq!(db.library_count("u_ghost").unwrap(), 0);
+}
+
+#[test]
 fn dedupe_skills_by_name_does_not_merge_across_owners() {
     let tmp = tempfile::tempdir().unwrap();
     let db = Database::open(&tmp.path().join("test.db")).unwrap();

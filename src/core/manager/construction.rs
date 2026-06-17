@@ -26,6 +26,9 @@ impl SkillManager {
         // flows so the dashboard's "我的库" count never includes rows
         // that 404 on click.
         let _ = db.cleanup_orphan_library_entries();
+        // Sweep library subscriptions left behind by DELETED users (the
+        // pre-cascade delete path orphaned whole library sets).
+        let _ = db.cleanup_orphan_library_for_deleted_users();
         Ok(Self { paths, db })
     }
 
@@ -36,6 +39,7 @@ impl SkillManager {
         let db = Database::open(&paths.db_path())?;
         let _ = db.dedupe_skills_by_name();
         let _ = db.cleanup_orphan_library_entries();
+        let _ = db.cleanup_orphan_library_for_deleted_users();
         Ok(Self { paths, db })
     }
 

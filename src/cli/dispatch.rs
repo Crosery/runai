@@ -583,6 +583,20 @@ pub fn run(cli: Cli) -> Result<()> {
                     "  removed {} duplicate skill DB rows",
                     report.dedupe_rows_removed
                 );
+                println!(
+                    "  reaped {} orphan (deleted-user) owner(s) — skills trashed (recoverable), dirs removed",
+                    report.orphan_users_reaped.len()
+                );
+                for u in &report.orphan_users_reaped {
+                    println!("    {u}");
+                }
+                println!(
+                    "  removed {} skill rows with a missing directory",
+                    report.missing_dir_rows_removed.len()
+                );
+                for s in &report.missing_dir_rows_removed {
+                    println!("    {s}");
+                }
                 println!();
             }
             if has_fail {
