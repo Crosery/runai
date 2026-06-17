@@ -245,13 +245,13 @@ pub fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Some(Commands::Search { query }) => {
-            use crate::core::search::{fuzzy_score_any, new_matcher};
+            use crate::core::search::{fuzzy_score_name_first, new_matcher};
             let mut matcher = new_matcher();
             let resources = mgr.list_resources(None, None).unwrap_or_default();
             let mut local_scored: Vec<(&_, u32)> = resources
                 .iter()
                 .filter_map(|r| {
-                    fuzzy_score_any(&mut matcher, &query, &[&r.name, &r.description])
+                    fuzzy_score_name_first(&mut matcher, &query, &r.name, &[&r.description])
                         .map(|s| (r, s))
                 })
                 .collect();
@@ -287,9 +287,12 @@ pub fn run(cli: Cli) -> Result<()> {
                         if installed_names.contains(&skill.name) {
                             continue;
                         }
-                        if let Some(score) =
-                            fuzzy_score_any(&mut matcher, &query, &[&skill.name, &skill.repo_path])
-                        {
+                        if let Some(score) = fuzzy_score_name_first(
+                            &mut matcher,
+                            &query,
+                            &skill.name,
+                            &[&skill.repo_path],
+                        ) {
                             market_scored.push((
                                 format!("  {} ({})", skill.name, skill.source_label),
                                 score,
@@ -314,7 +317,7 @@ pub fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Some(Commands::Market { source, search }) => {
-            use crate::core::search::{fuzzy_score_any, new_matcher};
+            use crate::core::search::{fuzzy_score_name_first, new_matcher};
             let data_dir = mgr.paths().data_dir().to_path_buf();
             let sources = crate::core::market::load_sources(&data_dir);
             let installed: Vec<String> = mgr
@@ -341,10 +344,11 @@ pub fn run(cli: Cli) -> Result<()> {
                 if let Some(cached) = crate::core::market::load_cache(&data_dir, src) {
                     for skill in cached {
                         let score = if let Some(ref q) = search {
-                            match fuzzy_score_any(
+                            match fuzzy_score_name_first(
                                 &mut matcher,
                                 q,
-                                &[&skill.name, &skill.repo_path, &skill.source_label],
+                                &skill.name,
+                                &[&skill.repo_path, &skill.source_label],
                             ) {
                                 Some(s) => s,
                                 None => continue,

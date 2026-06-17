@@ -217,6 +217,16 @@ fn admin_private_scope_relabeled_and_prefill_noted() {
 }
 
 #[test]
+fn app_js_ranks_name_matches_first_in_filter() {
+    let s = spawn_server();
+    let js = get_text(&s, "/app.js");
+    assert!(
+        js.contains("nameRank"),
+        "dashboard filter must rank name matches above description-only matches"
+    );
+}
+
+#[test]
 fn app_css_has_enrich_tag_styles() {
     let s = spawn_server();
     let css = get_text(&s, "/app.css");

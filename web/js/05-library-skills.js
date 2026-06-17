@@ -24,7 +24,15 @@
       rows = rows.filter((s) => (s.enrich_status || 'unenriched') === ef);
     }
     const sort = skillsState.sort;
+    // Name-primary, description-secondary: when a filter is active, rows whose
+    // NAME matches the query rank above rows that only matched in description /
+    // summary, with the chosen sort as the tiebreak inside each tier.
+    const nameRank = (s) => (f && s.name.toLowerCase().includes(f) ? 0 : 1);
     rows.sort((a, b) => {
+      if (f) {
+        const nr = nameRank(a) - nameRank(b);
+        if (nr !== 0) return nr;
+      }
       const sa = a.llm_score == null ? -1 : a.llm_score;
       const sb = b.llm_score == null ? -1 : b.llm_score;
       switch (sort) {

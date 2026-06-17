@@ -553,10 +553,11 @@ impl SmServer {
                 for mut skill in cached {
                     skill.installed = installed.contains(&skill.name);
                     if let Some(ref search) = p.search {
-                        let matched = crate::core::search::fuzzy_score_any(
+                        let matched = crate::core::search::fuzzy_score_name_first(
                             &mut matcher,
                             search,
-                            &[&skill.name, &skill.repo_path, &skill.source_label],
+                            &skill.name,
+                            &[&skill.repo_path, &skill.source_label],
                         )
                         .is_some();
                         if !matched {
@@ -699,7 +700,7 @@ impl SmServer {
         description = "Search across installed resources AND market. Returns local matches first, then market results. Use for finding skills/MCPs to enable or install."
     )]
     fn sm_search(&self, Parameters(p): Parameters<NameParams>) -> Json<TextResult> {
-        use crate::core::search::{fuzzy_score_any, new_matcher};
+        use crate::core::search::{fuzzy_score_name_first, new_matcher};
         let mgr = self.manager.lock().unwrap();
         let q = p.name.clone();
         let mut matcher = new_matcher();
@@ -710,7 +711,7 @@ impl SmServer {
         let mut local_scored: Vec<(&_, u32)> = resources
             .iter()
             .filter_map(|r| {
-                fuzzy_score_any(&mut matcher, &q, &[&r.name, &r.description]).map(|s| (r, s))
+                fuzzy_score_name_first(&mut matcher, &q, &r.name, &[&r.description]).map(|s| (r, s))
             })
             .collect();
         // Higher score first; tiebreak by usage_count desc.
@@ -749,7 +750,7 @@ impl SmServer {
                         continue;
                     }
                     if let Some(score) =
-                        fuzzy_score_any(&mut matcher, &q, &[&skill.name, &skill.repo_path])
+                        fuzzy_score_name_first(&mut matcher, &q, &skill.name, &[&skill.repo_path])
                     {
                         market_scored
                             .push((format!("  {} ({})", skill.name, skill.source_label), score));
