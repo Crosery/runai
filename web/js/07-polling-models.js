@@ -105,8 +105,22 @@
       const data = await res.json();
       skillsCountCache = data;
       $('#hero-strip-skills').textContent = data.total;
-      $('#hero-strip-skills-delta').textContent = `${data.enriched} enriched`;
+      const enriching = data.enriching || 0;
+      $('#hero-strip-skills-delta').textContent = enriching
+        ? `${data.enriched} 已富集 · ${enriching} 富集中`
+        : `${data.enriched} 已富集`;
     } catch (_e) { /* ignore */ }
+  }
+
+  // Live-refresh the Library installed list so enrichment tags update on their
+  // own (富集中 → 已富集) while sitting on the tab — the watcher / enrich run
+  // server-side and there is no SSE, so we re-fetch on the shared poll timer.
+  // Skipped while in select mode so a re-render can't drop the user's
+  // selection mid-action.
+  function maybeRefreshLibrary() {
+    const rows = document.getElementById('skill-rows');
+    if (rows && rows.classList.contains('select-mode')) return;
+    if (typeof loadSkills === 'function') loadSkills();
   }
 
   function startPolling() {
@@ -114,8 +128,9 @@
     pollTimer = setInterval(() => {
       const dlg = document.getElementById('detail-dialog');
       if (dlg && dlg.open) return;
-      if (parseRoute().view !== 'overview') return;
-      refresh();
+      const view = parseRoute().view;
+      if (view === 'overview') { refresh(); return; }
+      if (view === 'library') { maybeRefreshLibrary(); return; }
     }, POLL_INTERVAL_MS);
   }
   function stopPolling() {

@@ -24,7 +24,7 @@
   let pollTimer = null;
   let inFlight = false;
 
-  const skillsState = { filter: '', sort: 'score-desc', cache: [] };
+  const skillsState = { filter: '', sort: 'score-desc', enrichFilter: 'all', cache: [] };
   const detailState = { name: '', current: null, files: null, activeFile: null };
 
   const $ = (sel) => document.querySelector(sel);

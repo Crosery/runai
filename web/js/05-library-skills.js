@@ -1,6 +1,13 @@
   // ------------------------------------------------------------------
   //  Library: skills list
   // ------------------------------------------------------------------
+  // 3-state enrichment tag (已富集 / 富集中 / 未富集) from server enrich_status.
+  function enrichTagHtml(status) {
+    const st = status || 'unenriched';
+    const label = st === 'enriched' ? '已富集' : st === 'enriching' ? '富集中' : '未富集';
+    return `<span class="enrich-tag enrich-${st}" title="富集状态：${label}">${label}</span>`;
+  }
+
   function renderSkillsRows() {
     let rows = skillsState.cache.slice();
     const f = skillsState.filter.toLowerCase().trim();
@@ -10,6 +17,11 @@
         (s.description || '').toLowerCase().includes(f) ||
         (s.summary || '').toLowerCase().includes(f)
       );
+    }
+    // Enrichment-status filter (independent of the ownership scope bar).
+    const ef = skillsState.enrichFilter || 'all';
+    if (ef !== 'all') {
+      rows = rows.filter((s) => (s.enrich_status || 'unenriched') === ef);
     }
     const sort = skillsState.sort;
     rows.sort((a, b) => {
@@ -52,9 +64,10 @@
       const ownerBadge = s.owner_user_id
         ? `<span class="owner-badge owner-private" title="私有 owner=${escapeHTML(s.owner_user_id)}">私有</span>`
         : `<span class="owner-badge owner-public" title="公共池 skill">公共</span>`;
+      const enrichTag = enrichTagHtml(s.enrich_status);
       div.innerHTML = `
         <div class="idx">${String(idx + 1).padStart(2, '0')}</div>
-        <div class="nm">${escapeHTML(s.name)} ${ownerBadge}${desc}</div>
+        <div class="nm">${escapeHTML(s.name)} ${ownerBadge}${enrichTag}${desc}</div>
         <div class="used">${s.usage_count || 0}</div>
         <div class="last">—</div>
         ${llm}
@@ -100,7 +113,10 @@
     $('#library-count').textContent = `${data.total} installed`;
     $('#lib-sub-installed-count').textContent = data.total;
     $('#hero-strip-skills').textContent = data.total;
-    $('#hero-strip-skills-delta').textContent = `${data.enriched} enriched`;
+    const enriching = data.enriching || 0;
+    $('#hero-strip-skills-delta').textContent = enriching
+      ? `${data.enriched} 已富集 · ${enriching} 富集中`
+      : `${data.enriched} 已富集`;
     renderSkillsRows();
   }
 

@@ -339,6 +339,15 @@
                   <button type="button" class="dd-opt" data-value="unenriched">未富集优先</button>
                 </div>
               </div>
+              <!-- 富集状态筛选：已富集 / 富集中 / 未富集（按 enrich_status）。
+                   独立于 #library-scope-bar 的归属 scope；用 .enrich-btn 而非
+                   .scope-btn 以免触发 account.scope 绑定。 -->
+              <div class="enrich-filter" id="enrich-filter">
+                <button type="button" class="enrich-btn active" data-enrich="all">全部</button>
+                <button type="button" class="enrich-btn" data-enrich="enriched">已富集</button>
+                <button type="button" class="enrich-btn" data-enrich="enriching">富集中</button>
+                <button type="button" class="enrich-btn" data-enrich="unenriched">未富集</button>
+              </div>
             </div>
 
             <div class="skill-rows-head">

@@ -141,3 +141,50 @@ fn app_js_filters_installed_list_by_ownership() {
         "renderSkills must handle a 'private' scope"
     );
 }
+
+// ─── enrichment 3-state tag + filter + live refresh ──────────────────────
+
+#[test]
+fn dashboard_ships_enrich_filter() {
+    let s = spawn_server();
+    let html = get_text(&s, "/");
+    assert!(
+        html.contains(r#"data-enrich="enriching""#),
+        "Library must ship a 富集中 enrichment filter button"
+    );
+    assert!(
+        html.contains(r#"data-enrich="unenriched""#),
+        "Library must ship a 未富集 enrichment filter button"
+    );
+}
+
+#[test]
+fn app_js_renders_enrich_tag_and_live_refreshes_library() {
+    let s = spawn_server();
+    let js = get_text(&s, "/app.js");
+    // Rows render a 3-state tag from the server's enrich_status field.
+    assert!(
+        js.contains("enrich_status"),
+        "skill rows must render the server-provided enrich_status"
+    );
+    assert!(
+        js.contains("enrich-tag"),
+        "rows must use an enrich-tag element for 已富集/富集中/未富集"
+    );
+    // The Library tab live-refreshes so 富集中 → 已富集 updates without a manual
+    // reload (poll-based; mirrors startPolling's guards).
+    assert!(
+        js.contains("maybeRefreshLibrary"),
+        "a Library-scoped live refresh must exist"
+    );
+}
+
+#[test]
+fn app_css_has_enrich_tag_styles() {
+    let s = spawn_server();
+    let css = get_text(&s, "/app.css");
+    assert!(
+        css.contains(".enrich-tag"),
+        "an .enrich-tag style must ship for the 3-state enrichment tag"
+    );
+}

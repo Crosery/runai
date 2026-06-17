@@ -20,6 +20,19 @@
       });
     }
 
+    // Enrichment-status filter buttons (已富集 / 富集中 / 未富集). Distinct
+    // from the ownership scope bar — uses .enrich-btn + data-enrich so it
+    // never trips the .scope-btn handler.
+    document.querySelectorAll('.enrich-btn[data-enrich]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        skillsState.enrichFilter = btn.dataset.enrich;
+        document.querySelectorAll('.enrich-btn').forEach((b) =>
+          b.classList.toggle('active', b === btn),
+        );
+        renderSkillsRows();
+      });
+    });
+
     // Event detail dialog close
     const closeBtn = $('#detail-close');
     if (closeBtn) closeBtn.addEventListener('click', () => $('#detail-dialog').close());
