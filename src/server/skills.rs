@@ -30,12 +30,18 @@ pub(super) struct SkillRow {
     /// renders a "私有" / "公共" badge from this.
     #[serde(skip_serializing_if = "Option::is_none")]
     owner_user_id: Option<String>,
+    /// 3-state enrichment tag (PLANNING real-time enrichment): `"enriched"`
+    /// (summary non-empty), `"enriching"` (in the server in-flight registry),
+    /// or `"unenriched"`. The frontend renders 已富集 / 富集中 / 未富集 + filter.
+    enrich_status: &'static str,
 }
 
 #[derive(Serialize)]
 pub(super) struct SkillsResponse {
     total: usize,
     enriched: usize,
+    /// Count of skills currently 富集中 (in-flight), for the hero delta.
+    enriching: usize,
     skills: Vec<SkillRow>,
 }
 
@@ -71,14 +77,24 @@ pub(super) async fn api_skills(
 
     let mut skills = Vec::new();
     let mut enriched = 0usize;
+    let mut enriching = 0usize;
     for r in resources {
         if r.kind != ResourceKind::Skill {
             continue;
         }
         let summary = summaries.get(&r.name).cloned().unwrap_or_default();
-        if !summary.is_empty() {
+        // 3-state: summary present wins (and clears any stale in-flight mark);
+        // else in-flight registry → 富集中; else 未富集.
+        let enrich_status = if !summary.is_empty() {
+            super::enrich_state::clear(&r.name);
             enriched += 1;
-        }
+            "enriched"
+        } else if super::enrich_state::is_enriching(&r.name) {
+            enriching += 1;
+            "enriching"
+        } else {
+            "unenriched"
+        };
         let llm_score = scores.get(&r.name).copied();
         skills.push(SkillRow {
             name: r.name.clone(),
@@ -87,6 +103,7 @@ pub(super) async fn api_skills(
             summary,
             llm_score,
             owner_user_id: r.owner_user_id.clone(),
+            enrich_status,
         });
     }
     let total = skills.len();
@@ -99,6 +116,7 @@ pub(super) async fn api_skills(
     Ok(Json(SkillsResponse {
         total,
         enriched,
+        enriching,
         skills,
     }))
 }

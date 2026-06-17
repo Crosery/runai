@@ -16,6 +16,7 @@ mod admin;
 mod app;
 mod auth;
 mod community;
+mod enrich_state;
 mod error;
 mod install;
 mod library;

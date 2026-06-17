@@ -91,6 +91,11 @@ pub(super) fn spawn_enrich(names: &[String]) {
     if names.is_empty() {
         return;
     }
+    // Stamp each name 富集中 so the dashboard shows the 3-state tag immediately;
+    // it clears to 已富集 once the child writes the summary row.
+    for n in names {
+        super::enrich_state::mark_enriching(n);
+    }
     let Ok(exe) = std::env::current_exe() else {
         return;
     };
