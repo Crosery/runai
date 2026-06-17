@@ -4,7 +4,18 @@ use crate::core::linker::Linker;
 use crate::core::resource::{Resource, ResourceKind, Source, TrashEntry};
 use anyhow::{Result, bail};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// Outcome of [`SkillManager::delete_user_cascade`].
+#[derive(Debug, Default, Clone, Copy)]
+pub struct UserCascadeReport {
+    /// Private skills moved to the public (admin-recoverable) trash.
+    pub trashed: usize,
+    /// Community-pool entries removed.
+    pub community_removed: usize,
+    /// `user_skill_library` subscriptions cleared.
+    pub library_cleared: usize,
+}
 
 impl SkillManager {
     fn trash_entry_id(resource_id: &str, deleted_at_ms: i64) -> String {
@@ -176,6 +187,123 @@ impl SkillManager {
 
     pub fn uninstall(&self, resource_id: &str) -> Result<()> {
         let _ = self.trash_resource(resource_id)?;
+        Ok(())
+    }
+
+    /// Cascade-delete everything a user owns, then the user row itself
+    /// (PLANNING owner/auth cleanup, B1/B3/B4). Order is FS-before-DB so a crash
+    /// leaves recoverable state. The private skills land in the PUBLIC
+    /// (admin-recoverable) trash, de-owned, with their restore target pointed at
+    /// the public pool — the owner is going away, so restoring later mustn't
+    /// recreate an orphan under `<data>/users/<uid>/`.
+    ///
+    /// HIGH-RISK destructive path: every `remove_dir_all` goes through
+    /// [`Self::guarded_remove_dir_all`] (canonicalize + `starts_with`) and the
+    /// uid is validated by `AppPaths::user_root` (rejects traversal) before any
+    /// FS op. Covered by `tests/user_delete_cascade_e2e.rs` (incl. the
+    /// `RUNE_DATA_DIR` decoy run that proves it uses `self.paths`, never the
+    /// env-reading `paths::data_dir()`).
+    pub fn delete_user_cascade(&self, user_id: &str) -> Result<UserCascadeReport> {
+        // Validate the uid up front: user_root() bails on traversal-y ids, so a
+        // bad id can never reach remove_dir_all below.
+        let user_root = self.paths.user_root(user_id)?;
+
+        let now = chrono::Utc::now();
+        let deleted_at = now.timestamp();
+        let base_ms = now.timestamp_millis();
+
+        // 1. Trash each owned private skill → public trash, restorable to pool.
+        let owned: Vec<Resource> = self
+            .db
+            .list_resources_for_user(None, Some(user_id))?
+            .into_iter()
+            .filter(|r| r.owner_user_id.as_deref() == Some(user_id))
+            .collect();
+        let mut trashed = 0usize;
+        for (i, r) in owned.iter().enumerate() {
+            let deleted_at_ms = base_ms + i as i64; // unique payload dir per row
+            let payload = self.trash_payload_path(&r.name, deleted_at_ms, None)?; // None → public trash
+            if r.directory.exists() {
+                if let Some(parent) = payload.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                Linker::move_dir(&r.directory, &payload)?;
+            }
+            let group_ids = self.db.take_groups_for_resource(&r.id)?;
+            self.db.delete_skill_scoring(&r.name)?;
+            self.db.delete_resource(&r.id)?;
+            let entry = TrashEntry {
+                id: Self::trash_entry_id(&r.id, deleted_at_ms),
+                resource_id: r.id.clone(),
+                name: r.name.clone(),
+                kind: r.kind,
+                description: r.description.clone(),
+                // restore target = public pool (original owner is gone).
+                directory: self.paths.skills_dir().join(&r.name),
+                source: r.source.clone(),
+                installed_at: r.installed_at,
+                usage_count: r.usage_count,
+                last_used_at: r.last_used_at,
+                owner_user_id: None,
+                deleted_at,
+                payload_path: Some(payload),
+                enabled_targets: Vec::new(),
+                group_ids,
+                mcp_configs: HashMap::new(),
+                disabled_backup: None,
+            };
+            self.db.insert_trash_entry(&entry)?;
+            let _ = self.db.library_remove_for_all(&r.name);
+            trashed += 1;
+        }
+
+        // 2. Community-pool uploads (rows + per-uploader payload tree).
+        let mut community_removed = 0usize;
+        for cs in self.db.community_skills_by_uploader(user_id)? {
+            let _ = self.db.delete_community_skill(user_id, &cs.name);
+            community_removed += 1;
+        }
+        if let Ok(cdir) = self.paths.community_uploader_dir(user_id)
+            && cdir.exists()
+        {
+            self.guarded_remove_dir_all(&cdir, &self.paths.community_dir())?;
+        }
+
+        // 3. Physical per-user subtree (skills already moved to trash above).
+        if user_root.exists() {
+            let users_base = self.paths.data_dir().join("users");
+            self.guarded_remove_dir_all(&user_root, &users_base)?;
+        }
+
+        // 4. Anonymize their telemetry.
+        let _ = self.db.anonymize_router_events_for_user(user_id);
+
+        // 5. Library subscriptions + the user row.
+        let library_cleared = self.db.library_count(user_id).unwrap_or(0);
+        let _ = self.db.library_clear(user_id);
+        self.db.delete_user(user_id)?;
+
+        Ok(UserCascadeReport {
+            trashed,
+            community_removed,
+            library_cleared,
+        })
+    }
+
+    /// `remove_dir_all` with a path-containment guard: canonicalize `target` and
+    /// `must_be_under`, refuse unless `target` resolves inside the allowed base.
+    /// The one place destructive recursion is allowed in the cascade.
+    fn guarded_remove_dir_all(&self, target: &Path, must_be_under: &Path) -> Result<()> {
+        let target_real = target.canonicalize()?;
+        let base_real = must_be_under.canonicalize()?;
+        if !target_real.starts_with(&base_real) {
+            bail!(
+                "refusing remove_dir_all: {} escaped {}",
+                target_real.display(),
+                base_real.display()
+            );
+        }
+        std::fs::remove_dir_all(&target_real)?;
         Ok(())
     }
 

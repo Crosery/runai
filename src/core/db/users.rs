@@ -111,6 +111,25 @@ impl Database {
         )?;
         Ok(())
     }
+
+    /// Delete the `users` row. Auth-only deletion — callers that delete a user's
+    /// owned resources / physical subtree must do that via the manager-level
+    /// cascade (`SkillManager::delete_user_cascade`) BEFORE calling this.
+    pub fn delete_user(&self, user_id: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM users WHERE user_id = ?1", [user_id])?;
+        Ok(())
+    }
+
+    /// Null out `router_events.user_id` for a (being-deleted) user so their
+    /// telemetry survives for aggregate stats but is no longer attributable.
+    pub fn anonymize_router_events_for_user(&self, user_id: &str) -> Result<usize> {
+        let n = self.conn.execute(
+            "UPDATE router_events SET user_id = NULL WHERE user_id = ?1",
+            [user_id],
+        )?;
+        Ok(n)
+    }
 }
 
 fn row_to_user(r: &rusqlite::Row<'_>) -> rusqlite::Result<User> {

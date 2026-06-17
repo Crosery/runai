@@ -69,7 +69,7 @@
       } else if (action === 'delete') {
         const ok = await showConfirm({
           title: '删除用户',
-          body: `确定删除用户 ${username || userId}？该用户的账号 + 我的库订阅会被一并清除，已写入的 router_events 保留（user_id 不再可追溯到具体用户）。此操作不可撤销。`,
+          body: `确定删除用户 ${username || userId}？将级联清理：该用户的私有 skill 移入垃圾桶（管理员可恢复，恢复后落公共池）、其物理目录与社区上传一并删除、我的库订阅清空、调用记录匿名化（router_events.user_id 置空，保留用于统计但不再可追溯）。账号本身不可恢复。`,
           ok: '永久删除',
           cancel: '取消',
           danger: true,

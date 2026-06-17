@@ -624,14 +624,22 @@ pub(super) async fn api_admin_users_delete(
         {
             return Err(ApiError::NotFound);
         }
-        let lib_size = db.library_count(&user_id).unwrap_or(0);
-        let _ = db.library_clear(&user_id);
-        db.conn_ref()
-            .execute("DELETE FROM users WHERE user_id = ?1", [&user_id])
-            .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?;
+        // Cascade: trash the user's private skills (admin-recoverable), reap
+        // their community uploads + physical subtree, anonymize their telemetry,
+        // then drop the user row. Deleting only the `users` row left orphans
+        // (private skills + dirs + library subscriptions) no UI path could ever
+        // reach — PLANNING owner/auth cleanup B1-B4.
+        drop(db); // release this connection before the manager opens its own
+        let mgr = crate::core::manager::SkillManager::with_base(
+            state.db_path.parent().unwrap().to_path_buf(),
+        )
+        .map_err(ApiError::Internal)?;
+        let report = mgr
+            .delete_user_cascade(&user_id)
+            .map_err(ApiError::Internal)?;
         Ok(AdminDeleteResp {
             user_id,
-            deleted_library: lib_size,
+            deleted_library: report.library_cleared,
         })
     })
     .await

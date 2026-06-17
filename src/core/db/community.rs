@@ -137,6 +137,17 @@ impl Database {
         )?;
         Ok(n > 0)
     }
+
+    /// Every community skill uploaded by a given user — used by the
+    /// delete-user cascade to reap their community pool entries + payloads.
+    pub fn community_skills_by_uploader(&self, uploader_uid: &str) -> Result<Vec<CommunitySkill>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT uploader_uid, name, version, installs_total, created_at, updated_at
+             FROM community_skills WHERE uploader_uid = ?1",
+        )?;
+        let rows = stmt.query_map(params![uploader_uid], row_to_community_skill)?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
 }
 
 /// Sort order for `list_community_skills`. Maps to the `?sort=` query string
