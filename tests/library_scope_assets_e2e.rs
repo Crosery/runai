@@ -112,6 +112,20 @@ fn dashboard_html_ships_private_scope_button() {
 }
 
 #[test]
+fn app_css_does_not_hide_scope_segment_for_admin() {
+    // Regression: an obsolete rule hid `.scope-group:not(#select-mode-group)`
+    // for team-mode admin, leaving a blank band in the scope bar and hiding
+    // the ownership scope buttons. The segment is now ownership-based and
+    // meaningful for admin, so that hide must stay gone.
+    let s = spawn_server();
+    let css = get_text(&s, "/app.css");
+    assert!(
+        !css.contains("is-admin:not(.mode-owner) .scope-group"),
+        "the obsolete admin scope-group hide must not be reintroduced"
+    );
+}
+
+#[test]
 fn app_js_filters_installed_list_by_ownership() {
     let s = spawn_server();
     let js = get_text(&s, "/app.js");

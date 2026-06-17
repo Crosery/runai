@@ -45,22 +45,13 @@ body.mode-owner .settings-section.admin-block:has(#admin-users-rows) {
   display: none !important;
 }
 
-/* ──────────────────────────────────────────────────────────────────────
- *  PLANNING §1.6 — admin skill tab cut (Model B, applies in team mode)
+/* Team-mode admin KEEPS the 范围 scope segment.
  *
- *  For an admin user the "全部 / 我的库 / 仅公共" scope segment collapses
- *  to a single value — the public pool — because admin's library = the
- *  whole public pool. The three buttons therefore display identical
- *  counts and the segmentation is visual noise. Hide the entire
- *  `.scope-group` row (the three scope-btn buttons) but keep
- *  `#select-mode-group` + `#library-quick-actions` since admin still
- *  uses bulk selection + quick actions for housekeeping.
- *
- *  This rule is intentionally distinct from the `body.mode-owner` rules
- *  above: owner mode hides the entire `#library-scope-bar` because the
- *  user-library concept doesn't exist; team-admin keeps the bar but
- *  drops only the meaningless segmentation buttons.
- * ──────────────────────────────────────────────────────────────────── */
-body.is-admin:not(.mode-owner) .scope-group:not(#select-mode-group) {
-  display: none !important;
-}
+ *  Historical note: an earlier rule hid `.scope-group:not(#select-mode-group)`
+ *  for team-admin on the rationale that "admin's library = whole public pool,
+ *  so 全部 / 我的库 / 仅公共 segmentation is meaningless." That rationale is
+ *  obsolete: the scope segment is now OWNERSHIP-based (全部 / 我的库 / 公共库 /
+ *  私有库). Admin owns private skills too and wants to separate 公共库 from
+ *  私有库, so the segment is meaningful — and hiding it left a blank band in
+ *  the scope bar. The rule was removed; do NOT reintroduce it. Owner mode
+ *  still hides the whole `#library-scope-bar` above (single-user, no pools). */
