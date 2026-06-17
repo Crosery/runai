@@ -36,6 +36,10 @@
       // the inner text. Also marks rows that are currently in the user's
       // library so the indicator column renders correctly.
       div.dataset.skill = s.name;
+      // v0.11: tag ownership so the scope filter splits 公共库 vs 私有库 by
+      // owner_user_id (server omits the field for public rows). Empty string =
+      // public pool; non-empty = that user's private skill.
+      div.dataset.owner = s.owner_user_id || '';
       const inLib = account.libraryNames.has(s.name);
       if (inLib) div.classList.add('in-library');
       if (account.bulkSelect.has(s.name)) div.classList.add('selected');

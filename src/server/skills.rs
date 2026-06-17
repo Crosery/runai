@@ -15,7 +15,7 @@ use crate::core::manager::SkillManager;
 
 use super::error::ApiError;
 use super::recommend::guess_server_url;
-use super::state::{AppState, current_user, resolve_skill_dir};
+use super::state::{AppState, current_user, resolve_skill_dir, resolve_skill_dir_scoped};
 use super::telemetry::EventJson;
 
 #[derive(Serialize)]
@@ -123,6 +123,7 @@ pub(super) async fn api_skill_detail(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(name): Path<String>,
+    Query(q): Query<SkillScopeQuery>,
 ) -> Result<Json<SkillDetailResponse>, ApiError> {
     use crate::core::resource::ResourceKind;
 
@@ -138,7 +139,14 @@ pub(super) async fn api_skill_detail(
         current_user(&headers, &db).ok().flatten()
     };
     let owner_scope: Option<String> = match &me {
-        Some(u) if u.is_admin => Some("*".into()),
+        // admin: a non-empty `?owner=<uid>` pins resolution to that user's
+        // pool (the dashboard "用户库" drill-in), so a same-named private
+        // skill resolves to the user actually clicked instead of the freshest
+        // `"*"` match. No `?owner=` → global admin scope.
+        Some(u) if u.is_admin => match q.owner.as_deref() {
+            Some(uid) if !uid.is_empty() => Some(uid.to_string()),
+            _ => Some("*".into()),
+        },
         Some(u) => Some(u.user_id.clone()),
         None => None,
     };
@@ -215,19 +223,34 @@ pub(super) struct SkillFileResponse {
 #[derive(Deserialize)]
 pub(super) struct SkillFileQuery {
     path: String,
+    /// Admin-only: pin resolution to this user's private pool. Ignored for
+    /// non-admin viewers. Shares one Query extractor with `path` (axum allows
+    /// a single `Query` per handler).
+    #[serde(default)]
+    owner: Option<String>,
+}
+
+/// Query string for skill detail / files endpoints: optional admin-only
+/// `?owner=<uid>` that pins resolution to a specific user's private pool.
+#[derive(Deserialize)]
+pub(super) struct SkillScopeQuery {
+    #[serde(default)]
+    owner: Option<String>,
 }
 
 pub(super) async fn api_skill_files(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(name): Path<String>,
+    Query(q): Query<SkillScopeQuery>,
 ) -> Result<Json<SkillFilesResponse>, ApiError> {
     use crate::core::manager::SkillManager;
     let mgr = SkillManager::with_base(state.db_path.parent().unwrap().to_path_buf())
         .map_err(ApiError::Internal)?;
     let db = state.db()?;
     let (skill_dir, _owner) =
-        resolve_skill_dir(&headers, &db, mgr.paths(), &name).map_err(|_| ApiError::NotFound)?;
+        resolve_skill_dir_scoped(&headers, &db, mgr.paths(), &name, q.owner.as_deref())
+            .map_err(|_| ApiError::NotFound)?;
     if !skill_dir.is_dir() {
         return Err(ApiError::NotFound);
     }
@@ -349,7 +372,8 @@ pub(super) async fn api_skill_file(
         .map_err(ApiError::Internal)?;
     let db = state.db()?;
     let (skill_dir, _owner) =
-        resolve_skill_dir(&headers, &db, mgr.paths(), &name).map_err(|_| ApiError::NotFound)?;
+        resolve_skill_dir_scoped(&headers, &db, mgr.paths(), &name, q.owner.as_deref())
+            .map_err(|_| ApiError::NotFound)?;
     let target = skill_dir.join(&q.path);
     // SECURITY: canonicalise both, verify target still under skill_dir.
     // Prevents `?path=../../etc/passwd` style traversal.

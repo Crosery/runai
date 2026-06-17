@@ -200,6 +200,15 @@ body.is-admin:not(.mode-owner) .lib-sub.admin-only {
   font-size: 13px;
 }
 
+.userlib-skill-row.clickable {
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.userlib-skill-row.clickable:hover {
+  background: var(--hover, rgba(127, 127, 127, 0.08));
+}
+
 .userlib-skill-row .nm {
   font-weight: 500;
   color: var(--ink);

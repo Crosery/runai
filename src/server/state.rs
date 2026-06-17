@@ -167,11 +167,42 @@ pub(super) fn resolve_skill_dir(
     paths: &crate::core::paths::AppPaths,
     name: &str,
 ) -> Result<(std::path::PathBuf, Option<String>)> {
-    let owner = current_owner_id(headers, db);
+    resolve_skill_dir_scoped(headers, db, paths, name, None)
+}
+
+/// Like [`resolve_skill_dir`], but lets an ADMIN viewer pin resolution to a
+/// specific user's pool via `requested_owner` (the dashboard "用户库"
+/// drill-in passes `?owner=<uid>`). The override is admin-gated: a non-admin's
+/// `requested_owner` is IGNORED so they cannot read another user's private
+/// skill — they keep resolving within their own scope. `resolve_skill_dir`
+/// is the `requested_owner = None` shorthand, so behavior is byte-identical
+/// for every existing caller.
+pub(super) fn resolve_skill_dir_scoped(
+    headers: &HeaderMap,
+    db: &Database,
+    paths: &crate::core::paths::AppPaths,
+    name: &str,
+    requested_owner: Option<&str>,
+) -> Result<(std::path::PathBuf, Option<String>)> {
+    // admin + non-empty ?owner= → pin to that user's pool. The full-user
+    // lookup (for `is_admin`) only happens when an override is actually
+    // requested; the common path stays on `current_owner_id`.
+    let admin_override: Option<String> = match requested_owner {
+        Some(uid) if !uid.is_empty() => current_user(headers, db)
+            .ok()
+            .flatten()
+            .map(|u| u.is_admin)
+            .unwrap_or(false)
+            .then(|| uid.to_string()),
+        _ => None,
+    };
+    // Non-admin's `requested_owner` collapses to None above → falls back to
+    // the viewer's own scope (anonymous → None → public pool).
+    let scope: Option<String> = admin_override.or_else(|| current_owner_id(headers, db));
     if let Some(row) = db.find_resource_by_name_for_user(
         crate::core::resource::ResourceKind::Skill,
         name,
-        owner.as_deref(),
+        scope.as_deref(),
     )? {
         return Ok((row.directory.clone(), row.owner_user_id.clone()));
     }

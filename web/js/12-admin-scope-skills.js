@@ -127,13 +127,21 @@
       if (quick) quick.classList.add('hide');
     }
 
-    // Count badges per scope
-    const total = skillsState.cache.length;
-    const myCount = account.libraryNames.size;
-    const publicCount = Math.max(0, total - myCount);
+    // Count badges per scope — ownership-based (v0.11 model):
+    //   公共库 = owner_user_id absent (公共池 ~/.runai/skills)
+    //   私有库 = owner_user_id present (~/.runai/users/<uid>/skills)
+    //   我的库 = 私有库 ∪ 已订阅公共 (private always counts as mine)
+    const cache = skillsState.cache;
+    const total = cache.length;
+    const publicCount = cache.filter((s) => !s.owner_user_id).length;
+    const privateCount = total - publicCount;
+    const myCount = cache.filter(
+      (s) => s.owner_user_id || account.libraryNames.has(s.name),
+    ).length;
     $('#scope-all-count') && ($('#scope-all-count').textContent = total);
     $('#scope-my-count') && ($('#scope-my-count').textContent = myCount);
     $('#scope-public-count') && ($('#scope-public-count').textContent = publicCount);
+    $('#scope-private-count') && ($('#scope-private-count').textContent = privateCount);
 
     document.querySelectorAll('.scope-btn').forEach((b) => {
       b.classList.toggle('active', b.dataset.scope === account.scope);
@@ -145,23 +153,27 @@
     //
     // Rules:
     //   - select mode off              → hide all bulk buttons
+    //   - scope=private                → hide both (private is always "mine",
+    //                                    public-library subscription N/A)
     //   - scope=my                     → only "移出我的库"
-    //   - scope=public                 → only "加入我的库"
-    //   - scope=all + selection empty  → show both (user hasn't chosen yet)
-    //   - scope=all + all-in-library   → only "移出我的库"
-    //   - scope=all + all-not-in-lib   → only "加入我的库"
-    //   - scope=all + mixed selection  → show both, user picks intent
+    //   - scope=public/all + sel empty → show both (user hasn't chosen yet)
+    //   - scope=public/all + all-in    → only "移出我的库"
+    //   - scope=public/all + all-out   → only "加入我的库"
+    //   - scope=public/all + mixed     → show both, user picks intent
     const container = document.getElementById('skill-rows');
     const inSelectMode = container?.classList.contains('select-mode');
     let showAdd = false;
     let showRemove = false;
     if (inSelectMode) {
-      if (account.scope === 'my') {
+      if (account.scope === 'private') {
+        // 私有库 rows are always "mine" — no public-library add/remove applies.
+        showAdd = false;
+        showRemove = false;
+      } else if (account.scope === 'my') {
         showRemove = true;
-      } else if (account.scope === 'public') {
-        showAdd = true;
       } else {
-        // scope=all — look at the current selection composition.
+        // scope=all or 公共库 — both add/remove can apply (a public skill may
+        // or may not be subscribed). Look at the current selection composition.
         if (account.bulkSelect.size === 0) {
           showAdd = true;
           showRemove = true;
@@ -230,10 +242,14 @@
       const name = row.dataset.skill
         || row.querySelector('.nm')?.firstChild?.textContent?.trim()
         || '';
-      const inLib = account.libraryNames.has(name);
+      // Ownership-based scope (v0.11). `dataset.owner` is set by
+      // renderSkillsRows: non-empty = private skill, empty = public pool.
+      const isPrivate = !!row.dataset.owner;
+      const inMy = isPrivate || account.libraryNames.has(name);
       let show = true;
-      if (account.scope === 'my') show = inLib;
-      else if (account.scope === 'public') show = !inLib;
+      if (account.scope === 'my') show = inMy;
+      else if (account.scope === 'public') show = !isPrivate;
+      else if (account.scope === 'private') show = isPrivate;
       row.style.display = show ? '' : 'none';
     }
   }
@@ -308,15 +324,15 @@
       const d = await api('GET', `/api/admin/userlib/${encodeURIComponent(userId)}`);
       $('#userlib-detail-name').textContent = d.username + (d.disabled ? ' (已禁用)' : '');
       $('#userlib-detail-meta').textContent = `${d.recent_events_count} 次调用 · 上次活跃 ${fmtRelativeTime(d.last_active_ts)}`;
-      renderUserlibSection('private', d.private);
-      renderUserlibSection('imported', d.imported);
+      renderUserlibSection('private', d.private, userId);
+      renderUserlibSection('imported', d.imported, userId);
     } catch (e) {
       $('#userlib-detail-name').textContent = '加载失败';
       $('#userlib-detail-meta').textContent = e.message;
     }
   }
 
-  function renderUserlibSection(kind, items) {
+  function renderUserlibSection(kind, items, userId) {
     const rowsEl = $(`#userlib-detail-${kind}`);
     const emptyEl = $(`#userlib-detail-${kind}-empty`);
     const countEl = $(`#userlib-detail-${kind}-count`);
@@ -330,12 +346,20 @@
     if (emptyEl) emptyEl.hidden = true;
     for (const s of items) {
       const row = document.createElement('div');
-      row.className = 'userlib-skill-row';
+      row.className = 'userlib-skill-row clickable';
       row.innerHTML = `
         <div class="nm">${escapeHTML(s.name)}</div>
         <div class="desc" title="${escapeHTML(s.description || '')}">${escapeHTML(s.description || '—')}</div>
         <div class="used">${s.usage_count} 次</div>
       `;
+      // Click → full skill detail page, same as 已安装. Carry ?owner=<uid>
+      // so the (admin-gated) server resolves THIS user's skill — private
+      // skills shadow public per owner, and same-named privates across users
+      // would otherwise be ambiguous. Imported (public) rows resolve fine
+      // with the owner param too (public falls through when no private match).
+      row.addEventListener('click', () => {
+        location.hash = `#/skill/${encodeURIComponent(s.name)}?owner=${encodeURIComponent(userId)}`;
+      });
       rowsEl.appendChild(row);
     }
   }

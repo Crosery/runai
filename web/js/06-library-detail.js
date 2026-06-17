@@ -1,8 +1,13 @@
   // ------------------------------------------------------------------
   //  Library: skill detail
   // ------------------------------------------------------------------
-  async function loadSkillDetail(name) {
+  async function loadSkillDetail(name, owner) {
     detailState.name = name;
+    // owner is set only when arriving from the admin "用户库" drill-in; it
+    // pins detail/file resolution to that user's private pool (admin-gated
+    // server-side). Empty/absent → normal own-scope resolution.
+    detailState.owner = owner || null;
+    const ownerQ = owner ? `?owner=${encodeURIComponent(owner)}` : '';
     $('#detail-name').textContent = name;
     $('#detail-desc').textContent = '';
     $('#detail-meta-path').textContent = '—';
@@ -21,7 +26,7 @@
     $('#detail-file-path').textContent = '—';
     $('#detail-file-meta').textContent = '';
 
-    const res = await fetch(`/api/skill/${encodeURIComponent(name)}`);
+    const res = await fetch(`/api/skill/${encodeURIComponent(name)}${ownerQ}`);
     if (!res.ok) {
       $('#detail-name').textContent = '加载失败';
       $('#detail-desc').textContent = `找不到 skill: ${name}`;
@@ -93,12 +98,13 @@
       tbody.appendChild(row);
     }
 
-    await loadFileTree(name);
+    await loadFileTree(name, owner);
   }
 
-  async function loadFileTree(name) {
+  async function loadFileTree(name, owner) {
     const tree = $('#detail-file-tree');
-    const res = await fetch(`/api/skill/${encodeURIComponent(name)}/files`);
+    const ownerQ = owner ? `?owner=${encodeURIComponent(owner)}` : '';
+    const res = await fetch(`/api/skill/${encodeURIComponent(name)}/files${ownerQ}`);
     if (!res.ok) {
       tree.innerHTML = '<div class="muted" style="padding:8px">无法读取 skill 目录</div>';
       $('#detail-file-body').textContent = '';
@@ -123,24 +129,25 @@
         <span class="ftree-name">${escapeHTML(entry.path)}</span>
         <span class="ftree-size">${fmtBytes(entry.size)}</span>
       `;
-      div.addEventListener('click', () => selectFile(name, entry.path));
+      div.addEventListener('click', () => selectFile(name, entry.path, owner));
       tree.appendChild(div);
     }
     const preferred =
       entries.find((e) => e.path === 'SKILL.md') ||
       entries.find((e) => e.is_text) ||
       entries[0];
-    if (preferred) selectFile(name, preferred.path);
+    if (preferred) selectFile(name, preferred.path, owner);
   }
 
-  async function selectFile(name, path) {
+  async function selectFile(name, path, owner) {
     detailState.activeFile = path;
     $$('#detail-file-tree .ftree-entry').forEach((el) => {
       el.classList.toggle('active', el.dataset.path === path);
     });
     $('#detail-file-path').textContent = path;
     $('#detail-file-body').textContent = '加载中...';
-    const url = `/api/skill/${encodeURIComponent(name)}/file?path=${encodeURIComponent(path)}`;
+    const ownerQ = owner ? `&owner=${encodeURIComponent(owner)}` : '';
+    const url = `/api/skill/${encodeURIComponent(name)}/file?path=${encodeURIComponent(path)}${ownerQ}`;
     const res = await fetch(url);
     if (!res.ok) {
       $('#detail-file-body').textContent = '(读取失败)';

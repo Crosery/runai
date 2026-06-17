@@ -10,8 +10,14 @@
     if (h === 'admin') return { view: 'admin' };
     if (h === 'market') return { view: 'market' };
     if (h === 'setup') return { view: 'setup' };
-    const m = h.match(/^skill\/(.+)$/);
-    if (m) return { view: 'detail', name: decodeURIComponent(m[1]) };
+    // #/skill/<name> with an optional ?owner=<uid> suffix. The owner is used
+    // by the admin "用户库" drill-in so the detail page resolves the exact
+    // user's private skill (server treats ?owner= as admin-gated).
+    const m = h.match(/^skill\/([^?]+)(?:\?(.*))?$/);
+    if (m) {
+      const owner = new URLSearchParams(m[2] || '').get('owner');
+      return { view: 'detail', name: decodeURIComponent(m[1]), owner: owner || null };
+    }
     return { view: 'overview' };
   }
 
@@ -50,7 +56,7 @@
       case 'detail':
         setActivePane('detail');
         setActiveNav('skills');
-        loadSkillDetail(r.name);
+        loadSkillDetail(r.name, r.owner);
         break;
       case 'activity':
         setActivePane('activity');
