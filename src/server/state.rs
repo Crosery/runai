@@ -208,9 +208,25 @@ pub(super) fn resolve_skill_dir_scoped(
     }
     // Compat: a public skill might exist on disk without a DB row (e.g.
     // a freshly-cloned tree that hasn't been `runai scan`-ed yet).
+    //
+    // A1 SECURITY: do NOT let a stray public-pool dir shadow a PRIVATE skill
+    // row. If any row owns this name and it's private, the DB lookup above
+    // missed it only because the caller's scope doesn't include that owner —
+    // serving the bare on-disk dir here would hand a private skill to anyone
+    // (the `agent-browser` anon leak). Refuse the disk fallback in that case.
     let public_dir = paths.skills_dir().join(name);
     if public_dir.exists() {
-        return Ok((public_dir, None));
+        let private_shadow = db
+            .find_resource_by_name_for_user(
+                crate::core::resource::ResourceKind::Skill,
+                name,
+                Some("*"),
+            )?
+            .map(|r| r.owner_user_id.is_some())
+            .unwrap_or(false);
+        if !private_shadow {
+            return Ok((public_dir, None));
+        }
     }
     anyhow::bail!("skill not found: {name}")
 }
