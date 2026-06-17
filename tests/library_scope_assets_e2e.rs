@@ -126,6 +126,26 @@ fn app_css_does_not_hide_scope_segment_for_admin() {
 }
 
 #[test]
+fn app_css_hides_my_library_scope_for_admin() {
+    // "我的库" = private ∪ subscribed-public is a per-USER concept. For
+    // team-admin (scope "*", role = pool operator) the "private" bucket is
+    // EVERY user's private skill and the subscription is a meaningless
+    // pre-filled set — so 我的库 is incoherent for admin. Admin keeps
+    // 全部 / 公共库 / 私有库 only; the 我的库 button must be hidden for admin.
+    let s = spawn_server();
+    let css = get_text(&s, "/app.css");
+    assert!(
+        css.contains("is-admin:not(.mode-owner) .scope-btn[data-scope=\"my\"]"),
+        "team-admin must not see the 我的库 scope button"
+    );
+    // …but the whole scope segment must still NOT be hidden (公共库/私有库 stay).
+    assert!(
+        !css.contains("is-admin:not(.mode-owner) .scope-group"),
+        "only the 我的库 button is hidden for admin, not the whole segment"
+    );
+}
+
+#[test]
 fn app_js_filters_installed_list_by_ownership() {
     let s = spawn_server();
     let js = get_text(&s, "/app.js");

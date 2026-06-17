@@ -45,13 +45,20 @@ body.mode-owner .settings-section.admin-block:has(#admin-users-rows) {
   display: none !important;
 }
 
-/* Team-mode admin KEEPS the 范围 scope segment.
+/* Team-mode admin: keep the OWNERSHIP scope segment (全部 / 公共库 / 私有库)
+ * but hide 我的库.
  *
- *  Historical note: an earlier rule hid `.scope-group:not(#select-mode-group)`
- *  for team-admin on the rationale that "admin's library = whole public pool,
- *  so 全部 / 我的库 / 仅公共 segmentation is meaningless." That rationale is
- *  obsolete: the scope segment is now OWNERSHIP-based (全部 / 我的库 / 公共库 /
- *  私有库). Admin owns private skills too and wants to separate 公共库 from
- *  私有库, so the segment is meaningful — and hiding it left a blank band in
- *  the scope bar. The rule was removed; do NOT reintroduce it. Owner mode
- *  still hides the whole `#library-scope-bar` above (single-user, no pools). */
+ *  History: an earlier rule hid the WHOLE `.scope-group` for team-admin
+ *  ("admin's library = whole public pool, segmentation meaningless"). That was
+ *  too broad — admin genuinely wants 公共库 vs 私有库 separated. But the fix
+ *  must not swing the other way: 我的库 (= private ∪ subscribed-public) is a
+ *  per-USER concept. Admin's `/api/skills` scope is "*", so its "private"
+ *  bucket is EVERY user's private skill and its subscription is a meaningless
+ *  pre-filled set — 我的库 is incoherent for the pool operator. Hide ONLY the
+ *  我的库 button for admin; 全部 / 公共库 / 私有库 stay. Owner mode still hides
+ *  the whole `#library-scope-bar` above (single-user, no pools).
+ *
+ *  Do NOT hide `.scope-group` wholesale and do NOT un-hide 我的库. */
+body.is-admin:not(.mode-owner) .scope-btn[data-scope="my"] {
+  display: none !important;
+}
