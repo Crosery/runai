@@ -142,6 +142,25 @@ pub async fn serve_with(
         tls_key: tls_key.clone(),
     });
 
+    // Real-time enrichment watcher (PLANNING real-time enrichment): watch the
+    // public pool + every user's private pool so an edited SKILL.md or a new
+    // skill auto-triggers `recommend enrich`. Pre-create both roots so the
+    // RECURSIVE watch also covers users who register AFTER startup (new
+    // `users/<uid>/skills/` lands inside the already-watched `users/`).
+    // Failure to start is non-fatal — the dashboard is the primary surface.
+    let data_dir = state
+        .db_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_default();
+    let _ = std::fs::create_dir_all(data_dir.join("skills"));
+    let _ = std::fs::create_dir_all(data_dir.join("users"));
+    let _skill_watcher = crate::core::skill_watcher::SkillWatcher::start(data_dir, |names| {
+        super::market::spawn_enrich(names);
+    })
+    .map_err(|e| tracing::warn!("skill watcher failed to start: {e}"))
+    .ok();
+
     // Sub-routers for the rate-limited families. Building them as
     // independent sub-routers means the `from_fn` middleware applies
     // exactly to those paths and only those paths — no risk that the

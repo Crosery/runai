@@ -27,5 +27,6 @@ pub mod sandbox;
 pub mod scanner;
 pub mod search;
 pub mod server_mode;
+pub mod skill_watcher;
 pub mod transcript_stats;
 pub mod updater;

@@ -73,6 +73,7 @@ pub(super) async fn api_skills(
         .list_resources_for_user(None, owner_scope.as_deref())
         .map_err(ApiError::Internal)?;
     let summaries = db.skill_ai_summary_all().unwrap_or_default();
+    let summaries_ts = db.skill_ai_summary_timestamps().unwrap_or_default();
     let scores = db.skill_llm_scores_all().unwrap_or_default();
 
     let mut skills = Vec::new();
@@ -83,18 +84,18 @@ pub(super) async fn api_skills(
             continue;
         }
         let summary = summaries.get(&r.name).cloned().unwrap_or_default();
-        // 3-state: summary present wins (and clears any stale in-flight mark);
-        // else in-flight registry → 富集中; else 未富集.
-        let enrich_status = if !summary.is_empty() {
-            super::enrich_state::clear(&r.name);
-            enriched += 1;
-            "enriched"
-        } else if super::enrich_state::is_enriching(&r.name) {
-            enriching += 1;
-            "enriching"
-        } else {
-            "unenriched"
-        };
+        // 3-state: in-flight registry + summary timestamp decide 已富集 /
+        // 富集中 / 未富集 (a re-enriched skill with a stale summary shows 富集中).
+        let enrich_status = super::enrich_state::status_for(
+            &r.name,
+            !summary.is_empty(),
+            summaries_ts.get(&r.name).copied(),
+        );
+        match enrich_status {
+            "enriched" => enriched += 1,
+            "enriching" => enriching += 1,
+            _ => {}
+        }
         let llm_score = scores.get(&r.name).copied();
         skills.push(SkillRow {
             name: r.name.clone(),
