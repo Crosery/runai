@@ -1003,7 +1003,11 @@ impl ServerHandler for SmServer {
     }
 }
 
-#[cfg(test)]
+// Windows 上 dirs::home_dir() 走 SHGetKnownFolderPath、无视 HOME 环境变量，
+// with_temp_home_server 的隔离完全失效：SmServer::new() 会读写真实用户目录，
+// sm_backup 甚至往真实 profile 写备份（2026-07-02 Windows CI 实证）。与
+// manager::tests 同惯例，整个模块 unix-only。
+#[cfg(all(test, not(target_os = "windows")))]
 mod tests {
     use super::*;
     use crate::test_support::HOME_LOCK;
