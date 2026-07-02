@@ -62,6 +62,9 @@ argon2 = "0.5.3"
 # Lock-free concurrent map — backing store for the rate-limiter buckets
 # in src/server/middleware/rate_limit.rs.
 dashmap = "6"
+# Hidden terminal password prompt for `runai admin reset-password` when
+# --password is omitted (interactive machine-owner flow).
+rpassword = "7"
 
 [profile.release]
 strip = true

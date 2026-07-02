@@ -215,6 +215,32 @@ runai server --uninstall-autostart     # 卸载
 
 详见 [AGENTS.md](AGENTS.md) 的 "Per-user physical skill isolation" 段。
 
+## 管理员重置密码
+
+用户忘了密码时，管理员有三条正规路径重置（都会同时轮换该用户的 api_key，旧 Bearer / 已装客户端全部失效，用户必须用新密码重新登录）：
+
+**本机 CLI**（在跑 server 的机器上，直接写本地 `runai.db`，无需 server 在线）：
+
+```bash
+runai admin reset-password <username>                 # 交互隐藏输入 + 二次确认
+runai admin reset-password <username> --password <pw> # 非交互 / 脚本 & agent 用
+```
+
+这是"忘记密码时手改 `users` 表 SQL"的正规替代。用户不存在时干净报错，不 panic。
+
+**服务端 API**（team 模式，管理员 Bearer / session cookie）：
+
+```bash
+curl -X POST http://<host>:17888/api/admin/users/<user_id>/reset-password \
+  -H "Authorization: Bearer <admin_key>" \
+  -H "Content-Type: application/json" \
+  -d '{"new_password":"<新密码>"}'
+```
+
+返回 200 表示成功（响应只含 `user_id` / `username`，不回传新 key）；非管理员 403、未登录 401、用户不存在 404、密码短于 6 位 400。管理员也可以重置自己的密码。
+
+**Dashboard**（team 模式，以管理员登录）：Admin tab → 用户表 → 每行「重置密码」按钮（对自己那一行也生效）。点击后 prompt 收新密码，调的是同一个 `/api/admin/users/{id}/reset-password` 端点，成功后弹窗提醒把新密码告知用户——其旧 api_key/登录态已经失效。
+
 ---
 
 ## 项目结构

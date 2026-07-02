@@ -212,6 +212,32 @@ runai server --uninstall-autostart     # remove it
 
 See the "Per-user physical skill isolation" section in [AGENTS.md](AGENTS.md) for the full invariant set.
 
+## Admin password reset
+
+When a user forgets their password, an admin has three supported ways to reset it. All three rotate the target's api_key too, so every previously-issued Bearer (browser cookie / installed client) dies and the user must log in again with the new password.
+
+**Local CLI** (on the machine running the server; writes the local `runai.db` directly, no server needs to be up):
+
+```bash
+runai admin reset-password <username>                 # interactive hidden prompt + confirm
+runai admin reset-password <username> --password <pw> # non-interactive, for scripts / agents
+```
+
+This is the supported replacement for hand-editing the `users` table via SQL. An unknown username errors cleanly (no panic).
+
+**Server API** (team mode, admin Bearer / session cookie):
+
+```bash
+curl -X POST http://<host>:17888/api/admin/users/<user_id>/reset-password \
+  -H "Authorization: Bearer <admin_key>" \
+  -H "Content-Type: application/json" \
+  -d '{"new_password":"<new password>"}'
+```
+
+`200` on success (the response carries only `user_id` / `username` — the new key is never returned); `403` for non-admin, `401` unauthenticated, `404` unknown user, `400` when the password is shorter than 6 chars. An admin may reset their own password.
+
+**Dashboard** (team mode, logged in as admin): Admin tab → user table → 重置密码 button on each row (works on your own row too). Prompts for the new password, calls the same `/api/admin/users/{id}/reset-password` endpoint, then confirms with a reminder to hand the new password to the user — their old api_key/session is already dead.
+
 ---
 
 ## Project layout

@@ -1,6 +1,6 @@
 use super::command_enums::{Cli, Commands};
 use super::handlers::{
-    handle_community, handle_group_command, handle_recommend, handle_trash_command,
+    handle_admin, handle_community, handle_group_command, handle_recommend, handle_trash_command,
 };
 use super::helpers::{find_resource_id_by_name, spawn_targeted_enrich};
 use crate::core::cli_target::CliTarget;
@@ -611,5 +611,6 @@ pub fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Some(Commands::Community { command }) => handle_community(command),
+        Some(Commands::Admin { command }) => handle_admin(&mgr, command),
     }
 }

@@ -112,6 +112,31 @@ impl Database {
         Ok(())
     }
 
+    /// Reset a user's credentials in one atomic UPDATE: overwrite the argon2
+    /// `password_hash` AND rotate the `api_key_hash`. Used by the admin
+    /// "reset any user's password" surface (server `POST /api/admin/users/
+    /// {user_id}/reset-password` + local CLI `runai admin reset-password`).
+    ///
+    /// Rotating the api_key alongside the password is load-bearing: a reset
+    /// implies the old secret is compromised / forgotten, so every previously
+    /// issued Bearer (browser cookie + `~/.runai-identity`) must die and the
+    /// user must log in again with the new password to mint a fresh key.
+    /// Callers pass the SHA-256 hash of a freshly minted `new_api_key()`; the
+    /// plaintext key is intentionally NOT persisted or returned — the user
+    /// obtains a new one only by logging in.
+    pub fn set_user_credentials(
+        &self,
+        user_id: &str,
+        password_hash: &str,
+        new_api_key_hash: &str,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE users SET password_hash = ?1, api_key_hash = ?2 WHERE user_id = ?3",
+            params![password_hash, new_api_key_hash, user_id],
+        )?;
+        Ok(())
+    }
+
     /// Delete the `users` row. Auth-only deletion — callers that delete a user's
     /// owned resources / physical subtree must do that via the manager-level
     /// cascade (`SkillManager::delete_user_cascade`) BEFORE calling this.

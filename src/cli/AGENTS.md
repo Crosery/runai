@@ -13,9 +13,10 @@ clap-based CLI entry point. Parses subcommands, constructs a `SkillManager`, dis
 
 ## Public surface (the API contract — external code depends on these exact paths)
 - `crate::cli::Cli` (clap `Parser`) — top-level arg parser.
-- `crate::cli::Commands` — all subcommands: `Scan`, `Discover`, `List`, `Enable`, `Disable`, `Install`, `MarketInstall`, `Uninstall`, `Trash(TrashCommands)`, `Restore`, `Backup`, `Backups`, `Search`, `Market`, `Group(GroupCommands)`, `Status`, `McpServe`, `Server`, `Register`, `Unregister`, `Usage`, `Update`, `Doctor`, `Recommend(RecommendCommands)`, `Community(CommunityCommands)`.
+- `crate::cli::Commands` — all subcommands: `Scan`, `Discover`, `List`, `Enable`, `Disable`, `Install`, `MarketInstall`, `Uninstall`, `Trash(TrashCommands)`, `Restore`, `Backup`, `Backups`, `Search`, `Market`, `Group(GroupCommands)`, `Status`, `McpServe`, `Server`, `Register`, `Unregister`, `Usage`, `Update`, `Doctor`, `Recommend(RecommendCommands)`, `Community(CommunityCommands)`, `Admin(AdminCommands)`.
 - `crate::cli::RecommendCommands` — `Setup`, `Status`, `HookSnippet`, `InstallHook`, `UninstallHook`, `Stats`, `Feedback`, `Get`, `ResetScoring`, `Enrich`.
 - `crate::cli::CommunityCommands` — `Upload`, `Publish`, `List`, `Install`, `Delete`. Thin HTTP client over the server's community/private-skill endpoints (`handlers/community.rs`); reads `~/.runai-identity` for the Bearer key. `Upload` POSTs to `/api/users/me/skills/upload` (lands in the caller's PRIVATE pool, `publish_status='draft'` — NOT the shared pool). `Publish` POSTs `/api/users/me/skills/{name}/publish-request` to ask an admin to review a draft. See PLANNING §1.4 rewrite + issue #29 — the old direct-to-pool `/api/community/upload` is admin-only now and no CLI command calls it.
+- `crate::cli::AdminCommands` — `ResetPassword { username, password: Option<String> }`. Local machine-owner op on this box's `runai.db` (no HTTP, no auth — the filesystem is the trust boundary): looks the user up by username (clean error, not panic, when missing), validates + argon2-hashes the new password, writes it via `Database::set_user_credentials`, and rotates the `api_key_hash` so previously-issued Bearers die. Omitting `--password` prompts interactively with hidden input (`rpassword`) + confirmation; `--password <pw>` is the non-interactive / agent path. The 正规 replacement for hand-editing the `users` table via SQL. See `handlers/admin.rs`.
 - `crate::cli::GroupCommands` — `Create`, `Add`, `Remove`, `List`, `Delete`, `Update`, `Show { id }`. `List` prints one line per group plus a 120-char description preview (indented). `Show` dumps the full description (preserving newlines) + member list with per-member kind badge and 70-char description snippet; errors with `group not found: <id>` when missing.
 - `crate::cli::TrashCommands` — `List`, `Restore`, `Purge`, `Empty`.
 - `crate::cli::run(cli) -> Result<()>` — top dispatch.
@@ -26,10 +27,11 @@ Consumers (`main.rs`) only use `crate::cli::Cli` and `crate::cli::run`; the enum
 | File | Responsibility | Key items |
 |---|---|---|
 | `mod.rs` | re-exports only, no logic | `pub use command_enums::{Cli, Commands, GroupCommands, RecommendCommands, TrashCommands}`, `pub use dispatch::run` |
-| `command_enums.rs` | clap derive enums (the entire arg surface) | `Cli`, `Commands`, `RecommendCommands`, `GroupCommands`, `TrashCommands` |
-| `dispatch.rs` | top-level `run()` — constructs `SkillManager`, 24-arm match dispatcher; inline arms for everything except group/trash/recommend/community | `run()` |
+| `command_enums.rs` | clap derive enums (the entire arg surface) | `Cli`, `Commands`, `RecommendCommands`, `GroupCommands`, `TrashCommands`, `CommunityCommands`, `AdminCommands` |
+| `dispatch.rs` | top-level `run()` — constructs `SkillManager`, 25-arm match dispatcher; inline arms for everything except group/trash/recommend/community/admin | `run()` |
 | `helpers.rs` | shared private helpers used across dispatch + handlers | `spawn_targeted_enrich()`, `find_resource_id_by_name()`, `find_trash_id_by_query()` (all `pub(super)`) |
-| `handlers/mod.rs` | declares + re-exports the four area handlers for `dispatch.rs` | `pub(super) use {handle_community, handle_group_command, handle_recommend, handle_trash_command}` |
+| `handlers/mod.rs` | declares + re-exports the area handlers for `dispatch.rs` | `pub(super) use {handle_admin, handle_community, handle_group_command, handle_recommend, handle_trash_command}` |
+| `handlers/admin.rs` | `Admin(AdminCommands)` dispatch — local DB write, no HTTP | `handle_admin()`, `reset_password()` (file-private; `mgr.db()` → `find_user_by_username` → `set_user_credentials`, rotates api_key) |
 | `handlers/group.rs` | `Group(GroupCommands)` dispatch | `handle_group_command()` |
 | `handlers/trash.rs` | `Trash(TrashCommands)` dispatch | `handle_trash_command()` |
 | `handlers/recommend.rs` | `Recommend(RecommendCommands)` dispatch + `recommend setup` wizard | `handle_recommend()`, `recommend_setup()` (file-private) |

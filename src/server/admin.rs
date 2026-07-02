@@ -17,6 +17,7 @@ use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+use crate::core::auth as authmod;
 use crate::core::paths::AppPaths;
 
 use super::error::ApiError;
@@ -143,6 +144,69 @@ pub(super) async fn api_admin_users_update(
             created_at: updated.created_at,
             library_size,
             event_count,
+        })
+    })
+    .await
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))??;
+    Ok(Json(resp))
+}
+
+#[derive(Deserialize)]
+pub(super) struct AdminResetPasswordReq {
+    new_password: String,
+}
+
+#[derive(Serialize)]
+pub(super) struct AdminResetPasswordResp {
+    user_id: String,
+    username: String,
+}
+
+/// POST /api/admin/users/{user_id}/reset-password
+/// body: {"new_password": "..."}
+///
+/// Admin-only forced password reset for ANY user (incl. the admin
+/// themselves). Writes a fresh argon2 `password_hash` AND rotates the
+/// target's `api_key_hash` in one atomic UPDATE, so every previously issued
+/// Bearer (browser cookie / `~/.runai-identity`) is invalidated and the user
+/// must log in with the new password to mint a new key. The new key is NEVER
+/// returned — the user obtains it only via `/auth/login`.
+///
+/// Errors: 401/403 via `require_admin` (unauthenticated / non-admin); 404
+/// when `user_id` doesn't exist; 400 when `new_password` fails
+/// `validate_password` (min 6 chars). Security-sensitive: it is the only
+/// server surface that overwrites another user's `password_hash`.
+pub(super) async fn api_admin_reset_password(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(user_id): Path<String>,
+    Json(req): Json<AdminResetPasswordReq>,
+) -> Result<Json<AdminResetPasswordResp>, ApiError> {
+    let resp = tokio::task::spawn_blocking(move || -> Result<AdminResetPasswordResp, ApiError> {
+        let db = state.db().map_err(ApiError::Internal)?;
+        require_admin(&headers, &db)?;
+
+        // Target must exist. 404 (not 400) so an admin scripting against a
+        // stale user_id gets an unambiguous "gone" signal.
+        let target = db
+            .find_user_by_id(&user_id)
+            .map_err(ApiError::Internal)?
+            .ok_or(ApiError::NotFound)?;
+
+        authmod::validate_password(&req.new_password)
+            .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+
+        let password_hash =
+            authmod::hash_password(&req.new_password).map_err(ApiError::Internal)?;
+        // Rotate the api_key alongside the password (see set_user_credentials).
+        let new_key = authmod::new_api_key();
+        let api_key_hash = authmod::key_hash(&authmod::BearerToken(new_key));
+        db.set_user_credentials(&target.user_id, &password_hash, &api_key_hash)
+            .map_err(ApiError::Internal)?;
+
+        Ok(AdminResetPasswordResp {
+            user_id: target.user_id,
+            username: target.username,
         })
     })
     .await

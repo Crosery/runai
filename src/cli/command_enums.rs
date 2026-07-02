@@ -174,6 +174,34 @@ pub enum Commands {
         #[command(subcommand)]
         command: CommunityCommands,
     },
+    /// Local machine-owner admin operations on this box's runai.db.
+    Admin {
+        #[command(subcommand)]
+        command: AdminCommands,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum AdminCommands {
+    /// Reset a user's password directly in the local runai.db (no HTTP).
+    ///
+    /// The 正规 replacement for hand-editing the `users` table via SQL when a
+    /// user forgets their password. Operates as the machine owner on
+    /// `~/.runai/runai.db` (honors RUNE_DATA_DIR): looks the user up by
+    /// username, validates + argon2-hashes the new password, writes it, and
+    /// rotates the api_key_hash so every previously-issued Bearer dies. The
+    /// user must log in again with the new password to obtain a fresh key.
+    ///
+    /// Omit `--password` for an interactive hidden prompt (with confirm);
+    /// pass `--password <pw>` for non-interactive / agent use.
+    ResetPassword {
+        /// Username whose password to reset (must exist in the local DB).
+        username: String,
+        /// New password (>= 6 chars). Omit to be prompted interactively
+        /// with hidden input + confirmation.
+        #[arg(long)]
+        password: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
