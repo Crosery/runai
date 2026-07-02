@@ -27,28 +27,53 @@ impl Database {
         Ok(())
     }
 
-    /// Drop every user's library reference to this `skill_name`. Used by
-    /// `trash_resource` when a public-pool skill is deleted — every
-    /// subscriber loses the orphan entry so the UI doesn't show a row
-    /// that 404s on click.
+    /// Drop every user's library reference to this `skill_name` — but ONLY
+    /// when no PUBLIC-pool skill of that name still exists. Used by
+    /// `trash_resource` / `delete_user_cascade` / `doctor --fix` after they
+    /// `delete_resource`, so the deleted row is already gone by the time this
+    /// runs.
+    ///
+    /// C4 (scan_findings.md): `user_skill_library` only ever tracks
+    /// public-pool subscriptions (see the module doc). The owner-pool design
+    /// lets a private skill share a name with an unrelated public one, so a
+    /// name-only `DELETE` would wipe every OTHER user's subscription to the
+    /// still-existing PUBLIC skill whenever ANY user trashed a private skill
+    /// of that name. Gating on "no public row of this name remains" makes the
+    /// call a no-op for a private trash (public row still there → subscribers
+    /// kept) while still sweeping subscribers once the public skill itself is
+    /// gone (its row was deleted first, so the guard passes).
     pub fn library_remove_for_all(&self, skill_name: &str) -> Result<usize> {
         let n = self.conn.execute(
-            "DELETE FROM user_skill_library WHERE skill_name = ?1",
+            "DELETE FROM user_skill_library
+             WHERE skill_name = ?1
+               AND NOT EXISTS (
+                   SELECT 1 FROM resources
+                   WHERE name = ?1 AND kind = 'skill' AND owner_user_id IS NULL
+               )",
             params![skill_name],
         )?;
         Ok(n)
     }
 
-    /// Sweep `user_skill_library` for entries pointing at skills that no
-    /// longer exist in `resources` (kind='skill'). Returns the row count
-    /// removed. Run at startup so a database imported from an older
-    /// release (pre-`library_remove_for_all`-on-trash) doesn't leave the
-    /// dashboard with "我的库 N" rows that 404 on click.
+    /// Sweep `user_skill_library` for entries pointing at PUBLIC-pool skills
+    /// that no longer exist. Returns the row count removed. Run at startup so
+    /// a database imported from an older release (pre-`library_remove_for_all`-
+    /// on-trash) doesn't leave the dashboard with "我的库 N" rows that 404 on
+    /// click.
+    ///
+    /// C4 (scan_findings.md): the "still exists" subquery is filtered to
+    /// `owner_user_id IS NULL`. `user_skill_library` only tracks public-pool
+    /// subscriptions, so a private skill of the same name must NOT keep an
+    /// orphaned public subscription alive — without the filter, a subscriber's
+    /// public `foo` being trashed while a different user's private `foo`
+    /// survives left the genuinely-orphaned row un-swept (it kept 404ing on
+    /// click), defeating the exact purpose of this sweep.
     pub fn cleanup_orphan_library_entries(&self) -> Result<usize> {
         let n = self.conn.execute(
             "DELETE FROM user_skill_library
              WHERE skill_name NOT IN (
-                 SELECT name FROM resources WHERE kind = 'skill'
+                 SELECT name FROM resources
+                 WHERE kind = 'skill' AND owner_user_id IS NULL
              )",
             [],
         )?;

@@ -175,12 +175,14 @@ impl SkillManager {
             disabled_backup: None,
         };
         self.db.insert_trash_entry(&entry)?;
-        // Trashing a skill should also drop every user's library
-        // subscription so the "我的库" tab doesn't show a row that
-        // 404s on click. For a private skill only the owner could
-        // have subscribed; for a public-pool skill any user could —
-        // either way `library_remove_for_all(name)` is correct and
-        // idempotent.
+        // Trashing a PUBLIC skill should drop every user's library
+        // subscription so the "我的库" tab doesn't show a row that 404s on
+        // click. `library_remove_for_all` is owner-aware (C4): it no-ops when
+        // a public row of this name still exists, so trashing a PRIVATE skill
+        // that shares a name with an unrelated public skill does NOT wipe
+        // other users' subscriptions to that public skill. The public row was
+        // already `delete_resource`d above, so for a public trash the guard
+        // passes and subscribers are swept.
         let _ = self.db.library_remove_for_all(&entry.name);
         Ok(entry)
     }

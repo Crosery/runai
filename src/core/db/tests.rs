@@ -460,6 +460,87 @@ fn library_crud_roundtrip() {
     assert_eq!(db.library_list("u2").unwrap(), vec!["overdrive"]);
 }
 
+/// C4 (scan_findings.md): trashing a user's PRIVATE skill must NOT wipe every
+/// other user's library subscription to the still-existing PUBLIC skill of the
+/// same name. `library_remove_for_all` only tracks public-pool subscriptions,
+/// so it must no-op while a public row of that name still exists, and only
+/// sweep once that public skill is genuinely gone.
+#[test]
+fn library_remove_for_all_spares_public_when_private_same_name_gone() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(&tmp.path().join("test.db")).unwrap();
+
+    // A public skill `web-scraper` (owner NULL) that user Bob subscribes to.
+    db.insert_resource(&mk_skill("local:web-scraper", "web-scraper", None))
+        .unwrap();
+    // Alice separately owns a PRIVATE skill of the same name (allowed — private
+    // shadows public for the owner only).
+    db.insert_resource(&mk_skill(
+        "u:usr_alice:local:web-scraper",
+        "web-scraper",
+        Some("usr_alice"),
+    ))
+    .unwrap();
+    db.create_user("usr_bob", "bob", "p", "kb", false).unwrap();
+    db.library_add("usr_bob", "web-scraper").unwrap();
+    assert!(db.library_contains("usr_bob", "web-scraper").unwrap());
+
+    // Alice trashes HER private web-scraper: the private row goes away, then
+    // (as the trash path does) library_remove_for_all is called by name.
+    db.delete_resource("u:usr_alice:local:web-scraper").unwrap();
+    db.library_remove_for_all("web-scraper").unwrap();
+
+    // Bob's subscription to the STILL-EXISTING public web-scraper must survive.
+    assert!(
+        db.library_contains("usr_bob", "web-scraper").unwrap(),
+        "trashing a private same-name skill must not wipe public subscribers"
+    );
+
+    // Now the public skill is genuinely trashed → subscribers are swept.
+    db.delete_resource("local:web-scraper").unwrap();
+    db.library_remove_for_all("web-scraper").unwrap();
+    assert!(
+        !db.library_contains("usr_bob", "web-scraper").unwrap(),
+        "trashing the public skill must drop its now-orphan subscriptions"
+    );
+}
+
+/// C4 mirror gap: `cleanup_orphan_library_entries` must count only PUBLIC rows
+/// as "the skill still exists". A library row whose public skill was trashed
+/// is a genuine orphan even if a different user's PRIVATE skill of that name
+/// still exists — it must be swept, not kept alive by the private row.
+#[test]
+fn cleanup_orphan_library_entries_is_public_pool_aware() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(&tmp.path().join("test.db")).unwrap();
+
+    // Only a PRIVATE `foo` exists (public `foo` was trashed earlier). Bob has a
+    // leftover library subscription to the (gone) public `foo`.
+    db.insert_resource(&mk_skill("u:usr_alice:local:foo", "foo", Some("usr_alice")))
+        .unwrap();
+    db.create_user("usr_bob", "bob", "p", "kb", false).unwrap();
+    db.library_add("usr_bob", "foo").unwrap();
+
+    // A second, genuinely-valid public subscription that must be KEPT.
+    db.insert_resource(&mk_skill("local:bar", "bar", None))
+        .unwrap();
+    db.library_add("usr_bob", "bar").unwrap();
+
+    let removed = db.cleanup_orphan_library_entries().unwrap();
+    assert!(
+        removed >= 1,
+        "the orphan `foo` subscription must be swept even though a private foo exists"
+    );
+    assert!(
+        !db.library_contains("usr_bob", "foo").unwrap(),
+        "orphan public subscription must be gone (private same-name row must not shield it)"
+    );
+    assert!(
+        db.library_contains("usr_bob", "bar").unwrap(),
+        "a subscription whose public skill still exists must be kept"
+    );
+}
+
 #[test]
 fn ai_index_roundtrip() {
     let tmp = tempfile::tempdir().unwrap();
