@@ -2,12 +2,60 @@ use crate::cli::command_enums::RecommendCommands;
 use crate::core::manager::SkillManager;
 use anyhow::Result;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LocalRecommendAuth {
+    Anonymous,
+    Authenticated(String),
+    InvalidIdentity(String),
+}
+
+fn local_recommend_auth(mgr: &SkillManager) -> LocalRecommendAuth {
+    let home = match dirs::home_dir() {
+        Some(h) => h,
+        None => return LocalRecommendAuth::Anonymous,
+    };
+    let path = home.join(".runai-identity");
+    if !path.exists() {
+        return LocalRecommendAuth::Anonymous;
+    }
+    let body = match std::fs::read_to_string(&path) {
+        Ok(b) => b,
+        Err(e) => {
+            return LocalRecommendAuth::InvalidIdentity(format!("read {}: {e}", path.display()));
+        }
+    };
+    let v: serde_json::Value = match serde_json::from_str(&body) {
+        Ok(v) => v,
+        Err(e) => {
+            return LocalRecommendAuth::InvalidIdentity(format!(
+                "parse {} as JSON: {e}",
+                path.display()
+            ));
+        }
+    };
+    let Some(api_key) = v.get("api_key").and_then(|x| x.as_str()) else {
+        return LocalRecommendAuth::InvalidIdentity(format!("{} missing api_key", path.display()));
+    };
+    let hash = crate::core::auth::key_hash(&crate::core::auth::BearerToken(api_key.to_string()));
+    match mgr.db().find_user_by_api_key_hash(&hash).ok().flatten() {
+        Some(u) if !u.disabled => LocalRecommendAuth::Authenticated(u.user_id),
+        Some(_) => LocalRecommendAuth::InvalidIdentity(format!(
+            "{} points at a disabled user",
+            path.display()
+        )),
+        None => LocalRecommendAuth::InvalidIdentity(format!(
+            "{} api_key is not valid for this runai server",
+            path.display()
+        )),
+    }
+}
+
 pub(in crate::cli) fn handle_recommend(
     mgr: &SkillManager,
     command: Option<RecommendCommands>,
     prompt: Option<String>,
 ) -> Result<()> {
-    use crate::core::recommend::{Provider, RecommendConfig, recommend};
+    use crate::core::recommend::{Provider, RecommendConfig};
 
     match (command, prompt) {
         (None, prompt_opt) => {
@@ -63,12 +111,23 @@ pub(in crate::cli) fn handle_recommend(
                 }
                 return Ok(());
             }
-            match recommend(
+            let local_auth = local_recommend_auth(mgr);
+            let user_id = match &local_auth {
+                LocalRecommendAuth::Anonymous => None,
+                LocalRecommendAuth::Authenticated(uid) => Some(uid.as_str()),
+                LocalRecommendAuth::InvalidIdentity(msg) => {
+                    eprintln!("# runai recommend skipped: {msg}");
+                    return Ok(());
+                }
+            };
+
+            match crate::core::recommend::recommend_for_user(
                 mgr,
                 &user_prompt,
                 transcript_path.as_deref(),
                 session_id.as_deref(),
                 cwd.as_deref(),
+                user_id,
             ) {
                 Ok(decision) => {
                     // Re-format with the actual session_id + this session's
@@ -94,8 +153,17 @@ pub(in crate::cli) fn handle_recommend(
                     // 127.0.0.1 when offline. No X-Runai-User header in
                     // local mode (single user).
                     let local_server_url = crate::core::recommend::default_local_server_url();
-                    let cfg_local = crate::core::recommend::RecommendConfig::load(mgr.paths())
+                    let mut cfg_local = crate::core::recommend::RecommendConfig::load(mgr.paths())
                         .unwrap_or_default();
+                    if let Some(uid) = user_id
+                        && let Ok(Some(user)) = mgr.db().find_user_by_id(uid)
+                    {
+                        let p = crate::core::prefs::UserPrefs::from_json_str(&user.prefs_json);
+                        cfg_local.skip_reminder_enabled = p.skip_reminder_enabled;
+                        if !p.skip_reminder_template.is_empty() {
+                            cfg_local.skip_reminder_template = p.skip_reminder_template;
+                        }
+                    }
                     let skip_reminder = if cfg_local.skip_reminder_enabled {
                         cfg_local.skip_reminder_template.as_str()
                     } else {

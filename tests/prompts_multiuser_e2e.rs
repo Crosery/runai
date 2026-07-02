@@ -21,12 +21,18 @@
 
 #![cfg(not(target_os = "windows"))]
 
+use assert_cmd::cargo::CommandCargoExt;
 use runai::core::auth;
 use runai::core::manager::SkillManager;
 use runai::core::prefs::UserPrefs;
 use runai::core::recommend::{self, Provider, RecommendConfig, SessionMode};
+use runai::core::resource::{Resource, ResourceKind, Source};
+use std::collections::HashMap;
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
 use std::thread;
+use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 /// Bring up an isolated `<tempdir>/.runai/` data root and write a
@@ -54,6 +60,69 @@ fn setup() -> (TempDir, SkillManager) {
     (home, mgr)
 }
 
+fn runai_cmd() -> Command {
+    Command::cargo_bin("runai").expect("runai binary built by cargo test")
+}
+
+fn free_port() -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("ephemeral bind");
+    let port = listener.local_addr().expect("local_addr").port();
+    drop(listener);
+    port
+}
+
+fn wait_for_port(port: u16, timeout: Duration) {
+    let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if TcpStream::connect_timeout(&addr, Duration::from_millis(100)).is_ok() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    panic!("runai server did not bind 127.0.0.1:{port}");
+}
+
+struct ServerGuard {
+    child: Child,
+    port: u16,
+}
+
+impl ServerGuard {
+    fn spawn(home: &Path, data_dir: &Path) -> Self {
+        let port = free_port();
+        let mut cmd = runai_cmd();
+        cmd.arg("server")
+            .arg("--host")
+            .arg("127.0.0.1")
+            .arg("--port")
+            .arg(port.to_string())
+            .arg("--mode")
+            .arg("team")
+            .env("HOME", home)
+            .env("RUNE_DATA_DIR", data_dir)
+            .env("RUNAI_NO_AUTOSPAWN", "1")
+            .env_remove("SKILL_MANAGER_DATA_DIR")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let child = cmd.spawn().expect("spawn runai server");
+        wait_for_port(port, Duration::from_secs(8));
+        Self { child, port }
+    }
+
+    fn base_url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+}
+
+impl Drop for ServerGuard {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
 /// Plant a public skill so the router has a non-empty candidate set
 /// (otherwise `recommend_for_user` short-circuits and never writes a row).
 fn write_public_skill(root: &Path, name: &str) {
@@ -64,6 +133,34 @@ fn write_public_skill(root: &Path, name: &str) {
         format!("# {name}\n\ntest skill for prompts e2e\n"),
     )
     .unwrap();
+}
+
+fn write_private_skill(mgr: &SkillManager, uid: &str, name: &str, body_marker: &str) -> Resource {
+    mgr.paths().ensure_user_dirs(uid).unwrap();
+    let dir = mgr.paths().user_skills_dir(uid).unwrap().join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("SKILL.md"),
+        format!("# {name}\n\nprivate skill marker {body_marker}\n"),
+    )
+    .unwrap();
+    let source = Source::Local { path: dir.clone() };
+    let res = Resource {
+        id: Resource::generate_id(&source, name, Some(uid)),
+        name: name.to_string(),
+        kind: ResourceKind::Skill,
+        description: format!("private description {body_marker}"),
+        directory: dir,
+        source,
+        installed_at: chrono::Utc::now().timestamp(),
+        enabled: HashMap::new(),
+        usage_count: 0,
+        last_used_at: None,
+        owner_user_id: Some(uid.to_string()),
+        publish_status: "draft".to_string(),
+    };
+    mgr.db().insert_resource(&res).unwrap();
+    res
 }
 
 /// Create a real Claude-Code-style transcript jsonl so the history block
@@ -100,6 +197,24 @@ fn make_user(mgr: &SkillManager, username: &str, prefs: &UserPrefs) -> String {
     uid
 }
 
+fn make_user_with_api_key(
+    mgr: &SkillManager,
+    username: &str,
+    api_key: &str,
+    prefs: &UserPrefs,
+) -> String {
+    let uid = auth::new_user_id();
+    let api_key_hash = auth::key_hash(&auth::BearerToken(api_key.to_string()));
+    let password_hash = auth::hash_password("test-password").unwrap();
+    mgr.db()
+        .create_user(&uid, username, &password_hash, &api_key_hash, false)
+        .unwrap();
+    mgr.db()
+        .update_user_prefs(&uid, &prefs.to_json_str())
+        .unwrap();
+    uid
+}
+
 /// Fetch the most recent `llm_input` row stamped for `uid` (or `None` for
 /// unauthenticated). `recommend_for_user` stamps `user_id` on the event
 /// from its `user_id_opt` arg, so this filter is exact.
@@ -115,12 +230,91 @@ fn latest_llm_input(mgr: &SkillManager, uid: Option<&str>) -> String {
     rows[0].llm_input.clone()
 }
 
+fn latest_router_event(mgr: &SkillManager, uid: Option<&str>) -> runai::core::db::RouterEvent {
+    let rows = mgr
+        .db()
+        .router_events_paged_filtered(None, 50, 0, None, false, uid)
+        .unwrap();
+    assert!(
+        !rows.is_empty(),
+        "expected a router_events row for uid={uid:?}, got none"
+    );
+    rows[0].clone()
+}
+
+fn router_event_count_for(mgr: &SkillManager, uid: Option<&str>) -> usize {
+    mgr.db()
+        .router_events_paged_filtered(None, 50, 0, None, false, uid)
+        .unwrap()
+        .len()
+}
+
+fn anonymous_router_event_count(mgr: &SkillManager) -> usize {
+    mgr.db()
+        .router_events_paged(None, 50, 0, None, false)
+        .unwrap()
+        .into_iter()
+        .filter(|ev| ev.user_id.is_none())
+        .count()
+}
+
+fn llm_candidate_line_count(input: &str) -> usize {
+    input
+        .split("候选 skill:\n")
+        .nth(1)
+        .and_then(|tail| tail.split("\n\n---").next())
+        .unwrap_or("")
+        .lines()
+        .filter(|line| line.starts_with("- "))
+        .count()
+}
+
+fn run_cli_recommend_with_home(home: &Path, data_dir: &Path, hook_json: serde_json::Value) {
+    let mut cmd = runai_cmd();
+    cmd.arg("recommend")
+        .env("HOME", home)
+        .env("RUNE_DATA_DIR", data_dir)
+        .env("RUNAI_NO_AUTOSPAWN", "1")
+        .env_remove("SKILL_MANAGER_DATA_DIR")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn runai recommend");
+    {
+        use std::io::Write;
+        let stdin = child.stdin.as_mut().expect("stdin");
+        write!(stdin, "{hook_json}").expect("write hook JSON");
+    }
+    let out = child.wait_with_output().expect("runai recommend output");
+    assert!(
+        out.status.success(),
+        "runai recommend exited {:?}\nstdout:\n{}\nstderr:\n{}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+fn write_client_identity(home: &Path, username: &str, uid: &str, api_key: &str) {
+    let body = serde_json::json!({
+        "version": 1,
+        "server": "http://127.0.0.1:17888",
+        "user_id": uid,
+        "username": username,
+        "api_key": api_key,
+        "is_admin": false,
+    });
+    let path = home.join(".runai-identity");
+    std::fs::write(&path, serde_json::to_string_pretty(&body).unwrap()).unwrap();
+}
+
 /// Marker substrings drawn straight from the .md files. If the body of
 /// `recommend_history_prefix.md` changes, this test needs the new substring
 /// — that's intentional; the prompt registry is the contract.
 const HISTORY_MARKER: &str = "最近对话历史";
 const ALREADY_ROUTED_MARKER: &str = "本会话已推过的 skill";
 const CWD_MARKER: &str = "用作领域消歧线索";
+const PROJECT_CONTEXT_MARKER: &str = "当前项目背景";
 
 #[test]
 fn user_a_off_strips_history_block_user_b_on_keeps_it() {
@@ -347,6 +541,174 @@ fn unauthenticated_request_uses_defaults_and_does_not_read_user_prefs() {
 }
 
 #[test]
+fn stale_bearer_does_not_fall_back_to_anonymous_project_context() {
+    let (home, mgr) = setup();
+    let paths = mgr.paths();
+    write_public_skill(&paths.skills_dir(), "alpha");
+    mgr.register_local_skill("alpha").unwrap();
+
+    let cwd = home.path().join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+    std::fs::write(
+        cwd.join("CLAUDE.md"),
+        "# project rules\nsecret project context\n",
+    )
+    .unwrap();
+
+    let stale_key = auth::new_api_key();
+    let current_key = auth::new_api_key();
+    let mut prefs = UserPrefs::default();
+    prefs.allow_public_recommend = true;
+    prefs.read_claude_md = false;
+    prefs
+        .prompt_injection_flags
+        .insert("recommend_project_context".into(), false);
+    let uid = make_user_with_api_key(&mgr, "stale-user", &current_key, &prefs);
+    assert_eq!(
+        router_event_count_for(&mgr, None),
+        0,
+        "precondition: anonymous router event list is empty"
+    );
+    assert_eq!(
+        router_event_count_for(&mgr, Some(&uid)),
+        0,
+        "precondition: user router event list is empty"
+    );
+
+    let server = ServerGuard::spawn(home.path(), paths.data_dir());
+    let resp = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap()
+        .post(format!("{}/recommend", server.base_url()))
+        .bearer_auth(&stale_key)
+        .json(&serde_json::json!({
+            "prompt": "帮我推荐一个技能",
+            "session_id": "stale-bearer-session",
+            "cwd": cwd.to_string_lossy(),
+            "transcript_path": "",
+        }))
+        .send()
+        .expect("POST /recommend with stale bearer");
+    assert_eq!(resp.status().as_u16(), 200);
+    let body = resp.text().unwrap_or_default();
+    assert!(body.is_empty(), "stale Bearer returns empty hook output");
+    assert_eq!(
+        router_event_count_for(&mgr, None),
+        0,
+        "stale Bearer must not drop into anonymous default prefs"
+    );
+    assert_eq!(
+        router_event_count_for(&mgr, Some(&uid)),
+        0,
+        "stale Bearer must not write a user-scoped event either"
+    );
+
+    let _ = recommend::recommend_for_user(
+        &mgr,
+        "帮我推荐一个技能",
+        None,
+        Some("fresh-key-direct"),
+        Some(cwd.to_str().unwrap()),
+        Some(&uid),
+    );
+    let user_input = latest_llm_input(&mgr, Some(&uid));
+    assert!(
+        !user_input.contains(PROJECT_CONTEXT_MARKER),
+        "fresh authenticated user prefs keep project-context block absent"
+    );
+}
+
+#[test]
+fn local_cli_recommend_uses_identity_prefs_instead_of_anonymous_defaults() {
+    let (home, mgr) = setup();
+    let paths = mgr.paths();
+    write_public_skill(&paths.skills_dir(), "alpha");
+    mgr.register_local_skill("alpha").unwrap();
+
+    let cwd = home.path().join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+    std::fs::write(
+        cwd.join("CLAUDE.md"),
+        "# Project Context\nLOCAL_CLI_IDENTITY_PROJECT_CONTEXT_MARKER\n",
+    )
+    .unwrap();
+
+    let api_key = auth::new_api_key();
+    let mut prefs = UserPrefs::default();
+    prefs.allow_public_recommend = true;
+    prefs.read_claude_md = true;
+    prefs
+        .prompt_injection_flags
+        .insert("recommend_project_context".into(), false);
+    let uid = make_user_with_api_key(&mgr, "cli-user", &api_key, &prefs);
+    write_client_identity(home.path(), "cli-user", &uid, &api_key);
+
+    run_cli_recommend_with_home(
+        home.path(),
+        paths.data_dir(),
+        serde_json::json!({
+            "prompt": "alpha project context routing test",
+            "session_id": "local-cli-identity",
+            "cwd": cwd.to_string_lossy(),
+            "transcript_path": "",
+        }),
+    );
+
+    let input = latest_llm_input(&mgr, Some(&uid));
+    assert!(
+        !input.contains(PROJECT_CONTEXT_MARKER),
+        "CLI identity prefs must remove project-context prompt block: {input}"
+    );
+    assert!(
+        !input.contains("LOCAL_CLI_IDENTITY_PROJECT_CONTEXT_MARKER"),
+        "CLI identity prefs must remove CLAUDE.md content: {input}"
+    );
+    assert_eq!(
+        anonymous_router_event_count(&mgr),
+        0,
+        "local CLI recommend with valid identity must not write anonymous events"
+    );
+}
+
+#[test]
+fn local_cli_recommend_stale_identity_does_not_write_anonymous_event() {
+    let (home, mgr) = setup();
+    let paths = mgr.paths();
+    write_public_skill(&paths.skills_dir(), "alpha");
+    mgr.register_local_skill("alpha").unwrap();
+
+    let mut prefs = UserPrefs::default();
+    prefs.allow_public_recommend = true;
+    let real_key = auth::new_api_key();
+    let uid = make_user_with_api_key(&mgr, "cli-user", &real_key, &prefs);
+    let stale_key = auth::new_api_key();
+    write_client_identity(home.path(), "cli-user", &uid, &stale_key);
+
+    run_cli_recommend_with_home(
+        home.path(),
+        paths.data_dir(),
+        serde_json::json!({
+            "prompt": "alpha routing test",
+            "session_id": "local-cli-stale-identity",
+            "cwd": "",
+            "transcript_path": "",
+        }),
+    );
+
+    assert_eq!(
+        router_event_count_for(&mgr, Some(&uid)),
+        0,
+        "stale local identity must not write a user-scoped event"
+    );
+    assert_eq!(
+        anonymous_router_event_count(&mgr),
+        0,
+        "stale local identity must fail closed instead of anonymous routing"
+    );
+}
+
+#[test]
 fn switching_logged_in_account_picks_up_new_prefs_immediately() {
     let (_home, mgr) = setup();
     let paths = mgr.paths();
@@ -428,5 +790,87 @@ fn switching_logged_in_account_picks_up_new_prefs_immediately() {
     assert!(
         b_input.contains(ALREADY_ROUTED_MARKER),
         "B (same process, just switched): already_routed default ON — block present: {b_input}"
+    );
+}
+
+#[test]
+fn default_library_scope_includes_private_skill_and_uses_private_index() {
+    let (_home, mgr) = setup();
+
+    let prefs = UserPrefs::default();
+    let uid = make_user(&mgr, "alice", &prefs);
+    let private = write_private_skill(&mgr, &uid, "private-alpha", "PRIVATE_ALPHA_BODY");
+    mgr.db()
+        .set_skill_ai_summary_scored_scoped(
+            &private.name,
+            Some(&uid),
+            "task: 私有技能摘要 PRIVATE_ALPHA_INDEX\ntriggers: private-alpha\ninputs: 私有输入\noutputs: 私有输出\nnot-for: 公共技能",
+            9,
+        )
+        .unwrap();
+
+    let _ = recommend::recommend_for_user(
+        &mgr,
+        "private-alpha",
+        None,
+        Some("private-scope-session"),
+        None,
+        Some(&uid),
+    );
+
+    let input = latest_llm_input(&mgr, Some(&uid));
+    assert!(
+        input.contains("private-alpha"),
+        "default library scope must still include private owned skills: {input}"
+    );
+    assert!(
+        input.contains("PRIVATE_ALPHA_INDEX"),
+        "router candidate listing must use the private skill's scoped AI index: {input}"
+    );
+}
+
+#[test]
+fn router_llm_input_strips_template_frontmatter_and_honors_top_k() {
+    let (_home, mgr) = setup();
+    let paths = mgr.paths();
+
+    let mut cfg = RecommendConfig::load(paths).unwrap();
+    cfg.top_k = 4;
+    cfg.save(paths).unwrap();
+
+    for idx in 0..9 {
+        let name = format!("skill-{idx}");
+        write_public_skill(&paths.skills_dir(), &name);
+        mgr.register_local_skill(&name).unwrap();
+    }
+
+    let mut prefs = UserPrefs::default();
+    prefs.allow_public_recommend = true;
+    let uid = make_user(&mgr, "alice", &prefs);
+
+    let _ = recommend::recommend_for_user(
+        &mgr,
+        "skill",
+        None,
+        Some("candidate-cap-session"),
+        None,
+        Some(&uid),
+    );
+
+    let event = latest_router_event(&mgr, Some(&uid));
+    assert_eq!(
+        event.bm25_kept, 4,
+        "router must keep the configured number of LLM-facing candidates"
+    );
+    assert_eq!(
+        llm_candidate_line_count(&event.llm_input),
+        4,
+        "llm_input candidate listing must match top_k: {}",
+        event.llm_input
+    );
+    assert!(
+        !event.llm_input.contains("<!-- prompt:"),
+        "runtime router LLM input must not include prompt-template frontmatter: {}",
+        event.llm_input
     );
 }

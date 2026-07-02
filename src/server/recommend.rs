@@ -59,31 +59,35 @@ pub(super) async fn handle_recommend(
         format!(" -H 'X-Runai-User: {user_prefix}'")
     };
 
-    // Extract auth before we hop to blocking. v15 multi-user: Bearer token
-    // identifies which user_id to scope the recommendation against; when
-    // absent, fall back to legacy single-user behavior (no filter, user_id
-    // stamp on router_events is NULL — compat with existing clients).
-    let bearer_user_id = {
+    // Extract auth before we hop to blocking. Bearer identifies which
+    // user_id scopes the recommendation. Absence is the legacy anonymous
+    // compat lane; a malformed / stale Bearer must fail closed instead of
+    // silently becoming anonymous, or per-user prompt-injection prefs are
+    // bypassed after a browser login rotates the api_key.
+    let auth_header_present = headers.contains_key(header::AUTHORIZATION);
+    let bearer_hash = {
         let bearer = headers
             .get(header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok());
         authmod::parse_bearer_header(bearer).map(|tok| authmod::key_hash(&tok))
     };
+    if auth_header_present && bearer_hash.is_none() {
+        return ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], "").into_response();
+    }
 
     // recommend() is blocking (reqwest::blocking + rusqlite). Hop onto a
     // blocking thread so the async runtime stays responsive.
     let join = tokio::task::spawn_blocking(move || -> Result<String> {
         let mgr = SkillManager::new()?;
 
-        // Resolve user_id from bearer hash. None when no header / unknown key.
-        let user_id_opt: Option<String> = match bearer_user_id.as_deref() {
-            Some(h) => mgr
-                .db()
-                .find_user_by_api_key_hash(h)
-                .ok()
-                .flatten()
-                .filter(|u| !u.disabled)
-                .map(|u| u.user_id),
+        // Resolve user_id from bearer hash. No header keeps the legacy
+        // anonymous path. Unknown / disabled Bearer means the client is
+        // stale or invalid, so return empty hook output without routing.
+        let user_id_opt: Option<String> = match bearer_hash.as_deref() {
+            Some(h) => match mgr.db().find_user_by_api_key_hash(h).ok().flatten() {
+                Some(u) if !u.disabled => Some(u.user_id),
+                _ => return Ok(String::new()),
+            },
             None => None,
         };
 

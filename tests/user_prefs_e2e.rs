@@ -20,6 +20,8 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use assert_cmd::cargo::CommandCargoExt;
+use runai::core::manager::SkillManager;
+use runai::core::recommend::{Provider, RecommendConfig, SessionMode};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -163,6 +165,210 @@ fn read_prefs_json_from_db(data_dir: &Path, username: &str) -> Value {
         return json!({});
     }
     serde_json::from_str(&row).unwrap_or_else(|_| json!({}))
+}
+
+fn user_id_from_db(data_dir: &Path, username: &str) -> String {
+    let db_path = data_dir.join("runai.db");
+    let conn = rusqlite::Connection::open(&db_path).expect("open db");
+    conn.query_row(
+        "SELECT user_id FROM users WHERE username = ?1",
+        [username],
+        |r| r.get(0),
+    )
+    .expect("find user id")
+}
+
+fn latest_llm_input_by_session(data_dir: &Path, session_id: &str, user_id: &str) -> String {
+    let db_path = data_dir.join("runai.db");
+    let conn = rusqlite::Connection::open(&db_path).expect("open db");
+    conn.query_row(
+        "SELECT llm_input FROM router_events
+         WHERE session_id = ?1 AND user_id = ?2
+         ORDER BY id DESC
+         LIMIT 1",
+        (session_id, user_id),
+        |r| r.get(0),
+    )
+    .expect("find router_events.llm_input")
+}
+
+fn configure_recommend_with_public_skill(data_dir: &Path) {
+    let mgr = SkillManager::with_base(data_dir.to_path_buf()).expect("manager init");
+    let skill_dir = mgr.paths().skills_dir().join("alpha");
+    std::fs::create_dir_all(&skill_dir).expect("create public skill dir");
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "# alpha\n\ntask: test skill for dashboard prompt toggles\ntriggers: alpha project context\n",
+    )
+    .expect("write SKILL.md");
+    mgr.register_local_skill("alpha")
+        .expect("register public skill");
+
+    let mut cfg = RecommendConfig::default();
+    cfg.enabled = true;
+    cfg.provider = Provider::Anthropic;
+    cfg.base_url = "http://127.0.0.1:1".into();
+    cfg.model = "claude-test".into();
+    cfg.api_key = "dummy".into();
+    cfg.min_prompt_len = 0;
+    cfg.session_mode = SessionMode::Oneshot;
+    cfg.summary_lang_confirmed = true;
+    cfg.save(mgr.paths()).expect("save recommend config");
+}
+
+fn frontend_prompt_toggle_payloads() -> (Value, Value) {
+    let script = r##"
+(async () => {
+  const fs = require('fs');
+  const vm = require('vm');
+
+  class Input {
+    constructor(key, checked) {
+      this.dataset = { prefFlagInput: key };
+      this.checked = checked;
+      this.listeners = {};
+    }
+    addEventListener(type, cb) {
+      this.listeners[type] = cb;
+    }
+    async dispatchChange() {
+      const cb = this.listeners.change;
+      if (!cb) throw new Error(`missing change listener for ${this.dataset.prefFlagInput}`);
+      await cb();
+    }
+  }
+
+  class Element {
+    constructor() {
+      this.inputs = [];
+      this._innerHTML = '';
+    }
+    set innerHTML(html) {
+      this._innerHTML = html;
+      this.inputs = [];
+      const re = /<input type="checkbox" data-pref-flag-input="([^"]+)"([^>]*)>/g;
+      let match;
+      while ((match = re.exec(html))) {
+        this.inputs.push(new Input(match[1], /\bchecked\b/.test(match[2])));
+      }
+    }
+    get innerHTML() {
+      return this._innerHTML;
+    }
+    querySelectorAll(selector) {
+      return selector === 'input[data-pref-flag-input]' ? this.inputs : [];
+    }
+  }
+
+  const prefsFlagsList = new Element();
+  const context = {
+    console,
+    account: {
+      me: { username: 'alice' },
+      prefs: {
+        show_tradeoff: true,
+        show_session_history: true,
+        show_feedback_protocol: true,
+        recommend_mode: 'compatible',
+        candidate_limit: 3,
+        allow_public_recommend: true,
+        recommend_enabled: true,
+        read_claude_md: true,
+        skip_reminder_enabled: false,
+        skip_reminder_template: '',
+        prompt_injection_flags: {},
+      },
+    },
+    document: {
+      getElementById(id) {
+        return id === 'prefs-flags-list' ? prefsFlagsList : null;
+      },
+      querySelector() {
+        return null;
+      },
+      querySelectorAll() {
+        return [];
+      },
+    },
+    escapeHTML(value) {
+      return String(value)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+    },
+    initDropdown() {},
+    $() {
+      return null;
+    },
+    alert(message) {
+      throw new Error(message);
+    },
+  };
+
+  const saved = [];
+  context.window = context;
+  context.savePrefs = async () => {
+    saved.push(JSON.parse(JSON.stringify(context.account.prefs)));
+    return context.account.prefs;
+  };
+
+  vm.createContext(context);
+  vm.runInContext(
+    fs.readFileSync('web/js/10-settings.js', 'utf8'),
+    context,
+    { filename: 'web/js/10-settings.js' },
+  );
+
+  context.renderPromptInjectionFlags();
+  const toggle = prefsFlagsList.inputs.find(
+    (el) => el.dataset.prefFlagInput === 'recommend_project_context',
+  );
+  if (!toggle) {
+    throw new Error('recommend_project_context checkbox was not rendered');
+  }
+  if (!toggle.checked) {
+    throw new Error('missing prompt flag must render as checked by default');
+  }
+
+  toggle.checked = false;
+  await toggle.dispatchChange();
+  toggle.checked = true;
+  await toggle.dispatchChange();
+
+  const off = saved[0];
+  const on = saved[1];
+  if (off.prompt_injection_flags.recommend_project_context !== false) {
+    throw new Error(`OFF payload wrong: ${JSON.stringify(off)}`);
+  }
+  if (on.prompt_injection_flags.recommend_project_context !== true) {
+    throw new Error(`ON payload wrong: ${JSON.stringify(on)}`);
+  }
+  process.stdout.write(JSON.stringify({ off, on }));
+})().catch((err) => {
+  console.error(err.stack || err);
+  process.exit(1);
+});
+"##;
+
+    let output = Command::new("node")
+        .arg("-e")
+        .arg(script)
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("run Node frontend toggle harness");
+    assert!(
+        output.status.success(),
+        "frontend toggle harness failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let body: Value = serde_json::from_slice(&output.stdout).expect("parse toggle harness JSON");
+    (
+        body.get("off").cloned().expect("off payload"),
+        body.get("on").cloned().expect("on payload"),
+    )
 }
 
 // ─── tests ──────────────────────────────────────────────────────────────────
@@ -530,5 +736,96 @@ fn post_prefs_non_object_body_does_not_corrupt() {
     assert!(
         prefs.get("prompt_injection_flags").is_some(),
         "prompt_injection_flags field must be present (defaults applied)"
+    );
+}
+
+/// Dashboard regression: the real Settings UI checkbox must save different
+/// prefs payloads, and those payloads must change the router LLM input.
+#[test]
+fn frontend_prompt_injection_toggle_changes_router_llm_input() {
+    let server = spawn_team_server();
+    let api_key = register_user(&server, "alice", "correct horse battery staple");
+    let user_id = user_id_from_db(&server.data_dir, "alice");
+    configure_recommend_with_public_skill(&server.data_dir);
+
+    let project_dir = server.data_dir.join("project");
+    std::fs::create_dir_all(&project_dir).expect("create project cwd");
+    std::fs::write(
+        project_dir.join("CLAUDE.md"),
+        "# Project Context\nFRONTEND_TOGGLE_PROJECT_CONTEXT_MARKER\n",
+    )
+    .expect("write CLAUDE.md");
+
+    let (off_payload, on_payload) = frontend_prompt_toggle_payloads();
+    let client = http_client();
+
+    let off_resp = client
+        .post(format!("{}/api/prefs", server.base_url()))
+        .bearer_auth(&api_key)
+        .json(&off_payload)
+        .send()
+        .expect("POST /api/prefs off payload");
+    assert_eq!(off_resp.status().as_u16(), 200);
+    let off_echo: Value = off_resp.json().expect("off prefs response");
+    assert_eq!(
+        off_echo["prompt_injection_flags"]["recommend_project_context"],
+        json!(false)
+    );
+
+    let off_recommend = client
+        .post(format!("{}/recommend", server.base_url()))
+        .bearer_auth(&api_key)
+        .json(&json!({
+            "prompt": "alpha project context routing test",
+            "session_id": "frontend-toggle-off",
+            "cwd": project_dir.to_string_lossy(),
+            "transcript_path": "",
+        }))
+        .send()
+        .expect("POST /recommend off");
+    assert_eq!(off_recommend.status().as_u16(), 200);
+    let off_input = latest_llm_input_by_session(&server.data_dir, "frontend-toggle-off", &user_id);
+    assert!(
+        !off_input.contains("当前项目背景"),
+        "frontend OFF payload must remove project-context prompt block: {off_input}"
+    );
+    assert!(
+        !off_input.contains("FRONTEND_TOGGLE_PROJECT_CONTEXT_MARKER"),
+        "frontend OFF payload must remove CLAUDE.md content: {off_input}"
+    );
+
+    let on_resp = client
+        .post(format!("{}/api/prefs", server.base_url()))
+        .bearer_auth(&api_key)
+        .json(&on_payload)
+        .send()
+        .expect("POST /api/prefs on payload");
+    assert_eq!(on_resp.status().as_u16(), 200);
+    let on_echo: Value = on_resp.json().expect("on prefs response");
+    assert_eq!(
+        on_echo["prompt_injection_flags"]["recommend_project_context"],
+        json!(true)
+    );
+
+    let on_recommend = client
+        .post(format!("{}/recommend", server.base_url()))
+        .bearer_auth(&api_key)
+        .json(&json!({
+            "prompt": "alpha project context routing test",
+            "session_id": "frontend-toggle-on",
+            "cwd": project_dir.to_string_lossy(),
+            "transcript_path": "",
+        }))
+        .send()
+        .expect("POST /recommend on");
+    assert_eq!(on_recommend.status().as_u16(), 200);
+    let on_input = latest_llm_input_by_session(&server.data_dir, "frontend-toggle-on", &user_id);
+    assert!(
+        on_input.contains("当前项目背景"),
+        "frontend ON payload must inject project-context prompt block: {on_input}"
+    );
+    assert!(
+        on_input.contains("FRONTEND_TOGGLE_PROJECT_CONTEXT_MARKER"),
+        "frontend ON payload must inject CLAUDE.md content: {on_input}"
     );
 }
