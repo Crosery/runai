@@ -216,9 +216,32 @@ printf "\n"
 if [[ "$DO_AUTH" -eq 1 ]]; then
   step "1/3" "账号注册 / 登录"
   if [[ -f "$IDENTITY_PATH" ]] && grep -q '"api_key"' "$IDENTITY_PATH" 2>/dev/null; then
-    ok "复用已有 ${B}$IDENTITY_PATH${R} 里的 api_key"
-    printf "  ${D}(想换账号 → rm %s 后重跑)${R}\n\n" "$IDENTITY_PATH"
-  else
+    EXISTING_KEY=$(python3 - "$IDENTITY_PATH" <<'PY'
+import json, sys
+try:
+    print(json.load(open(sys.argv[1])).get("api_key") or "")
+except Exception:
+    print("")
+PY
+    )
+    if [[ -n "$EXISTING_KEY" ]]; then
+      VERIFY_HTTP=$(curl -s -o /tmp/runai-me-resp.$$ -w '%{http_code}' \
+        -H "Authorization: Bearer $EXISTING_KEY" \
+        "$SERVER_URL/api/me" || echo 000)
+      rm -f /tmp/runai-me-resp.$$
+      if [[ "$VERIFY_HTTP" == "200" ]]; then
+        ok "复用已有 ${B}$IDENTITY_PATH${R} 里的 api_key"
+        printf "  ${D}(想换账号 → rm %s 后重跑)${R}\n\n" "$IDENTITY_PATH"
+      else
+        warn "已有 identity 已失效 (HTTP $VERIFY_HTTP),重新登录刷新 api_key"
+        rm -f "$IDENTITY_PATH"
+      fi
+    else
+      warn "已有 identity 缺少 api_key,重新登录刷新"
+      rm -f "$IDENTITY_PATH"
+    fi
+  fi
+  if [[ ! -f "$IDENTITY_PATH" ]]; then
     printf "  ${D}新机器 — 注册或登录到 %s${R}\n" "$SERVER_URL"
 
     # Early TTY guard: if both username + password env vars are unset AND

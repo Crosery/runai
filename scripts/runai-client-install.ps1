@@ -134,10 +134,19 @@ if (Test-Path $IdentityPath) {
 if ($DoAuth) {
     Write-Step "1/3" "account setup"
     if ($haveIdentity) {
-        Write-Ok "found existing identity, reusing stored api_key"
-        Write-Dim ("  (remove $IdentityPath to switch user)")
-        Write-Host ""
-    } else {
+        try {
+            $headers = @{ Authorization = "Bearer $($existing.api_key)" }
+            Invoke-RestMethod -Method Get -Uri "$ServerUrl/api/me" -Headers $headers -TimeoutSec 10 | Out-Null
+            Write-Ok "found existing identity, reusing stored api_key"
+            Write-Dim ("  (remove $IdentityPath to switch user)")
+            Write-Host ""
+        } catch {
+            Write-Warn2 "existing identity is stale, signing in again"
+            Remove-Item -Force $IdentityPath -ErrorAction SilentlyContinue
+            $haveIdentity = $false
+        }
+    }
+    if (-not $haveIdentity) {
         Write-Dim ("  new device - register or sign in to $ServerUrl")
 
         # Username: env first, then TTY prompt. Env wins so RUNAI_USERNAME=x
