@@ -4,15 +4,19 @@
 use anyhow::Result;
 use axum::{
     Json,
+    extract::State,
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
 use serde::Deserialize;
+use std::sync::Arc;
 
 use crate::core::auth as authmod;
 use crate::core::manager::SkillManager;
 use crate::core::recommend;
 use crate::core::recommend::local_ipv4;
+
+use super::state::{AppState, require_user};
 
 /// Pull a single field from the Claude Code hook payload, defaulting to
 /// empty string when missing.
@@ -246,19 +250,51 @@ pub(super) struct FeedbackBody {
 
 /// POST /feedback — replaces `runai recommend feedback`.
 /// Body: `{"skill":"...","note":"..."}`.
-pub(super) async fn handle_feedback(headers: HeaderMap, Json(req): Json<FeedbackBody>) -> Response {
-    let user_prefix = headers
-        .get("X-Runai-User")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("")
-        .to_string();
+///
+/// Requires auth (Bearer or session cookie) — issue #26: this endpoint
+/// triggers a real LLM call (`reevaluate_skill`) and rewrites a skill's AI
+/// summary/score, so it must be gated the same way as every other write
+/// endpoint (`require_user`). An anonymous caller gets `401` with a
+/// completely EMPTY body (not `ApiError::Unauthorized`'s JSON shape) to
+/// match the anti-enumeration style used by `empty_404` / the `/recommend`
+/// fail-closed-Bearer lane — no distinguishing "auth required" text for a
+/// probe to key off of.
+///
+/// The "applied by" attribution is now always the AUTHENTICATED username.
+/// The legacy `X-Runai-User` header is no longer read here at all — it was
+/// fully client-controlled and trivially forgeable, so trusting it for the
+/// audit-trail field would let any anonymous caller impersonate anyone in
+/// the response text.
+pub(super) async fn handle_feedback(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<FeedbackBody>,
+) -> Response {
+    let user = {
+        let db = match state.db() {
+            Ok(db) => db,
+            Err(e) => {
+                eprintln!("/feedback: db open failed: {e:#}");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+                    "internal error\n",
+                )
+                    .into_response();
+            }
+        };
+        match require_user(&headers, &db) {
+            Ok(u) => u,
+            Err(_) => return (StatusCode::UNAUTHORIZED, "").into_response(),
+        }
+    };
 
     let join = tokio::task::spawn_blocking(move || -> Result<String> {
         let mgr = SkillManager::new()?;
         let report = recommend::reevaluate_skill(&mgr, &req.skill, &req.note)?;
         Ok(format!(
-            "feedback applied by {user_prefix}: {} llm_score {} → {} (summary {} chars)\n",
-            req.skill, report.old_score, report.new_score, report.new_summary_len
+            "feedback applied by {}: {} llm_score {} → {} (summary {} chars)\n",
+            user.username, req.skill, report.old_score, report.new_score, report.new_summary_len
         ))
     })
     .await;
