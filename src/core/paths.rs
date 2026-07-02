@@ -350,6 +350,36 @@ fn is_safe_user_id(s: &str) -> bool {
         .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
+/// Path-traversal guard for a skill NAME that arrives as a route parameter and
+/// is about to be joined onto `skills_dir()` (the disk-fallback in
+/// `server::state::resolve_skill_dir_scoped`). A skill name is always a single
+/// path segment (`Resource::generate_id` namespaces on it, dirs are one level
+/// under the pool), so any separator or parent-ref is illegitimate.
+///
+/// This is intentionally looser than [`is_safe_user_id`]: skill names are
+/// user-authored and may contain unicode (non-ascii kebab, CJK), so we do NOT
+/// restrict the charset — we only reject the traversal primitives. Rejects:
+/// empty, over-long (>128), the `.`/`..` segments, any `/` or `\` separator,
+/// NUL, and any control char. A name like `foo.bar` stays valid (it is a
+/// literal single-segment dir name, no escape); `..` or `a/b` or `a/../b`
+/// cannot pass.
+pub fn is_safe_skill_name(s: &str) -> bool {
+    if s.is_empty() || s.len() > 128 {
+        return false;
+    }
+    if s == "." || s == ".." {
+        return false;
+    }
+    // A bare `..` substring can only produce a parent-ref once combined with a
+    // separator, and separators are rejected below — but reject it outright as
+    // belt-and-suspenders (no real skill name contains `..`).
+    if s.contains("..") {
+        return false;
+    }
+    !s.chars()
+        .any(|c| c == '/' || c == '\\' || c == '\0' || c.is_control())
+}
+
 #[cfg(all(test, not(target_os = "windows")))]
 mod tests {
     use super::*;
@@ -685,6 +715,38 @@ mod tests {
         // Path-traversal flavors must all reject.
         for bad in ["..", ".", "../x", "a/b", "a\\b", "a b", "中", "."] {
             assert!(!is_safe_user_id(bad), "must reject {bad:?}");
+        }
+    }
+
+    #[test]
+    fn safe_skill_name_rejects_traversal_keeps_real_names() {
+        // Real skill names (kebab, unicode allowed, dots inside a segment).
+        for ok in [
+            "normal-skill",
+            "agent-browser",
+            "foo.bar",
+            "a",
+            "中文技能",
+            &"a".repeat(128),
+        ] {
+            assert!(is_safe_skill_name(ok), "must accept {ok:?}");
+        }
+        // Traversal primitives + separators + control chars must all reject.
+        for bad in [
+            "",
+            "..",
+            ".",
+            "../x",
+            "a/b",
+            "a\\b",
+            "a/../b",
+            "..\\..",
+            "foo..bar",
+            "a\0b",
+            "a\nb",
+            &"a".repeat(129),
+        ] {
+            assert!(!is_safe_skill_name(bad), "must reject {bad:?}");
         }
     }
 }

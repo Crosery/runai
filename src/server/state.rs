@@ -184,6 +184,16 @@ pub(super) fn resolve_skill_dir_scoped(
     name: &str,
     requested_owner: Option<&str>,
 ) -> Result<(std::path::PathBuf, Option<String>)> {
+    // C1 SECURITY: the route `name` is user-controlled and is joined onto
+    // `skills_dir()` in the disk-fallback below. Reject any traversal-flavored
+    // name up front (`..`, embedded separators, control chars) so a crafted
+    // `%2e%2e` can never make the resolved dir climb out of the public pool
+    // (which would let anon `/skills/{get,file,bundle}` tar/read the whole
+    // data dir incl. runai.db). Bailing here — before the DB lookup even —
+    // also keeps a bogus name from matching anything by accident.
+    if !crate::core::paths::is_safe_skill_name(name) {
+        anyhow::bail!("unsafe skill name: {name}");
+    }
     // admin + non-empty ?owner= → pin to that user's pool. The full-user
     // lookup (for `is_admin`) only happens when an override is actually
     // requested; the common path stays on `current_owner_id`.
