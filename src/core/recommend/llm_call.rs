@@ -10,7 +10,7 @@ use anyhow::{Context, Result, bail};
 use std::time::{Duration, Instant};
 
 use super::config::{Provider, RecommendConfig};
-use super::prompts::SYSTEM_PROMPT_TEMPLATE;
+use super::prompts::system_prompt_template;
 use super::router::RouterTurn;
 
 const PROVIDER_TEST_PROMPT: &str = "Reply with exactly OK.";
@@ -144,7 +144,8 @@ pub(super) fn call_claude_cli(
     cfg: &RecommendConfig,
     user_msg: &str,
 ) -> Result<(String, RouterCallStats)> {
-    let combined = format!("{SYSTEM_PROMPT_TEMPLATE}\n\n{user_msg}");
+    let system_prompt = system_prompt_template();
+    let combined = format!("{system_prompt}\n\n{user_msg}");
     let v = claude_cli_json(cfg, &combined, None)?;
     let content = v["result"].as_str().unwrap_or_default();
     if std::env::var("RUNAI_RECOMMEND_DEBUG").is_ok() {
@@ -318,7 +319,7 @@ pub(super) fn call_openai_compat(
     let mut messages = Vec::with_capacity(1 + history.len() * 2 + 1);
     messages.push(serde_json::json!({
         "role": "system",
-        "content": SYSTEM_PROMPT_TEMPLATE,
+        "content": system_prompt_template(),
     }));
     for turn in history {
         messages.push(serde_json::json!({"role": "user", "content": turn.user}));
@@ -389,7 +390,7 @@ pub(super) fn call_anthropic(
     let body = serde_json::json!({
         "model": cfg.model,
         "max_tokens": 256,
-        "system": SYSTEM_PROMPT_TEMPLATE,
+        "system": system_prompt_template(),
         "messages": messages,
     });
     let resp = reqwest::blocking::Client::builder()

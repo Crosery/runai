@@ -8,7 +8,9 @@
 // All router prompts and hook output templates live in src/core/prompts/ and
 // are exposed as `PROMPT_<NAME>` consts via the centralised registry
 // (`crate::core::prompts`). Edit the .md files to retune wording.
-pub(super) const SYSTEM_PROMPT_TEMPLATE: &str = crate::core::prompts::PROMPT_RECOMMEND_SYSTEM;
+pub(super) fn system_prompt_template() -> &'static str {
+    crate::core::prompts::template_body(crate::core::prompts::PROMPT_RECOMMEND_SYSTEM)
+}
 
 /// The hard language directive injected into every enrich / feedback prompt.
 ///
@@ -141,8 +143,8 @@ pub(super) fn build_enrich_prompt(
         \n\
         # 这段 summary 的唯一目的\n\
         这段 summary **不是给用户读的**，是喂给两个下游消费者：\n\
-        1. **BM25 检索器** — 把用户当前 prompt 跟 (name + summary + groups) 做 token 重叠打分，分高的 skill 进 top 30 候选\n\
-        2. **路由 LLM** — 在 top 30 候选里看每条 summary 选最合适的推给用户\n\
+        1. **BM25 检索器** — 把用户当前 prompt 跟 (name + summary + groups) 做 token 重叠打分，分高的 skill 进入配置控制的 top-K 候选\n\
+        2. **路由 LLM** — 在 top-K 候选里看每条 summary 选最合适的推给用户\n\
         \n\
         所以 summary 要最大化两件事：\n\
         - **覆盖**用户可能用来描述这个任务的所有词形（同义词、行话、动词名词、缩写、中英混合）\n\

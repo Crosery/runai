@@ -83,6 +83,23 @@ pub fn is_toggleable(name: &str) -> bool {
     TOGGLEABLE_PROMPT_NAMES.contains(&name)
 }
 
+/// Return the runtime prompt body by stripping the first-line
+/// `<!-- prompt: ... -->` metadata comment. The raw constants keep that
+/// frontmatter for greppable documentation, but LLM calls should not spend
+/// tokens on it.
+pub fn template_body(template: &'static str) -> &'static str {
+    let Some(rest) = template.strip_prefix("<!-- prompt:") else {
+        return template;
+    };
+    let Some(end) = rest.find("-->") else {
+        return template;
+    };
+    let body = &rest[end + 3..];
+    body.strip_prefix("\r\n")
+        .or_else(|| body.strip_prefix('\n'))
+        .unwrap_or(body)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,5 +140,13 @@ mod tests {
         assert!(PROMPT_RECOMMEND_PROJECT_CONTEXT.contains("{PROJECT_DOCS}"));
         assert!(PROMPT_RECOMMEND_USER.contains("{USER_PROMPT}"));
         assert!(PROMPT_HOOK_OUTPUT.contains("{CANDIDATES_BLOCK}"));
+    }
+
+    #[test]
+    fn template_body_strips_prompt_frontmatter() {
+        let body = template_body(PROMPT_RECOMMEND_USER);
+        assert!(!body.starts_with("<!-- prompt:"));
+        assert!(!body.contains("<!-- prompt: recommend_user"));
+        assert!(body.contains("{USER_PROMPT}"));
     }
 }

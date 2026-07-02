@@ -21,7 +21,7 @@ structurally required as long as the recommend feature is enabled
 ## Layout
 | File | Public const in `mod.rs` | Caller | Variables (`{PLACEHOLDER}`) | Output contract |
 |---|---|---|---|---|
-| `recommend_system.md` | `PROMPT_RECOMMEND_SYSTEM` | `recommend::llm_call::call_openai_compat` / `call_anthropic` / `call_claude_cli` (via `recommend::prompts::SYSTEM_PROMPT_TEMPLATE`) | none | system message body sent verbatim |
+| `recommend_system.md` | `PROMPT_RECOMMEND_SYSTEM` | `recommend::llm_call::call_openai_compat` / `call_anthropic` / `call_claude_cli` (via `recommend::prompts::system_prompt_template`) | none | system message body sent to router LLM after frontmatter stripping |
 | `recommend_user.md` | `PROMPT_RECOMMEND_USER` | `recommend::router::recommend_for_user` | `{USER_PROMPT}` (×2), `{CWD_BLOCK}`, `{PROJECT_CONTEXT_BLOCK}`, `{HISTORY_BLOCK}`, `{ALREADY_ROUTED_BLOCK}`, `{CANDIDATE_LISTING}`, `{TOP_K}` | user message body sent to router LLM |
 | `recommend_history_prefix.md` | `PROMPT_RECOMMEND_HISTORY_PREFIX` | `recommend::router::recommend_for_user` (subbed into `{HISTORY_BLOCK}`) | `{HISTORY}` | block dropped to empty string when `prompt_injection_flags["recommend_history_prefix"] == false` or transcript history is empty |
 | `recommend_already_routed.md` | `PROMPT_RECOMMEND_ALREADY_ROUTED` | `recommend::router::recommend_for_user` (subbed into `{ALREADY_ROUTED_BLOCK}`) | `{ALREADY_ROUTED}` | block dropped to empty string when `prompt_injection_flags["recommend_already_routed"] == false` or already_routed list is empty |
@@ -50,11 +50,12 @@ first line of the form:
 <!-- prompt: <name> | callers: <module>::<fn> | vars: {A},{B} -->
 ```
 
-The frontmatter is documentation only — it is not parsed at runtime.
-`include_str!` slurps the whole file body, so the comment travels with
-the template into the LLM message (HTML comments are ignored by LLMs
-and don't confuse them when sent). Tests in `mod.rs` assert each file
-is non-empty and contains its declared placeholder.
+The frontmatter is documentation only. Raw constants include it, but
+runtime prompt builders must call `crate::core::prompts::template_body(...)`
+before sending text to an LLM or hook stdout; that helper strips exactly this
+first-line metadata comment and leaves the template body untouched.
+Tests in `mod.rs` assert each file is non-empty, contains its declared
+placeholder, and strips frontmatter for runtime use.
 
 ## Touch points
 - **Upstream**: `src/core/recommend/*` (every submodule that builds an LLM
@@ -65,8 +66,9 @@ is non-empty and contains its declared placeholder.
 
 ## Tests
 - Inline `#[cfg(test)] mod tests` in `mod.rs` pins every constant
-  non-empty, the toggleable subset is a subset of `PROMPT_NAMES`, and
-  each template contains its declared placeholder.
+  non-empty, the toggleable subset is a subset of `PROMPT_NAMES`, each
+  template contains its declared placeholder, and `template_body` strips
+  first-line frontmatter.
 - `tests/prompts_multiuser_e2e.rs` exercises the per-user toggle plumbing
   end-to-end: A turns off a prompt, B doesn't; concurrent `recommend_for_user`
   calls see A's stripped LLM input and B's full one with zero cross-talk;

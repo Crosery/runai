@@ -143,7 +143,7 @@ fn render_hook_output(
         format!("\n{}\n", skip_reminder.trim())
     };
 
-    HOOK_OUTPUT_TEMPLATE
+    crate::core::prompts::template_body(HOOK_OUTPUT_TEMPLATE)
         .replace("{MODE}", decision.mode.as_str())
         .replace("{REASONING_BLOCK}", &reasoning_block)
         .replace("{CANDIDATES_BLOCK}", &candidates_block)
