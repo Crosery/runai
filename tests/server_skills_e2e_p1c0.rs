@@ -346,6 +346,10 @@ fn skill_detail_includes_related_events() {
         let chosen = ev["chosen"].as_array().expect("chosen array");
         let chosen_names: Vec<&str> = chosen.iter().map(|s| s.as_str().unwrap()).collect();
         assert!(
+            ev.get("authenticated").is_some(),
+            "event {ev:?} should expose whether it was user-authenticated"
+        );
+        assert!(
             chosen_names.contains(&"hot"),
             "event {ev:?} should contain 'hot'"
         );

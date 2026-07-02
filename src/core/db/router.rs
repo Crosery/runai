@@ -60,7 +60,7 @@ impl Database {
                     total_tokens, cache_hit_tokens, cache_miss_tokens, latency_ms,
                     chosen_skills_json, candidate_count, status, error_msg,
                     session_id, mode, user_prompt, cwd, bm25_kept,
-                    llm_raw_response, hook_output, llm_input
+                    llm_raw_response, hook_output, llm_input, user_id
              FROM router_events re
              WHERE EXISTS (
                 SELECT 1 FROM json_each(re.chosen_skills_json) je WHERE je.value = ?1

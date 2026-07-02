@@ -142,6 +142,9 @@
     const injectedBadge = e.injected
       ? `<span class="chip">已注入</span>`
       : `<span class="chip-empty">未注入</span>`;
+    const authBadge = e.authenticated
+      ? `<span class="chip">认证用户</span>`
+      : `<span class="chip-empty">匿名无 Bearer</span>`;
     body.innerHTML = `
       <dl class="detail-grid">
         <dt>时间</dt><dd class="mono">${fmtTsFull(e.ts)}</dd>
@@ -150,6 +153,7 @@
         <dt>模型</dt><dd><span class="mono">${escapeHTML(e.provider)} · ${escapeHTML(e.model)}</span></dd>
         <dt>模式</dt><dd class="mono">${escapeHTML(e.mode)}</dd>
         <dt>session</dt><dd class="mono muted">${escapeHTML(e.session_id || '(none)')}</dd>
+        <dt>身份</dt><dd>${authBadge}</dd>
         <dt>BM25</dt><dd>${e.bm25_kept} / ${e.candidate_count} 候选</dd>
         <dt>token</dt><dd>prompt <span class="mono">${fmtInt(e.prompt_tokens)}</span> · completion <span class="mono">${fmtInt(e.completion_tokens)}</span> · total <span class="mono">${fmtInt(e.total_tokens)}</span></dd>
         <dt>延迟</dt><dd><span class="mono">${fmtMs(e.latency_ms)} ms</span></dd>
@@ -173,4 +177,3 @@
   // dialog 关闭时摘掉 body.dialog-open，让 custom cursor 恢复
   document.getElementById('detail-dialog')
     ?.addEventListener('close', () => document.body.classList.remove('dialog-open'));
-

@@ -136,6 +136,7 @@ pub(super) struct EventJson {
     session_id: String,
     user_prompt: String,
     cwd: String,
+    authenticated: bool,
     error_msg: Option<String>,
     /// Raw LLM response (mode tag + skill names). Empty for legacy rows.
     llm_raw_response: String,
@@ -171,6 +172,7 @@ impl From<RouterEvent> for EventJson {
             session_id: e.session_id,
             user_prompt: e.user_prompt,
             cwd: e.cwd,
+            authenticated: e.user_id.is_some(),
             error_msg: e.error_msg,
             llm_raw_response: e.llm_raw_response,
             hook_output: e.hook_output,

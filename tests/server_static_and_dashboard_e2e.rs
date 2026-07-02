@@ -14,6 +14,8 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use assert_cmd::cargo::CommandCargoExt;
+use runai::core::db::RouterEvent;
+use runai::core::manager::SkillManager;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -39,12 +41,15 @@ fn wait_for_port(port: u16, t: Duration) -> bool {
 }
 struct ServerGuard {
     child: Child,
-    _home: TempDir,
+    home: TempDir,
     port: u16,
 }
 impl ServerGuard {
     fn base_url(&self) -> String {
         format!("http://127.0.0.1:{}", self.port)
+    }
+    fn data_dir(&self) -> std::path::PathBuf {
+        self.home.path().join(".runai")
     }
 }
 impl Drop for ServerGuard {
@@ -74,11 +79,7 @@ fn spawn_team_server() -> ServerGuard {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    let g = ServerGuard {
-        child,
-        _home: home,
-        port,
-    };
+    let g = ServerGuard { child, home, port };
     assert!(wait_for_port(port, Duration::from_secs(8)));
     g
 }
@@ -97,6 +98,56 @@ fn register(s: &ServerGuard, u: &str, p: &str) -> String {
     assert_eq!(r.status().as_u16(), 201);
     let b: Value = r.json().unwrap();
     b["api_key"].as_str().unwrap().to_string()
+}
+
+fn register_with_uid(s: &ServerGuard, u: &str, p: &str) -> (String, String) {
+    let r = http()
+        .post(format!("{}/users/register", s.base_url()))
+        .json(&json!({"username": u, "password": p}))
+        .send()
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 201);
+    let b: Value = r.json().unwrap();
+    (
+        b["api_key"].as_str().unwrap().to_string(),
+        b["user_id"].as_str().unwrap().to_string(),
+    )
+}
+
+fn seed_router_event(s: &ServerGuard, user_id: Option<&str>) -> i64 {
+    let mgr = SkillManager::with_base(s.data_dir()).expect("manager");
+    let ev = RouterEvent {
+        id: None,
+        ts: 123,
+        provider: "test-provider".into(),
+        model: "test-model".into(),
+        prompt_tokens: 1,
+        completion_tokens: 2,
+        reasoning_tokens: 0,
+        total_tokens: 3,
+        cache_hit_tokens: 0,
+        cache_miss_tokens: 1,
+        latency_ms: 10,
+        chosen_skills_json: r#"["alpha"]"#.into(),
+        candidate_count: 2,
+        status: "ok".into(),
+        error_msg: None,
+        session_id: "seed-session".into(),
+        mode: "exclusive".into(),
+        user_prompt: "seed prompt".into(),
+        cwd: "/tmp".into(),
+        bm25_kept: 1,
+        llm_raw_response: "EXCLUSIVE\nreasoning: seed\nalpha\n".into(),
+        hook_output: "seed hook".into(),
+        llm_input: "seed llm input".into(),
+        user_id: user_id.map(str::to_string),
+    };
+    mgr.db().insert_router_event(&ev).unwrap();
+    mgr.db()
+        .router_events_paged_filtered(None, 1, 0, None, false, user_id)
+        .unwrap()[0]
+        .id
+        .unwrap()
 }
 
 // ─── GET / ────────────────────────────────────────────────────────────
@@ -253,6 +304,29 @@ fn api_events_empty_for_fresh_server() {
             .unwrap_or(0)
     };
     assert_eq!(count, 0);
+}
+
+#[test]
+fn api_events_exposes_authenticated_boolean_without_user_id() {
+    let s = spawn_team_server();
+    let (key, uid) = register_with_uid(&s, "alice", "pw alice 1234");
+    seed_router_event(&s, Some(&uid));
+
+    let r = http()
+        .get(format!("{}/api/events", s.base_url()))
+        .bearer_auth(&key)
+        .send()
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 200);
+    let b: Value = r.json().unwrap();
+    let events = b["events"].as_array().expect("events array");
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["authenticated"], json!(true));
+    assert!(
+        events[0].get("user_id").is_none(),
+        "telemetry DTO must not expose raw user_id: {:?}",
+        events[0]
+    );
 }
 
 // ─── GET /api/event/:id ───────────────────────────────────────────────
