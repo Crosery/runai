@@ -16,9 +16,12 @@
 //! at 5/min" from "I'm limited at 6/min" from "I'm limited at all".
 //!
 //! Algorithm: fixed-window counter keyed by `(route_class, principal,
-//! window_index)`. Cheap, no per-request floating-point math, and the small
-//! `dashmap` works fine for the volumes runai handles (single-server
-//! dashboard, not a public CDN).
+//! window_index)`. `window_index` is measured from one process-global
+//! monotonic `Instant`; do not compute it from a request-local `Instant`, or
+//! every request lands in window 0 and the limiter never recovers until restart.
+//! Cheap, no per-request floating-point math, and the small `dashmap` works
+//! fine for the volumes runai handles (single-server dashboard, not a public
+//! CDN).
 //!
 //! Memory: every minute a sweep prunes entries whose window has expired by
 //! more than one period, so the map stays bounded. The sweep runs lazily on
@@ -102,6 +105,11 @@ fn buckets() -> &'static BucketMap {
     BUCKETS.get_or_init(DashMap::new)
 }
 
+fn limiter_started_at() -> Instant {
+    static STARTED_AT: OnceLock<Instant> = OnceLock::new();
+    *STARTED_AT.get_or_init(Instant::now)
+}
+
 /// Returns true when the bucket has room. Also bumps the counter when the
 /// answer is true. False = caller should respond 429.
 fn check_and_record(class: RouteClass, principal: &str) -> bool {
@@ -110,7 +118,7 @@ fn check_and_record(class: RouteClass, principal: &str) -> bool {
     // Window key is `(tag, principal, epoch_window_index)`. The index is
     // computed off Instant rather than SystemTime because we don't care
     // about wall-clock alignment, only about uniformly-sized windows.
-    let nanos = now.elapsed().as_nanos();
+    let nanos = now.duration_since(limiter_started_at()).as_nanos();
     let window_idx = nanos / window.as_nanos();
     let key = format!("{}:{}:{}", class.tag(), principal, window_idx);
 
@@ -245,10 +253,19 @@ pub(crate) fn _reset_all_for_tests() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard};
+
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn test_guard() -> MutexGuard<'static, ()> {
+        let guard = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        _reset_all_for_tests();
+        guard
+    }
 
     #[test]
     fn quota_enforced_per_class_and_principal() {
-        _reset_all_for_tests();
+        let _guard = test_guard();
         // login = 5/min/IP
         for _ in 0..5 {
             assert!(check_and_record(RouteClass::AuthLogin, "1.2.3.4"));
@@ -265,7 +282,7 @@ mod tests {
 
     #[test]
     fn upload_quota_is_ten() {
-        _reset_all_for_tests();
+        let _guard = test_guard();
         for _ in 0..10 {
             assert!(check_and_record(RouteClass::CommunityUpload, "u:abc"));
         }
@@ -277,13 +294,32 @@ mod tests {
 
     #[test]
     fn skills_get_quota_is_twenty() {
-        _reset_all_for_tests();
+        let _guard = test_guard();
         for _ in 0..20 {
             assert!(check_and_record(RouteClass::SkillsGet, "9.9.9.9"));
         }
         assert!(
             !check_and_record(RouteClass::SkillsGet, "9.9.9.9"),
             "21st hit must be over the 20/sec quota"
+        );
+    }
+
+    #[test]
+    fn skills_get_bucket_rolls_over_after_window() {
+        let _guard = test_guard();
+        for _ in 0..20 {
+            assert!(check_and_record(RouteClass::SkillsGet, "9.9.9.9"));
+        }
+        assert!(
+            !check_and_record(RouteClass::SkillsGet, "9.9.9.9"),
+            "precondition: same-window request is over quota"
+        );
+
+        std::thread::sleep(RouteClass::SkillsGet.window() + Duration::from_millis(25));
+
+        assert!(
+            check_and_record(RouteClass::SkillsGet, "9.9.9.9"),
+            "a new fixed window must accept the next request"
         );
     }
 }

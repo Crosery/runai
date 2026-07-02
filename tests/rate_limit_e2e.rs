@@ -282,3 +282,54 @@ fn skills_get_burst_hits_429_within_one_second() {
         start.elapsed()
     );
 }
+
+/// Regression: the fixed-window index must advance after the one-second
+/// `/skills/get/*` window. A previous implementation keyed every request
+/// into window 0, so once a process served 20 get calls, all later skill
+/// activations from that IP returned 429 until restart.
+#[test]
+fn skills_get_limit_recovers_after_one_second_window() {
+    let server = spawn_team_server();
+    let client = http_client();
+    let url = format!(
+        "{}/skills/get/no-such-skill-window-rollover-{}",
+        server.base_url(),
+        std::process::id()
+    );
+
+    for i in 0..20 {
+        let resp = client.post(&url).send().expect("POST /skills/get");
+        assert_ne!(
+            resp.status().as_u16(),
+            429,
+            "request {} should pass the limiter before the cliff",
+            i + 1
+        );
+    }
+
+    let limited = client.post(&url).send().expect("POST /skills/get");
+    assert_eq!(
+        limited.status().as_u16(),
+        429,
+        "21st request must hit the limiter before the window rolls",
+    );
+    let limited_body = limited.text().expect("limited body");
+    assert!(
+        limited_body.is_empty(),
+        "429 body must be empty (PLANNING §2.3 item 6); got {limited_body:?}",
+    );
+
+    std::thread::sleep(Duration::from_millis(1100));
+
+    let recovered = client.post(&url).send().expect("POST /skills/get");
+    let status = recovered.status().as_u16();
+    let body = recovered.text().expect("recovered body");
+    assert_eq!(
+        status, 404,
+        "after the one-second window rolls, the request must reach the handler; body={body:?}",
+    );
+    assert!(
+        body.contains("skill not found:"),
+        "recovered response must be the handler's 404 body, got {body:?}",
+    );
+}
