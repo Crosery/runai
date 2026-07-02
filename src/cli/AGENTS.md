@@ -13,8 +13,9 @@ clap-based CLI entry point. Parses subcommands, constructs a `SkillManager`, dis
 
 ## Public surface (the API contract — external code depends on these exact paths)
 - `crate::cli::Cli` (clap `Parser`) — top-level arg parser.
-- `crate::cli::Commands` — all subcommands: `Scan`, `Discover`, `List`, `Enable`, `Disable`, `Install`, `MarketInstall`, `Uninstall`, `Trash(TrashCommands)`, `Restore`, `Backup`, `Backups`, `Search`, `Market`, `Group(GroupCommands)`, `Status`, `McpServe`, `Server`, `Register`, `Unregister`, `Usage`, `Update`, `Doctor`, `Recommend(RecommendCommands)`.
+- `crate::cli::Commands` — all subcommands: `Scan`, `Discover`, `List`, `Enable`, `Disable`, `Install`, `MarketInstall`, `Uninstall`, `Trash(TrashCommands)`, `Restore`, `Backup`, `Backups`, `Search`, `Market`, `Group(GroupCommands)`, `Status`, `McpServe`, `Server`, `Register`, `Unregister`, `Usage`, `Update`, `Doctor`, `Recommend(RecommendCommands)`, `Community(CommunityCommands)`.
 - `crate::cli::RecommendCommands` — `Setup`, `Status`, `HookSnippet`, `InstallHook`, `UninstallHook`, `Stats`, `Feedback`, `Get`, `ResetScoring`, `Enrich`.
+- `crate::cli::CommunityCommands` — `Upload`, `Publish`, `List`, `Install`, `Delete`. Thin HTTP client over the server's community/private-skill endpoints (`handlers/community.rs`); reads `~/.runai-identity` for the Bearer key. `Upload` POSTs to `/api/users/me/skills/upload` (lands in the caller's PRIVATE pool, `publish_status='draft'` — NOT the shared pool). `Publish` POSTs `/api/users/me/skills/{name}/publish-request` to ask an admin to review a draft. See PLANNING §1.4 rewrite + issue #29 — the old direct-to-pool `/api/community/upload` is admin-only now and no CLI command calls it.
 - `crate::cli::GroupCommands` — `Create`, `Add`, `Remove`, `List`, `Delete`, `Update`, `Show { id }`. `List` prints one line per group plus a 120-char description preview (indented). `Show` dumps the full description (preserving newlines) + member list with per-member kind badge and 70-char description snippet; errors with `group not found: <id>` when missing.
 - `crate::cli::TrashCommands` — `List`, `Restore`, `Purge`, `Empty`.
 - `crate::cli::run(cli) -> Result<()>` — top dispatch.
@@ -26,12 +27,13 @@ Consumers (`main.rs`) only use `crate::cli::Cli` and `crate::cli::run`; the enum
 |---|---|---|
 | `mod.rs` | re-exports only, no logic | `pub use command_enums::{Cli, Commands, GroupCommands, RecommendCommands, TrashCommands}`, `pub use dispatch::run` |
 | `command_enums.rs` | clap derive enums (the entire arg surface) | `Cli`, `Commands`, `RecommendCommands`, `GroupCommands`, `TrashCommands` |
-| `dispatch.rs` | top-level `run()` — constructs `SkillManager`, 24-arm match dispatcher; inline arms for everything except group/trash/recommend | `run()` |
+| `dispatch.rs` | top-level `run()` — constructs `SkillManager`, 24-arm match dispatcher; inline arms for everything except group/trash/recommend/community | `run()` |
 | `helpers.rs` | shared private helpers used across dispatch + handlers | `spawn_targeted_enrich()`, `find_resource_id_by_name()`, `find_trash_id_by_query()` (all `pub(super)`) |
-| `handlers/mod.rs` | declares + re-exports the three area handlers for `dispatch.rs` | `pub(super) use {handle_group_command, handle_recommend, handle_trash_command}` |
+| `handlers/mod.rs` | declares + re-exports the four area handlers for `dispatch.rs` | `pub(super) use {handle_community, handle_group_command, handle_recommend, handle_trash_command}` |
 | `handlers/group.rs` | `Group(GroupCommands)` dispatch | `handle_group_command()` |
 | `handlers/trash.rs` | `Trash(TrashCommands)` dispatch | `handle_trash_command()` |
 | `handlers/recommend.rs` | `Recommend(RecommendCommands)` dispatch + `recommend setup` wizard | `handle_recommend()`, `recommend_setup()` (file-private) |
+| `handlers/community.rs` | `Community(CommunityCommands)` dispatch — thin HTTP client, no `SkillManager` involved | `handle_community()`, `upload()` (POSTs `/api/users/me/skills/upload`, private draft), `publish()` (POSTs `/api/users/me/skills/{name}/publish-request`), `list()`, `install()`, `delete()` — all read `~/.runai-identity` / `RUNAI_API_KEY` via `resolve_key()` |
 
 ## Key invariants
 - Manager construction honors `RUNE_DATA_DIR` → `SKILL_MANAGER_DATA_DIR` → default, in that order (in `dispatch::run`).

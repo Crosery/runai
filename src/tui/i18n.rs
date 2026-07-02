@@ -154,6 +154,43 @@ impl T {
         )
     }
 
+    // ── Community upload picker (PLANNING §1.4 rewrite — private draft,
+    // NOT a direct write to the shared pool; see issue #29) ──
+    pub fn community_upload_picker_title_fmt(&self, count: usize) -> String {
+        match self.lang {
+            Lang::Zh => format!(" 上传 skill 到私有池(draft) — {count} 个候选 "),
+            Lang::En => {
+                format!(" Upload skill to your private pool (draft) — {count} candidate(s) ")
+            }
+        }
+    }
+    pub fn community_upload_picker_scan_hint(&self) -> &'static str {
+        self.zh_en(
+            "  扫描范围: ~/.claude/skills + cwd/.claude/skills",
+            "  Scan: ~/.claude/skills + cwd/.claude/skills",
+        )
+    }
+    pub fn community_upload_picker_empty(&self) -> &'static str {
+        self.zh_en(
+            "  没有候选 — 先创建一个带 SKILL.md 的 skill 目录",
+            "  no candidates found — create a skill dir with a SKILL.md first",
+        )
+    }
+    pub fn help_community_upload_picker(&self) -> &'static str {
+        self.zh_en(
+            "j/k 移动  Enter 上传  r 重新扫描  Esc/q 关闭",
+            "j/k move  Enter upload  r rescan  Esc/q close",
+        )
+    }
+    /// Appended after "uploaded {name}" — reminds the user the skill landed
+    /// in their PRIVATE pool as a draft, not the shared community pool.
+    pub fn community_upload_draft_hint(&self) -> &'static str {
+        self.zh_en(
+            "已落私有池(draft)，富集完成后用 `runai community publish` 申请上架",
+            "landed in your private pool (draft) — run `runai community publish` once enriched",
+        )
+    }
+
     // ── Filter modes ──
     pub fn filter_all(&self) -> &'static str {
         self.zh_en("全部", "All")

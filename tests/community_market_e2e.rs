@@ -235,6 +235,165 @@ fn upload(
     json
 }
 
+/// PLANNING §1.4 rewrite / issue #29: `POST /api/community/upload` is now
+/// admin-only, so a non-admin user can no longer land a skill directly in
+/// the community pool via HTTP. Tests that need a "bob-owned community
+/// skill" fixture must go through the real workflow instead:
+///   1. `bob` uploads to his PRIVATE pool via `/api/users/me/skills/upload`.
+///   2. Force-write a `resource_ai_summary` row directly via sqlite — the
+///      test sandbox has no LLM provider configured, so real enrichment
+///      never completes and `publish-request` would 400 forever otherwise
+///      (same "force the gate open via direct DB write" pattern already
+///      used by `tests/admin_publish_approve_e2e.rs`'s doc comment).
+///   3. `bob` calls `publish-request` (draft → pending).
+///   4. `admin` looks up the resulting `resource_id` via
+///      `GET /api/admin/publish-requests` and calls `approve` (pending →
+///      approved + physical copy into `<data>/community/<uid>/<name>/`).
+///
+/// Returns the `resource_id` string so callers can assert on it if needed.
+fn private_upload(
+    server: &ServerGuard,
+    actor: &Account,
+    skill_name: &str,
+    skill_md: &str,
+) -> serde_json::Value {
+    let client = http_client();
+    let boundary = format!(
+        "----runai-test-priv-{}",
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+    );
+    let bundle = make_bundle_bytes(skill_name, skill_md);
+    let body = build_multipart_body(skill_name, &bundle, &boundary);
+    let resp = client
+        .post(format!("{}/api/users/me/skills/upload", server.base_url()))
+        .bearer_auth(&actor.api_key)
+        .header(
+            "Content-Type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(body)
+        .send()
+        .expect("POST /api/users/me/skills/upload");
+    let status = resp.status().as_u16();
+    let json: serde_json::Value = resp.json().unwrap_or(serde_json::json!({}));
+    assert_eq!(status, 200, "private upload status={status} body={json}");
+    assert_eq!(
+        json["publish_status"].as_str(),
+        Some("draft"),
+        "fresh private upload must be draft; body={json}"
+    );
+    json
+}
+
+/// Force-complete enrichment for `(owner_user_id, name)` by writing a
+/// `resource_ai_summary` row directly via sqlite, bypassing the real LLM
+/// call the test sandbox has no provider for. Mirrors the schema-v21 shape
+/// in `src/core/db/schema.rs` (`PRIMARY KEY (owner_user_id, name)`).
+fn force_enrich_summary(server: &ServerGuard, owner_user_id: &str, name: &str) {
+    let db_path = server.home_path().join(".runai/runai.db");
+    let conn = rusqlite::Connection::open(&db_path).expect("open test db for force-enrich");
+    conn.execute(
+        "INSERT INTO resource_ai_summary
+            (owner_user_id, name, summary, updated_at, llm_score, search_doc, router_card, source_hash, prompt_hash, format_key)
+         VALUES (?1, ?2, ?3, ?4, 8, ?3, ?3, 'test', 'test', 'test')
+         ON CONFLICT(owner_user_id, name) DO UPDATE SET summary = excluded.summary",
+        rusqlite::params![
+            owner_user_id,
+            name,
+            format!("test-forced-summary for {name}"),
+            chrono::Utc::now().timestamp(),
+        ],
+    )
+    .expect("insert forced resource_ai_summary row");
+}
+
+fn publish_request(server: &ServerGuard, actor: &Account, name: &str) -> serde_json::Value {
+    let client = http_client();
+    let resp = client
+        .post(format!(
+            "{}/api/users/me/skills/{}/publish-request",
+            server.base_url(),
+            name
+        ))
+        .bearer_auth(&actor.api_key)
+        .send()
+        .expect("POST publish-request");
+    let status = resp.status().as_u16();
+    let json: serde_json::Value = resp.json().unwrap_or(serde_json::json!({}));
+    assert_eq!(status, 200, "publish-request status={status} body={json}");
+    assert_eq!(json["publish_status"].as_str(), Some("pending"));
+    json
+}
+
+/// Admin approves `owner_username`'s pending publish-request for `name`,
+/// resolving the `resource_id` via `GET /api/admin/publish-requests` first
+/// (the approve endpoint takes a resource_id, not a name).
+fn admin_approve(server: &ServerGuard, admin: &Account, owner_username: &str, name: &str) {
+    let client = http_client();
+    let list_resp = client
+        .get(format!("{}/api/admin/publish-requests", server.base_url()))
+        .bearer_auth(&admin.api_key)
+        .send()
+        .expect("GET /api/admin/publish-requests");
+    assert_eq!(list_resp.status().as_u16(), 200);
+    let list_json: serde_json::Value = list_resp.json().expect("publish-requests JSON");
+    let items = list_json["items"].as_array().expect("items array");
+    let resource_id = items
+        .iter()
+        .find(|it| {
+            it["name"].as_str() == Some(name)
+                && it["uploader_username"].as_str() == Some(owner_username)
+        })
+        .and_then(|it| it["resource_id"].as_str())
+        .unwrap_or_else(|| {
+            panic!("no pending publish-request for {owner_username}/{name}; list={list_json}")
+        })
+        .to_string();
+
+    let approve_resp = client
+        .post(format!(
+            "{}/api/admin/publish-requests/{resource_id}/approve",
+            server.base_url()
+        ))
+        .bearer_auth(&admin.api_key)
+        .send()
+        .expect("POST approve");
+    let status = approve_resp.status().as_u16();
+    let body = approve_resp.text().unwrap_or_default();
+    assert_eq!(status, 200, "approve status={status} body={body}");
+}
+
+#[derive(Debug)]
+struct AccountWithUsername {
+    account: Account,
+    username: String,
+}
+
+fn register_named(server: &ServerGuard, username: &str, password: &str) -> AccountWithUsername {
+    AccountWithUsername {
+        account: register(server, username, password),
+        username: username.to_string(),
+    }
+}
+
+/// End-to-end: private upload → forced enrich → publish-request → admin
+/// approve. Lands `name` in the community pool with `uploader_uid =
+/// uploader.account.user_id`, exactly like the pre-#29 direct-upload
+/// fixture did — but through the real workflow instead of the now
+/// admin-only `/api/community/upload`.
+fn land_in_community_via_workflow(
+    server: &ServerGuard,
+    uploader: &AccountWithUsername,
+    admin: &Account,
+    name: &str,
+    skill_md: &str,
+) {
+    private_upload(server, &uploader.account, name, skill_md);
+    force_enrich_summary(server, &uploader.account.user_id, name);
+    publish_request(server, &uploader.account, name);
+    admin_approve(server, admin, &uploader.username, name);
+}
+
 // ─── tests ──────────────────────────────────────────────────────────────────
 
 #[test]
@@ -354,19 +513,20 @@ fn bob_installs_alice_skill_lands_in_bob_private_pool() {
 #[test]
 fn non_uploader_non_admin_cannot_delete_others_upload() {
     let server = spawn_team_server();
+    // alice is first → auto-admin.
     let alice = register(&server, "alice", "correct horse battery staple");
-    let bob = register(&server, "bob", "another long passphrase here");
+    let bob = register_named(&server, "bob", "another long passphrase here");
     // Carol is third user — NOT first, so not auto-admin.
     let carol = register(&server, "carol", "yet another good password!!!");
 
-    upload(&server, &bob, "bob-private", "# bob's skill");
+    land_in_community_via_workflow(&server, &bob, &alice, "bob-private", "# bob's skill");
 
     let client = http_client();
     let resp = client
         .delete(format!(
             "{}/api/community/skill/{}/{}",
             server.base_url(),
-            bob.user_id,
+            bob.account.user_id,
             "bob-private"
         ))
         .bearer_auth(&carol.api_key)
@@ -385,7 +545,7 @@ fn non_uploader_non_admin_cannot_delete_others_upload() {
         .get(format!(
             "{}/api/community/skill/{}/{}",
             server.base_url(),
-            bob.user_id,
+            bob.account.user_id,
             "bob-private"
         ))
         .bearer_auth(&alice.api_key)
@@ -403,16 +563,16 @@ fn admin_can_delete_any_upload() {
     let server = spawn_team_server();
     // alice is first → auto-admin.
     let alice = register(&server, "alice", "correct horse battery staple");
-    let bob = register(&server, "bob", "another long passphrase here");
+    let bob = register_named(&server, "bob", "another long passphrase here");
 
-    upload(&server, &bob, "bob-stuff", "# bob");
+    land_in_community_via_workflow(&server, &bob, &alice, "bob-stuff", "# bob");
 
     let client = http_client();
     let resp = client
         .delete(format!(
             "{}/api/community/skill/{}/{}",
             server.base_url(),
-            bob.user_id,
+            bob.account.user_id,
             "bob-stuff"
         ))
         .bearer_auth(&alice.api_key)
@@ -431,7 +591,7 @@ fn admin_can_delete_any_upload() {
         .get(format!(
             "{}/api/community/skill/{}/{}",
             server.base_url(),
-            bob.user_id,
+            bob.account.user_id,
             "bob-stuff"
         ))
         .bearer_auth(&alice.api_key)
@@ -447,7 +607,7 @@ fn admin_can_delete_any_upload() {
     let payload = server
         .home_path()
         .join(".runai/community")
-        .join(&bob.user_id)
+        .join(&bob.account.user_id)
         .join("bob-stuff");
     assert!(
         !payload.exists(),
@@ -537,5 +697,92 @@ fn re_upload_same_name_bumps_version_preserves_installs_total() {
             .contains("second version"),
         "v2 readme content visible; readme={}",
         body["readme"]
+    );
+}
+
+/// PLANNING §1.4 rewrite / issue #29: `POST /api/community/upload` used to
+/// be reachable by any authenticated user, letting them bypass the
+/// draft → enrich → publish-request → approve workflow entirely. It is now
+/// `require_admin`-gated, matching every other admin-only route.
+#[test]
+fn direct_community_upload_requires_admin() {
+    let server = spawn_team_server();
+    // alice is first → auto-admin.
+    let alice = register(&server, "alice", "correct horse battery staple");
+    let bob = register(&server, "bob", "another long passphrase here");
+
+    let client = http_client();
+    let boundary = format!(
+        "----runai-test-admin-gate-{}",
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+    );
+    let bundle = make_bundle_bytes("bob-direct-attempt", "# bob tries to bypass review");
+    let body = build_multipart_body("bob-direct-attempt", &bundle, &boundary);
+
+    // Non-admin (bob) must 403.
+    let resp = client
+        .post(format!("{}/api/community/upload", server.base_url()))
+        .bearer_auth(&bob.api_key)
+        .header(
+            "Content-Type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(body.clone())
+        .send()
+        .expect("POST /api/community/upload as non-admin");
+    assert_eq!(
+        resp.status().as_u16(),
+        403,
+        "non-admin direct upload must 403; body={:?}",
+        resp.text()
+    );
+
+    // Nothing landed anywhere — neither the community pool nor bob's
+    // private pool. This endpoint has never written to a caller's
+    // private pool, so a regression that silently redirected instead of
+    // rejecting would still show up here.
+    let community_payload = server
+        .home_path()
+        .join(".runai/community")
+        .join(&bob.user_id)
+        .join("bob-direct-attempt");
+    assert!(
+        !community_payload.exists(),
+        "rejected upload must not write to the community pool; found {:?}",
+        community_payload
+    );
+    let private_payload = server
+        .home_path()
+        .join(".runai/users")
+        .join(&bob.user_id)
+        .join("skills/bob-direct-attempt");
+    assert!(
+        !private_payload.exists(),
+        "rejected upload must not write to bob's private pool either; found {:?}",
+        private_payload
+    );
+
+    // Admin (alice) can still use the direct endpoint.
+    let boundary2 = format!(
+        "----runai-test-admin-gate-ok-{}",
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+    );
+    let bundle2 = make_bundle_bytes("admin-direct", "# admin seeds directly");
+    let body2 = build_multipart_body("admin-direct", &bundle2, &boundary2);
+    let resp2 = client
+        .post(format!("{}/api/community/upload", server.base_url()))
+        .bearer_auth(&alice.api_key)
+        .header(
+            "Content-Type",
+            format!("multipart/form-data; boundary={boundary2}"),
+        )
+        .body(body2)
+        .send()
+        .expect("POST /api/community/upload as admin");
+    assert_eq!(
+        resp2.status().as_u16(),
+        200,
+        "admin direct upload must still 200; body={:?}",
+        resp2.text()
     );
 }

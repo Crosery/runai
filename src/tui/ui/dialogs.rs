@@ -261,7 +261,8 @@ pub(super) fn render_pick_skill(f: &mut Frame, app: &App, t: &Theme) {
     );
 }
 
-/// Community upload picker overlay (PLANNING §1.5).
+/// Community-tab upload picker overlay (PLANNING §1.5 + §1.4 rewrite,
+/// issue #29).
 ///
 /// Lists local skill candidates scanned by `App::scan_upload_candidates`
 /// (`~/.claude/skills/` + cwd `.claude/skills/`). User uses j/k or arrows
@@ -269,14 +270,17 @@ pub(super) fn render_pick_skill(f: &mut Frame, app: &App, t: &Theme) {
 /// the last upload message (success or error). When `upload_busy` is
 /// true the picker shows a "uploading …" line and all keys are ignored
 /// (see `handle_community_upload_picker_key`).
+///
+/// Despite living on the "Community" tab, Enter here does NOT write
+/// directly to the shared community pool — it lands the skill in the
+/// caller's PRIVATE pool as a draft (see `market_tab.rs::do_upload`);
+/// admin review is a separate step (`runai community publish`).
 pub(super) fn render_community_upload_picker(f: &mut Frame, app: &App, t: &Theme) {
+    let i = T::new(app.lang);
     let area = centered_rect(60, 70, f.area());
     f.render_widget(Clear, area);
 
-    let title = format!(
-        " Upload skill to community — {} candidate(s) ",
-        app.upload_candidates.len()
-    );
+    let title = i.community_upload_picker_title_fmt(app.upload_candidates.len());
     let block = Block::default()
         .title(Span::styled(title, Style::default().fg(t.brand).bold()))
         .borders(Borders::ALL)
@@ -294,14 +298,14 @@ pub(super) fn render_community_upload_picker(f: &mut Frame, app: &App, t: &Theme
     .split(inner);
 
     let header = Line::from(Span::styled(
-        "  Scan: ~/.claude/skills + cwd/.claude/skills",
+        i.community_upload_picker_scan_hint(),
         Style::default().fg(t.text_dim),
     ));
     f.render_widget(Paragraph::new(header), chunks[0]);
 
     if app.upload_candidates.is_empty() {
         let empty = Paragraph::new(Line::from(Span::styled(
-            "  no candidates found — create a skill dir with a SKILL.md first",
+            i.community_upload_picker_empty(),
             Style::default().fg(t.text_dim),
         )));
         f.render_widget(empty, chunks[1]);
@@ -345,17 +349,10 @@ pub(super) fn render_community_upload_picker(f: &mut Frame, app: &App, t: &Theme
     )));
     f.render_widget(msg, chunks[2]);
 
-    let help = Line::from(vec![
-        Span::styled("  j/k", Style::default().fg(t.text_highlight)),
-        Span::styled(" move  ", Style::default().fg(t.text_dim)),
-        Span::styled("Enter", Style::default().fg(t.text_highlight)),
-        Span::styled(" upload  ", Style::default().fg(t.text_dim)),
-        Span::styled("r", Style::default().fg(t.text_highlight)),
-        Span::styled(" rescan  ", Style::default().fg(t.text_dim)),
-        Span::styled("Esc/q", Style::default().fg(t.text_highlight)),
-        Span::styled(" close", Style::default().fg(t.text_dim)),
-    ]);
-    f.render_widget(Paragraph::new(help), chunks[3]);
+    f.render_widget(
+        Paragraph::new(styled_help(i.help_community_upload_picker(), t)),
+        chunks[3],
+    );
 }
 
 pub(super) fn render_source_manager(f: &mut Frame, app: &App, t: &Theme) {

@@ -1,11 +1,22 @@
 //! `runai community ...` CLI dispatch.
 //!
-//! Thin client over the server's `/api/community/*` endpoints. Reads
-//! `~/.runai-identity` for the Bearer key (compatibility with the same
-//! identity file installed by `scripts/runai-client-install.sh`). When the
-//! file is missing the caller must pass `--server` and the server must be
-//! in owner mode or the request will 401 — that's intentional, community is
-//! a team-mode feature.
+//! Thin client over the server's community-market + private-upload
+//! endpoints. Reads `~/.runai-identity` for the Bearer key (compatibility
+//! with the same identity file installed by `scripts/runai-client-install.sh`).
+//! When the file is missing the caller must pass `--server` and the server
+//! must be in owner mode or the request will 401 — that's intentional,
+//! community is a team-mode feature.
+//!
+//! **`upload` is a private-pool draft upload, not a direct community-pool
+//! write (PLANNING §1.4 rewrite, issue #29).** It POSTs to
+//! `/api/users/me/skills/upload`, which lands the skill under
+//! `<data>/users/<uid>/skills/<name>/` with `publish_status='draft'` and
+//! fires best-effort enrichment. `publish` then POSTs to
+//! `/api/users/me/skills/{name}/publish-request` to ask an admin to review
+//! it; only after `POST /api/admin/publish-requests/{id}/approve` does the
+//! skill become visible to other users via `list`/`install`. The old
+//! direct-to-pool `POST /api/community/upload` endpoint still exists
+//! server-side but is now admin-only — this CLI does not call it.
 
 use anyhow::{Context, Result, bail};
 use std::path::Path;
@@ -21,6 +32,7 @@ pub(crate) fn handle_community(cmd: CommunityCommands) -> Result<()> {
         CommunityCommands::Upload { path, name, server } => {
             upload(&path, name.as_deref(), server.as_deref())
         }
+        CommunityCommands::Publish { name, server } => publish(&name, server.as_deref()),
         CommunityCommands::List { sort, server } => list(&sort, server.as_deref()),
         CommunityCommands::Install {
             uploader,
@@ -110,7 +122,10 @@ fn upload(skill_dir: &Path, name_override: Option<&str>, server_flag: Option<&st
         tar.finish().context("tar finish")?;
     }
 
-    let url = format!("{server}/api/community/upload");
+    // PLANNING §1.4 rewrite (issue #29): this lands in the caller's PRIVATE
+    // pool as a draft, not directly in the shared community pool. The old
+    // `/api/community/upload` endpoint is admin-only now.
+    let url = format!("{server}/api/users/me/skills/upload");
     let client = reqwest::blocking::Client::new();
     let form = reqwest::blocking::multipart::Form::new()
         .text("name", name.clone())
@@ -132,7 +147,29 @@ fn upload(skill_dir: &Path, name_override: Option<&str>, server_flag: Option<&st
     if !status.is_success() {
         bail!("upload failed: HTTP {status} — {body}");
     }
-    println!("uploaded {name} to {server}");
+    println!("uploaded {name} to your private pool on {server} (publish_status=draft)");
+    println!(
+        "  once enrichment finishes, run `runai community publish {name}` to request admin review"
+    );
+    Ok(())
+}
+
+fn publish(name: &str, server_flag: Option<&str>) -> Result<()> {
+    let server = resolve_server(server_flag);
+    let key = resolve_key()?;
+    let url = format!("{server}/api/users/me/skills/{name}/publish-request");
+    let client = reqwest::blocking::Client::new();
+    let resp = client
+        .post(&url)
+        .bearer_auth(&key)
+        .send()
+        .with_context(|| format!("POST {url}"))?;
+    let status = resp.status();
+    let body = resp.text().unwrap_or_default();
+    if !status.is_success() {
+        bail!("publish request failed: HTTP {status} — {body}");
+    }
+    println!("publish request for {name} submitted: {body}");
     Ok(())
 }
 

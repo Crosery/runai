@@ -131,7 +131,7 @@
 - `POST /api/community/install/{uid}/{name}` 安装到自己私有池。
 - `DELETE /api/community/skill/{uid}/{name}` 仅 uploader / admin。
 
-**已废弃**:`POST /api/community/upload` 不再是 user-facing 入口(底层路径仍在被 C9d approve 内部复用,但 user 走 publish-request,admin 走 approve)。
+**已废弃**:`POST /api/community/upload` 不再是 user-facing 入口(admin approve 走 `copy_dir_recursive` 直接落盘 + `upsert_community_skill`,并不复用这个 HTTP 端点;user 走 upload→publish-request,admin 走 approve)。issue #29 收尾:端点已收敛为 admin-only(`require_admin`,非 admin 调用 403),CLI `runai community upload`、TUI Community tab 上传 picker 均已改打 `/api/users/me/skills/upload`,与 `runai-client upload` 对齐——三个入口不再有任何一个直打旧端点。
 
 **runai-client CLI 接面**(C9f):
 - `runai-client upload` 默认走 `/api/users/me/skills/upload`(私有,publish_status='draft')。
@@ -315,6 +315,7 @@ skill 上传到社区市场前自动跑：SKILL.md 字段完整性、frontmatter
 - §1.1 owner 模式 dashboard 后端裁剪：进程级 `SERVER_MODE` atomic + `synthetic_owner()`（implicit admin sentinel `user_id="owner"`） + `state::current_user` owner 短路 + `state::private_data_locked` owner 恒 `false` + `MeResp.mode` 字段 + `serve_index` 注入 `body class="mode-owner"`；41 个 `require_user`/`require_admin`/`current_owner_id` 调用点零改动。`tests/server_mode_dashboard_e2e.rs` 7 fn 物理 e2e 守。
 - §1.1 owner 模式 dashboard 前端裁剪：`web/css/13-owner-mode.css` 一刀切 hide `#account-pill` / `#auth-modal` / `#library-scope-bar` / market 社区 tab btn / `#market-community-pane` / `#community-detail-modal` / `:has(#admin-users-rows)` 用户管理 section；保留路由总闸门 + 运营商配置（owner 本人隐式 admin）。`11-account-library.js::refreshMe` 每次同步 body `mode-owner` class；`12-admin-scope-skills.js::loadAdminUsers` owner 模式 short-circuit return。真浏览器渲染断言 spec 入 issue #20（Playwright harness 待重建）。
 - §1.4 重写 publish 工作流(C9a-C9h 8 commit): schema v17 加 resources.publish_status + publish_reason; POST /api/users/me/skills/upload 私有上传 + spawn_enrich; publish-request 端点 + enrich gate; admin GET /publish-requests + approve(copy 到社区池 + community_skills) / reject(reason 必填); GET /api/users/me/skills list-mine + workflow 状态; runai-client 加 list-mine / publish 子命令,默认 upload 走 private; dashboard Admin tab 新增「待审核发布」section + approve/reject 按钮。tests: private_skill_upload_e2e (5 fn) / publish_request_e2e (4 fn) / admin_publish_approve_e2e (7 fn) / list_mine_e2e (4 fn)。
+- issue #29 收尾:C9f 之后 CLI `runai community upload` / TUI Community tab 上传 picker 仍直打已废弃的 `POST /api/community/upload`,绕过 enrich gate + admin 审核。三点修复:(a) CLI `upload` 改打 `/api/users/me/skills/upload` + 新增 `Publish` 子命令打 publish-request;(b) TUI `market_tab.rs::do_upload` 同步改端点,picker 文案经 `i18n.rs` 中英双语化;(c) server `api_community_upload` 收成 `require_admin`,非 admin 403(approve 内部走 `copy_dir_recursive` 不依赖这个 HTTP 端点,收紧零副作用)。tests: `community_market_e2e.rs` 新增 `direct_community_upload_requires_admin`,`non_uploader_non_admin_cannot_delete_others_upload` / `admin_can_delete_any_upload` 改走「私有上传 + 强制写 ai_summary 绕过 enrich gate + publish-request + admin approve」真实工作流(而非直传)构造夹具;`market_tab_cov_c0_e2e.rs` 新增请求路径断言;新增 `cli_community_upload_e2e.rs` 验证 CLI 物理落盘 draft。
 
 ---
 

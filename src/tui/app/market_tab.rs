@@ -141,15 +141,19 @@ impl App {
     }
 
     /// POST the currently-selected `upload_candidates[upload_idx]` to
-    /// `/api/community/upload`. Blocks the UI thread — uploads are small
-    /// (single skill dir, typically &lt;1 MB tar.gz) and the local loopback
-    /// loop closes in tens of ms; we accept the brief stall to avoid
-    /// dragging a worker thread + channel for one POST.
+    /// `/api/users/me/skills/upload` (private pool, `publish_status='draft'`
+    /// — PLANNING §1.4 rewrite, issue #29; NOT the old direct-to-community
+    /// `/api/community/upload`, which is admin-only now). Blocks the UI
+    /// thread — uploads are small (single skill dir, typically &lt;1 MB
+    /// tar.gz) and the local loopback loop closes in tens of ms; we accept
+    /// the brief stall to avoid dragging a worker thread + channel for one
+    /// POST.
     ///
-    /// On success: clears the picker, reloads community list, sets a
-    /// success message. On failure: keeps the picker open with the error
-    /// in `upload_message` so the user can pick a different candidate or
-    /// fix and retry.
+    /// On success: reloads the community list (unaffected by this draft —
+    /// it stays private until a publish-request is approved) and sets a
+    /// success message reminding the user to run `runai community publish`.
+    /// On failure: keeps the picker open with the error in `upload_message`
+    /// so the user can pick a different candidate or fix and retry.
     pub fn upload_selected_candidate(&mut self) {
         if self.upload_busy {
             return;
@@ -164,7 +168,11 @@ impl App {
         self.upload_busy = false;
         match result {
             Ok(_) => {
-                self.upload_message = format!("uploaded {}", cand.name);
+                self.upload_message = format!(
+                    "uploaded {} — {}",
+                    cand.name,
+                    self.t().community_upload_draft_hint()
+                );
                 self.reload_community();
             }
             Err(e) => {
@@ -210,6 +218,12 @@ fn collect_skills(parent: &std::path::Path, source: UploadSource, out: &mut Vec<
 /// the api_key from the same identity file when present, and fall back
 /// to a bare POST (server returns 401 in team mode without auth — that's
 /// the surfaced error message in the picker).
+///
+/// PLANNING §1.4 rewrite (issue #29): posts to `/api/users/me/skills/upload`
+/// — the caller's PRIVATE pool, landing as `publish_status='draft'` — not
+/// the old direct-to-community-pool `/api/community/upload` (now
+/// admin-only). Use `runai community publish <name>` (or the future
+/// dashboard "申请上架" action) to submit the draft for admin review.
 fn do_upload(cand: &UploadCandidate) -> anyhow::Result<()> {
     let mut buf = Vec::new();
     {
@@ -218,7 +232,7 @@ fn do_upload(cand: &UploadCandidate) -> anyhow::Result<()> {
         tar.append_dir_all(&cand.name, &cand.path)?;
         tar.finish()?;
     }
-    let url = format!("http://127.0.0.1:{COMMUNITY_PORT}/api/community/upload");
+    let url = format!("http://127.0.0.1:{COMMUNITY_PORT}/api/users/me/skills/upload");
     let client = reqwest::blocking::Client::new();
     let form = reqwest::blocking::multipart::Form::new()
         .text("name", cand.name.clone())

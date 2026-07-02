@@ -1,9 +1,12 @@
 //! Community-market handlers (PLANNING.md §1.4).
 //!
-//! Team-mode social skill pool: any authenticated user can upload a skill
-//! (gz tar via multipart), browse the catalog, fetch metadata, download
-//! the raw bundle, install a copy into their own private pool, or delete
-//! their own uploads. Admins can delete anything.
+//! Team-mode social skill pool: any authenticated user can browse the
+//! catalog, fetch metadata, download the raw bundle, install a copy into
+//! their own private pool, or delete their own uploads (admins can delete
+//! anything). **Direct upload (`api_community_upload`) is admin-only**
+//! (issue #29) — regular users go through the private-pool draft →
+//! enrich → publish-request → admin-approve workflow in `private_upload.rs`
+//! + `admin.rs` instead; see the doc comment on `api_community_upload`.
 //!
 //! Physical layout (see also [`crate::core::paths::community_dir`]):
 //! ```text
@@ -41,7 +44,7 @@ use crate::core::paths::AppPaths;
 use crate::core::server_mode::ServerMode;
 
 use super::error::ApiError;
-use super::state::{AppState, require_user};
+use super::state::{AppState, require_admin, require_user};
 
 // ─── helpers ─────────────────────────────────────────────────────────────
 
@@ -151,7 +154,17 @@ pub(super) struct UploadResp {
     bytes: usize,
 }
 
-/// POST /api/community/upload
+/// POST /api/community/upload — **admin-only** direct-to-community-pool
+/// upload, bypassing the private-pool draft → enrich → publish-request →
+/// approve workflow (PLANNING §1.4 rewrite).
+///
+/// This is NOT the user-facing upload entrypoint. Regular users go through
+/// `POST /api/users/me/skills/upload` (private pool, `publish_status='draft'`)
+/// followed by `POST /api/users/me/skills/{name}/publish-request` and an
+/// admin `approve`. This endpoint stays mounted only for an admin who wants
+/// to seed the community pool directly (e.g. bootstrapping, or restoring a
+/// skill from a backup) without round-tripping through their own private
+/// pool. A non-admin caller gets 403 — see issue #29.
 ///
 /// multipart/form-data body. Required parts:
 ///   - `name`: skill name (string field)
@@ -167,10 +180,11 @@ pub(super) async fn api_community_upload(
 ) -> Result<Json<UploadResp>, ApiError> {
     require_team_mode(&state)?;
 
-    // Resolve uploader before reading multipart (cheap fail-fast).
+    // Resolve uploader before reading multipart (cheap fail-fast). Admin
+    // only — see the doc comment above and issue #29.
     let user = {
         let db = state.db().map_err(ApiError::Internal)?;
-        require_user(&headers, &db)?
+        require_admin(&headers, &db)?
     };
 
     let mut skill_name: Option<String> = None;

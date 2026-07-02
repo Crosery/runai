@@ -178,11 +178,19 @@ pub enum Commands {
 
 #[derive(Subcommand)]
 pub enum CommunityCommands {
-    /// Upload a local skill directory to the community pool.
+    /// Upload a local skill directory to your PRIVATE pool (draft).
     ///
     /// Reads `<path>/SKILL.md` to confirm it's a skill, tar.gz it, POST
-    /// to `<server>/api/community/upload` with the Bearer key from
+    /// to `<server>/api/users/me/skills/upload` with the Bearer key from
     /// `~/.runai-identity`. `--name` defaults to the directory's basename.
+    ///
+    /// PLANNING §1.4 rewrite: this does NOT land the skill directly in the
+    /// shared community pool anymore — it lands in your own private pool
+    /// with `publish_status='draft'` and kicks off enrichment. Once the
+    /// summary is ready, run `runai community publish <name>` to submit it
+    /// for admin review; only after admin approval does it appear in
+    /// `community list` for other users. The old direct-to-pool
+    /// `/api/community/upload` endpoint is now admin-only (issue #29).
     Upload {
         /// Path to the skill directory (must contain SKILL.md)
         #[arg(long)]
@@ -190,6 +198,18 @@ pub enum CommunityCommands {
         /// Skill name in the community pool (defaults to dirname)
         #[arg(long)]
         name: Option<String>,
+        /// Server base URL; defaults to RUNAI_SERVER env or http://127.0.0.1:17888
+        #[arg(long)]
+        server: Option<String>,
+    },
+    /// Submit a draft private skill for admin review (draft → pending).
+    ///
+    /// POSTs to `<server>/api/users/me/skills/<name>/publish-request`.
+    /// Fails with a 400 if enrichment hasn't produced a summary yet — wait
+    /// a bit and retry, or run `runai recommend enrich --name <name>`.
+    Publish {
+        /// Skill name (must already be uploaded via `community upload`)
+        name: String,
         /// Server base URL; defaults to RUNAI_SERVER env or http://127.0.0.1:17888
         #[arg(long)]
         server: Option<String>,

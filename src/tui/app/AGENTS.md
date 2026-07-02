@@ -36,7 +36,7 @@ All re-exported from `mod.rs`; consumers (`tui::mod`, `tui::ui`) keep using `tui
 | `group_detail.rs` | group-detail overlay + pick-items flow | `open_group_detail`, `reload_group_detail`, `handle_group_detail_key`, `handle_pick_skill_key` (`pub(super)`), `load_pick_items` |
 | `first_launch.rs` | one-shot first-launch scan + MCP discovery/registration | `do_first_launch_scan` |
 | `hook_panel.rs` | Hooks tab state + keys (PLANNING §1.5) | `reload_hook_status`, `handle_hooks_key` (`pub(super)`); shells out to `recommend::install_claude_hook` / `uninstall_claude_hook` so the TUI writes the same `~/.claude/settings.json` shape as `runai recommend install-hook` |
-| `market_tab.rs` | Community tab data fetch (PLANNING §1.5 + §1.4) | `reload_community` (blocking `GET /api/community/list` to local dashboard, 3s timeout); `COMMUNITY_PORT = 17888` matches the auto-spawned dashboard port |
+| `market_tab.rs` | Community tab data fetch + upload picker (PLANNING §1.5 + §1.4) | `reload_community` (blocking `GET /api/community/list` to local dashboard, 3s timeout); `scan_upload_candidates`/`upload_selected_candidate`/`do_upload` (upload picker — POSTs to `/api/users/me/skills/upload`, the caller's PRIVATE pool as `publish_status='draft'`, NOT the admin-only `/api/community/upload`; see issue #29); `COMMUNITY_PORT = 17888` matches the auto-spawned dashboard port |
 | `tests.rs` | unix-gated key/handler tests | `delete_key_*`, `enter_confirms_*`, `source_delete_requires_confirmation` |
 
 ## Invariants (load-bearing — do not break silently)

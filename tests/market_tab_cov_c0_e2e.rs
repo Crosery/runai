@@ -132,6 +132,55 @@ Connection: close\r\n\r\n{body}",
     });
 }
 
+/// Like `serve_canned_response`, but captures the request line (method +
+/// path) of every accepted connection into the returned `Vec` so a test
+/// can assert WHICH endpoint the client actually hit — used to pin
+/// `do_upload`'s target URL (issue #29: must be
+/// `/api/users/me/skills/upload`, never the admin-only
+/// `/api/community/upload`).
+fn serve_canned_response_capturing(
+    listener: TcpListener,
+    status_line: &'static str,
+    body: &'static str,
+) -> std::sync::Arc<Mutex<Vec<String>>> {
+    let captured = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let captured_clone = captured.clone();
+    listener.set_nonblocking(false).expect("blocking mode");
+    std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let _ = stream.set_read_timeout(Some(Duration::from_millis(300)));
+                    let mut buf = [0u8; 4096];
+                    let n = stream.read(&mut buf).unwrap_or(0);
+                    let request_line = String::from_utf8_lossy(&buf[..n])
+                        .lines()
+                        .next()
+                        .unwrap_or("")
+                        .to_string();
+                    captured_clone
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .push(request_line);
+                    let payload = format!(
+                        "HTTP/1.1 {status_line}\r\n\
+Content-Type: application/json\r\n\
+Content-Length: {}\r\n\
+Connection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(payload.as_bytes());
+                    let _ = stream.flush();
+                    let _ = stream.shutdown(std::net::Shutdown::Both);
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    captured
+}
+
 /// Build a `CommunitySkill` via JSON deserialization (the struct has no
 /// `Default` impl and no public constructor; only `name` is required).
 fn make_community_skill(name: &str) -> runai::tui::app::CommunitySkill {
@@ -508,5 +557,71 @@ fn upload_selected_candidate_reports_terminal_state_with_real_skill() {
                 app.upload_message
             );
         }
+    });
+}
+
+/// Issue #29: the TUI Community-tab upload picker (`do_upload`) must POST
+/// to `/api/users/me/skills/upload` — the caller's PRIVATE pool, landing
+/// as `publish_status='draft'` — and NEVER the admin-only
+/// `/api/community/upload`. Stages a tiny capturing HTTP server on
+/// 127.0.0.1:17888 and asserts on the literal request path it received.
+#[test]
+fn upload_selected_candidate_targets_private_pool_endpoint_not_admin_only_community_upload() {
+    let tmp = TempDir::new().unwrap();
+    let Some(listener) = try_lock_community_port() else {
+        eprintln!("[skip] 127.0.0.1:17888 already in use; cannot stage capturing mock");
+        return;
+    };
+    let captured = serve_canned_response_capturing(
+        listener,
+        "200 OK",
+        r#"{"name":"uploadable-skill","uploader_uid":"u1","bytes":10,"publish_status":"draft"}"#,
+    );
+
+    with_sandbox(tmp.path(), || {
+        let user_skills = tmp.path().join(".claude/skills");
+        std::fs::create_dir_all(&user_skills).unwrap();
+        let dir = user_skills.join("uploadable-skill");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("SKILL.md"), "---\nname: x\n---\nbody").unwrap();
+
+        let mut app = fresh_app(tmp.path());
+        app.scan_upload_candidates();
+
+        let Some(idx) = app
+            .upload_candidates
+            .iter()
+            .position(|c| c.name == "uploadable-skill")
+        else {
+            eprintln!("[skip] cwd-scan ate the test dir; cannot exercise upload path");
+            return;
+        };
+        app.upload_idx = idx;
+        app.upload_busy = false;
+        app.upload_message.clear();
+
+        app.upload_selected_candidate();
+
+        assert!(!app.upload_busy, "upload completion must clear busy flag");
+
+        let requests = captured.lock().unwrap_or_else(|p| p.into_inner());
+        assert_eq!(
+            requests.len(),
+            1,
+            "expected exactly one POST to the capturing mock; got {:?}",
+            *requests
+        );
+        assert!(
+            requests[0].starts_with("POST /api/users/me/skills/upload"),
+            "do_upload must target the private-pool draft endpoint, not the \
+             admin-only community-pool endpoint; got request line {:?}",
+            requests[0]
+        );
+        assert!(
+            !requests[0].contains("/api/community/upload"),
+            "do_upload must NEVER hit the admin-only direct-to-community-pool \
+             endpoint; got request line {:?}",
+            requests[0]
+        );
     });
 }
