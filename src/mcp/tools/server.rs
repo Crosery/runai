@@ -1128,14 +1128,40 @@ mod tests {
     }
 
     #[test]
-    fn sm_backups_returns_string() {
+    fn sm_backups_no_backups_returns_exact_message() {
         with_temp_home_server(|server| {
             let Json(result) = server.sm_backups();
-            // With no backups, should return "No backups found"
-            // With backups, should return newline-separated timestamps
+            assert_eq!(result.result, "No backups found");
+        });
+    }
+
+    #[test]
+    fn sm_backups_lists_created_backup_timestamp() {
+        with_temp_home_server(|server| {
+            // Real backup on the isolated HOME set up by with_temp_home_server.
+            let Json(backup_result) = server.sm_backup();
             assert!(
-                !result.result.is_empty(),
-                "sm_backups should return a non-empty string"
+                backup_result.result.starts_with("Backup created: "),
+                "unexpected sm_backup response: {}",
+                backup_result.result
+            );
+            let backup_dir = backup_result
+                .result
+                .strip_prefix("Backup created: ")
+                .unwrap();
+            let ts = std::path::Path::new(backup_dir)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .expect("backup dir must have a timestamp-named final component")
+                .to_string();
+
+            let Json(list_result) = server.sm_backups();
+            // Exactly one backup exists, so list_backups().join("\n") must equal
+            // that single timestamp exactly — catches a broken join, a stale
+            // "No backups found" fallback, or a mangled timestamp format.
+            assert_eq!(
+                list_result.result, ts,
+                "sm_backups should list the just-created backup's timestamp exactly"
             );
         });
     }

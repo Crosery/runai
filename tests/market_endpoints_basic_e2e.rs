@@ -10,6 +10,9 @@
 //!   POST /api/market/refresh          (auth required)
 //!   POST /api/market/install          (auth required)
 //!   GET  /api/market/preview          (returns 4xx without proper input)
+//!   GET  /api/market                  (pure disk-cache read, no network —
+//!                                      deterministic 200 + empty catalog
+//!                                      shape on a fresh HOME)
 
 #![cfg(not(target_os = "windows"))]
 
@@ -227,9 +230,25 @@ fn market_list_works_for_any_user() {
         .bearer_auth(&key)
         .send()
         .unwrap();
-    // Either 200 with a list (cache present or empty) or 5xx if the cache
-    // bootstrap requires network. Accept both — we're only checking that
-    // the route is registered and auth flowed through.
-    let st = r.status().as_u16();
-    assert!(st < 500 || st == 500, "got {st}");
+    // api_market_list is pure disk-cache read — no network call happens on
+    // this path (refresh is a separate endpoint) — so on a freshly minted
+    // HOME with an empty market-cache dir the response is fully
+    // deterministic: 200, one builtin source (the skills.sh aggregator),
+    // zero cached skills, and needs_refresh=true telling the frontend to
+    // fire /api/market/refresh in the background.
+    assert_eq!(r.status().as_u16(), 200);
+    let body: Value = r.json().unwrap();
+    assert_eq!(body["items"], json!([]));
+    assert_eq!(body["total"], 0);
+    assert_eq!(body["offset"], 0);
+    assert_eq!(body["limit"], 50);
+    assert_eq!(body["needs_refresh"], true);
+    let sources = body["sources"].as_array().expect("sources must be array");
+    assert_eq!(
+        sources.len(),
+        1,
+        "expected only the skills.sh builtin source"
+    );
+    assert_eq!(sources[0]["label"], "skills.sh");
+    assert_eq!(sources[0]["cached_count"], 0);
 }
