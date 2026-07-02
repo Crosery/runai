@@ -49,7 +49,19 @@ impl Scanner {
                 None => continue,
             };
 
-            // Check if already in DB — if so, refresh description if stale
+            // Check if already in DB — if so, refresh description if stale.
+            //
+            // C3 (scan_findings.md): this scans the PUBLIC pool, so the
+            // fallback lookup MUST be public-pool-only. The old fallback
+            // `list_resources(None, None).find(name)` scanned EVERY row incl.
+            // all users' privates, so a public dir with no row matched a
+            // different user's private same-name row → the public dir was
+            // never adopted AND (if that private row's desc was stale) its
+            // metadata got overwritten from the public dir's SKILL.md.
+            // `find_resource_by_name_for_user(.., None)` filters
+            // `owner_user_id IS NULL`, matching public rows only — incl.
+            // github-sourced public rows (`github:owner/repo:name`) whose id
+            // the prefix probes above miss.
             let existing = ["local:", "adopted:", "github:"]
                 .iter()
                 .find_map(|prefix| {
@@ -57,9 +69,9 @@ impl Scanner {
                     db.get_resource(&id).ok().flatten()
                 })
                 .or_else(|| {
-                    db.list_resources(None, None)
+                    db.find_resource_by_name_for_user(ResourceKind::Skill, &name, None)
                         .ok()
-                        .and_then(|all| all.into_iter().find(|r| r.name == name))
+                        .flatten()
                 });
 
             if let Some(existing) = existing {
@@ -122,11 +134,14 @@ impl Scanner {
                 continue;
             }
 
-            // Skip if already known — refresh description if stale
+            // Skip if already known — refresh description if stale.
+            // C3: public-pool-only lookup (owner_user_id IS NULL) so a public
+            // `.agents` skill never collides with a user's private same-name
+            // row. Same fix as scan_managed_dir above.
             let existing = db
-                .list_resources(None, None)
+                .find_resource_by_name_for_user(ResourceKind::Skill, &name, None)
                 .ok()
-                .and_then(|all| all.into_iter().find(|r| r.name == name));
+                .flatten();
             if let Some(existing) = existing {
                 if Self::is_stale_description(&existing.description) {
                     let desc = Self::extract_description(&path);
