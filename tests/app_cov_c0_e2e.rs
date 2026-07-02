@@ -104,10 +104,10 @@ impl ServerSandbox {
             .unwrap();
         let url = format!("http://127.0.0.1:{}/", self.port);
         while Instant::now() < deadline {
-            if let Ok(r) = client.get(&url).send() {
-                if r.status().is_success() {
-                    return true;
-                }
+            if let Ok(r) = client.get(&url).send()
+                && r.status().is_success()
+            {
+                return true;
             }
             std::thread::sleep(Duration::from_millis(50));
         }

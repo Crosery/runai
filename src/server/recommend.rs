@@ -149,13 +149,13 @@ pub(super) async fn handle_recommend(
         let mut cfg = recommend::RecommendConfig::load(mgr.paths()).unwrap_or_default();
         // Mirror the per-user override applied inside recommend_for_user
         // so the final hook trailer reflects the same source of truth.
-        if let Some(uid) = user_id_opt.as_deref() {
-            if let Ok(Some(user)) = mgr.db().find_user_by_id(uid) {
-                let p = crate::core::prefs::UserPrefs::from_json_str(&user.prefs_json);
-                cfg.skip_reminder_enabled = p.skip_reminder_enabled;
-                if !p.skip_reminder_template.is_empty() {
-                    cfg.skip_reminder_template = p.skip_reminder_template;
-                }
+        if let Some(uid) = user_id_opt.as_deref()
+            && let Ok(Some(user)) = mgr.db().find_user_by_id(uid)
+        {
+            let p = crate::core::prefs::UserPrefs::from_json_str(&user.prefs_json);
+            cfg.skip_reminder_enabled = p.skip_reminder_enabled;
+            if !p.skip_reminder_template.is_empty() {
+                cfg.skip_reminder_template = p.skip_reminder_template;
             }
         }
         let skip_reminder = if cfg.skip_reminder_enabled {
@@ -209,10 +209,8 @@ pub(super) fn guess_server_url(headers: &HeaderMap) -> String {
     let host_part = host.rsplit_once(':').map(|(h, _)| h).unwrap_or(host);
     let port_part = host.rsplit_once(':').map(|(_, p)| p).unwrap_or("17888");
     let is_loopback = matches!(host_part, "127.0.0.1" | "localhost" | "::1" | "[::1]");
-    if is_loopback {
-        if let Some(ip) = local_ipv4() {
-            return format!("{scheme}://{ip}:{port_part}");
-        }
+    if is_loopback && let Some(ip) = local_ipv4() {
+        return format!("{scheme}://{ip}:{port_part}");
     }
     format!("{scheme}://{host}")
 }

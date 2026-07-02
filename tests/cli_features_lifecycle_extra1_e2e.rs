@@ -112,61 +112,61 @@ fn plant_market_cache(data_dir: &Path, owner: &str, repo: &str, skills_json: &st
 
 // ─── 1.7 [P0] market-install ────────────────────────────────────────────────
 
-/// market-install must reject a name that's absent from every enabled
-/// source's cache, AND must not partially create a skill directory in
-/// `~/.runai/skills/`. Tests the cli/dispatch find-then-install precondition.
+// market-install must reject a name that's absent from every enabled
+// source's cache, AND must not partially create a skill directory in
+// `~/.runai/skills/`. Tests the cli/dispatch find-then-install precondition.
 
-/// When `--source <label>` is supplied, the lookup must be scoped to sources
-/// whose label OR repo_id matches the filter substring (case-insensitive).
-/// A skill present only in a non-matching source's cache must return
-/// "not found" — proving the filter is applied before the cache lookup.
+// When `--source <label>` is supplied, the lookup must be scoped to sources
+// whose label OR repo_id matches the filter substring (case-insensitive).
+// A skill present only in a non-matching source's cache must return
+// "not found" — proving the filter is applied before the cache lookup.
 
-/// Cross RUNE_DATA_DIR isolation: with a non-default RUNE_DATA_DIR set,
-/// market-install (even when it fails) must NOT read or write the user's
-/// default `~/.runai/skills/`. A cache file in the default dir should be
-/// invisible to the alt-data-dir invocation.
+// Cross RUNE_DATA_DIR isolation: with a non-default RUNE_DATA_DIR set,
+// market-install (even when it fails) must NOT read or write the user's
+// default `~/.runai/skills/`. A cache file in the default dir should be
+// invisible to the alt-data-dir invocation.
 
 // ─── 1.8 [P0] uninstall ─────────────────────────────────────────────────────
 
-/// uninstall moves a managed skill into ~/.runai/trash/ AND removes its
-/// symlinks from every CLI target it was enabled on. The skill's directory
-/// must no longer be visible at the managed location.
+// uninstall moves a managed skill into ~/.runai/trash/ AND removes its
+// symlinks from every CLI target it was enabled on. The skill's directory
+// must no longer be visible at the managed location.
 
-/// Trash entries must preserve enough metadata to support restoration:
-/// at minimum the resource name + kind must be discoverable via `trash list`.
-/// This guards against information loss during the uninstall hand-off.
+// Trash entries must preserve enough metadata to support restoration:
+// at minimum the resource name + kind must be discoverable via `trash list`.
+// This guards against information loss during the uninstall hand-off.
 
-/// Cross RUNE_DATA_DIR isolation: an uninstall under a non-default
-/// RUNE_DATA_DIR must put the trash payload into that alt dir's `trash/`,
-/// and must NOT touch the user's default `~/.runai/skills/` OR
-/// `~/.runai/trash/`.
+// Cross RUNE_DATA_DIR isolation: an uninstall under a non-default
+// RUNE_DATA_DIR must put the trash payload into that alt dir's `trash/`,
+// and must NOT touch the user's default `~/.runai/skills/` OR
+// `~/.runai/trash/`.
 
 // ─── 1.10 [P0] trash restore ────────────────────────────────────────────────
 
-/// Restore recreates the managed dir with identical SKILL.md bytes, brings
-/// the resource back into `runai list`, and re-enables the symlinks on
-/// the targets the skill was on before uninstall.
+// Restore recreates the managed dir with identical SKILL.md bytes, brings
+// the resource back into `runai list`, and re-enables the symlinks on
+// the targets the skill was on before uninstall.
 
-/// If a skill is part of a group at uninstall time, restoring it should
-/// re-add it to that same group (group still exists).
+// If a skill is part of a group at uninstall time, restoring it should
+// re-add it to that same group (group still exists).
 
-/// If a different live resource already occupies the name, restore must
-/// refuse rather than overwrite — the trash entry must remain intact.
+// If a different live resource already occupies the name, restore must
+// refuse rather than overwrite — the trash entry must remain intact.
 
-/// Cross RUNE_DATA_DIR isolation: an alt-data-dir restore must not
-/// modify the default `~/.runai/skills/` (or its trash).
+// Cross RUNE_DATA_DIR isolation: an alt-data-dir restore must not
+// modify the default `~/.runai/skills/` (or its trash).
 
 // ─── 1.11 [P0] trash purge ──────────────────────────────────────────────────
 
-/// trash purge must permanently delete the payload directory AND remove the
-/// entry from `trash list`. There must be no remaining files under
-/// `~/.runai/trash/` referencing the purged skill.
+// trash purge must permanently delete the payload directory AND remove the
+// entry from `trash list`. There must be no remaining files under
+// `~/.runai/trash/` referencing the purged skill.
 
-/// trash purge with a name that doesn't exist in trash must fail (non-zero
-/// exit), and must not leave the trash in an inconsistent state.
+// trash purge with a name that doesn't exist in trash must fail (non-zero
+// exit), and must not leave the trash in an inconsistent state.
 
-/// Cross RUNE_DATA_DIR isolation: an alt-data-dir purge must only touch
-/// the alt dir's trash. The default `~/.runai/trash/` must remain intact.
+// Cross RUNE_DATA_DIR isolation: an alt-data-dir purge must only touch
+// the alt dir's trash. The default `~/.runai/trash/` must remain intact.
 
 #[test]
 fn market_install_fails_on_not_found() {

@@ -174,9 +174,9 @@ fn admin_users_list_admin_sees_all() {
         .iter()
         .find(|x| x["username"] == "admin")
         .expect("admin row");
-    assert_eq!(admin_row["is_admin"].as_bool().unwrap(), true);
+    assert!(admin_row["is_admin"].as_bool().unwrap());
     let bob_row = items.iter().find(|x| x["username"] == "bob").unwrap();
-    assert_eq!(bob_row["is_admin"].as_bool().unwrap(), false);
+    assert!(!bob_row["is_admin"].as_bool().unwrap());
 }
 
 // ─── POST /api/admin/users/:id (patch) ─────────────────────────────────────
@@ -194,7 +194,7 @@ fn admin_users_update_promote_to_admin() {
         .unwrap();
     assert_eq!(resp.status().as_u16(), 200);
     let body: Value = resp.json().unwrap();
-    assert_eq!(body["is_admin"].as_bool().unwrap(), true);
+    assert!(body["is_admin"].as_bool().unwrap());
     assert_eq!(body["user_id"].as_str().unwrap(), bob_uid);
 }
 
@@ -211,7 +211,7 @@ fn admin_users_update_disable_user() {
         .unwrap();
     assert_eq!(resp.status().as_u16(), 200);
     let body: Value = resp.json().unwrap();
-    assert_eq!(body["disabled"].as_bool().unwrap(), true);
+    assert!(body["disabled"].as_bool().unwrap());
 }
 
 #[test]

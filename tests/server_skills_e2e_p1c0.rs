@@ -87,13 +87,13 @@ impl Server {
             .build()
             .unwrap();
         loop {
-            if let Ok(resp) = client.get(&url).send() {
-                if resp.status().is_success() || resp.status() == 500 {
-                    // 200 or 500 both indicate the server is bound; we
-                    // accept either for readiness (some endpoints will
-                    // 500 until DB is initialised by SkillManager).
-                    return;
-                }
+            if let Ok(resp) = client.get(&url).send()
+                && (resp.status().is_success() || resp.status() == 500)
+            {
+                // 200 or 500 both indicate the server is bound; we
+                // accept either for readiness (some endpoints will
+                // 500 until DB is initialised by SkillManager).
+                return;
             }
             if Instant::now() >= deadline {
                 panic!("runai server did not respond on port {}", self.port);
@@ -283,7 +283,7 @@ fn skill_detail_returns_skill_md_content() {
         !v["skill_md_content"].as_str().unwrap().is_empty(),
         "expected SKILL.md content"
     );
-    assert_eq!(v["skill_md_truncated"].as_bool().unwrap(), false);
+    assert!(!v["skill_md_truncated"].as_bool().unwrap());
     assert_eq!(
         v["skill_md_size"].as_u64().unwrap(),
         md_len as u64,
@@ -305,7 +305,7 @@ fn skill_detail_truncates_large_skill_md() {
     let (status, body) = http_get(&srv.url("/api/skill/big"));
     assert_eq!(status, 200, "body: {body}");
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(v["skill_md_truncated"].as_bool().unwrap(), true);
+    assert!(v["skill_md_truncated"].as_bool().unwrap());
     let content = v["skill_md_content"].as_str().unwrap();
     // Server cuts at 60_000 chars; ascii ⇒ len == char count.
     assert!(
@@ -510,8 +510,8 @@ fn skill_file_returns_content_for_valid_path() {
     assert_eq!(status, 200, "body: {body}");
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(v["path"].as_str().unwrap(), "SKILL.md");
-    assert_eq!(v["is_text"].as_bool().unwrap(), true);
-    assert_eq!(v["truncated"].as_bool().unwrap(), false);
+    assert!(v["is_text"].as_bool().unwrap());
+    assert!(!v["truncated"].as_bool().unwrap());
     assert_eq!(v["size"].as_u64().unwrap(), md_len as u64);
     let content = v["content"].as_str().unwrap();
     assert_eq!(content.len(), md_len, "full file content returned");
@@ -535,7 +535,7 @@ fn skill_file_truncates_large_files() {
     let (status, body) = http_get(&srv.url("/api/skill/big/file?path=huge.md"));
     assert_eq!(status, 200, "body: {body}");
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(v["truncated"].as_bool().unwrap(), true);
+    assert!(v["truncated"].as_bool().unwrap());
     // Server caps at 80_000 chars; ascii so byte count == char count.
     let content = v["content"].as_str().unwrap();
     assert!(
@@ -594,7 +594,7 @@ fn skill_file_handles_binary_files() {
     let (status, body) = http_get(&srv.url("/api/skill/bin/file?path=logo.png"));
     assert_eq!(status, 200, "body: {body}");
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(v["is_text"].as_bool().unwrap(), false);
+    assert!(!v["is_text"].as_bool().unwrap());
     assert_eq!(v["content"].as_str().unwrap(), "");
     assert_eq!(v["size"].as_u64().unwrap(), png_magic.len() as u64);
     assert_eq!(v["path"].as_str().unwrap(), "logo.png");
@@ -603,7 +603,7 @@ fn skill_file_handles_binary_files() {
     let (status, body) = http_get(&srv.url("/api/skill/bin/file?path=SKILL.md"));
     assert_eq!(status, 200);
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(v["is_text"].as_bool().unwrap(), true);
+    assert!(v["is_text"].as_bool().unwrap());
     assert!(!v["content"].as_str().unwrap().is_empty());
 }
 

@@ -256,7 +256,7 @@ fn settings_post_persists_enabled_toggle() {
         .unwrap();
     assert_eq!(r.status().as_u16(), 200);
     let b: Value = r.json().unwrap();
-    assert_eq!(b["enabled"].as_bool().unwrap(), false);
+    assert!(!b["enabled"].as_bool().unwrap());
     // Read back
     let g: Value = http()
         .get(format!("{}/api/settings", s.base_url()))
@@ -265,7 +265,7 @@ fn settings_post_persists_enabled_toggle() {
         .unwrap()
         .json()
         .unwrap();
-    assert_eq!(g["enabled"].as_bool().unwrap(), false);
+    assert!(!g["enabled"].as_bool().unwrap());
 }
 
 #[test]
@@ -324,7 +324,7 @@ fn providers_upsert_creates_new_entry() {
         .find(|p| p["id"] == "test1")
         .expect("test1 provider");
     assert_eq!(new_p["label"].as_str().unwrap(), "Test Provider 1");
-    assert_eq!(new_p["has_api_key"].as_bool().unwrap(), true);
+    assert!(new_p["has_api_key"].as_bool().unwrap());
     // api_key bytes never returned
     assert!(new_p.get("api_key").is_none());
 }
@@ -354,11 +354,7 @@ fn providers_upsert_preserves_existing_api_key_when_empty_sent() {
         .find(|p| p["id"] == "p1")
         .unwrap();
     assert_eq!(p["label"].as_str().unwrap(), "L2");
-    assert_eq!(
-        p["has_api_key"].as_bool().unwrap(),
-        true,
-        "api_key preserved"
-    );
+    assert!(p["has_api_key"].as_bool().unwrap(), "api_key preserved");
 }
 
 #[test]

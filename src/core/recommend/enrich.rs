@@ -76,10 +76,10 @@ fn compact_text(text: &str, limit: usize) -> String {
 fn parse_summary_field(summary: &str, label: &str) -> String {
     for line in summary.lines() {
         let trimmed = line.trim();
-        if let Some((lhs, rhs)) = trimmed.split_once([':', '：']) {
-            if lhs.trim().eq_ignore_ascii_case(label) {
-                return rhs.trim().to_string();
-            }
+        if let Some((lhs, rhs)) = trimmed.split_once([':', '：'])
+            && lhs.trim().eq_ignore_ascii_case(label)
+        {
+            return rhs.trim().to_string();
         }
     }
     String::new()
@@ -350,7 +350,7 @@ pub fn enrich_skills(
                     } else {
                         // Lightweight default progress: print every 10 or
                         // last item so the user sees movement.
-                        if done == 1 || done % 10 == 0 || done == total {
+                        if done == 1 || done.is_multiple_of(10) || done == total {
                             eprintln!("[enrich] {done}/{total}");
                         }
                     }

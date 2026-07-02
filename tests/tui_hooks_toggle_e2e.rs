@@ -9,7 +9,7 @@
 //!
 //!   * Install plants a canonical-shape entry in
 //!     `~/.claude/settings.json`:
-//!       `hooks.UserPromptSubmit[].hooks[] = {type:"command", command:"runai recommend"}`
+//!     `hooks.UserPromptSubmit[].hooks[] = {type:"command", command:"runai recommend"}`
 //!   * Uninstall removes only that entry; the rest of the file (sibling
 //!     hooks, unrelated keys, other `UserPromptSubmit` groups) survives.
 //!   * Install is idempotent: a second call returns `AlreadyPresent` and

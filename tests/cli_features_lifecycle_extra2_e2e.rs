@@ -59,10 +59,6 @@ impl TestEnv {
         self.home().join(".runai")
     }
 
-    fn cli_skills_dir(&self, cli: &str) -> PathBuf {
-        self.home().join(format!(".{cli}/skills"))
-    }
-
     fn run(&self, args: &[&str]) -> std::process::Output {
         let mut cmd = runai();
         cmd.args(args)
@@ -121,15 +117,15 @@ fn count_subdirs(dir: &Path) -> usize {
 
 // ─── 1.12 trash empty ───────────────────────────────────────────────────────
 
-/// Plan 1.12.1 [physical_e2e]: trash empty deletes payload files AND DB trash
-/// records; trash list afterwards reports empty.
+// Plan 1.12.1 [physical_e2e]: trash empty deletes payload files AND DB trash
+// records; trash list afterwards reports empty.
 
-/// Plan 1.12.2 [cargo_integration]: trash empty on an already-empty trash is
-/// idempotent — reports "Emptied trash (0 items)" without erroring.
+// Plan 1.12.2 [cargo_integration]: trash empty on an already-empty trash is
+// idempotent — reports "Emptied trash (0 items)" without erroring.
 
-/// Plan 1.12.3 [physical_e2e]: trash empty under an explicit `RUNE_DATA_DIR`
-/// only clears that data dir's trash and leaves the default `~/.runai/trash/`
-/// untouched. Cross data-dir isolation, the 4-20 / 4-27 root cause area.
+// Plan 1.12.3 [physical_e2e]: trash empty under an explicit `RUNE_DATA_DIR`
+// only clears that data dir's trash and leaves the default `~/.runai/trash/`
+// untouched. Cross data-dir isolation, the 4-20 / 4-27 root cause area.
 
 // ─── 1.13 backup ────────────────────────────────────────────────────────────
 
@@ -158,35 +154,35 @@ fn newest_backup_dir(data_dir: &Path) -> PathBuf {
     entries.pop().unwrap()
 }
 
-/// Plan 1.13.1 [physical_e2e]: `runai backup` writes a snapshot under
-/// `<data>/backups/<ts>/` containing managed skills, managed MCPs, per-CLI
-/// skill dirs, and the CLI config files that exist on disk.
+// Plan 1.13.1 [physical_e2e]: `runai backup` writes a snapshot under
+// `<data>/backups/<ts>/` containing managed skills, managed MCPs, per-CLI
+// skill dirs, and the CLI config files that exist on disk.
 
-/// Plan 1.13.2 [cargo_integration]: two successive backups produce independent
-/// snapshots — modifying a skill between backups doesn't retroactively rewrite
-/// the earlier backup.
+// Plan 1.13.2 [cargo_integration]: two successive backups produce independent
+// snapshots — modifying a skill between backups doesn't retroactively rewrite
+// the earlier backup.
 
-/// Plan 1.13.3 [physical_e2e]: backup under explicit RUNE_DATA_DIR lands in
-/// that dir's `backups/` subdirectory, not the default `~/.runai/backups/`.
+// Plan 1.13.3 [physical_e2e]: backup under explicit RUNE_DATA_DIR lands in
+// that dir's `backups/` subdirectory, not the default `~/.runai/backups/`.
 
 // ─── 1.15 restore ───────────────────────────────────────────────────────────
 
-/// Plan 1.15.1 [physical_e2e]: `runai restore` (no `--timestamp`) recovers
-/// managed skills + CLI config from the newest backup, replacing the live
-/// state. Verifies the restore_backup overlay across managed dirs + configs.
+// Plan 1.15.1 [physical_e2e]: `runai restore` (no `--timestamp`) recovers
+// managed skills + CLI config from the newest backup, replacing the live
+// state. Verifies the restore_backup overlay across managed dirs + configs.
 
-/// Plan 1.15.2 [physical_e2e]: `runai restore --timestamp <ts>` honors the
-/// explicit timestamp instead of the newest backup.
+// Plan 1.15.2 [physical_e2e]: `runai restore --timestamp <ts>` honors the
+// explicit timestamp instead of the newest backup.
 
-/// Plan 1.15.3 [cargo_integration]: when restore encounters a skill already
-/// present in the live managed dir, the current implementation removes the
-/// live dir before recopying — i.e. restore overwrites. This test pins the
-/// observed behavior so future implementations that change semantics (e.g.
-/// to refuse on conflict) trigger a deliberate, visible test failure.
+// Plan 1.15.3 [cargo_integration]: when restore encounters a skill already
+// present in the live managed dir, the current implementation removes the
+// live dir before recopying — i.e. restore overwrites. This test pins the
+// observed behavior so future implementations that change semantics (e.g.
+// to refuse on conflict) trigger a deliberate, visible test failure.
 
-/// Plan 1.15.4 [physical_e2e]: `runai restore` under `RUNE_DATA_DIR` reads
-/// the backup from that data dir and restores into the same data dir's
-/// managed skills/ — does not cross over to the default ~/.runai/.
+// Plan 1.15.4 [physical_e2e]: `runai restore` under `RUNE_DATA_DIR` reads
+// the backup from that data dir and restores into the same data dir's
+// managed skills/ — does not cross over to the default ~/.runai/.
 
 #[test]
 fn trash_empty_clears_all() {

@@ -20,7 +20,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use assert_cmd::cargo::CommandCargoExt;
-use serde_json::{Value, json};
+use serde_json::json;
 use tempfile::TempDir;
 
 fn runai_cmd() -> Command {

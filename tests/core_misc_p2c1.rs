@@ -17,7 +17,7 @@ use runai::core::mcp_canonical::{
 use serde_json::json;
 
 /// 1. canonical_identity_for_standard — Claude/Gemini-style JSON entries are
-/// already canonical; to_canonical must be the identity, no field invented.
+///    already canonical; to_canonical must be the identity, no field invented.
 #[test]
 fn mcp_canonical_identity_for_standard_entry() {
     let entry = json!({
@@ -42,8 +42,8 @@ fn mcp_canonical_identity_for_standard_entry() {
 }
 
 /// 2. opencode_normalization — OpenCode shape (command:array + enabled +
-/// type:"local") must normalize to canonical: command split out, args
-/// extracted, enabled→disabled flipped, type:"local" stripped.
+///    type:"local") must normalize to canonical: command split out, args
+///    extracted, enabled→disabled flipped, type:"local" stripped.
 #[test]
 fn mcp_canonical_normalizes_opencode_shape() {
     // enabled:false → disabled:true, command array split.
@@ -85,8 +85,8 @@ fn mcp_canonical_normalizes_opencode_shape() {
 }
 
 /// 3. corrupt_detection — is_corrupt flags entries that are unusable
-/// (empty command AND no http url). HTTP-style remote entries (no command,
-/// non-empty url) are NOT corrupt.
+///    (empty command AND no http url). HTTP-style remote entries (no command,
+///    non-empty url) are NOT corrupt.
 #[test]
 fn mcp_canonical_corrupt_detection() {
     // Empty command string is corrupt.
@@ -111,8 +111,8 @@ fn mcp_canonical_corrupt_detection() {
 }
 
 /// 4. codex_toml_preserves_subtables — Codex MCP entries carry tools.* /
-/// env.* subtables; canonical_to_codex_toml then codex_toml_to_canonical
-/// must round-trip them intact.
+///    env.* subtables; canonical_to_codex_toml then codex_toml_to_canonical
+///    must round-trip them intact.
 #[test]
 fn mcp_canonical_codex_toml_preserves_tools_and_env_subtables() {
     let canonical = json!({
@@ -143,7 +143,7 @@ fn mcp_canonical_codex_toml_preserves_tools_and_env_subtables() {
 }
 
 /// 5. opencode_roundtrip_stable — canonical → OpenCode → canonical →
-/// OpenCode should be idempotent: same output both rounds, no field drift.
+///    OpenCode should be idempotent: same output both rounds, no field drift.
 #[test]
 fn mcp_canonical_opencode_roundtrip_is_stable() {
     let canonical = json!({
@@ -191,7 +191,7 @@ fn write_text(dir: &Path, rel: &str, content: &str) {
 }
 
 /// 1. discover_claude_json_mcps — find all entries in ~/.claude.json,
-/// parse command/args/description, honor `disabled` flag.
+///    parse command/args/description, honor `disabled` flag.
 #[test]
 fn mcp_discovery_finds_claude_json_entries() {
     let tmp = tempfile::tempdir().unwrap();
@@ -235,7 +235,7 @@ fn mcp_discovery_finds_claude_json_entries() {
 }
 
 /// 2. discover_codex_toml_mcps — Codex uses TOML at ~/.codex/config.toml,
-/// `[mcp_servers.*]` tables, `type="http"` recognized as HTTP entry.
+///    `[mcp_servers.*]` tables, `type="http"` recognized as HTTP entry.
 #[test]
 fn mcp_discovery_finds_codex_toml_entries() {
     let tmp = tempfile::tempdir().unwrap();
@@ -274,8 +274,8 @@ command = ""
 }
 
 /// 3. discover_opencode_json_mcps — OpenCode lives at
-/// ~/.config/opencode/opencode.json under `mcp` (NOT mcpServers).
-/// command is an array split into command+args; enabled:false → disabled:true.
+///    ~/.config/opencode/opencode.json under `mcp` (NOT mcpServers).
+///    command is an array split into command+args; enabled:false → disabled:true.
 #[test]
 fn mcp_discovery_finds_opencode_json_entries() {
     let tmp = tempfile::tempdir().unwrap();
@@ -312,8 +312,8 @@ fn mcp_discovery_finds_opencode_json_entries() {
 }
 
 /// 4. discovery_deduplication_first_wins — when the same MCP name appears in
-/// both ~/.claude.json and ~/.codex/config.toml, the Claude version (read
-/// first) is kept and Codex is skipped.
+///    both ~/.claude.json and ~/.codex/config.toml, the Claude version (read
+///    first) is kept and Codex is skipped.
 #[test]
 fn mcp_discovery_dedupes_first_reader_wins() {
     let tmp = tempfile::tempdir().unwrap();
@@ -349,7 +349,7 @@ args = ["x"]
 }
 
 /// 5. discovery_skips_meta_keys — keys starting with `_` (e.g. `_comments`)
-/// must not be returned as MCP entries.
+///    must not be returned as MCP entries.
 #[test]
 fn mcp_discovery_skips_underscore_meta_keys() {
     let tmp = tempfile::tempdir().unwrap();
@@ -379,7 +379,7 @@ fn mcp_discovery_skips_underscore_meta_keys() {
 }
 
 /// 6. discovery_missing_configs_ok — completely empty home should yield an
-/// empty result, never an error.
+///    empty result, never an error.
 #[test]
 fn mcp_discovery_empty_home_returns_empty_no_error() {
     let tmp = tempfile::tempdir().unwrap();
@@ -398,7 +398,7 @@ fn mcp_discovery_empty_home_returns_empty_no_error() {
 use runai::core::mcp_register::McpRegister;
 
 /// 1. register_all_symmetric_across_targets — register_all() writes the runai
-/// entry to all four CLIs in their format-specific shape.
+///    entry to all four CLIs in their format-specific shape.
 #[test]
 fn mcp_register_all_symmetric_across_four_targets() {
     let tmp = tempfile::tempdir().unwrap();
@@ -462,7 +462,7 @@ fn mcp_register_all_symmetric_across_four_targets() {
 }
 
 /// 2. register_idempotent — second register_all() reports all four as
-/// skipped (already registered with same binary path); no duplicate entries.
+///    skipped (already registered with same binary path); no duplicate entries.
 #[test]
 fn mcp_register_is_idempotent_on_second_call() {
     let tmp = tempfile::tempdir().unwrap();
@@ -494,8 +494,8 @@ fn mcp_register_is_idempotent_on_second_call() {
 }
 
 /// 3. register_opencode_command_array — OpenCode's `command` MUST be an
-/// array (load-bearing for the OpenCode MCP parser). A string format would
-/// silently break.
+///    array (load-bearing for the OpenCode MCP parser). A string format would
+///    silently break.
 #[test]
 fn mcp_register_opencode_command_is_array_not_string() {
     let tmp = tempfile::tempdir().unwrap();
@@ -516,7 +516,7 @@ fn mcp_register_opencode_command_is_array_not_string() {
     // (typically arr[1]).
     let strs: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
     assert!(
-        strs.iter().any(|s| *s == "mcp-serve"),
+        strs.contains(&"mcp-serve"),
         "command array must include mcp-serve, got {arr:?}"
     );
     assert_eq!(
@@ -532,7 +532,7 @@ fn mcp_register_opencode_command_is_array_not_string() {
 }
 
 /// 4. register_codex_toml_format — Codex uses TOML (not JSON), with
-/// type="stdio" and string command.
+///    type="stdio" and string command.
 #[test]
 fn mcp_register_codex_uses_toml_with_type_stdio() {
     let tmp = tempfile::tempdir().unwrap();
@@ -571,8 +571,8 @@ fn mcp_register_codex_uses_toml_with_type_stdio() {
 }
 
 /// 5. register_creates_cli_dirs — Gemini needs ~/.gemini/ which doesn't
-/// exist in a fresh home; register_gemini must mkdir-p and create
-/// settings.json.
+///    exist in a fresh home; register_gemini must mkdir-p and create
+///    settings.json.
 #[test]
 fn mcp_register_creates_missing_cli_dirs() {
     let tmp = tempfile::tempdir().unwrap();
@@ -704,7 +704,7 @@ fn paths_data_dir_respects_rune_data_dir_env() {
 }
 
 /// 2. SKILL_MANAGER_DATA_DIR is honored as the second-priority env (when
-/// RUNE_DATA_DIR is unset). This is the 2026-04-27 high-risk regression area.
+///    RUNE_DATA_DIR is unset). This is the 2026-04-27 high-risk regression area.
 #[test]
 fn paths_data_dir_honors_skill_manager_data_dir_when_rune_unset() {
     let _guard = HOME_LOCK
@@ -747,8 +747,8 @@ fn paths_data_dir_honors_skill_manager_data_dir_when_rune_unset() {
 // Test phase=src_missing.
 
 /// 4. AppPaths::default_path() runs migration from ~/.skill-manager/ →
-/// ~/.runai/ when only the old dir exists. Renames dir, renames DB file,
-/// fixes CLI symlinks, rewrites DB path columns.
+///    ~/.runai/ when only the old dir exists. Renames dir, renames DB file,
+///    fixes CLI symlinks, rewrites DB path columns.
 #[test]
 fn paths_default_path_migrates_skill_manager_to_runai() {
     let scratch = tempfile::tempdir().unwrap();
@@ -817,7 +817,7 @@ fn paths_default_path_migrates_skill_manager_to_runai() {
 }
 
 /// 5. Migration is skipped when ~/.runai/ already exists — protects an
-/// already-upgraded user from accidental clobber.
+///    already-upgraded user from accidental clobber.
 #[test]
 fn paths_default_path_skips_migration_when_new_dir_exists() {
     let scratch = tempfile::tempdir().unwrap();
@@ -859,7 +859,7 @@ fn paths_default_path_skips_migration_when_new_dir_exists() {
 }
 
 /// 6. with_base + the public-pool path getters give the expected layout.
-/// Public skills dir, mcps dir, trash dir all sibling under base.
+///    Public skills dir, mcps dir, trash dir all sibling under base.
 #[test]
 fn paths_with_base_public_layout_is_correct() {
     let tmp = tempfile::tempdir().unwrap();
@@ -883,7 +883,7 @@ fn paths_with_base_public_layout_is_correct() {
 // Plan-item per-user pool layout SKIPPED: cloud HEAD has no per-user paths.
 
 /// 7. db_path() prefers runai.db, falls back to skill-manager.db when only
-/// the old one exists. Compat for users mid-migration.
+///    the old one exists. Compat for users mid-migration.
 #[test]
 fn paths_db_path_prefers_new_falls_back_to_old() {
     let tmp = tempfile::tempdir().unwrap();
@@ -916,7 +916,7 @@ fn paths_db_path_prefers_new_falls_back_to_old() {
 }
 
 /// 6. unregister_all_removes_runai_entry — sanity for the inverse: after
-/// register_all + unregister_all, no runai entry remains in any CLI config.
+///    register_all + unregister_all, no runai entry remains in any CLI config.
 #[test]
 fn mcp_register_unregister_removes_entries_in_all_clis() {
     let tmp = tempfile::tempdir().unwrap();

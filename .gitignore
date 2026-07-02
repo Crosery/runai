@@ -10,3 +10,4 @@ docs/superpowers/
 
 # codegraph local index (MCP code-intelligence cache)
 .codegraph/
+.pi/

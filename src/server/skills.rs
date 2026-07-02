@@ -581,10 +581,10 @@ fn walk_skill_dir_plain(
         };
         if md.is_dir() {
             let _ = walk_skill_dir_plain(root, &path, out);
-        } else if md.is_file() {
-            if let Ok(rel) = path.strip_prefix(root) {
-                out.push(rel.to_string_lossy().replace('\\', "/"));
-            }
+        } else if md.is_file()
+            && let Ok(rel) = path.strip_prefix(root)
+        {
+            out.push(rel.to_string_lossy().replace('\\', "/"));
         }
     }
     Ok(())

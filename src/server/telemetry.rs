@@ -35,7 +35,7 @@ pub(super) struct EventsQuery {
     /// - None / absent → default: current Bearer user only (per-user privacy)
     /// - "all"          → admin only, every user (global view)
     /// - "<user_id>"    → admin only, that specific user
-    /// Non-admins get 403 if they try anything other than absent / their own uid.
+    ///   Non-admins get 403 if they try anything other than absent / their own uid.
     user: Option<String>,
 }
 
@@ -274,12 +274,12 @@ pub(super) async fn api_event_by_id(
     let view = resolve_view_user(&headers, &db, None)?;
     match db.router_event_by_id(id)? {
         Some(ev) => {
-            if let Some(scope) = view.as_deref() {
-                if ev.user_id.as_deref() != Some(scope) {
-                    // Hide cross-tenant access — return 404 (not 403) so
-                    // attackers can't enumerate event ids by status code.
-                    return Err(ApiError::NotFound);
-                }
+            if let Some(scope) = view.as_deref()
+                && ev.user_id.as_deref() != Some(scope)
+            {
+                // Hide cross-tenant access — return 404 (not 403) so
+                // attackers can't enumerate event ids by status code.
+                return Err(ApiError::NotFound);
             }
             Ok(Json(ev.into()))
         }

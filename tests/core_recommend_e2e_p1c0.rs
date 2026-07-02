@@ -10,7 +10,7 @@
 //!      + [`disabled_recommend_writes_bootstrap_seen_then_stays_silent`]
 //!   6. `recommend_hook_output_format_safe` → [`mock_llm_recommend_emits_curl_activation`]
 //!   7. `recommend_router_telemetry_persisted_even_on_error`
-//!                                          → [`mock_llm_http_500_persists_error_router_event`]
+//!      → [`mock_llm_http_500_persists_error_router_event`]
 //!
 //! Plan tests 2/3/4/5 either depend on internals (`BM25_MIN_POSITIVE_HITS` env)
 //! that are awkward to drive over the binary boundary, or on multi-user

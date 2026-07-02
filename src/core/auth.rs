@@ -133,10 +133,10 @@ pub fn parse_session_cookie(cookie_header: Option<&str>) -> Option<String> {
     let raw = cookie_header?;
     for part in raw.split(';') {
         let kv = part.trim();
-        if let Some(val) = kv.strip_prefix(&format!("{SESSION_COOKIE_NAME}=")) {
-            if !val.is_empty() {
-                return Some(val.to_string());
-            }
+        if let Some(val) = kv.strip_prefix(&format!("{SESSION_COOKIE_NAME}="))
+            && !val.is_empty()
+        {
+            return Some(val.to_string());
         }
     }
     None

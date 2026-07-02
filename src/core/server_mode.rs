@@ -42,22 +42,17 @@ use std::str::FromStr;
 /// required for `team` mode.
 const LOOPBACK_HOSTS: &[&str] = &["127.0.0.1", "::1", "localhost"];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 #[clap(rename_all = "lowercase")]
 pub enum ServerMode {
     /// Single-user self-serve. Default — keeps the existing single-machine
     /// experience untouched.
+    #[default]
     Owner,
     /// Multi-tenant team server. Opens register/install, gates non-loopback
     /// binds behind TLS.
     Team,
-}
-
-impl Default for ServerMode {
-    fn default() -> Self {
-        Self::Owner
-    }
 }
 
 impl ServerMode {

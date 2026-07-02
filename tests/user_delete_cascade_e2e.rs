@@ -227,17 +227,20 @@ fn run_scenario(with_decoy: bool) {
 
     // 3. foo recoverable in the PUBLIC trash, de-owned, restore target = public pool
     let trash = db.list_trash_entries().unwrap();
-    let foo = trash
+    let trashed_foo = trash
         .iter()
         .find(|e| e.name == "foo")
         .expect("foo must be in trash");
-    assert_eq!(foo.owner_user_id, None, "trashed skill must be de-owned");
-    assert!(
-        foo.directory.ends_with("skills/foo"),
-        "restore target must be the public pool, got {:?}",
-        foo.directory
+    assert_eq!(
+        trashed_foo.owner_user_id, None,
+        "trashed skill must be de-owned"
     );
-    let payload = foo.payload_path.as_ref().expect("payload path");
+    assert!(
+        trashed_foo.directory.ends_with("skills/foo"),
+        "restore target must be the public pool, got {:?}",
+        trashed_foo.directory
+    );
+    let payload = trashed_foo.payload_path.as_ref().expect("payload path");
     assert!(
         payload.join("SKILL.md").exists(),
         "foo's SKILL.md must physically live in the trash payload {payload:?}"

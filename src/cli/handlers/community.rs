@@ -52,10 +52,10 @@ fn resolve_server(flag: Option<&str>) -> String {
     if let Some(s) = flag {
         return s.trim_end_matches('/').to_string();
     }
-    if let Ok(s) = std::env::var("RUNAI_SERVER") {
-        if !s.is_empty() {
-            return s.trim_end_matches('/').to_string();
-        }
+    if let Ok(s) = std::env::var("RUNAI_SERVER")
+        && !s.is_empty()
+    {
+        return s.trim_end_matches('/').to_string();
     }
     DEFAULT_SERVER.to_string()
 }
@@ -80,10 +80,10 @@ fn read_identity_key() -> Result<String> {
 }
 
 fn resolve_key() -> Result<String> {
-    if let Ok(k) = std::env::var("RUNAI_API_KEY") {
-        if !k.is_empty() {
-            return Ok(k);
-        }
+    if let Ok(k) = std::env::var("RUNAI_API_KEY")
+        && !k.is_empty()
+    {
+        return Ok(k);
     }
     read_identity_key()
 }

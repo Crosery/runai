@@ -32,7 +32,7 @@ const CJK_STOP_UNIGRAMS: &[&str] = &[
 ];
 
 fn is_cjk_stop(s: &str) -> bool {
-    CJK_STOP_UNIGRAMS.iter().any(|w| *w == s)
+    CJK_STOP_UNIGRAMS.contains(&s)
 }
 
 pub fn tokenize(text: &str) -> Vec<String> {

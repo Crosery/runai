@@ -141,10 +141,10 @@ fn http_get(port: u16, path: &str, host_header: Option<&str>) -> (u16, String, u
             content_type = v.trim().to_string();
         } else if let Some(v) = lower.strip_prefix("content-length:") {
             content_length = v.trim().parse().unwrap_or(0);
-        } else if let Some(v) = lower.strip_prefix("transfer-encoding:") {
-            if v.trim().eq_ignore_ascii_case("chunked") {
-                transfer_chunked = true;
-            }
+        } else if let Some(v) = lower.strip_prefix("transfer-encoding:")
+            && v.trim().eq_ignore_ascii_case("chunked")
+        {
+            transfer_chunked = true;
         }
     }
 

@@ -66,7 +66,7 @@ fn newest_backup_ts(paths: &AppPaths) -> String {
 // ─── tests ──────────────────────────────────────────────────────────────────
 
 /// 1) Symlinks in `~/.claude/skills/` must be copied **as symlinks** into the
-/// backup, not dereferenced into a copy of the target.
+///    backup, not dereferenced into a copy of the target.
 #[test]
 fn backup_preserves_symlinks_not_dereferenced() {
     let home_tmp = TempDir::new().unwrap();
@@ -104,7 +104,7 @@ fn backup_preserves_symlinks_not_dereferenced() {
 }
 
 /// 2) `create_backup` snapshots managed `skills/` + `mcps/` + the 4 CLI config
-/// files + writes a `timestamp` marker.
+///    files + writes a `timestamp` marker.
 #[test]
 fn backup_snapshots_all_managed_data_and_configs() {
     let home_tmp = TempDir::new().unwrap();
@@ -201,8 +201,8 @@ fn list_backups_newest_first() {
 }
 
 /// 4) Restore overlay semantics — managed config files restore by overwrite,
-/// but live state that's NOT in the backup must remain untouched. Re-running
-/// restore yields the same end state (idempotent).
+///    but live state that's NOT in the backup must remain untouched. Re-running
+///    restore yields the same end state (idempotent).
 #[test]
 fn restore_backup_overlays_idempotent() {
     let home_tmp = TempDir::new().unwrap();
@@ -264,9 +264,9 @@ fn restore_backup_overlays_idempotent() {
 }
 
 /// 5) Cross-`RUNE_DATA_DIR`: backup written under one data dir is correctly
-/// read back when the backup tree has been migrated to a different data dir.
-/// (Critical: per safety contract bug-class 2026-04-27, data-dir override must
-/// be honored end-to-end.)
+///    read back when the backup tree has been migrated to a different data dir.
+///    (Critical: per safety contract bug-class 2026-04-27, data-dir override must
+///    be honored end-to-end.)
 #[test]
 fn backup_restore_cross_rune_data_dir_override() {
     let home_tmp = TempDir::new().unwrap();
@@ -350,7 +350,7 @@ fn copy_dir(from: &Path, to: &Path) {
 }
 
 /// 6) All 4 CLI targets (claude / codex / gemini / opencode) round-trip
-/// symmetrically through backup + restore — same sequence, no target skipped.
+///    symmetrically through backup + restore — same sequence, no target skipped.
 #[test]
 fn backup_restore_all_4_cli_targets_symmetric() {
     let home_tmp = TempDir::new().unwrap();

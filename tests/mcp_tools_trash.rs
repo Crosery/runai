@@ -183,7 +183,7 @@ fn mcp_text(resp: &serde_json::Value) -> String {
 // ─── sm_delete tests (PLANNING test-plan §3.6 P0) ───────────────────────────
 
 /// 1. `delete_skill_moves_to_trash_removes_symlinks` — sm_delete moves skill
-/// to ~/.runai/trash/ and removes all symlinks.
+///    to ~/.runai/trash/ and removes all symlinks.
 #[test]
 fn delete_skill_moves_to_trash_removes_symlinks() {
     let home_guard = fresh_home();
@@ -249,7 +249,7 @@ fn delete_skill_moves_to_trash_removes_symlinks() {
 }
 
 /// 2. `delete_respects_rune_data_dir_trash_location` — sm_delete with
-/// `RUNE_DATA_DIR` override moves payload to override trash dir, not default.
+///    `RUNE_DATA_DIR` override moves payload to override trash dir, not default.
 #[test]
 fn delete_respects_rune_data_dir_trash_location() {
     let home_guard = fresh_home();
@@ -307,7 +307,7 @@ fn delete_respects_rune_data_dir_trash_location() {
 }
 
 /// 3. `delete_cleans_symlinks_across_enabled_targets` — sm_delete across all
-/// 4 CLI targets removes symlinks from each enabled target.
+///    4 CLI targets removes symlinks from each enabled target.
 #[test]
 fn delete_cleans_symlinks_across_enabled_targets() {
     let home_guard = fresh_home();
@@ -356,7 +356,7 @@ fn delete_cleans_symlinks_across_enabled_targets() {
 }
 
 /// 4. `delete_mcp_removes_config_entry` — sm_delete for MCP removes config
-/// entry from CLI config (~/.claude.json) and adds a trash entry.
+///    entry from CLI config (~/.claude.json) and adds a trash entry.
 #[test]
 fn delete_mcp_removes_config_entry() {
     let home_guard = fresh_home();
@@ -401,7 +401,7 @@ fn delete_mcp_removes_config_entry() {
 }
 
 /// 6. `delete_nonexistent_fails_gracefully` — sm_delete with a missing name
-/// returns an error string (no filesystem mutation, no panic).
+///    returns an error string (no filesystem mutation, no panic).
 #[test]
 fn delete_nonexistent_fails_gracefully() {
     let home_guard = fresh_home();
@@ -449,8 +449,8 @@ fn delete_nonexistent_fails_gracefully() {
 }
 
 /// 7. `delete_preserves_metadata_for_restore` — sm_delete stores resource
-/// metadata in trash so sm_trash_restore can work. We verify the trash listing
-/// carries the kind ([skill]) and name.
+///    metadata in trash so sm_trash_restore can work. We verify the trash listing
+///    carries the kind ([skill]) and name.
 #[test]
 fn delete_preserves_metadata_for_restore() {
     let home_guard = fresh_home();
@@ -496,7 +496,7 @@ fn delete_preserves_metadata_for_restore() {
 // ─── sm_trash_restore tests (PLANNING test-plan §3.8 P0) ────────────────────
 
 /// 1. `trash_restore_recovers_skill_files` — sm_trash_restore brings skill
-/// files back from trash to original ~/.runai/skills/ location.
+///    files back from trash to original ~/.runai/skills/ location.
 #[test]
 fn trash_restore_recovers_skill_files() {
     let home_guard = fresh_home();
@@ -553,7 +553,7 @@ fn trash_restore_recovers_skill_files() {
 }
 
 /// 2. `trash_restore_respects_rune_data_dir` — restore under RUNE_DATA_DIR
-/// override restores to override location, not default home.
+///    override restores to override location, not default home.
 #[test]
 fn trash_restore_respects_rune_data_dir() {
     let home_guard = fresh_home();
@@ -614,7 +614,7 @@ fn trash_restore_respects_rune_data_dir() {
 }
 
 /// 3. `trash_restore_mcp_restores_config` — restoring an MCP re-adds the
-/// canonical entry to ~/.claude.json.
+///    canonical entry to ~/.claude.json.
 #[test]
 fn trash_restore_mcp_restores_config() {
     let home_guard = fresh_home();
@@ -657,7 +657,7 @@ fn trash_restore_mcp_restores_config() {
 }
 
 /// 4. `trash_restore_by_id_unambiguous` — restoring by trash entry ID picks
-/// the exact entry (not a name-collision sibling).
+///    the exact entry (not a name-collision sibling).
 #[test]
 fn trash_restore_by_id_unambiguous() {
     let home_guard = fresh_home();
@@ -722,7 +722,7 @@ fn trash_restore_by_id_unambiguous() {
 }
 
 /// 5. `trash_restore_nonexistent_fails` — sm_trash_restore on a missing query
-/// returns a 'Trash entry not found' message (no filesystem mutation).
+///    returns a 'Trash entry not found' message (no filesystem mutation).
 #[test]
 fn trash_restore_nonexistent_fails() {
     let home_guard = fresh_home();
@@ -745,7 +745,7 @@ fn trash_restore_nonexistent_fails() {
 }
 
 /// 6. `trash_restore_preserves_target_state` — sm_trash_restore re-creates
-/// symlinks for all previously-enabled targets.
+///    symlinks for all previously-enabled targets.
 #[test]
 fn trash_restore_preserves_target_state() {
     let home_guard = fresh_home();
@@ -793,7 +793,7 @@ fn trash_restore_preserves_target_state() {
 // ─── sm_trash_purge tests (PLANNING test-plan §3.9 P0) ──────────────────────
 
 /// 1. `trash_purge_permanently_deletes_files` — sm_trash_purge irreversibly
-/// removes skill files from ~/.runai/trash/.
+///    removes skill files from ~/.runai/trash/.
 #[test]
 fn trash_purge_permanently_deletes_files() {
     let home_guard = fresh_home();
@@ -851,7 +851,7 @@ fn trash_purge_permanently_deletes_files() {
 }
 
 /// 2. `trash_purge_respects_rune_data_dir_isolation` — purge under
-/// RUNE_DATA_DIR override purges from override trash only.
+///    RUNE_DATA_DIR override purges from override trash only.
 #[test]
 fn trash_purge_respects_rune_data_dir_isolation() {
     let home_guard = fresh_home();
@@ -905,7 +905,7 @@ fn trash_purge_respects_rune_data_dir_isolation() {
 }
 
 /// 3. `trash_purge_by_id_precise` — purge by trash ID removes exactly that
-/// entry and leaves the rest alone.
+///    entry and leaves the rest alone.
 #[test]
 fn trash_purge_by_id_precise() {
     let home_guard = fresh_home();
@@ -953,7 +953,7 @@ fn trash_purge_by_id_precise() {
 }
 
 /// 4. `trash_purge_nonexistent_fails_safely` — sm_trash_purge with missing
-/// query returns 'Trash entry not found' and no fs mutation.
+///    query returns 'Trash entry not found' and no fs mutation.
 #[test]
 fn trash_purge_nonexistent_fails_safely() {
     let home_guard = fresh_home();
@@ -989,7 +989,7 @@ fn trash_purge_nonexistent_fails_safely() {
 }
 
 /// 5. `trash_purge_mcp_cleans_backup` — purge for an MCP removes the trash
-/// entry; any residual config backup must be cleaned.
+///    entry; any residual config backup must be cleaned.
 #[test]
 fn trash_purge_mcp_cleans_backup() {
     let home_guard = fresh_home();
@@ -1037,9 +1037,9 @@ fn trash_purge_mcp_cleans_backup() {
 }
 
 /// 6. `trash_purge_group_safe_for_members` — purging a trash entry must not
-/// cascade-delete unrelated member skills. We trash two skills, purge one,
-/// confirm the other remains in trash and the *managed* skill (not in trash)
-/// is unaffected.
+///    cascade-delete unrelated member skills. We trash two skills, purge one,
+///    confirm the other remains in trash and the *managed* skill (not in trash)
+///    is unaffected.
 #[test]
 fn trash_purge_group_safe_for_members() {
     let home_guard = fresh_home();

@@ -138,7 +138,7 @@ pub(super) async fn api_user_skills_upload(
         // enrich completion, so a draft sitting at "no summary" is
         // visible to the user but cannot be submitted for review until
         // enrich actually lands.
-        spawn_enrich(&[name.clone()]);
+        spawn_enrich(std::slice::from_ref(&name));
 
         Ok(PrivateUploadResp {
             name,

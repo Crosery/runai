@@ -119,11 +119,11 @@ fn mcp_serve_initializes_and_waits() {
     // SmServer must publish sm_list — the contract test for §1.26 #2 leans on it.
     let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
     assert!(
-        names.iter().any(|n| *n == "sm_list"),
+        names.contains(&"sm_list"),
         "tools/list missing 'sm_list'; got: {names:?}"
     );
     assert!(
-        names.iter().any(|n| *n == "sm_status"),
+        names.contains(&"sm_status"),
         "tools/list missing 'sm_status'; got: {names:?}"
     );
 

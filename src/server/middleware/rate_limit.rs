@@ -140,7 +140,7 @@ fn maybe_sweep(class: RouteClass) {
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     const SWEEP_EVERY_N: u64 = 1024;
     let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    if n % SWEEP_EVERY_N != 0 {
+    if !n.is_multiple_of(SWEEP_EVERY_N) {
         return;
     }
     let now = Instant::now();
@@ -163,7 +163,7 @@ fn principal_ip<B>(req: &Request<B>) -> String {
 /// User-id extractor for the per-user limits. Same lookup as
 /// `state::current_user` but stripped to just the api_key path (cookies
 /// + bearer) and without a DB round-trip — we hash the credential and
-/// use the hash as the principal. Two consequences:
+///   use the hash as the principal. Two consequences:
 /// - we don't need a DB connection inside the middleware (cheaper)
 /// - rotating the api_key resets the bucket (acceptable: that's a deliberate
 ///   "I want a new identity" signal)
@@ -180,15 +180,14 @@ fn bearer_or_cookie(headers: &HeaderMap) -> Option<authmod::BearerToken> {
     if let Some(auth) = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
+        && let Some(tok) = authmod::parse_bearer_header(Some(auth))
     {
-        if let Some(tok) = authmod::parse_bearer_header(Some(auth)) {
-            return Some(tok);
-        }
+        return Some(tok);
     }
-    if let Some(cookie) = headers.get(header::COOKIE).and_then(|v| v.to_str().ok()) {
-        if let Some(raw) = authmod::parse_session_cookie(Some(cookie)) {
-            return Some(authmod::BearerToken(raw));
-        }
+    if let Some(cookie) = headers.get(header::COOKIE).and_then(|v| v.to_str().ok())
+        && let Some(raw) = authmod::parse_session_cookie(Some(cookie))
+    {
+        return Some(authmod::BearerToken(raw));
     }
     None
 }

@@ -27,6 +27,12 @@ use super::state::{AppState, require_user};
 /// poison the rest of the index).
 async fn refresh_all_sources(sources: &[mkt::SourceEntry], data_dir: &std::path::Path) {
     let mut handles = Vec::new();
+    // clippy::unnecessary_to_owned false positive: `sources` is a borrowed
+    // slice tied to this fn's non-'static lifetime, but each item is moved
+    // into `tokio::spawn(async move { .. })`, which requires 'static. Dropping
+    // `.cloned()` here does not compile (E0521: borrowed data escapes
+    // outside of function) — verified by trying it directly.
+    #[allow(clippy::unnecessary_to_owned)]
     for source in sources.iter().cloned() {
         let data_dir = data_dir.to_path_buf();
         handles.push(tokio::spawn(async move {
@@ -368,7 +374,7 @@ pub(super) async fn api_market_install(
                 )
                 .map_err(ApiError::Internal)?;
             let _ = db.library_add(&user.user_id, &skill_name);
-            spawn_enrich(&[skill_name.clone()]);
+            spawn_enrich(std::slice::from_ref(&skill_name));
             let size = db.library_count(&user.user_id).unwrap_or(0);
             return Ok(InstallResp {
                 installed: vec![skill_name],
@@ -387,7 +393,7 @@ pub(super) async fn api_market_install(
         let _ = mgr.register_local_skill_for(&skill_name, Some(&user.user_id));
         // Auto-subscribe to installing user's library.
         let _ = db.library_add(&user.user_id, &skill_name);
-        spawn_enrich(&[skill_name.clone()]);
+        spawn_enrich(std::slice::from_ref(&skill_name));
         let size = db.library_count(&user.user_id).unwrap_or(0);
         Ok(InstallResp {
             installed: vec![skill_name],

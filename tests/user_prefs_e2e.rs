@@ -204,15 +204,17 @@ fn configure_recommend_with_public_skill(data_dir: &Path) {
     mgr.register_local_skill("alpha")
         .expect("register public skill");
 
-    let mut cfg = RecommendConfig::default();
-    cfg.enabled = true;
-    cfg.provider = Provider::Anthropic;
-    cfg.base_url = "http://127.0.0.1:1".into();
-    cfg.model = "claude-test".into();
-    cfg.api_key = "dummy".into();
-    cfg.min_prompt_len = 0;
-    cfg.session_mode = SessionMode::Oneshot;
-    cfg.summary_lang_confirmed = true;
+    let cfg = RecommendConfig {
+        enabled: true,
+        provider: Provider::Anthropic,
+        base_url: "http://127.0.0.1:1".into(),
+        model: "claude-test".into(),
+        api_key: "dummy".into(),
+        min_prompt_len: 0,
+        session_mode: SessionMode::Oneshot,
+        summary_lang_confirmed: true,
+        ..Default::default()
+    };
     cfg.save(mgr.paths()).expect("save recommend config");
 }
 

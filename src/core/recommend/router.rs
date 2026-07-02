@@ -384,10 +384,10 @@ pub fn recommend_for_user(
         let max_score = ranked.iter().map(|(_, s)| *s).fold(0.0_f64, f64::max);
         if max_score > 0.0 {
             for (i, s) in &ranked {
-                if *s > 0.0 {
-                    if let Some(c) = all_candidates.get(*i) {
-                        bm25_scores.insert(c.name.clone(), s / max_score);
-                    }
+                if *s > 0.0
+                    && let Some(c) = all_candidates.get(*i)
+                {
+                    bm25_scores.insert(c.name.clone(), s / max_score);
                 }
             }
         }

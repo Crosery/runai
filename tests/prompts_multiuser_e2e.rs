@@ -46,15 +46,17 @@ fn setup() -> (TempDir, SkillManager) {
     let data = home.path().join(".runai");
     let mgr = SkillManager::with_base(data.clone()).expect("manager init");
 
-    let mut cfg = RecommendConfig::default();
-    cfg.enabled = true;
-    cfg.provider = Provider::Anthropic;
-    cfg.base_url = "http://127.0.0.1:1".into();
-    cfg.model = "claude-test".into();
-    cfg.api_key = "dummy".into();
-    cfg.min_prompt_len = 0;
-    cfg.session_mode = SessionMode::Oneshot;
-    cfg.summary_lang_confirmed = true;
+    let cfg = RecommendConfig {
+        enabled: true,
+        provider: Provider::Anthropic,
+        base_url: "http://127.0.0.1:1".into(),
+        model: "claude-test".into(),
+        api_key: "dummy".into(),
+        min_prompt_len: 0,
+        session_mode: SessionMode::Oneshot,
+        summary_lang_confirmed: true,
+        ..Default::default()
+    };
     cfg.save(mgr.paths()).expect("save config");
 
     (home, mgr)
@@ -326,13 +328,17 @@ fn user_a_off_strips_history_block_user_b_on_keeps_it() {
     mgr.register_local_skill("beta").unwrap();
 
     // A: history off; B: defaults (history on).
-    let mut a_prefs = UserPrefs::default();
-    a_prefs.allow_public_recommend = true;
+    let mut a_prefs = UserPrefs {
+        allow_public_recommend: true,
+        ..Default::default()
+    };
     a_prefs
         .prompt_injection_flags
         .insert("recommend_history_prefix".into(), false);
-    let mut b_prefs = UserPrefs::default();
-    b_prefs.allow_public_recommend = true;
+    let b_prefs = UserPrefs {
+        allow_public_recommend: true,
+        ..Default::default()
+    };
     let a_uid = make_user(&mgr, "alice", &a_prefs);
     let b_uid = make_user(&mgr, "bob", &b_prefs);
 
@@ -383,13 +389,17 @@ fn a_prefs_change_does_not_affect_b_concurrent_request() {
     // the public "alpha" skill makes it into their per-user candidate set
     // and the router actually reaches the LLM call (which then fails fast
     // on the bogus URL, persisting llm_input).
-    let mut a_prefs = UserPrefs::default();
-    a_prefs.allow_public_recommend = true;
+    let mut a_prefs = UserPrefs {
+        allow_public_recommend: true,
+        ..Default::default()
+    };
     a_prefs
         .prompt_injection_flags
         .insert("recommend_cwd_prefix".into(), false);
-    let mut b_prefs = UserPrefs::default();
-    b_prefs.allow_public_recommend = true;
+    let b_prefs = UserPrefs {
+        allow_public_recommend: true,
+        ..Default::default()
+    };
     let a_uid = make_user(&mgr, "alice", &a_prefs);
     let b_uid = make_user(&mgr, "bob", &b_prefs);
 
@@ -557,9 +567,11 @@ fn stale_bearer_does_not_fall_back_to_anonymous_project_context() {
 
     let stale_key = auth::new_api_key();
     let current_key = auth::new_api_key();
-    let mut prefs = UserPrefs::default();
-    prefs.allow_public_recommend = true;
-    prefs.read_claude_md = false;
+    let mut prefs = UserPrefs {
+        allow_public_recommend: true,
+        read_claude_md: false,
+        ..Default::default()
+    };
     prefs
         .prompt_injection_flags
         .insert("recommend_project_context".into(), false);
@@ -635,9 +647,11 @@ fn local_cli_recommend_uses_identity_prefs_instead_of_anonymous_defaults() {
     .unwrap();
 
     let api_key = auth::new_api_key();
-    let mut prefs = UserPrefs::default();
-    prefs.allow_public_recommend = true;
-    prefs.read_claude_md = true;
+    let mut prefs = UserPrefs {
+        allow_public_recommend: true,
+        read_claude_md: true,
+        ..Default::default()
+    };
     prefs
         .prompt_injection_flags
         .insert("recommend_project_context".into(), false);
@@ -678,8 +692,10 @@ fn local_cli_recommend_stale_identity_does_not_write_anonymous_event() {
     write_public_skill(&paths.skills_dir(), "alpha");
     mgr.register_local_skill("alpha").unwrap();
 
-    let mut prefs = UserPrefs::default();
-    prefs.allow_public_recommend = true;
+    let prefs = UserPrefs {
+        allow_public_recommend: true,
+        ..Default::default()
+    };
     let real_key = auth::new_api_key();
     let uid = make_user_with_api_key(&mgr, "cli-user", &real_key, &prefs);
     let stale_key = auth::new_api_key();
@@ -719,13 +735,17 @@ fn switching_logged_in_account_picks_up_new_prefs_immediately() {
     // allow_public_recommend so the public "alpha" skill enters the
     // candidate set (otherwise the recommend short-circuits with an empty
     // candidate list and never persists a router_events row).
-    let mut a_prefs = UserPrefs::default();
-    a_prefs.allow_public_recommend = true;
+    let mut a_prefs = UserPrefs {
+        allow_public_recommend: true,
+        ..Default::default()
+    };
     a_prefs
         .prompt_injection_flags
         .insert("recommend_already_routed".into(), false);
-    let mut b_prefs = UserPrefs::default();
-    b_prefs.allow_public_recommend = true;
+    let b_prefs = UserPrefs {
+        allow_public_recommend: true,
+        ..Default::default()
+    };
     let a_uid = make_user(&mgr, "alice", &a_prefs);
     let b_uid = make_user(&mgr, "bob", &b_prefs);
 
@@ -844,8 +864,10 @@ fn router_llm_input_strips_template_frontmatter_and_honors_top_k() {
         mgr.register_local_skill(&name).unwrap();
     }
 
-    let mut prefs = UserPrefs::default();
-    prefs.allow_public_recommend = true;
+    let prefs = UserPrefs {
+        allow_public_recommend: true,
+        ..Default::default()
+    };
     let uid = make_user(&mgr, "alice", &prefs);
 
     let _ = recommend::recommend_for_user(

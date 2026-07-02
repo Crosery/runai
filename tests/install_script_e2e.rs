@@ -124,10 +124,10 @@ fn make_home() -> TempDir {
 fn rewrite_server_url(body: &str, new_url: &str) -> String {
     body.lines()
         .map(|line| {
-            if let Some(rest) = line.trim_start().strip_prefix("SERVER_URL=\"") {
-                if rest.ends_with('"') {
-                    return format!("SERVER_URL=\"{new_url}\"");
-                }
+            if let Some(rest) = line.trim_start().strip_prefix("SERVER_URL=\"")
+                && rest.ends_with('"')
+            {
+                return format!("SERVER_URL=\"{new_url}\"");
             }
             line.to_string()
         })

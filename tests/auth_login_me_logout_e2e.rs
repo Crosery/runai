@@ -278,7 +278,7 @@ fn me_first_user_is_admin() {
         .unwrap()
         .json()
         .unwrap();
-    assert_eq!(me["is_admin"].as_bool().unwrap(), true);
+    assert!(me["is_admin"].as_bool().unwrap());
 }
 
 #[test]
@@ -293,7 +293,7 @@ fn me_second_user_is_not_admin() {
         .unwrap()
         .json()
         .unwrap();
-    assert_eq!(me["is_admin"].as_bool().unwrap(), false);
+    assert!(!me["is_admin"].as_bool().unwrap());
 }
 
 // ─── GET /api/prefs ────────────────────────────────────────────────

@@ -141,7 +141,6 @@ fn cache_hit_reuses_stats() {
     // append-then-rewind to keep the file untouched but pretend.) Cleanest:
     // touch nothing; rerun the scan and confirm counts are identical and the
     // cache wasn't rewritten with new entries.
-    drop(meta);
     let _ = original_mtime;
     let _ = original_size;
 

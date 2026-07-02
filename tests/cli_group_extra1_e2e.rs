@@ -91,15 +91,15 @@ fn read_toml(path: &Path) -> String {
 /// physical_e2e: update both name and description; TOML reflects both changes
 /// and stdout reports them.
 
-/// physical_e2e (was unit_in_module): partial update — only `--name` keeps
-/// description intact; only `--description` keeps name intact.
+// physical_e2e (was unit_in_module): partial update — only `--name` keeps
+// description intact; only `--description` keeps name intact.
 
-/// physical_e2e (was unit_in_module): neither `--name` nor `--description`
-/// passed: the CLI prints a no-op hint and the TOML must NOT change.
+// physical_e2e (was unit_in_module): neither `--name` nor `--description`
+// passed: the CLI prints a no-op hint and the TOML must NOT change.
 
-/// physical_e2e (high_risk: cross-RUNE_DATA_DIR isolation). Two independent
-/// data dirs each host their own `g1.toml`; updating one must NOT touch the
-/// other.
+// physical_e2e (high_risk: cross-RUNE_DATA_DIR isolation). Two independent
+// data dirs each host their own `g1.toml`; updating one must NOT touch the
+// other.
 
 #[test]
 fn group_update_modifies_toml_and_db() {

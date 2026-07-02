@@ -2,10 +2,10 @@
 //!
 //! Pins the contract for:
 //!   - GET /api/admin/userlib           (list non-admin users + per-user
-//!                                       private_count / imported_count /
-//!                                       last_active_ts, sorted last_active DESC)
+//!     private_count / imported_count /
+//!     last_active_ts, sorted last_active DESC)
 //!   - GET /api/admin/userlib/{uid}     (one user's private skills +
-//!                                       imported public skills, with usage)
+//!     imported public skills, with usage)
 //!
 //! Auth contract:
 //!   - 401 with no credential

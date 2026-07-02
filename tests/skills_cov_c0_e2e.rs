@@ -183,15 +183,15 @@ fn api_skill_files_walks_dir_and_returns_entries() {
         .map(|e| e["path"].as_str().unwrap())
         .collect();
     assert!(
-        paths.iter().any(|p| *p == "SKILL.md"),
+        paths.contains(&"SKILL.md"),
         "expected SKILL.md in entries, got {paths:?}"
     );
     assert!(
-        paths.iter().any(|p| *p == "scripts/run.sh"),
+        paths.contains(&"scripts/run.sh"),
         "expected nested scripts/run.sh, got {paths:?}"
     );
     assert!(
-        paths.iter().any(|p| *p == "data.bin"),
+        paths.contains(&"data.bin"),
         "expected data.bin, got {paths:?}"
     );
     assert!(

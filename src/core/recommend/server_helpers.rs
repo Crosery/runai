@@ -53,10 +53,10 @@ pub fn default_local_server_url() -> String {
     if probe("127.0.0.1") {
         return "http://127.0.0.1:17888".to_string();
     }
-    if let Some(ip) = local_ipv4() {
-        if probe(&ip) {
-            return format!("http://{ip}:17888");
-        }
+    if let Some(ip) = local_ipv4()
+        && probe(&ip)
+    {
+        return format!("http://{ip}:17888");
     }
     "http://127.0.0.1:17888".to_string()
 }

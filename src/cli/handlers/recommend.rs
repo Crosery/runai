@@ -618,26 +618,26 @@ fn recommend_setup(mgr: &SkillManager) -> Result<()> {
         })
         .unwrap_or(0);
     let missing = total_skills.saturating_sub(already_have as usize);
-    if missing > 0 {
-        if let Ok(exe) = std::env::current_exe() {
-            let spawn = std::process::Command::new(exe)
-                .arg("recommend")
-                .arg("enrich")
-                .arg("--missing-only")
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn();
-            match spawn {
-                Ok(_) => {
-                    println!(
-                        "\nspawned background enrich for {missing} skills missing AI summary.\n  follow progress at http://127.0.0.1:17888/#/skills"
-                    );
-                }
-                Err(e) => {
-                    eprintln!("(warn) could not spawn background enrich: {e}");
-                    eprintln!("       run manually: runai recommend enrich --missing-only");
-                }
+    if missing > 0
+        && let Ok(exe) = std::env::current_exe()
+    {
+        let spawn = std::process::Command::new(exe)
+            .arg("recommend")
+            .arg("enrich")
+            .arg("--missing-only")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        match spawn {
+            Ok(_) => {
+                println!(
+                    "\nspawned background enrich for {missing} skills missing AI summary.\n  follow progress at http://127.0.0.1:17888/#/skills"
+                );
+            }
+            Err(e) => {
+                eprintln!("(warn) could not spawn background enrich: {e}");
+                eprintln!("       run manually: runai recommend enrich --missing-only");
             }
         }
     }
