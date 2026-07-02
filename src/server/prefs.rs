@@ -19,7 +19,7 @@ use crate::core::prefs::UserPrefs;
 use crate::core::recommend;
 
 use super::error::ApiError;
-use super::state::{AppState, require_admin, require_user};
+use super::state::{AppState, private_data_locked, require_admin, require_user};
 
 #[derive(Serialize)]
 pub(super) struct ProviderView {
@@ -120,10 +120,14 @@ pub(super) async fn api_get_settings(
     tokio::task::spawn_blocking(move || -> Result<SettingsView, ApiError> {
         let db = state.db().map_err(ApiError::Internal)?;
         // Settings tab shows recommend / providers config — admin only.
-        // Compat: if the users table is empty (fresh install before any
-        // registration) keep the legacy "no auth" behavior so first-run
-        // setup wizard from the dashboard still works.
-        if !db.list_users().map_err(ApiError::Internal)?.is_empty() {
+        // Compat: on a truly cold server (no users AND no router_events —
+        // see `private_data_locked`) keep the legacy "no auth" behavior so
+        // the first-run setup wizard from the dashboard still works. This
+        // must be the SAME gate telemetry/skills endpoints use (issue #32):
+        // checking `users` alone would leave `/api/settings` open on a team
+        // server whose accounts were deleted but whose router_events table
+        // still holds history.
+        if private_data_locked(&db) {
             require_admin(&headers, &db)?;
         }
         let paths = AppPaths::default_path();
@@ -154,7 +158,7 @@ pub(super) async fn api_post_settings(
 ) -> Result<Json<SettingsView>, ApiError> {
     tokio::task::spawn_blocking(move || -> Result<SettingsView, ApiError> {
         let db = state.db().map_err(ApiError::Internal)?;
-        if !db.list_users().map_err(ApiError::Internal)?.is_empty() {
+        if private_data_locked(&db) {
             require_admin(&headers, &db)?;
         }
         let paths = AppPaths::default_path();
@@ -217,7 +221,7 @@ pub(super) async fn api_upsert_provider(
 ) -> Result<Json<SettingsView>, ApiError> {
     tokio::task::spawn_blocking(move || -> Result<SettingsView, ApiError> {
         let db = state.db().map_err(ApiError::Internal)?;
-        if !db.list_users().map_err(ApiError::Internal)?.is_empty() {
+        if private_data_locked(&db) {
             require_admin(&headers, &db)?;
         }
         if patch.id.trim().is_empty() {
@@ -270,7 +274,7 @@ pub(super) async fn api_delete_provider(
 ) -> Result<Json<SettingsView>, ApiError> {
     tokio::task::spawn_blocking(move || -> Result<SettingsView, ApiError> {
         let db = state.db().map_err(ApiError::Internal)?;
-        if !db.list_users().map_err(ApiError::Internal)?.is_empty() {
+        if private_data_locked(&db) {
             require_admin(&headers, &db)?;
         }
         let paths = AppPaths::default_path();
@@ -293,7 +297,7 @@ pub(super) async fn api_activate_provider(
 ) -> Result<Json<SettingsView>, ApiError> {
     tokio::task::spawn_blocking(move || -> Result<SettingsView, ApiError> {
         let db = state.db().map_err(ApiError::Internal)?;
-        if !db.list_users().map_err(ApiError::Internal)?.is_empty() {
+        if private_data_locked(&db) {
             require_admin(&headers, &db)?;
         }
         let paths = AppPaths::default_path();
@@ -316,7 +320,7 @@ pub(super) async fn api_test_provider(
 ) -> Result<Json<ProviderTestView>, ApiError> {
     tokio::task::spawn_blocking(move || -> Result<ProviderTestView, ApiError> {
         let db = state.db().map_err(ApiError::Internal)?;
-        if !db.list_users().map_err(ApiError::Internal)?.is_empty() {
+        if private_data_locked(&db) {
             require_admin(&headers, &db)?;
         }
         let paths = AppPaths::default_path();

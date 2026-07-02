@@ -101,6 +101,117 @@ fn register(s: &ServerGuard, u: &str, p: &str) -> String {
     b["api_key"].as_str().unwrap().to_string()
 }
 
+/// Seed the server's DB with a single router_event row without ever
+/// registering a user — reproduces "team server with users deleted/never
+/// created but historical telemetry present" (issue #32). Goes through the
+/// public Rust API so the test stays valid across schema migrations.
+fn seed_one_router_event(s: &ServerGuard) {
+    use runai::core::db::Database;
+    use runai::core::db::RouterEvent;
+    let db_path = s._home.path().join(".runai/runai.db");
+    let db = Database::open(&db_path).expect("open db");
+    let ev = RouterEvent {
+        id: None,
+        ts: chrono::Utc::now().timestamp(),
+        provider: "openai-compat".into(),
+        model: "fake/model".into(),
+        prompt_tokens: 1,
+        completion_tokens: 1,
+        reasoning_tokens: 0,
+        total_tokens: 2,
+        cache_hit_tokens: 0,
+        cache_miss_tokens: 0,
+        latency_ms: 1,
+        chosen_skills_json: "[]".into(),
+        candidate_count: 0,
+        status: "ok".into(),
+        error_msg: None,
+        session_id: "synthetic".into(),
+        mode: "exclusive".into(),
+        user_prompt: "synthetic user prompt".into(),
+        cwd: "/tmp".into(),
+        bm25_kept: 0,
+        llm_raw_response: "synthetic raw response".into(),
+        hook_output: "synthetic hook output".into(),
+        llm_input: "synthetic llm input".into(),
+        user_id: None,
+    };
+    db.insert_router_event(&ev).expect("seed router event");
+}
+
+// ─── issue #32: cold-start compat carve-out must match private_data_locked ─
+
+#[test]
+fn settings_get_anonymous_rejected_once_router_events_exist_but_users_empty() {
+    let s = spawn_team_server();
+    seed_one_router_event(&s);
+    let r = http()
+        .get(format!("{}/api/settings", s.base_url()))
+        .send()
+        .unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        401,
+        "anonymous GET /api/settings must 401 once router_events is non-empty, even with users table empty"
+    );
+}
+
+#[test]
+fn settings_post_anonymous_rejected_once_router_events_exist_but_users_empty() {
+    let s = spawn_team_server();
+    seed_one_router_event(&s);
+    let r = http()
+        .post(format!("{}/api/settings", s.base_url()))
+        .json(&json!({"enabled": false}))
+        .send()
+        .unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        401,
+        "anonymous POST /api/settings must 401 once router_events is non-empty, even with users table empty"
+    );
+}
+
+#[test]
+fn providers_upsert_anonymous_rejected_once_router_events_exist_but_users_empty() {
+    let s = spawn_team_server();
+    seed_one_router_event(&s);
+    let r = http()
+        .post(format!("{}/api/providers", s.base_url()))
+        .json(&json!({
+            "id": "leak-probe",
+            "label": "leak probe",
+            "kind": "openai-compat",
+            "base_url": "https://api.example.com",
+            "model": "test-model",
+            "api_key": "sk-should-not-be-writable"
+        }))
+        .send()
+        .unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        401,
+        "anonymous POST /api/providers must 401 once router_events is non-empty, even with users table empty"
+    );
+}
+
+#[test]
+fn settings_get_anonymous_still_open_on_truly_cold_server() {
+    // No users, no router_events — the legacy first-run compat window must
+    // stay open so the dashboard setup wizard keeps working on a genuinely
+    // fresh deployment. This pins the non-regression side of issue #32.
+    let s = spawn_team_server();
+    let r = http()
+        .get(format!("{}/api/settings", s.base_url()))
+        .send()
+        .unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        200,
+        "anonymous GET /api/settings must stay open on a truly cold server (no users, no events)"
+    );
+}
+
 // ─── /api/settings ─────────────────────────────────────────────────────
 
 #[test]
