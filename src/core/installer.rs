@@ -17,6 +17,9 @@
 //! - `Installer::install_from_github(owner, repo, branch, &AppPaths)` (async) —
 //!   downloads `.../archive/refs/heads/<branch>.tar.gz`, returns one
 //!   `InstallResult` per discovered skill.
+//! - `Installer::archive_url(owner, repo, branch)` (`pub(crate)`) — builds the
+//!   tarball URL. Honors the **test-only** `RUNAI_GITHUB_ARCHIVE_BASE` env
+//!   override (default `https://github.com`); production never sets it.
 //!
 //! ## Invariants / gotchas
 //! - `tar::Archive::unpack` strips nothing by name, but `find_skills` recurses
@@ -66,13 +69,32 @@ impl Installer {
         Ok((parts[0].to_string(), parts[1].to_string(), branch))
     }
 
+    /// Build the branch-tarball download URL. Defaults to the real GitHub
+    /// codeload host (`https://github.com/<o>/<r>/archive/refs/heads/<b>.tar.gz`).
+    ///
+    /// **Test-only override** (`RUNAI_GITHUB_ARCHIVE_BASE`): when set to a
+    /// non-empty base URL, the tarball is fetched from
+    /// `<base>/<owner>/<repo>/archive/refs/heads/<branch>.tar.gz` instead, so
+    /// the install path can be exercised against a local fixture server with
+    /// no network. Production never sets it.
+    pub(crate) fn archive_url(owner: &str, repo: &str, branch: &str) -> String {
+        let suffix = format!("{owner}/{repo}/archive/refs/heads/{branch}.tar.gz");
+        if let Ok(v) = std::env::var("RUNAI_GITHUB_ARCHIVE_BASE") {
+            let base = v.trim().trim_end_matches('/');
+            if !base.is_empty() {
+                return format!("{base}/{suffix}");
+            }
+        }
+        format!("https://github.com/{suffix}")
+    }
+
     pub async fn install_from_github(
         owner: &str,
         repo: &str,
         branch: &str,
         paths: &AppPaths,
     ) -> Result<Vec<InstallResult>> {
-        let url = format!("https://github.com/{owner}/{repo}/archive/refs/heads/{branch}.tar.gz");
+        let url = Self::archive_url(owner, repo, branch);
 
         let response = reqwest::get(&url).await?;
         if !response.status().is_success() {
@@ -143,5 +165,34 @@ impl Installer {
 
     fn extract_description(dir: &Path) -> String {
         crate::core::scanner::Scanner::extract_description(dir)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn archive_url_defaults_to_github_host() {
+        // Ensure a clean slate regardless of the outer environment.
+        unsafe { std::env::remove_var("RUNAI_GITHUB_ARCHIVE_BASE") };
+        assert_eq!(
+            Installer::archive_url("o", "r", "main"),
+            "https://github.com/o/r/archive/refs/heads/main.tar.gz",
+        );
+    }
+
+    #[test]
+    fn archive_url_honors_test_only_base_override() {
+        // Serialized with the default test via a shared env var; both mutate
+        // + read it, and the CI gate runs `--test-threads=1`, so there is no
+        // concurrent reader to race the write.
+        unsafe { std::env::set_var("RUNAI_GITHUB_ARCHIVE_BASE", "http://127.0.0.1:9/mock/") };
+        assert_eq!(
+            Installer::archive_url("o", "r", "dev"),
+            "http://127.0.0.1:9/mock/o/r/archive/refs/heads/dev.tar.gz",
+            "override base must be used with a normalized trailing slash",
+        );
+        unsafe { std::env::remove_var("RUNAI_GITHUB_ARCHIVE_BASE") };
     }
 }

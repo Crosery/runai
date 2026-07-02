@@ -96,10 +96,11 @@ impl Market {
         api_path: &str,
         local_dir: &std::path::Path,
     ) -> Result<()> {
+        let api_base = super::github_mirror::github_api_base();
         let url = if api_path.is_empty() {
-            format!("https://api.github.com/repos/{owner}/{repo}/contents?ref={branch}",)
+            format!("{api_base}/repos/{owner}/{repo}/contents?ref={branch}")
         } else {
-            format!("https://api.github.com/repos/{owner}/{repo}/contents/{api_path}?ref={branch}",)
+            format!("{api_base}/repos/{owner}/{repo}/contents/{api_path}?ref={branch}")
         };
 
         let resp = client.get(&url).send().await?;

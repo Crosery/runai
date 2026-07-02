@@ -21,8 +21,11 @@ impl Market {
             });
         }
         let url = format!(
-            "https://api.github.com/repos/{}/{}/git/trees/{}?recursive=1",
-            source.owner, source.repo, source.branch,
+            "{}/repos/{}/{}/git/trees/{}?recursive=1",
+            super::github_mirror::github_api_base(),
+            source.owner,
+            source.repo,
+            source.branch,
         );
 
         let client = reqwest::Client::builder().user_agent("runai/0.5").build()?;

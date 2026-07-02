@@ -33,7 +33,7 @@ All re-exported from `mod.rs`; consumers reach them at `crate::core::market::X`.
 | `mod.rs` | re-exports only, no logic | `pub use` of public + `pub(crate) use is_root_skill_payload` |
 | `types.rs` | core domain types | `MarketSkill`, `Market` (unit struct) |
 | `sources.rs` | source list (built-in + user) | `SourceEntry`, `SKILLSHUB_SENTINEL`, `builtin_sources`, `load_sources`, `save_sources` |
-| `github_mirror.rs` | raw-download URL shaping | `mirror_base` (private), `raw_url_for` |
+| `github_mirror.rs` | raw-download + REST-API URL shaping | `mirror_base` (private), `raw_url_for`, `github_api_base` |
 | `cache.rs` | on-disk index cache + plugin markers + lookup | `load_cache`, `save_cache`, `save_plugin_marker`, `is_plugin_source`, `find_skill_in_sources`, `cache_key` |
 | `leaderboard.rs` | skills.sh SSR leaderboard parser | `LeaderboardRow`, `parse_leaderboard`, `extract_quoted_field`/`extract_field`/`extract_array_field` (private) |
 | `sitemap.rs` | sitemap XML + root-skill filter | `extract_sitemap_locs` (`pub(super)`), `is_root_skill_payload` |
@@ -63,6 +63,7 @@ All re-exported from `mod.rs`; consumers reach them at `crate::core::market::X`.
 - Cache invalidation is **file mtime only** — if the file is touched (e.g. `git clone`), TTL restarts. Don't assume content age tracks file age.
 - Plugin markers (`is_plugin_source`) change how installed skills are laid out — plugin sources put the whole repo under `plugins/marketplaces/`, which scanner then filters out.
 - The fetch/install path creates a nested `tokio` runtime inside `spawn_blocking` in the server handlers — legal, do not relocate the runtime creation across an async boundary.
+- **Test-only base-URL overrides** (default off, production behavior byte-identical): `github_mirror::github_api_base()` reads `RUNAI_GITHUB_API_BASE` (used by `fetch.rs` git-trees + `install.rs` Contents API), and `github_mirror::raw_url_for` reads `RUNAI_GITHUB_RAW_BASE` (raw-file downloads, raw.githubusercontent path shape, takes precedence over `RUNAI_GH_MIRROR`). Both default to the real GitHub hosts when unset. They exist so `tests/install_fixture_e2e.rs` can point the whole install pipeline (tree → download → 落盘 → DB) at a local axum fixture server and run offline in default CI. `installer.rs` has a sibling `RUNAI_GITHUB_ARCHIVE_BASE` for its branch-tarball URL. Do NOT set any of these in shipped code paths.
 
 ## Tests
 Each submodule carries its own `#[cfg(test)] mod tests` next to the code under test (12 tests total, no platform gating):
