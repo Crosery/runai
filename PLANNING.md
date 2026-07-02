@@ -192,13 +192,9 @@ remote 客户端 TUI 上传依赖 `fzf` 或 `gum`，脚本检测缺则给安装�
 
 **定稿决策**：TUI 选择性加，权衡为只加 hook 安装/卸载和市场浏览。不加完整的"server mode 切换"（那是命令行/服务端管理动作）。
 
-**TUI 改动范围**：
-- `src/tui/app/` 新增 hook 安装/卸载 panel
-- `src/tui/app/` Community tab 接入社区市场（与 dashboard 数据源一致）
-- `src/tui/app/` Community tab 加上传 panel：扫描 `~/.claude/skills/` + cwd 下 `.claude/skills/` 列出本机所有 skill，用户用方向键选择 + Enter 上传（复用 `cli::handlers::community::upload` 逻辑）—— 待办，dashboard 上传 UI 已经移除
-- 现有 skill 管理 tab 不动
+**TUI 改动范围里的三项（hook 安装/卸载 panel、Community tab 接入社区市场、Community tab 上传 panel）已全部实现，记录见 §4。** 现有 skill 管理 tab 不动。
 
-**不在 runai 本机 TUI 做的**：
+**不在 runai 本机 TUI 做的**（真正的残项，不是待实施）：
 - server mode 切换 —— 命令行专用，TUI 切换 mode 涉及重启 server，不适合
 
 ---
@@ -316,6 +312,7 @@ skill 上传到社区市场前自动跑：SKILL.md 字段完整性、frontmatter
 - §1.1 owner 模式 dashboard 前端裁剪：`web/css/13-owner-mode.css` 一刀切 hide `#account-pill` / `#auth-modal` / `#library-scope-bar` / market 社区 tab btn / `#market-community-pane` / `#community-detail-modal` / `:has(#admin-users-rows)` 用户管理 section；保留路由总闸门 + 运营商配置（owner 本人隐式 admin）。`11-account-library.js::refreshMe` 每次同步 body `mode-owner` class；`12-admin-scope-skills.js::loadAdminUsers` owner 模式 short-circuit return。真浏览器渲染断言 spec 入 issue #20（Playwright harness 待重建）。
 - §1.4 重写 publish 工作流(C9a-C9h 8 commit): schema v17 加 resources.publish_status + publish_reason; POST /api/users/me/skills/upload 私有上传 + spawn_enrich; publish-request 端点 + enrich gate; admin GET /publish-requests + approve(copy 到社区池 + community_skills) / reject(reason 必填); GET /api/users/me/skills list-mine + workflow 状态; runai-client 加 list-mine / publish 子命令,默认 upload 走 private; dashboard Admin tab 新增「待审核发布」section + approve/reject 按钮。tests: private_skill_upload_e2e (5 fn) / publish_request_e2e (4 fn) / admin_publish_approve_e2e (7 fn) / list_mine_e2e (4 fn)。
 - issue #29 收尾:C9f 之后 CLI `runai community upload` / TUI Community tab 上传 picker 仍直打已废弃的 `POST /api/community/upload`,绕过 enrich gate + admin 审核。三点修复:(a) CLI `upload` 改打 `/api/users/me/skills/upload` + 新增 `Publish` 子命令打 publish-request;(b) TUI `market_tab.rs::do_upload` 同步改端点,picker 文案经 `i18n.rs` 中英双语化;(c) server `api_community_upload` 收成 `require_admin`,非 admin 403(approve 内部走 `copy_dir_recursive` 不依赖这个 HTTP 端点,收紧零副作用)。tests: `community_market_e2e.rs` 新增 `direct_community_upload_requires_admin`,`non_uploader_non_admin_cannot_delete_others_upload` / `admin_can_delete_any_upload` 改走「私有上传 + 强制写 ai_summary 绕过 enrich gate + publish-request + admin approve」真实工作流(而非直传)构造夹具;`market_tab_cov_c0_e2e.rs` 新增请求路径断言;新增 `cli_community_upload_e2e.rs` 验证 CLI 物理落盘 draft。
+- §1.5 TUI 安装/卸载流程三项全部实现:`src/tui/app/hook_panel.rs` hook 安装/卸载 panel(按 CliTarget 遍历 claude/codex/gemini/opencode);`src/tui/app/market_tab.rs::reload_community` 接入 `/api/community/list` 社区市场浏览(与 dashboard 同数据源,owner 模式短路提示);`market_tab.rs::scan_upload_candidates` + `do_upload` 加上传 picker(扫描 `~/.claude/skills/` + cwd `.claude/skills/`,方向键选择 + Enter 上传,已跟随 issue #29 改打 `/api/users/me/skills/upload` 私有上传路径)。§1.5 里唯一保留的"不做"项(server mode 切换)是设计决策,非待实施残项。
 
 ---
 

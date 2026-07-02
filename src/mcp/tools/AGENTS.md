@@ -9,7 +9,7 @@ role: mcp-server
 > This folder (`src/mcp/tools/`). One-liner: rmcp-exposed `sm_*` tool surface delegating to `SkillManager`.
 
 ## Purpose
-The rmcp-exposed tool surface. 21 `sm_*` tools that MCP clients (Claude Code / Codex / Gemini / OpenCode as consumers) can call. Each tool is thin — it delegates to `SkillManager` or other core modules and serializes the result.
+The rmcp-exposed tool surface. 22 `sm_*` tools that MCP clients (Claude Code / Codex / Gemini / OpenCode as consumers) can call. Each tool is thin — it delegates to `SkillManager` or other core modules and serializes the result.
 
 ## Public surface (stable — external code depends on these paths)
 - `crate::mcp::tools::SmServer` — the rmcp server type; `mcp::serve()` calls `SmServer::new()`.
@@ -36,7 +36,7 @@ The rmcp-exposed tool surface. 21 `sm_*` tools that MCP clients (Claude Code / C
 
 **Trash** (3): `sm_trash`, `sm_trash_restore`, `sm_trash_purge`.
 
-**Usage** (1): `sm_usage_stats`.
+**Usage** (2): `sm_usage_stats`, `sm_recommend_stats`.
 
 **Backup/utility** (3): `sm_backup`, `sm_restore`, `sm_backups`.
 
@@ -53,7 +53,7 @@ The rmcp-exposed tool surface. 21 `sm_*` tools that MCP clients (Claude Code / C
 
 ## Gotchas
 - stdout must carry only JSON-RPC frames — `tracing::subscriber::fmt()` in `main.rs` writes to stderr for this reason. Any `println!` / `print!` in a tool path will break Codex CLI silently.
-- Adding a new tool: add the method **inside the single `#[tool_router] impl SmServer` block in `server.rs`** with the `#[tool]` macro, put its arg struct in `params.rs` and re-export it from `mod.rs`, then update `README.md` feature list + tool count (currently 21). Do NOT move tool methods out of `server.rs` — the macro requires them all in one impl block.
+- Adding a new tool: add the method **inside the single `#[tool_router] impl SmServer` block in `server.rs`** with the `#[tool]` macro, put its arg struct in `params.rs` and re-export it from `mod.rs`, then update `README.md` feature list + tool count (currently 22, asserted by `tool_router_has_expected_tools`). Do NOT move tool methods out of `server.rs` — the macro requires them all in one impl block.
 - Arg names must match the rmcp schema exactly — snake_case, no Rust keyword collisions.
 - Helper fns used by tool bodies live in `helpers.rs` as `pub(super)` and are glob-imported into `server.rs` via `use super::helpers::*` — keep them non-`pub` so they don't widen the public surface.
 

@@ -4,15 +4,13 @@
   //  Two views via hash router: Overview (#/) and Library (#/skills),
   //  plus a Skill Detail view (#/skill/<name>) shown inside Library.
   //
-  //  Backend contract:
-  //    GET /api/summary?hours=N
-  //    GET /api/timeline?hours=N
-  //    GET /api/events?hours=N&limit=N&offset=N
-  //    GET /api/event/{id}
-  //    GET /api/skills
-  //    GET /api/skill/{name}
-  //    GET /api/skill/{name}/files
-  //    GET /api/skill/{name}/file?path=X
+  //  Backend contract: this file talks to far more than a handful of
+  //  routes (skills library, groups, market, community, auth/prefs, ...)
+  //  and the list rots every time a route is added here without updating
+  //  a comment far from the code. Don't re-grow an endpoint inventory in
+  //  this header — the source of truth is src/server/AGENTS.md plus the
+  //  route modules under src/server/*.rs; grep this directory for
+  //  `fetch(` / `api(` if you need the current call sites.
   // ==================================================================
 
   const state = {
