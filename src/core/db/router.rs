@@ -1,25 +1,19 @@
 //! `router_events` + `router_session_adoptions` CRUD and per-session memory.
 //!
 //! INVARIANT: `row_to_router_event` reads columns POSITIONALLY. Every SELECT in
-//! this file lists columns in the exact order the converter expects:
+//! this file that feeds it MUST list all 24 columns, in this exact order:
 //! id, ts, provider, model, prompt_tokens, completion_tokens, reasoning_tokens,
 //! total_tokens, cache_hit_tokens, cache_miss_tokens, latency_ms,
 //! chosen_skills_json, candidate_count, status, error_msg, session_id, mode,
-//! user_prompt, cwd, bm25_kept, llm_raw_response, hook_output, llm_input
-//! [, user_id]. Do NOT reorder a SELECT without updating the converter.
-//!
-//! KNOWN BUG (github.com/Crosery/runai/issues/33): `router_event_by_id` and
-//! `router_events_since_ordered` currently omit the trailing `user_id`
-//! column from their SELECTs. `row_to_router_event` still reads it
-//! positionally at index 23, which is out of range for those two queries;
-//! `Row::get::<_, Option<_>>(..).unwrap_or_default()` swallows the resulting
-//! error, so both functions silently return `user_id: None` regardless of
-//! what is actually stored. Every other query in this file (`router_events_for_skill`,
-//! `router_events_paged_filtered`, `router_events_since_ordered`'s siblings)
-//! selects `user_id` correctly — only these two are affected. Regression
-//! tests pinning the CORRECT behavior live in `db/tests.rs` as
-//! `#[ignore]`d `*_should_preserve_user_id_but_currently_drops_it` tests;
-//! un-ignore them when fixing.
+//! user_prompt, cwd, bm25_kept, llm_raw_response, hook_output, llm_input,
+//! user_id. Do NOT reorder, and do NOT drop the trailing `user_id` — see
+//! github.com/Crosery/runai/issues/33, where `router_event_by_id` and
+//! `router_events_since_ordered` omitted it, causing `row_to_router_event`'s
+//! positional `r.get(23)` to silently read out of range and always return
+//! `user_id: None` (swallowed by `Row::get::<_, Option<_>>(..).unwrap_or_default()`).
+//! Regression tests pinning this live in `db/tests.rs` as
+//! `router_event_by_id_preserves_user_id` and
+//! `router_events_since_ordered_preserves_user_id`.
 
 use super::Database;
 use super::types::RouterEvent;
@@ -381,7 +375,7 @@ impl Database {
                     total_tokens, cache_hit_tokens, cache_miss_tokens, latency_ms,
                     chosen_skills_json, candidate_count, status, error_msg,
                     session_id, mode, user_prompt, cwd, bm25_kept,
-                    llm_raw_response, hook_output, llm_input
+                    llm_raw_response, hook_output, llm_input, user_id
              FROM router_events
              WHERE ts >= ?1 AND session_id != ''
              ORDER BY session_id, ts",
@@ -400,7 +394,7 @@ impl Database {
                     total_tokens, cache_hit_tokens, cache_miss_tokens, latency_ms,
                     chosen_skills_json, candidate_count, status, error_msg,
                     session_id, mode, user_prompt, cwd, bm25_kept,
-                    llm_raw_response, hook_output, llm_input
+                    llm_raw_response, hook_output, llm_input, user_id
              FROM router_events WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map(params![id], row_to_router_event)?;

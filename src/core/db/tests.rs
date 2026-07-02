@@ -1147,24 +1147,15 @@ fn router_event_by_id_finds_row_and_reports_none_for_unknown_id() {
     );
 }
 
-/// REAL_BUG (github.com/Crosery/runai/issues/33): `router_event_by_id`'s SELECT omits the
-/// `user_id` column while `row_to_router_event` reads it positionally at
-/// index 23 — an out-of-range read that `Row::get::<_, Option<_>>` swallows
-/// via `unwrap_or_default()`, so the returned event's `user_id` is always
-/// `None` even when the stored row has one. This is the exact class of bug
-/// this issue was filed to catch (a sibling of the historical
-/// "router_event_by_id 漏 user_id 列" incident) — it currently reproduces on
-/// this same function. Per repo policy we do not silently patch production
-/// code inside a test-only task; this test is written to the CORRECT
-/// behavior and left `#[ignore]`d until a fix lands.
+/// Regression pin for github.com/Crosery/runai/issues/33: `router_event_by_id`'s
+/// SELECT used to omit the `user_id` column while `row_to_router_event` read
+/// it positionally at index 23 — an out-of-range read that
+/// `Row::get::<_, Option<_>>` swallowed via `unwrap_or_default()`, so the
+/// returned event's `user_id` was always `None` even when the stored row had
+/// one. This is the same failure class as the historical "router_event_by_id
+/// 漏 user_id 列" incident. Fixed by adding `user_id` to the SELECT.
 #[test]
-#[ignore = "REAL_BUG (github.com/Crosery/runai/issues/33): router_event_by_id's \
-            SELECT is missing the user_id column, so ev.user_id always \
-            deserializes to None regardless of the stored value — see \
-            src/server/telemetry.rs::api_event_by_id which relies on ev.user_id \
-            for the cross-tenant check. TODO: fix the SELECT to include \
-            user_id, then un-ignore."]
-fn router_event_by_id_should_preserve_user_id_but_currently_drops_it() {
+fn router_event_by_id_preserves_user_id() {
     let tmp = tempfile::tempdir().unwrap();
     let db = Database::open(&tmp.path().join("router.db")).unwrap();
 
@@ -1648,18 +1639,15 @@ fn router_events_since_ordered_orders_by_session_then_ts_and_excludes_empty_sess
     );
 }
 
-/// REAL_BUG (same root cause as `router_event_by_id`, see above): this
-/// SELECT also omits `user_id`, so every row this function returns reports
-/// `user_id: None` even when the underlying row has one set. Currently this
-/// function has no in-tree caller (feedback mining is not wired up yet), so
-/// the blast radius is latent rather than live — but it is the same
-/// landmine and should be fixed in the same pass as `router_event_by_id`.
+/// Regression pin for github.com/Crosery/runai/issues/33 (same root cause as
+/// `router_event_by_id`, see above): this SELECT used to also omit
+/// `user_id`, so every row this function returned reported `user_id: None`
+/// even when the underlying row had one set. This function currently has no
+/// in-tree caller (feedback mining is not wired up yet), so the blast radius
+/// was latent rather than live — but it was the same landmine, fixed in the
+/// same pass as `router_event_by_id`.
 #[test]
-#[ignore = "REAL_BUG (github.com/Crosery/runai/issues/33): \
-            router_events_since_ordered's SELECT is missing the user_id \
-            column, same root cause as router_event_by_id above. TODO: fix \
-            the SELECT, then un-ignore."]
-fn router_events_since_ordered_should_preserve_user_id_but_currently_drops_it() {
+fn router_events_since_ordered_preserves_user_id() {
     let tmp = tempfile::tempdir().unwrap();
     let db = Database::open(&tmp.path().join("router.db")).unwrap();
 
