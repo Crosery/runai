@@ -1,5 +1,6 @@
 use super::Database;
 use crate::core::cli_target::CliTarget;
+use crate::core::db::RouterEvent;
 use crate::core::resource::{Resource, ResourceKind, Source, TrashEntry};
 use rusqlite::params;
 use std::collections::HashMap;
@@ -991,4 +992,879 @@ fn dedupe_skills_by_name_still_collapses_within_one_owner() {
     assert_eq!(removed, 1, "same-owner same-name dup must still collapse");
     assert!(db.get_resource("adopted:dup").unwrap().is_some());
     assert!(db.get_resource("local:dup").unwrap().is_none());
+}
+
+// =========================================================================
+//  issue #27 — router.rs / router_stats.rs functional coverage.
+//
+//  Historical real bug: `router_event_by_id` dropped the `user_id` column
+//  from its SELECT while `row_to_router_event` still reads it positionally
+//  at index 23, so every returned event silently reports `user_id: None`
+//  regardless of what is actually stored. This blind spot let the bug ship
+//  to production and get discovered only by manual audit. These tests are
+//  the regression gate.
+// =========================================================================
+
+/// Base fixture event. Individual tests override the fields they care about
+/// via struct-update syntax so each test reads as "what's different here".
+fn base_event() -> RouterEvent {
+    RouterEvent {
+        id: None,
+        ts: 1_000,
+        provider: "openai-compat".into(),
+        model: "deepseek-v4-flash".into(),
+        prompt_tokens: 100,
+        completion_tokens: 20,
+        reasoning_tokens: 5,
+        total_tokens: 125,
+        cache_hit_tokens: 10,
+        cache_miss_tokens: 90,
+        latency_ms: 250,
+        chosen_skills_json: "[]".into(),
+        candidate_count: 0,
+        status: "ok".into(),
+        error_msg: None,
+        session_id: "sess-1".into(),
+        mode: "compatible".into(),
+        user_prompt: "help me write a test".into(),
+        cwd: "/tmp/proj".into(),
+        bm25_kept: 0,
+        llm_raw_response: "COMPATIBLE\nfoo".into(),
+        hook_output: "# runai recommend\n...".into(),
+        llm_input: "candidate listing + user prompt".into(),
+        user_id: None,
+    }
+}
+
+#[test]
+fn insert_router_event_roundtrip_preserves_all_fields_including_user_id() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(&tmp.path().join("router.db")).unwrap();
+
+    let ev = RouterEvent {
+        chosen_skills_json: r#"["foo","bar"]"#.into(),
+        candidate_count: 7,
+        error_msg: Some("boom".into()),
+        user_id: Some("usr_alice".into()),
+        ..base_event()
+    };
+    db.insert_router_event(&ev).unwrap();
+
+    let rows = db.router_recent_events(10).unwrap();
+    assert_eq!(rows.len(), 1);
+    let got = &rows[0];
+    assert!(got.id.is_some(), "inserted row must have an assigned rowid");
+    assert_eq!(got.ts, ev.ts);
+    assert_eq!(got.provider, ev.provider);
+    assert_eq!(got.model, ev.model);
+    assert_eq!(got.prompt_tokens, ev.prompt_tokens);
+    assert_eq!(got.completion_tokens, ev.completion_tokens);
+    assert_eq!(got.reasoning_tokens, ev.reasoning_tokens);
+    assert_eq!(got.total_tokens, ev.total_tokens);
+    assert_eq!(got.cache_hit_tokens, ev.cache_hit_tokens);
+    assert_eq!(got.cache_miss_tokens, ev.cache_miss_tokens);
+    assert_eq!(got.latency_ms, ev.latency_ms);
+    assert_eq!(got.chosen_skills_json, ev.chosen_skills_json);
+    assert_eq!(got.candidate_count, ev.candidate_count);
+    assert_eq!(got.status, ev.status);
+    assert_eq!(got.error_msg, ev.error_msg);
+    assert_eq!(got.session_id, ev.session_id);
+    assert_eq!(got.mode, ev.mode);
+    assert_eq!(got.user_prompt, ev.user_prompt);
+    assert_eq!(got.cwd, ev.cwd);
+    assert_eq!(got.bm25_kept, ev.bm25_kept);
+    assert_eq!(got.llm_raw_response, ev.llm_raw_response);
+    assert_eq!(got.hook_output, ev.hook_output);
+    assert_eq!(got.llm_input, ev.llm_input);
+    assert_eq!(
+        got.user_id.as_deref(),
+        Some("usr_alice"),
+        "user_id must round-trip through router_recent_events (uses the \
+         24-column SELECT, unlike router_event_by_id — see REAL_BUG test below)"
+    );
+}
+
+#[test]
+fn insert_router_event_caps_oversized_prompt_and_input_fields() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(&tmp.path().join("router.db")).unwrap();
+
+    let ev = RouterEvent {
+        user_prompt: "a".repeat(5_000),
+        llm_raw_response: "b".repeat(5_000),
+        hook_output: "c".repeat(10_000),
+        llm_input: "d".repeat(100_000),
+        ..base_event()
+    };
+    db.insert_router_event(&ev).unwrap();
+
+    let got = db.router_recent_events(1).unwrap().remove(0);
+    assert_eq!(
+        got.user_prompt.chars().count(),
+        2000,
+        "user_prompt capped at 2KB chars"
+    );
+    assert_eq!(
+        got.llm_raw_response.chars().count(),
+        2000,
+        "llm_raw_response capped at 2KB chars"
+    );
+    assert_eq!(
+        got.hook_output.chars().count(),
+        6000,
+        "hook_output capped at 6KB chars"
+    );
+    assert_eq!(
+        got.llm_input.chars().count(),
+        65536,
+        "llm_input capped at 64KB chars"
+    );
+}
+
+#[test]
+fn router_event_by_id_finds_row_and_reports_none_for_unknown_id() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(&tmp.path().join("router.db")).unwrap();
+
+    let ev = RouterEvent {
+        session_id: "sess-lookup".into(),
+        model: "gpt-lookup".into(),
+        chosen_skills_json: r#"["alpha"]"#.into(),
+        ..base_event()
+    };
+    db.insert_router_event(&ev).unwrap();
+    let id = db.router_recent_events(1).unwrap()[0].id.unwrap();
+
+    let found = db.router_event_by_id(id).unwrap().unwrap();
+    assert_eq!(found.id, Some(id));
+    assert_eq!(found.session_id, "sess-lookup");
+    assert_eq!(found.model, "gpt-lookup");
+    assert_eq!(found.chosen_skills_json, r#"["alpha"]"#);
+
+    assert!(
+        db.router_event_by_id(id + 999).unwrap().is_none(),
+        "unknown id must return None, not error"
+    );
+}
+
+/// REAL_BUG (github.com/Crosery/runai/issues/33): `router_event_by_id`'s SELECT omits the
+/// `user_id` column while `row_to_router_event` reads it positionally at
+/// index 23 — an out-of-range read that `Row::get::<_, Option<_>>` swallows
+/// via `unwrap_or_default()`, so the returned event's `user_id` is always
+/// `None` even when the stored row has one. This is the exact class of bug
+/// this issue was filed to catch (a sibling of the historical
+/// "router_event_by_id 漏 user_id 列" incident) — it currently reproduces on
+/// this same function. Per repo policy we do not silently patch production
+/// code inside a test-only task; this test is written to the CORRECT
+/// behavior and left `#[ignore]`d until a fix lands.
+#[test]
+#[ignore = "REAL_BUG (github.com/Crosery/runai/issues/33): router_event_by_id's \
+            SELECT is missing the user_id column, so ev.user_id always \
+            deserializes to None regardless of the stored value — see \
+            src/server/telemetry.rs::api_event_by_id which relies on ev.user_id \
+            for the cross-tenant check. TODO: fix the SELECT to include \
+            user_id, then un-ignore."]
+fn router_event_by_id_should_preserve_user_id_but_currently_drops_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(&tmp.path().join("router.db")).unwrap();
+
+    let ev = RouterEvent {
+        user_id: Some("usr_alice".into()),
+        ..base_event()
+    };
+    db.insert_router_event(&ev).unwrap();
+    let id = db.router_recent_events(1).unwrap()[0].id.unwrap();
+
+    let found = db.router_event_by_id(id).unwrap().unwrap();
+    assert_eq!(
+        found.user_id.as_deref(),
+        Some("usr_alice"),
+        "router_event_by_id must preserve user_id like router_recent_events does"
+    );
+}
+
+#[test]
+fn router_events_for_skill_matches_exact_name_not_substring() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(&tmp.path().join("router.db")).unwrap();
+
+    // "foo" must not match an event whose chosen array only contains
+    // "foobar" — this is exactly what json_each (vs a LIKE '%foo%') buys us.
+    db.insert_router_event(&RouterEvent {
+        ts: 1,
+        chosen_skills_json: r#"["foo"]"#.into(),
+        ..base_event()
+    })
+    .unwrap();
+    db.insert_router_event(&RouterEvent {
+        ts: 2,
+        chosen_skills_json: r#"["foobar"]"#.into(),
+        ..base_event()
+    })
+    .unwrap();
+    db.insert_router_event(&RouterEvent {
+        ts: 3,
+        chosen_skills_json: r#"["bar","foo"]"#.into(),
+        ..base_event()
+    })
+    .unwrap();
+
+    let hits = db.router_events_for_skill("foo", 10).unwrap();
+    assert_eq!(hits.len(), 2, "foobar must not count as a foo hit");
+    // ORDER BY ts DESC — the ts=3 row comes first.
+    assert_eq!(hits[0].ts, 3);
+    assert_eq!(hits[1].ts, 1);
+
+    // limit is honored.
+    let limited = db.router_events_for_skill("foo", 1).unwrap();
+    assert_eq!(limited.len(), 1);
+    assert_eq!(limited[0].ts, 3);
+}
+
+#[test]
+fn record_session_adoption_is_idempotent_and_ignores_empty_ids() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(&tmp.path().join("router.db")).unwrap();
+
+    db.record_session_adoption("sess-a", "skill-one").unwrap();
+    db.record_session_adoption("sess-a", "skill-one").unwrap(); // repeat signal
+    db.record_session_adoption("sess-a", "skill-two").unwrap();
+
+    let count: i64 = db
+        .conn_ref()
+        .query_row(
+            "SELECT COUNT(*) FROM router_session_adoptions WHERE session_id = 'sess-a' AND skill_name = 'skill-one'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        count, 1,
+        "PK (session_id, skill_name) must collapse repeats"
+    );
+
+    // Empty session_id / skill_name are explicit no-ops, not errors.
+    db.record_session_adoption("", "skill-three").unwrap();
+    db.record_session_adoption("sess-a", "").unwrap();
+    let total: i64 = db
+        .conn_ref()
+        .query_row("SELECT COUNT(*) FROM router_session_adoptions", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        total, 2,
+        "empty session_id/skill_name must not insert a row"
+    );
+}
+
+#[test]
+fn router_session_routed_skills_dedups_and_sorts() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(&tmp.path().join("router.db")).unwrap();
+
+    assert_eq!(
+        db.router_session_routed_skills("").unwrap(),
+        Vec::<String>::new(),
+        "empty session_id short-circuits without a query"
+    );
+    assert_eq!(
+        db.router_session_routed_skills("no-such-session").unwrap(),
+        Vec::<String>::new()
+    );
+
+    db.record_session_adoption("sess-x", "zeta").unwrap();
+    db.record_session_adoption("sess-x", "alpha").unwrap();
+    db.record_session_adoption("sess-x", "alpha").unwrap();
+    db.record_session_adoption("sess-y", "other-session-skill")
+        .unwrap();
+
+    let routed = db.router_session_routed_skills("sess-x").unwrap();
+    assert_eq!(
+        routed,
+        vec!["alpha".to_string(), "zeta".to_string()],
+        "deduped (BTreeSet) and alphabetically sorted"
+    );
+}
+
+#[test]
+fn router_session_recommended_skills_dedups_preserving_newest_first_order() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(&tmp.path().join("router.db")).unwrap();
+
+    assert_eq!(
+        db.router_session_recommended_skills("").unwrap(),
+        Vec::<String>::new()
+    );
+
+    // Older event (ts=1): recommended a, b.
+    db.insert_router_event(&RouterEvent {
+        ts: 1,
+        session_id: "sess-rec".into(),
+        status: "ok".into(),
+        chosen_skills_json: r#"["a","b"]"#.into(),
+        ..base_event()
+    })
+    .unwrap();
+    // Newer event (ts=2): recommended b, c.
+    db.insert_router_event(&RouterEvent {
+        ts: 2,
+        session_id: "sess-rec".into(),
+        status: "ok".into(),
+        chosen_skills_json: r#"["b","c"]"#.into(),
+        ..base_event()
+    })
+    .unwrap();
+    // Error-status event must be excluded even though it has a chosen array.
+    db.insert_router_event(&RouterEvent {
+        ts: 3,
+        session_id: "sess-rec".into(),
+        status: "error".into(),
+        chosen_skills_json: r#"["should-not-appear"]"#.into(),
+        ..base_event()
+    })
+    .unwrap();
+
+    let names = db.router_session_recommended_skills("sess-rec").unwrap();
+    // Rows are walked newest-first (ORDER BY ts DESC), so ts=2 ("b","c") is
+    // seen before ts=1 ("a","b") -> first-seen order is b, c, a.
+    assert_eq!(
+        names,
+        vec!["b".to_string(), "c".to_string(), "a".to_string()]
+    );
+}
+
+#[test]
+fn router_session_turn_history_orders_ascending_and_respects_limit_and_status() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(&tmp.path().join("router.db")).unwrap();
+
+    assert_eq!(
+        db.router_session_turn_history("", 10).unwrap(),
+        Vec::<(String, String)>::new()
+    );
+
+    for (ts, input, output) in [
+        (10, "turn1-in", "turn1-out"),
+        (20, "turn2-in", "turn2-out"),
+        (30, "turn3-in", "turn3-out"),
+    ] {
+        db.insert_router_event(&RouterEvent {
+            ts,
+            session_id: "sess-turns".into(),
+            status: "ok".into(),
+            llm_input: input.into(),
+            llm_raw_response: output.into(),
+            ..base_event()
+        })
+        .unwrap();
+    }
+    // Error-status turn must never show up in conversation replay.
+    db.insert_router_event(&RouterEvent {
+        ts: 40,
+        session_id: "sess-turns".into(),
+        status: "error".into(),
+        llm_input: "turn4-in".into(),
+        llm_raw_response: "turn4-out".into(),
+        ..base_event()
+    })
+    .unwrap();
+
+    let all = db.router_session_turn_history("sess-turns", 10).unwrap();
+    assert_eq!(
+        all,
+        vec![
+            ("turn1-in".to_string(), "turn1-out".to_string()),
+            ("turn2-in".to_string(), "turn2-out".to_string()),
+            ("turn3-in".to_string(), "turn3-out".to_string()),
+        ],
+        "ASC by ts, error-status row excluded"
+    );
+
+    let limited = db.router_session_turn_history("sess-turns", 2).unwrap();
+    assert_eq!(
+        limited,
+        vec![
+            ("turn1-in".to_string(), "turn1-out".to_string()),
+            ("turn2-in".to_string(), "turn2-out".to_string()),
+        ],
+        "limit caps the ASC-ordered result, keeping the oldest turns"
+    );
+}
+
+#[test]
+fn router_recent_events_orders_desc_and_respects_limit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(&tmp.path().join("router.db")).unwrap();
+
+    for ts in [100, 200, 300, 400, 500] {
+        db.insert_router_event(&RouterEvent { ts, ..base_event() })
+            .unwrap();
+    }
+
+    let recent = db.router_recent_events(3).unwrap();
+    assert_eq!(
+        recent.iter().map(|e| e.ts).collect::<Vec<_>>(),
+        vec![500, 400, 300],
+        "most recent 3, newest first"
+    );
+}
+
+#[test]
+fn router_events_paged_filtered_applies_since_ts_model_and_hit_only() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(&tmp.path().join("router.db")).unwrap();
+
+    // ts=100 model-a miss (empty chosen).
+    db.insert_router_event(&RouterEvent {
+        ts: 100,
+        model: "model-a".into(),
+        status: "ok".into(),
+        chosen_skills_json: "[]".into(),
+        ..base_event()
+    })
+    .unwrap();
+    // ts=200 model-a hit.
+    db.insert_router_event(&RouterEvent {
+        ts: 200,
+        model: "model-a".into(),
+        status: "ok".into(),
+        chosen_skills_json: r#"["x"]"#.into(),
+        ..base_event()
+    })
+    .unwrap();
+    // ts=300 model-b hit.
+    db.insert_router_event(&RouterEvent {
+        ts: 300,
+        model: "model-b".into(),
+        status: "ok".into(),
+        chosen_skills_json: r#"["y"]"#.into(),
+        ..base_event()
+    })
+    .unwrap();
+    // ts=400 model-a error (should be excluded by hit_only even though model matches).
+    db.insert_router_event(&RouterEvent {
+        ts: 400,
+        model: "model-a".into(),
+        status: "error".into(),
+        chosen_skills_json: r#"["z"]"#.into(),
+        ..base_event()
+    })
+    .unwrap();
+
+    // No filters: everything, newest first.
+    let all = db.router_events_paged(None, 100, 0, None, false).unwrap();
+    assert_eq!(
+        all.iter().map(|e| e.ts).collect::<Vec<_>>(),
+        vec![400, 300, 200, 100]
+    );
+
+    // since_ts = 200: rows with ts >= 200 only.
+    let since = db
+        .router_events_paged(Some(200), 100, 0, None, false)
+        .unwrap();
+    assert_eq!(
+        since.iter().map(|e| e.ts).collect::<Vec<_>>(),
+        vec![400, 300, 200]
+    );
+
+    // model filter: only model-a rows.
+    let by_model = db
+        .router_events_paged(None, 100, 0, Some("model-a"), false)
+        .unwrap();
+    assert_eq!(
+        by_model.iter().map(|e| e.ts).collect::<Vec<_>>(),
+        vec![400, 200, 100]
+    );
+
+    // hit_only: status='ok' AND chosen_skills_json != '[]' -> ts 300, 200.
+    let hits = db.router_events_paged(None, 100, 0, None, true).unwrap();
+    assert_eq!(
+        hits.iter().map(|e| e.ts).collect::<Vec<_>>(),
+        vec![300, 200]
+    );
+
+    // Combine model + hit_only: model-a hit only -> ts=200 (400 is error, 100 is miss).
+    let combo = db
+        .router_events_paged(None, 100, 0, Some("model-a"), true)
+        .unwrap();
+    assert_eq!(combo.iter().map(|e| e.ts).collect::<Vec<_>>(), vec![200]);
+
+    // Pagination: limit=1 offset=1 over the unfiltered set -> second-newest.
+    let paged = db.router_events_paged(None, 1, 1, None, false).unwrap();
+    assert_eq!(paged.len(), 1);
+    assert_eq!(paged[0].ts, 300);
+}
+
+#[test]
+fn router_events_paged_filtered_scopes_by_user_id() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(&tmp.path().join("router.db")).unwrap();
+
+    db.insert_router_event(&RouterEvent {
+        ts: 1,
+        user_id: Some("alice".into()),
+        ..base_event()
+    })
+    .unwrap();
+    db.insert_router_event(&RouterEvent {
+        ts: 2,
+        user_id: Some("bob".into()),
+        ..base_event()
+    })
+    .unwrap();
+    db.insert_router_event(&RouterEvent {
+        ts: 3,
+        user_id: None,
+        ..base_event()
+    })
+    .unwrap();
+
+    let alice_only = db
+        .router_events_paged_filtered(None, 100, 0, None, false, Some("alice"))
+        .unwrap();
+    assert_eq!(alice_only.len(), 1);
+    assert_eq!(alice_only[0].ts, 1);
+    assert_eq!(alice_only[0].user_id.as_deref(), Some("alice"));
+
+    let unscoped = db
+        .router_events_paged_filtered(None, 100, 0, None, false, None)
+        .unwrap();
+    assert_eq!(
+        unscoped.len(),
+        3,
+        "None scope = every row, admin/compat view"
+    );
+}
+
+#[test]
+fn router_events_count_filtered_matches_paged_result_lengths() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(&tmp.path().join("router.db")).unwrap();
+
+    db.insert_router_event(&RouterEvent {
+        ts: 1,
+        model: "m1".into(),
+        status: "ok".into(),
+        chosen_skills_json: r#"["a"]"#.into(),
+        user_id: Some("alice".into()),
+        ..base_event()
+    })
+    .unwrap();
+    db.insert_router_event(&RouterEvent {
+        ts: 2,
+        model: "m2".into(),
+        status: "error".into(),
+        chosen_skills_json: "[]".into(),
+        user_id: Some("bob".into()),
+        ..base_event()
+    })
+    .unwrap();
+    db.insert_router_event(&RouterEvent {
+        ts: 3,
+        model: "m1".into(),
+        status: "ok".into(),
+        chosen_skills_json: r#"["b"]"#.into(),
+        user_id: None,
+        ..base_event()
+    })
+    .unwrap();
+
+    assert_eq!(db.router_events_count(None, None, false).unwrap(), 3);
+    assert_eq!(db.router_events_count(Some(2), None, false).unwrap(), 2);
+    assert_eq!(db.router_events_count(None, Some("m1"), false).unwrap(), 2);
+    assert_eq!(db.router_events_count(None, None, true).unwrap(), 2);
+    assert_eq!(
+        db.router_events_count_filtered(None, None, false, Some("alice"))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        db.router_events_count_filtered(None, None, false, None)
+            .unwrap(),
+        3
+    );
+
+    // Cross-check against the paged variant for one non-trivial combo.
+    let paged_m1_hits = db
+        .router_events_paged(None, 100, 0, Some("m1"), true)
+        .unwrap();
+    assert_eq!(
+        paged_m1_hits.len() as i64,
+        db.router_events_count(None, Some("m1"), true).unwrap()
+    );
+}
+
+#[test]
+fn router_events_since_ordered_orders_by_session_then_ts_and_excludes_empty_session() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(&tmp.path().join("router.db")).unwrap();
+
+    // Interleaved ts across two sessions — result must group by session_id
+    // then order by ts within the group, per the SQL ORDER BY.
+    db.insert_router_event(&RouterEvent {
+        ts: 10,
+        session_id: "sess-b".into(),
+        ..base_event()
+    })
+    .unwrap();
+    db.insert_router_event(&RouterEvent {
+        ts: 5,
+        session_id: "sess-a".into(),
+        ..base_event()
+    })
+    .unwrap();
+    db.insert_router_event(&RouterEvent {
+        ts: 20,
+        session_id: "sess-a".into(),
+        ..base_event()
+    })
+    .unwrap();
+    // Empty session_id must never appear (feedback mining needs a real session).
+    db.insert_router_event(&RouterEvent {
+        ts: 15,
+        session_id: "".into(),
+        ..base_event()
+    })
+    .unwrap();
+    // Before the `since_ts` cutoff — excluded.
+    db.insert_router_event(&RouterEvent {
+        ts: 1,
+        session_id: "sess-a".into(),
+        ..base_event()
+    })
+    .unwrap();
+
+    let rows = db.router_events_since_ordered(5).unwrap();
+    let got: Vec<(String, i64)> = rows.iter().map(|e| (e.session_id.clone(), e.ts)).collect();
+    assert_eq!(
+        got,
+        vec![
+            ("sess-a".to_string(), 5),
+            ("sess-a".to_string(), 20),
+            ("sess-b".to_string(), 10),
+        ],
+        "grouped by session_id, ascending ts within each group, ts=1 dropped by since_ts, empty session_id dropped"
+    );
+}
+
+/// REAL_BUG (same root cause as `router_event_by_id`, see above): this
+/// SELECT also omits `user_id`, so every row this function returns reports
+/// `user_id: None` even when the underlying row has one set. Currently this
+/// function has no in-tree caller (feedback mining is not wired up yet), so
+/// the blast radius is latent rather than live — but it is the same
+/// landmine and should be fixed in the same pass as `router_event_by_id`.
+#[test]
+#[ignore = "REAL_BUG (github.com/Crosery/runai/issues/33): \
+            router_events_since_ordered's SELECT is missing the user_id \
+            column, same root cause as router_event_by_id above. TODO: fix \
+            the SELECT, then un-ignore."]
+fn router_events_since_ordered_should_preserve_user_id_but_currently_drops_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(&tmp.path().join("router.db")).unwrap();
+
+    db.insert_router_event(&RouterEvent {
+        ts: 5,
+        session_id: "sess-a".into(),
+        user_id: Some("usr_alice".into()),
+        ..base_event()
+    })
+    .unwrap();
+
+    let rows = db.router_events_since_ordered(0).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].user_id.as_deref(), Some("usr_alice"));
+}
+
+#[test]
+fn router_stats_summary_filtered_aggregates_tokens_errors_latency_and_per_model() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(&tmp.path().join("router.db")).unwrap();
+
+    db.insert_router_event(&RouterEvent {
+        ts: 100,
+        model: "model-a".into(),
+        status: "ok".into(),
+        prompt_tokens: 10,
+        completion_tokens: 5,
+        reasoning_tokens: 1,
+        total_tokens: 16,
+        latency_ms: 200,
+        ..base_event()
+    })
+    .unwrap();
+    db.insert_router_event(&RouterEvent {
+        ts: 200,
+        model: "model-a".into(),
+        status: "ok".into(),
+        prompt_tokens: 20,
+        completion_tokens: 10,
+        reasoning_tokens: 2,
+        total_tokens: 32,
+        latency_ms: 400,
+        ..base_event()
+    })
+    .unwrap();
+    db.insert_router_event(&RouterEvent {
+        ts: 300,
+        model: "model-b".into(),
+        status: "error".into(),
+        prompt_tokens: 5,
+        completion_tokens: 0,
+        reasoning_tokens: 0,
+        total_tokens: 5,
+        latency_ms: 999_999, // error rows must not pollute avg_latency_ms
+        ..base_event()
+    })
+    .unwrap();
+
+    let summary = db.router_stats_summary(None).unwrap();
+    assert_eq!(summary.total_calls, 3);
+    assert_eq!(summary.total_prompt_tokens, 35);
+    assert_eq!(summary.total_completion_tokens, 15);
+    assert_eq!(summary.total_reasoning_tokens, 3);
+    assert_eq!(summary.total_tokens, 53);
+    assert_eq!(summary.errors, 1);
+    assert_eq!(
+        summary.avg_latency_ms,
+        Some(300.0),
+        "avg over ok-status rows only: (200+400)/2"
+    );
+    assert_eq!(summary.per_model.len(), 2);
+    // ORDER BY total_tokens DESC -> model-a (48) before model-b (5).
+    assert_eq!(summary.per_model[0].model, "model-a");
+    assert_eq!(summary.per_model[0].calls, 2);
+    assert_eq!(summary.per_model[0].total_tokens, 48);
+    assert_eq!(summary.per_model[1].model, "model-b");
+    assert_eq!(summary.per_model[1].total_tokens, 5);
+
+    // since_ts cuts off the ts=100 row.
+    let since = db.router_stats_summary(Some(200)).unwrap();
+    assert_eq!(since.total_calls, 2);
+    assert_eq!(since.total_prompt_tokens, 25);
+}
+
+#[test]
+fn router_stats_summary_filtered_scopes_by_user_id() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(&tmp.path().join("router.db")).unwrap();
+
+    db.insert_router_event(&RouterEvent {
+        ts: 1,
+        total_tokens: 10,
+        user_id: Some("alice".into()),
+        ..base_event()
+    })
+    .unwrap();
+    db.insert_router_event(&RouterEvent {
+        ts: 2,
+        total_tokens: 999,
+        user_id: Some("bob".into()),
+        ..base_event()
+    })
+    .unwrap();
+
+    let alice_scope = db
+        .router_stats_summary_filtered(None, Some("alice"))
+        .unwrap();
+    assert_eq!(alice_scope.total_calls, 1);
+    assert_eq!(alice_scope.total_tokens, 10);
+
+    let unscoped = db.router_stats_summary_filtered(None, None).unwrap();
+    assert_eq!(unscoped.total_calls, 2);
+    assert_eq!(unscoped.total_tokens, 1009);
+}
+
+#[test]
+fn router_timeline_filtered_buckets_counts_hits_errors_and_latency() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(&tmp.path().join("router.db")).unwrap();
+
+    let now = chrono::Utc::now().timestamp();
+    let bucket_secs = 3600; // wide buckets so test timing jitter can't flip a bucket boundary
+    let buckets = 2;
+    let start = now - bucket_secs * buckets;
+
+    // Bucket 0 spans [start, start+3600): one hit at start+10.
+    db.insert_router_event(&RouterEvent {
+        ts: start + 10,
+        status: "ok".into(),
+        chosen_skills_json: r#"["hit"]"#.into(),
+        latency_ms: 100,
+        ..base_event()
+    })
+    .unwrap();
+    // Bucket 1 spans [start+3600, start+7200): one error + one ok-miss.
+    db.insert_router_event(&RouterEvent {
+        ts: start + 3600 + 5,
+        status: "error".into(),
+        chosen_skills_json: "[]".into(),
+        latency_ms: 50,
+        ..base_event()
+    })
+    .unwrap();
+    db.insert_router_event(&RouterEvent {
+        ts: start + 3600 + 6,
+        status: "ok".into(),
+        chosen_skills_json: "[]".into(),
+        latency_ms: 300,
+        ..base_event()
+    })
+    .unwrap();
+
+    let timeline = db.router_timeline(bucket_secs, buckets).unwrap();
+    assert_eq!(
+        timeline.len(),
+        2,
+        "always returns exactly `buckets` entries"
+    );
+    assert_eq!(timeline[0].total, 1);
+    assert_eq!(timeline[0].hits, 1);
+    assert_eq!(timeline[0].errors, 0);
+    assert_eq!(timeline[0].avg_latency_ms, 100.0);
+
+    assert_eq!(timeline[1].total, 2);
+    assert_eq!(
+        timeline[1].hits, 0,
+        "ok-status but empty chosen array is not a hit"
+    );
+    assert_eq!(timeline[1].errors, 1);
+    assert_eq!(
+        timeline[1].avg_latency_ms, 175.0,
+        "(50+300)/2 averaged over both rows"
+    );
+}
+
+#[test]
+fn router_timeline_filtered_scopes_by_user_id() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(&tmp.path().join("router.db")).unwrap();
+
+    let now = chrono::Utc::now().timestamp();
+    let bucket_secs = 3600;
+    let buckets = 1;
+    let start = now - bucket_secs * buckets;
+
+    db.insert_router_event(&RouterEvent {
+        ts: start + 10,
+        user_id: Some("alice".into()),
+        ..base_event()
+    })
+    .unwrap();
+    db.insert_router_event(&RouterEvent {
+        ts: start + 20,
+        user_id: Some("bob".into()),
+        ..base_event()
+    })
+    .unwrap();
+
+    let alice_timeline = db
+        .router_timeline_filtered(bucket_secs, buckets, Some("alice"))
+        .unwrap();
+    assert_eq!(alice_timeline[0].total, 1);
+
+    let all_timeline = db
+        .router_timeline_filtered(bucket_secs, buckets, None)
+        .unwrap();
+    assert_eq!(all_timeline[0].total, 2);
 }

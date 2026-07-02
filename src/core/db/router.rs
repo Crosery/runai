@@ -7,6 +7,19 @@
 //! chosen_skills_json, candidate_count, status, error_msg, session_id, mode,
 //! user_prompt, cwd, bm25_kept, llm_raw_response, hook_output, llm_input
 //! [, user_id]. Do NOT reorder a SELECT without updating the converter.
+//!
+//! KNOWN BUG (github.com/Crosery/runai/issues/33): `router_event_by_id` and
+//! `router_events_since_ordered` currently omit the trailing `user_id`
+//! column from their SELECTs. `row_to_router_event` still reads it
+//! positionally at index 23, which is out of range for those two queries;
+//! `Row::get::<_, Option<_>>(..).unwrap_or_default()` swallows the resulting
+//! error, so both functions silently return `user_id: None` regardless of
+//! what is actually stored. Every other query in this file (`router_events_for_skill`,
+//! `router_events_paged_filtered`, `router_events_since_ordered`'s siblings)
+//! selects `user_id` correctly — only these two are affected. Regression
+//! tests pinning the CORRECT behavior live in `db/tests.rs` as
+//! `#[ignore]`d `*_should_preserve_user_id_but_currently_drops_it` tests;
+//! un-ignore them when fixing.
 
 use super::Database;
 use super::types::RouterEvent;

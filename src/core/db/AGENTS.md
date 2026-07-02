@@ -51,7 +51,7 @@ As of the v0.11 decoupling, the former 2507-line `db.rs` is a directory: a thin 
 | `users.rs` | `users` CRUD + auth lookups | `row_to_user` (positional) |
 | `library.rs` | `user_skill_library` CRUD | `top_public_skills` |
 | `community.rs` | `community_skills` CRUD (v16+) | `row_to_community_skill` (positional), `CommunitySort` query enum |
-| `tests.rs` | migration / users / library / resources fixtures | unit suite (20 tests) |
+| `tests.rs` | migration / users / library / resources / router fixtures | unit suite (45 tests, 2 `#[ignore]`d REAL_BUG regressions) |
 
 ## Invariants (load-bearing — do not break silently)
 - **`schema.rs` keeps `init_schema` + every v1–v21 migration MONOLITHIC.** Migrations run on every `open()` with no version lock; splitting them across files risks a half-applied schema. Do not factor per-version files.
@@ -63,6 +63,7 @@ As of the v0.11 decoupling, the former 2507-line `db.rs` is a directory: a thin 
 - **`dedupe_skills_by_name` groups by `(name, owner_user_id)`, never `name` alone.** Name-only grouping would collapse a public skill and a different user's same-named private skill (or two users' privates) into one row and delete the loser's directory reference — cross-owner data loss against the owner-pool invariant. Uses SQLite's null-safe `owner_user_id IS ?` so a bound NULL matches public rows and a bound uid matches that user exactly. Public same-name rows still collapse together (the legitimate local-install + later-adopt case).
 - Trash payloads are stored as JSON `TrashEntry` blobs; new `TrashEntry` fields must stay serde backward-compatible. `owner_user_id` was added with `#[serde(default)]` so pre-v15 payloads still decode (owner surfaces as `None`).
 - `Database::conn` is `pub(super)` — sibling submodules' `impl Database` blocks access `self.conn`; it is NOT part of the public API. Use `conn_ref()` for the (rare) crate-internal raw-SQL escape hatch.
+- **KNOWN BUG (github.com/Crosery/runai/issues/33)**: `router.rs::router_event_by_id` and `router.rs::router_events_since_ordered` omit the trailing `user_id` column from their SELECTs while `row_to_router_event` still reads it positionally — both silently return `user_id: None` regardless of the stored value. This is the same failure class as the historical "`router_event_by_id` 漏 user_id 列" incident, recurring in the same function. `server::telemetry::api_event_by_id`'s cross-tenant check depends on `router_event_by_id`'s `user_id`, so a non-admin querying their own event detail currently always 404s (fail-closed, not a leak, but a real functional bug). Pinned by two `#[ignore]`d tests in `tests.rs`; do not remove the ignore without also fixing the SELECT.
 
 ## Touch points
 - **Upstream**: `SkillManager`, `scanner` (insert on adopt), `server`, `recommend`, MCP tools (list/search).
@@ -75,4 +76,4 @@ As of the v0.11 decoupling, the former 2507-line `db.rs` is a directory: a thin 
 - `schema_version()` is the contract between the app and the DB — bump it whenever you change the schema.
 
 ## Tests
-- `tests.rs` (`#[cfg(test)] mod tests`, no platform gate) — 20 tests: migration to v15, group-member migration, resource usage/conflict round-trips, trash round-trips (incl. pre-v15 payload decode), user CRUD, library CRUD, owner-aware list/find, owner-aware dedupe (no cross-owner merge + same-owner collapse). Physical owner-pool contract lives in the workspace integration suite `tests/multiuser_owner_e2e.rs`.
+- `tests.rs` (`#[cfg(test)] mod tests`, no platform gate) — 45 tests (43 run + 2 `#[ignore]`): migration to v15, group-member migration, resource usage/conflict round-trips, trash round-trips (incl. pre-v15 payload decode), user CRUD, library CRUD, owner-aware list/find, owner-aware dedupe (no cross-owner merge + same-owner collapse), and the full `router.rs` + `router_stats.rs` surface (issue #27) — insert/roundtrip incl. `user_id` and field-length caps, `router_event_by_id` hit/miss, exact-name `json_each` matching, session adoption/routed/recommended/turn-history memory, paged/count/user-scoped queries, `router_events_since_ordered` grouping, and `router_stats_summary`/`router_timeline` aggregation incl. per-user scoping. The 2 `#[ignore]`d tests pin the CORRECT (currently-failing) behavior for the `user_id`-dropping bug tracked in issue #33. Physical owner-pool contract lives in the workspace integration suite `tests/multiuser_owner_e2e.rs`.
