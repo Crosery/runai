@@ -145,6 +145,8 @@ fn ensure_user_dirs_creates_subtree_for_safe_uid() {
 fn ensure_user_dirs_rejects_unsafe_uid() {
     let (_td, paths) = fresh_paths();
     assert!(paths.ensure_user_dirs("../escape").is_err());
-    // and nothing was created
-    assert!(!paths.data_dir().join("users").join("..").exists());
+    // and nothing was created — assert on the `users` dir itself: a `users/..`
+    // probe is lexically collapsed to `data_dir` on Windows (always exists),
+    // while unix would traverse-and-fail; only the direct check is portable.
+    assert!(!paths.data_dir().join("users").exists());
 }

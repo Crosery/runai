@@ -15,6 +15,12 @@
 //! Safety contract: every test runs in a fresh `tempfile::TempDir` with
 //! `HOME` / `RUNE_DATA_DIR` / `RUNAI_NO_AUTOSPAWN` injected so the binary
 //! NEVER touches the real `~/.runai/` or any of the 4 CLI config files.
+//!
+//! Skipped on Windows: `dirs::home_dir()` ignores the HOME override there,
+//! so the spawned `mcp-serve` process would resolve its real data dir / CLI
+//! configs from the actual Windows profile instead of the tempdir sandbox —
+//! same HOME-mocking-is-unix-only class as the other physical-e2e suites.
+#![cfg(not(target_os = "windows"))]
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};

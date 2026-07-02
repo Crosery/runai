@@ -1,5 +1,12 @@
 //! Integration test: MCP stdio transport must only write valid JSON-RPC to stdout.
 //! Tracing/log output on stdout corrupts the protocol and breaks Codex CLI.
+//!
+//! Skipped on Windows: tests set only `HOME` (no `RUNE_DATA_DIR`) for
+//! isolation, but `dirs::home_dir()` ignores the HOME override there, so the
+//! spawned `mcp-serve` process would resolve its real data dir from the
+//! actual Windows profile instead of the tempdir sandbox. The binary-path
+//! fallback below is also unix-only (`/home/crosery/.local/bin/runai`).
+#![cfg(not(target_os = "windows"))]
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};

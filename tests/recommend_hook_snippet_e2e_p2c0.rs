@@ -11,6 +11,10 @@
 // sandbox HOME / RUNE_DATA_DIR per the safety contract so the test
 // cannot perturb the developer's real ~/.runai/ even if a future
 // refactor adds incidental I/O.
+//
+// Skipped on Windows: HOME mocking via env var is unix-only (dirs::home_dir()
+// ignores it there), same as its sibling p1c0 file.
+#![cfg(not(target_os = "windows"))]
 
 use std::process::Command;
 use tempfile::TempDir;

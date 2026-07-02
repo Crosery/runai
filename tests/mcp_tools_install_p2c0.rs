@@ -9,6 +9,12 @@
 //! - `HOME=$(mktemp -d)` so all data-dir reads/writes are sandboxed
 //! - `RUNE_DATA_DIR=$HOME/.runai` so the binary's data dir resolution stays in sandbox
 //! - `RUNAI_NO_AUTOSPAWN=1` so the TUI dashboard server never auto-spawns
+//!
+//! Skipped on Windows: `dirs::home_dir()` ignores the HOME override there,
+//! so the spawned `mcp-serve` binary would touch the runner's real profile
+//! instead of the sandbox — same HOME-mocking-is-unix-only class as the
+//! other physical-e2e suites.
+#![cfg(not(target_os = "windows"))]
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;

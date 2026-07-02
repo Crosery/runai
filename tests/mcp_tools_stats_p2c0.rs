@@ -5,6 +5,11 @@
 //! by inserting rows over rusqlite (after first letting runai initialize
 //! the schema), then drive the tool over stdio JSON-RPC and assert on
 //! the formatted text result.
+//!
+//! Skipped on Windows: `dirs::home_dir()` ignores the HOME override there,
+//! so the spawned binary and the direct `runai.db` open below would resolve
+//! against the runner's real profile instead of the isolated sandbox.
+#![cfg(not(target_os = "windows"))]
 
 use rusqlite::{Connection, params};
 use std::io::{BufRead, BufReader, Read, Write};

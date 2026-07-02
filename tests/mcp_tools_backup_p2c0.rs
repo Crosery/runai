@@ -10,6 +10,12 @@
 //! Every test runs inside an isolated `HOME=$(mktemp -d)` + `RUNE_DATA_DIR`
 //! sandbox per the AGENTS.md safety contract. No test touches the real
 //! `~/.runai/` or any CLI config under the real `~/`.
+//!
+//! Skipped on Windows: `dirs::home_dir()` ignores the HOME override there
+//! (breaking the sandbox), and this file also asserts unix symlink
+//! preservation semantics (`std::os::unix::fs::symlink`) that don't hold
+//! on Windows.
+#![cfg(not(target_os = "windows"))]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

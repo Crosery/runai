@@ -1,3 +1,12 @@
+//! Manual network test (`#[ignore]`) that mutates HOME via `unsafe
+//! std::env::set_var("HOME", ...)` and asserts symlinks land under the
+//! sandboxed HOME through `CliTarget::Claude`/`dirs::home_dir()`. On Windows,
+//! `dirs::home_dir()` ignores the HOME override, so a manual `--ignored` run
+//! there would write into (and assert against) the real user profile instead
+//! of the sandbox — same HOME-mocking-is-unix-only class as the other
+//! physical-e2e suites.
+#![cfg(not(target_os = "windows"))]
+
 use runai::core::cli_target::CliTarget;
 use runai::core::manager::SkillManager;
 
