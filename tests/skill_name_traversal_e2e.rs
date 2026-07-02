@@ -97,9 +97,9 @@ fn spawn_server() -> ServerGuard {
 }
 
 /// Send a request with the target string byte-for-byte (no URL normalization)
-/// and return `(status_code, body_len)`. This is the only way to deliver a
+/// and return `(status_code, body_bytes)`. This is the only way to deliver a
 /// literal `%2e%2e` path segment — reqwest collapses it client-side.
-fn raw_request(port: u16, method: &str, target: &str) -> (u16, usize) {
+fn raw_request(port: u16, method: &str, target: &str) -> (u16, Vec<u8>) {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
@@ -120,8 +120,25 @@ fn raw_request(port: u16, method: &str, target: &str) -> (u16, usize) {
         .nth(1)
         .and_then(|s| s.parse::<u16>().ok())
         .unwrap_or(0);
-    let body_len = buf.len().saturating_sub(head_end + 4);
-    (status, body_len)
+    let body = if head_end + 4 <= buf.len() {
+        buf[head_end + 4..].to_vec()
+    } else {
+        Vec::new()
+    };
+    (status, body)
+}
+
+/// The SQLite file header magic — every `runai.db` file starts with this. A
+/// traversal response must NEVER contain it, even if a future regression
+/// returns `200`-with-error-body (or a bundle tar) that pattern-matches "pass"
+/// on status code alone.
+const SQLITE_MAGIC: &[u8] = b"SQLite format 3";
+
+fn assert_no_db_leak(body: &[u8], ctx: &str) {
+    assert!(
+        !body.windows(SQLITE_MAGIC.len()).any(|w| w == SQLITE_MAGIC),
+        "{ctx}: response body must not contain the SQLite header magic (runai.db leaked)"
+    );
 }
 
 fn register(s: &ServerGuard, u: &str, p: &str) {
@@ -157,26 +174,95 @@ fn traversal_name_cannot_escape_public_skills_dir() {
 
     // ── traversal must be refused on every anonymous content route ──
     // /skills/bundle/{name}: name=".." previously tarred the whole data dir.
-    let (st, _len) = raw_request(s.port, "GET", "/skills/bundle/%2e%2e");
+    let (st, body) = raw_request(s.port, "GET", "/skills/bundle/%2e%2e");
     assert_eq!(st, 404, "bundle traversal must 404, not tar the data dir");
+    assert_no_db_leak(&body, "bundle %2e%2e");
 
     // /skills/file/{name}/{*path}: name=".." + path=runai.db read the raw DB.
-    let (st, _len) = raw_request(s.port, "GET", "/skills/file/%2e%2e/runai.db");
+    let (st, body) = raw_request(s.port, "GET", "/skills/file/%2e%2e/runai.db");
     assert_eq!(st, 404, "file traversal must 404, not read runai.db");
+    assert_no_db_leak(&body, "file %2e%2e/runai.db");
 
     // /skills/get/{name} (POST): name=".." resolved above the public dir.
-    let (st, _len) = raw_request(s.port, "POST", "/skills/get/%2e%2e");
+    let (st, _body) = raw_request(s.port, "POST", "/skills/get/%2e%2e");
     assert_eq!(st, 404, "get traversal must 404");
 
     // A literal (un-encoded) `..` segment on the file route too — some clients
     // don't normalize. Deeper escape attempt to a well-known system file.
-    let (st, _len) = raw_request(s.port, "GET", "/skills/bundle/%2e%2e%2f%2e%2e");
+    let (st, body) = raw_request(s.port, "GET", "/skills/bundle/%2e%2e%2f%2e%2e");
     assert_eq!(st, 404, "nested traversal must 404");
+    assert_no_db_leak(&body, "bundle nested %2e%2e");
 
     // ── genuine public skill still resolves ──
-    let (st, len) = raw_request(s.port, "POST", "/skills/get/normal-skill");
+    let (st, body) = raw_request(s.port, "POST", "/skills/get/normal-skill");
     assert_eq!(st, 200, "a real public skill must still resolve");
-    assert!(len > 0, "real skill body must be non-empty");
-    let (st, _len) = raw_request(s.port, "GET", "/skills/bundle/normal-skill");
+    assert!(!body.is_empty(), "real skill body must be non-empty");
+    let (st, _body) = raw_request(s.port, "GET", "/skills/bundle/normal-skill");
     assert_eq!(st, 200, "a real public skill bundle must still resolve");
+}
+
+/// Hardening cases (F6 test-completeness pass, per the C1 adversarial eval):
+/// these pin traversal variants the first fn didn't wire-level cover, plus the
+/// path-side `{*path}` guard and the "single-decode" invariant.
+#[test]
+fn traversal_hardening_variants() {
+    let s = spawn_server();
+    register(&s, "admin", "pw admin 1234");
+    assert!(s.data().join("runai.db").exists());
+    plant_skill(
+        &s.data().join("skills/normal-skill"),
+        "---\nname: normal-skill\n---\nPUBLIC_BODY\n",
+    );
+
+    // (1) bare `.` / `%2e` single-dot: `skills_dir().join(".")` is the public
+    //     skills dir ITSELF, so an unguarded bundle would tar the entire public
+    //     pool. Must 404. (`is_safe_skill_name` rejects `.`; `%2e` decodes to
+    //     `.` and is likewise rejected.)
+    for target in [
+        "/skills/bundle/%2e",
+        "/skills/get/%2e", // note: get is POST below
+    ] {
+        let method = if target.contains("/get/") {
+            "POST"
+        } else {
+            "GET"
+        };
+        let (st, body) = raw_request(s.port, method, target);
+        assert_eq!(st, 404, "single-dot name must 404: {target}");
+        assert_no_db_leak(&body, target);
+    }
+
+    // (2) legit name + path-SIDE traversal on `/skills/file/{name}/{*path}`.
+    //     The name is valid, so `is_safe_skill_name` passes and resolution
+    //     succeeds — this exercises the SEPARATE canonicalize + starts_with
+    //     guard on the wildcard `{*path}` (skills.rs handle_skill_file), which
+    //     the first fn never touched. `../../runai.db` must not escape the
+    //     resolved skill dir.
+    let (st, body) = raw_request(
+        s.port,
+        "GET",
+        "/skills/file/normal-skill/%2e%2e%2f%2e%2e%2frunai.db",
+    );
+    assert_eq!(st, 404, "path-side traversal must 404 (path guard)");
+    assert_no_db_leak(&body, "path-side ../../runai.db");
+
+    // (3a) overlong-UTF-8 `%c0%ae` (a non-canonical encoding of `.`): must NOT
+    //      be silently folded to `.` and served. axum decodes the two bytes to
+    //      invalid UTF-8, so this is rejected (400) rather than 200 — the point
+    //      is it never resolves to the skills dir.
+    let (st, body) = raw_request(s.port, "GET", "/skills/bundle/%c0%ae%c0%ae");
+    assert_ne!(st, 200, "overlong-UTF-8 dot must not resolve (got 200)");
+    assert_no_db_leak(&body, "overlong %c0%ae");
+
+    // (3b) double-encoded `%252e%252e`: decoded ONCE this is the literal string
+    //      "%2e%2e" (a harmless, non-existent single-segment name) → 404. If a
+    //      future change ever added a SECOND decode pass, it would collapse to
+    //      ".." and re-open the hole. Pins the single-decode invariant.
+    let (st, body) = raw_request(s.port, "GET", "/skills/bundle/%252e%252e");
+    assert_eq!(st, 404, "double-encoded name must 404 (single-decode only)");
+    assert_no_db_leak(&body, "double-encoded %252e%252e");
+
+    // (4) sanity: the legit skill still resolves through the same routes.
+    let (st, _body) = raw_request(s.port, "GET", "/skills/file/normal-skill/SKILL.md");
+    assert_eq!(st, 200, "legit skill file must still resolve");
 }
