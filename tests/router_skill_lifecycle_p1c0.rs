@@ -2,9 +2,10 @@
 //! `runai server` (single-file `src/server.rs` on cloud HEAD): POST
 //! /recommend, POST /skills/get/:name, POST /feedback.
 //!
-//! Each feature gets its own block. Tests spawn the installed runai
-//! binary as a real subprocess against an isolated HOME tempdir (no
-//! contact with the real `~/.runai/` per the safety contract) and
+//! Each feature gets its own block. Tests spawn the workspace-built runai
+//! binary (`env!("CARGO_BIN_EXE_runai")`) as a real subprocess against an
+//! isolated HOME tempdir (no contact with the real `~/.runai/` per the
+//! safety contract) and
 //! hit it over loopback via reqwest::blocking. The cloud HEAD does
 //! NOT have multi-user auth, per-user skill ownership, or the
 //! tower-governor rate-limit middleware, so test variants that depend
@@ -20,7 +21,7 @@ use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
 
-const RUNAI_BIN: &str = "/Users/crosery/.cargo/bin/runai";
+const RUNAI_BIN: &str = env!("CARGO_BIN_EXE_runai");
 
 // ─── Shared server harness ─────────────────────────────────────────────────
 

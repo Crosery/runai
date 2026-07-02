@@ -4,8 +4,8 @@
 //! exist in this cloud HEAD — those features are skipped (see structured
 //! output `skipped` array reported by the runner).
 //!
-//! The doctor tests (added in a later commit) spawn the installed
-//! `/Users/crosery/.cargo/bin/runai` binary inside an isolated
+//! The doctor tests (added in a later commit) spawn the workspace-built
+//! `runai` binary (`env!("CARGO_BIN_EXE_runai")`) inside an isolated
 //! `HOME=$(mktemp -d)` plus `RUNE_DATA_DIR=$HOME/.runai` so the real
 //! `~/.runai/` is untouched, per the AGENTS.md safety contract. The
 //! auto_group tests use the in-process library API via
@@ -290,13 +290,13 @@ fn auto_group_multi_group_assignment() {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// 5.11 core::doctor — physical e2e via spawned `/Users/crosery/.cargo/bin/runai`
+// 5.11 core::doctor — physical e2e via spawned workspace-built `runai`
 // ════════════════════════════════════════════════════════════════════════════
 //
 // `run_doctor()` and `run_doctor_fix()` read `dirs::home_dir()` +
 // `paths::data_dir()` (which honors RUNE_DATA_DIR). Mutating env vars
 // mid-test would race with other tests in the same process, so we spawn the
-// pre-installed binary in an isolated HOME and assert on filesystem state.
+// workspace-built binary in an isolated HOME and assert on filesystem state.
 
 mod doctor {
     use std::os::unix::fs::symlink;
@@ -305,7 +305,7 @@ mod doctor {
 
     use tempfile::TempDir;
 
-    const RUNAI_BIN: &str = "/Users/crosery/.cargo/bin/runai";
+    const RUNAI_BIN: &str = env!("CARGO_BIN_EXE_runai");
 
     /// Build an isolated HOME with the four CLI skills dirs pre-created plus a
     /// fresh `~/.runai/` so `runai` spawns can't see the real user state.

@@ -15,7 +15,7 @@
 use std::process::Command;
 use tempfile::TempDir;
 
-const RUNAI_BIN: &str = "/Users/crosery/.cargo/bin/runai";
+const RUNAI_BIN: &str = env!("CARGO_BIN_EXE_runai");
 
 fn run_hook_snippet() -> (bool, String, String) {
     let scratch = TempDir::new().expect("tempdir");

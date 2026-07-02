@@ -1,7 +1,7 @@
 //! P2 extra e2e tests for `runai register` / `runai unregister`.
 //!
-//! Spawns the real binary at `/Users/crosery/.cargo/bin/runai` inside an
-//! isolated `HOME=$(mktemp -d)` with `RUNAI_NO_AUTOSPAWN=1` and a scoped
+//! Spawns the workspace-built `runai` binary (`env!("CARGO_BIN_EXE_runai")`)
+//! inside an isolated `HOME=$(mktemp -d)` with `RUNAI_NO_AUTOSPAWN=1` and a scoped
 //! `RUNE_DATA_DIR`, then asserts the 4 CLI config files (`.claude.json`,
 //! `.gemini/settings.json`, `.codex/config.toml`,
 //! `.config/opencode/opencode.json`) are touched in the right shape and
@@ -13,7 +13,7 @@ use std::process::Command;
 
 use tempfile::TempDir;
 
-const RUNAI_BIN: &str = "/Users/crosery/.cargo/bin/runai";
+const RUNAI_BIN: &str = env!("CARGO_BIN_EXE_runai");
 
 fn runai_cmd(home: &Path) -> Command {
     let mut cmd = Command::new(RUNAI_BIN);

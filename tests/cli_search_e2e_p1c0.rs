@@ -23,7 +23,7 @@ use std::process::{Command, Output};
 
 use tempfile::TempDir;
 
-const RUNAI_BIN: &str = "/Users/crosery/.cargo/bin/runai";
+const RUNAI_BIN: &str = env!("CARGO_BIN_EXE_runai");
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 

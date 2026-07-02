@@ -2,10 +2,11 @@
 //!
 //! Plan: runai-158-test-plan.md §1.34 (status feature chunk).
 //!
-//! These tests spawn the real installed binary at /Users/crosery/.cargo/bin/runai
-//! against a fully sandboxed HOME / RUNE_DATA_DIR. They verify that
-//! `recommend status` prints the loaded config without ever echoing the
-//! api_key value (per the rationale: status output may be piped to logs).
+//! These tests spawn the workspace-built `runai` binary
+//! (`env!("CARGO_BIN_EXE_runai")`) against a fully sandboxed HOME /
+//! RUNE_DATA_DIR. They verify that `recommend status` prints the loaded
+//! config without ever echoing the api_key value (per the rationale:
+//! status output may be piped to logs).
 //!
 //! Skipped on Windows because HOME mocking + the unix binary path don't apply.
 #![cfg(not(target_os = "windows"))]
@@ -13,7 +14,7 @@
 use std::path::Path;
 use std::process::Command;
 
-const RUNAI_BIN: &str = "/Users/crosery/.cargo/bin/runai";
+const RUNAI_BIN: &str = env!("CARGO_BIN_EXE_runai");
 
 /// Spawn the installed binary with a fully isolated HOME + RUNE_DATA_DIR and
 /// every env var that could leak the host machine's real recommend config

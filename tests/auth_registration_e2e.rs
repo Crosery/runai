@@ -1,12 +1,11 @@
 //! Physical end-to-end tests for `POST /users/register` (PLANNING.md §1.1 / §1.6
 //! multi-user).
 //!
-//! These tests spawn the **installed** `runai` binary (the released
-//! `~/.cargo/bin/runai`, currently `0.11.0-beta.5`) rather than the worktree's
-//! `cargo build` output, because the multi-user `/users/register` endpoint
-//! only exists in the post-v0.11 codebase and this worktree predates that
-//! merge. The branch under test will be cherry-picked onto a base that does
-//! have the endpoint; these tests pin its contract.
+//! These tests spawn the `runai` binary built from this workspace
+//! (`env!("CARGO_BIN_EXE_runai")`, produced by `cargo build`/`cargo test`)
+//! against an isolated HOME sandbox, so they exercise the multi-user
+//! `/users/register` endpoint as implemented in this worktree's
+//! `src/server.rs`.
 //!
 //! Each test:
 //!   * Allocates a unique TCP port via a kernel-assigned ephemeral bind.
@@ -15,8 +14,7 @@
 //!   * Hits the endpoint, asserts on status / body / DB state.
 //!   * Kills the child and lets the tempdir drop.
 //!
-//! The real `~/.runai/` is never touched. The binary path is the canonical
-//! one named in `AGENTS.md`'s safety contract.
+//! The real `~/.runai/` is never touched.
 
 #![cfg(not(target_os = "windows"))]
 
@@ -28,7 +26,7 @@ use std::time::{Duration, Instant};
 use rusqlite::Connection;
 use tempfile::TempDir;
 
-const RUNAI_BIN: &str = "/Users/crosery/.cargo/bin/runai";
+const RUNAI_BIN: &str = env!("CARGO_BIN_EXE_runai");
 
 /// Spawned `runai server` process plus its HOME tempdir and bound URL.
 /// Drop kills the child so each test cleans up even on panic.
@@ -73,9 +71,7 @@ fn pick_port() -> u16 {
 fn spawn_server(mode: &str) -> ServerHandle {
     if !Path::new(RUNAI_BIN).exists() {
         panic!(
-            "{} not found — tests assume the released binary is installed via cargo install. \
-             Run `cargo install --path . --force` from a post-v0.11 base that has the \
-             multi-user endpoints.",
+            "{} not found — expected `cargo test` to have built the workspace binary first.",
             RUNAI_BIN
         );
     }

@@ -1,6 +1,6 @@
 //! Physical e2e + cargo integration tests for sm_backup / sm_backups / sm_restore.
 //!
-//! Drives the real installed binary at /Users/crosery/.cargo/bin/runai through
+//! Drives the workspace-built binary (`env!("CARGO_BIN_EXE_runai")`) through
 //! its CLI (`runai backup` / `runai backups` / `runai restore`) — these are the
 //! same `core::backup::{create_backup, list_backups, restore_backup}` entry
 //! points the MCP `sm_backup` / `sm_backups` / `sm_restore` tools wrap, so a
@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use tempfile::TempDir;
 
-const RUNAI_BIN: &str = "/Users/crosery/.cargo/bin/runai";
+const RUNAI_BIN: &str = env!("CARGO_BIN_EXE_runai");
 
 /// Sandbox: isolated HOME + RUNE_DATA_DIR pointing inside that HOME.
 struct Sandbox {

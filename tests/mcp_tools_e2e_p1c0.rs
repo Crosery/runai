@@ -1,10 +1,9 @@
 //! P1 e2e regression tests for `sm_list` and `sm_status` MCP tools.
 //!
-//! Each test spawns the installed runai binary in an isolated HOME / RUNE_DATA_DIR,
+//! Each test spawns the workspace-built runai binary in an isolated HOME / RUNE_DATA_DIR,
 //! drives `runai mcp-serve` over stdio with framed JSON-RPC, and asserts on the
-//! tool result text. The binary is `/Users/crosery/.cargo/bin/runai` (the
-//! installed cloud HEAD), per task instructions — NOT the cargo-built debug
-//! binary from this worktree (which may be a stale branch).
+//! tool result text. The binary is `env!("CARGO_BIN_EXE_runai")` — the binary
+//! produced by `cargo build`/`cargo test` from this worktree's source.
 //!
 //! These tests never touch the real `~/.runai/` or `~/.{claude,codex,gemini,opencode}/`.
 //! Safety contract: every spawn carries explicit `HOME`, `RUNAI_NO_AUTOSPAWN=1`,
@@ -23,7 +22,7 @@ use tempfile::TempDir;
 // Helpers
 // ────────────────────────────────────────────────────────────────────────────
 
-const INSTALLED_RUNAI: &str = "/Users/crosery/.cargo/bin/runai";
+const RUNAI_BIN: &str = env!("CARGO_BIN_EXE_runai");
 
 /// Build an isolated HOME with `~/.runai/skills/`, `~/.runai/mcps/`, and a
 /// pre-created `~/.claude/skills/` symlink directory. Returns the TempDir
@@ -64,7 +63,7 @@ impl Env {
 
     /// Run a runai CLI command (not MCP) and return the trimmed stdout.
     fn cli(&self, args: &[&str]) -> String {
-        let out = Command::new(INSTALLED_RUNAI)
+        let out = Command::new(RUNAI_BIN)
             .args(args)
             .env("HOME", self.home())
             .env("RUNAI_NO_AUTOSPAWN", "1")
@@ -83,7 +82,7 @@ impl Env {
 
     /// Spawn `runai mcp-serve` with the env locked to this sandbox.
     fn spawn_mcp(&self) -> Child {
-        Command::new(INSTALLED_RUNAI)
+        Command::new(RUNAI_BIN)
             .arg("mcp-serve")
             .env("HOME", self.home())
             .env("RUNAI_NO_AUTOSPAWN", "1")

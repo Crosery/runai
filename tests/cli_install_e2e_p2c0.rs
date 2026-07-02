@@ -19,10 +19,9 @@ use std::process::Command;
 
 use tempfile::TempDir;
 
-/// Path to the installed runai binary. Per task instructions:
-/// `/Users/crosery/.cargo/bin/runai` (cloud HEAD).
+/// Path to the workspace-built runai binary (produced by `cargo build`/`cargo test`).
 fn runai_bin() -> &'static str {
-    "/Users/crosery/.cargo/bin/runai"
+    env!("CARGO_BIN_EXE_runai")
 }
 
 struct TestEnv {

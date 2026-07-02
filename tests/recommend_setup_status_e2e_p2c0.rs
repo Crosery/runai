@@ -1,9 +1,10 @@
 //! P2 e2e regression for `runai recommend setup` and `runai recommend status`.
 //!
-//! These spawn the installed `/Users/crosery/.cargo/bin/runai` binary inside a
-//! tempdir HOME with an explicit `RUNE_DATA_DIR` so they NEVER touch the real
-//! `~/.runai/`. Each test pipes interactive answers to stdin where the wizard
-//! demands them, then asserts on the resulting `config.toml` and stdout.
+//! These spawn the workspace-built `runai` binary (`env!("CARGO_BIN_EXE_runai")`)
+//! inside a tempdir HOME with an explicit `RUNE_DATA_DIR` so they NEVER touch
+//! the real `~/.runai/`. Each test pipes interactive answers to stdin where
+//! the wizard demands them, then asserts on the resulting `config.toml` and
+//! stdout.
 //!
 //! Plan target: `tests/recommend_setup_status_e2e.rs`.
 //! Chunked filename to avoid concurrent-write conflicts across agents.
@@ -15,9 +16,9 @@ use std::process::{Command, Stdio};
 
 use tempfile::TempDir;
 
-const RUNAI_BIN: &str = "/Users/crosery/.cargo/bin/runai";
+const RUNAI_BIN: &str = env!("CARGO_BIN_EXE_runai");
 
-/// Spawn the installed runai binary in an isolated HOME with RUNE_DATA_DIR
+/// Spawn the workspace-built runai binary in an isolated HOME with RUNE_DATA_DIR
 /// pointed at a freshly-created `<home>/.runai` so the wizard cannot reach
 /// the real user data dir even if something in the wizard ignored HOME.
 fn isolated_env() -> (TempDir, PathBuf) {

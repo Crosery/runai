@@ -17,7 +17,7 @@ use std::time::Instant;
 
 use tempfile::TempDir;
 
-const RUNAI_BIN: &str = "/Users/crosery/.cargo/bin/runai";
+const RUNAI_BIN: &str = env!("CARGO_BIN_EXE_runai");
 
 fn runai_cmd(home: &Path) -> Command {
     let mut cmd = Command::new(RUNAI_BIN);

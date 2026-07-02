@@ -1,9 +1,9 @@
 //! P2 e2e regression tests for `GET /install`
 //! (PLANNING.md §1.2 — client install script, mode-gated).
 //!
-//! Spawns the real installed `runai` binary as a server in an isolated
-//! HOME + RUNE_DATA_DIR sandbox, then probes the install endpoint with
-//! a minimal blocking HTTP client. Asserts:
+//! Spawns the workspace-built `runai` binary (`env!("CARGO_BIN_EXE_runai")`)
+//! as a server in an isolated HOME + RUNE_DATA_DIR sandbox, then probes the
+//! install endpoint with a minimal blocking HTTP client. Asserts:
 //!   - owner mode: 404 with empty body (anti-explore)
 //!   - team mode: 200, text/x-shellscript, `{SERVER_URL}` substituted,
 //!     no binary-only management commands leaked
@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-const BINARY: &str = "/Users/crosery/.cargo/bin/runai";
+const BINARY: &str = env!("CARGO_BIN_EXE_runai");
 
 /// Pick a free TCP port by binding to :0 and immediately dropping the
 /// listener. Race-prone in principle (another process could grab it),

@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
-const BINARY_PATH: &str = "/Users/crosery/.cargo/bin/runai";
+const BINARY_PATH: &str = env!("CARGO_BIN_EXE_runai");
 
 struct McpSession {
     child: Child,

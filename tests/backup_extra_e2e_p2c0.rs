@@ -1,6 +1,6 @@
 //! P2 extra coverage for `runai backup` / `runai backups` / `runai restore`
-//! CLI commands. Each test spawns the installed `runai` binary at
-//! `/Users/crosery/.cargo/bin/runai` in an isolated HOME and `RUNE_DATA_DIR`
+//! CLI commands. Each test spawns the workspace-built `runai` binary
+//! (`env!("CARGO_BIN_EXE_runai")`) in an isolated HOME and `RUNE_DATA_DIR`
 //! so it touches **nothing** outside the per-test tempdirs.
 //!
 //! These are physical e2e tests as required by the safety contract — backup
@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 use tempfile::TempDir;
 
-const RUNAI_BIN: &str = "/Users/crosery/.cargo/bin/runai";
+const RUNAI_BIN: &str = env!("CARGO_BIN_EXE_runai");
 
 fn run_in(home: &Path, rune_data: &Path, args: &[&str]) -> Output {
     let mut cmd = std::process::Command::new(RUNAI_BIN);

@@ -16,7 +16,7 @@ use std::time::Duration;
 // Test harness helpers
 // ---------------------------------------------------------------------------
 
-const BIN: &str = "/Users/crosery/.cargo/bin/runai";
+const BIN: &str = env!("CARGO_BIN_EXE_runai");
 
 /// Holds the per-test sandbox so `Drop` cleans the tempdir + child process.
 struct Harness {

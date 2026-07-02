@@ -2,8 +2,8 @@
 //! `runai list` (with --kind / --target / --group filters), `runai trash list`,
 //! `runai trash empty`.
 //!
-//! Each test spawns the real installed `runai` binary
-//! (`/Users/crosery/.cargo/bin/runai`) in an isolated HOME tempdir with
+//! Each test spawns the workspace-built `runai` binary
+//! (`env!("CARGO_BIN_EXE_runai")`) in an isolated HOME tempdir with
 //! `RUNE_DATA_DIR` pointed at a per-test `.runai` directory so we never touch
 //! the user's real `~/.runai/`. Skipped on Windows: symlinks + HOME mocking are
 //! unix-only (same gate as the other safety/symmetry suites).
@@ -14,7 +14,7 @@ use std::process::Command;
 
 use tempfile::TempDir;
 
-const RUNAI_BIN: &str = "/Users/crosery/.cargo/bin/runai";
+const RUNAI_BIN: &str = env!("CARGO_BIN_EXE_runai");
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 

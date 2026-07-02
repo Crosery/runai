@@ -12,9 +12,8 @@
 //!     sandbox — AGENTS.md safety contract rule 1)
 //!   - sets `RUNAI_NO_AUTOSPAWN=1` (no dashboard spawn during CLI tests)
 //!   - sets `RUNAI_TRANSCRIPTS_DIR=<sandboxed jsonl tree>`
-//!   - spawns the pre-installed binary at `/Users/crosery/.cargo/bin/runai`
-//!     (test runner contract — the cloud HEAD has been `cargo install`ed
-//!     there)
+//!   - spawns the workspace-built binary (`env!("CARGO_BIN_EXE_runai")`,
+//!     produced by `cargo build`/`cargo test`)
 //!
 //! Skipped on Windows: the `dirs` crate ignores HOME/USERPROFILE env vars and
 //! the parent integration suites are gated the same way (see
@@ -26,7 +25,7 @@ use std::process::Command;
 
 use tempfile::TempDir;
 
-const RUNAI_BIN: &str = "/Users/crosery/.cargo/bin/runai";
+const RUNAI_BIN: &str = env!("CARGO_BIN_EXE_runai");
 
 /// Build a sandboxed `runai usage` invocation.
 fn runai_usage(home: &Path, transcripts: &Path, extra_args: &[&str]) -> std::process::Output {

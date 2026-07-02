@@ -1,8 +1,9 @@
 //! End-to-end regression for `core::recommend` (PLANNING test plan 5.7).
 //!
-//! These tests spawn the **already-installed** `runai` binary against an
-//! isolated `HOME` + `RUNE_DATA_DIR` sandbox — production
-//! `~/.runai/` and the four CLI homes are never touched.
+//! These tests spawn the workspace-built `runai` binary
+//! (`env!("CARGO_BIN_EXE_runai")`) against an isolated `HOME` +
+//! `RUNE_DATA_DIR` sandbox — production `~/.runai/` and the four CLI
+//! homes are never touched.
 //!
 //! Coverage map vs. plan §5.7:
 //!   1. `recommend_disabled_no_llm_call`   → [`disabled_recommend_emits_no_router_event`]
@@ -30,7 +31,7 @@ use std::time::Duration;
 
 use tempfile::TempDir;
 
-const RUNAI_BIN: &str = "/Users/crosery/.cargo/bin/runai";
+const RUNAI_BIN: &str = env!("CARGO_BIN_EXE_runai");
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 

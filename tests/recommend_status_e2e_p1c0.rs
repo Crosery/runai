@@ -5,10 +5,10 @@
 //! value, password, …). The status output is routinely piped into logs and
 //! Claude Code transcripts, so leaking a key there leaks it everywhere.
 //!
-//! Each test runs the real `runai` binary at /Users/crosery/.cargo/bin/runai
-//! (reinstalled from cloud HEAD) inside an isolated HOME/RUNE_DATA_DIR sandbox
-//! per the safety contract in AGENTS.md — no test ever touches the real
-//! `~/.runai/` or `~/.{claude,codex,gemini,opencode}/` paths.
+//! Each test runs the workspace-built `runai` binary
+//! (`env!("CARGO_BIN_EXE_runai")`) inside an isolated HOME/RUNE_DATA_DIR
+//! sandbox per the safety contract in AGENTS.md — no test ever touches the
+//! real `~/.runai/` or `~/.{claude,codex,gemini,opencode}/` paths.
 //!
 //! Skipped on Windows because the project's other physical-e2e suites are
 //! all `#[cfg(not(target_os = "windows"))]` for HOME-mocking reasons.
@@ -19,7 +19,7 @@ use std::process::Command;
 
 use tempfile::TempDir;
 
-const RUNAI_BIN: &str = "/Users/crosery/.cargo/bin/runai";
+const RUNAI_BIN: &str = env!("CARGO_BIN_EXE_runai");
 
 /// Spawn `runai recommend status` against an isolated HOME / RUNE_DATA_DIR.
 /// `extra_env` lets a caller layer `RUNAI_RECOMMEND_API_KEY` on top.

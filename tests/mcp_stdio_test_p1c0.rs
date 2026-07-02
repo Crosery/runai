@@ -20,7 +20,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-const RUNAI_BIN: &str = "/Users/crosery/.cargo/bin/runai";
+const RUNAI_BIN: &str = env!("CARGO_BIN_EXE_runai");
 
 /// Spawn `runai mcp-serve` in a sandbox HOME. Returns the child plus a
 /// retained TempDir so the caller controls cleanup ordering.

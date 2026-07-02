@@ -18,9 +18,10 @@
 //!   - the trailing "enrichment done" stats block is always rendered
 //!     with the same five rows, regardless of mode
 //!
-//! All assertions run the real binary at /Users/crosery/.cargo/bin/runai
-//! inside an isolated HOME tempdir + RUNE_DATA_DIR; production
-//! `~/.runai/` is never touched (safety contract bullet 1).
+//! All assertions run the workspace-built binary
+//! (`env!("CARGO_BIN_EXE_runai")`) inside an isolated HOME tempdir +
+//! RUNE_DATA_DIR; production `~/.runai/` is never touched (safety
+//! contract bullet 1).
 
 #![cfg(not(target_os = "windows"))]
 
@@ -29,7 +30,7 @@ use std::process::{Command, Output};
 
 use tempfile::TempDir;
 
-const RUNAI_BIN: &str = "/Users/crosery/.cargo/bin/runai";
+const RUNAI_BIN: &str = env!("CARGO_BIN_EXE_runai");
 
 struct Env {
     home: TempDir,
