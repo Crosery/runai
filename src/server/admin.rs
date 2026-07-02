@@ -201,7 +201,8 @@ pub(super) async fn api_admin_publish_list(
                         COALESCE(s.summary, '') \
                  FROM resources r \
                  LEFT JOIN users u ON u.user_id = r.owner_user_id \
-                 LEFT JOIN resource_ai_summary s ON s.name = r.name \
+                 LEFT JOIN resource_ai_summary s \
+                    ON s.owner_user_id = COALESCE(r.owner_user_id, '') AND s.name = r.name \
                  WHERE r.publish_status = 'pending' AND r.kind = 'skill' \
                  ORDER BY r.installed_at DESC",
             )

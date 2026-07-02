@@ -37,7 +37,7 @@ use tempfile::TempDir;
 // source does NOT have; for this test file we want the binary built from
 // the same `src/server.rs` we are exercising — produced by `cargo build`
 // into the shared target dir.
-const RUNAI_BIN: &str = "/tmp/runai-p0-shared-target/debug/runai";
+const RUNAI_BIN: &str = env!("CARGO_BIN_EXE_runai");
 
 struct Server {
     child: Child,
@@ -162,9 +162,9 @@ impl Server {
         // llm_score. The "enriched" field counts only non-empty summaries,
         // so a non-empty summary here also lets us test that branch.
         conn.execute(
-            "INSERT INTO resource_ai_summary (name, summary, llm_score, updated_at)
-             VALUES (?1, '', ?2, ?3)
-             ON CONFLICT(name) DO UPDATE SET llm_score = excluded.llm_score",
+            "INSERT INTO resource_ai_summary (owner_user_id, name, summary, llm_score, updated_at)
+             VALUES ('', ?1, '', ?2, ?3)
+             ON CONFLICT(owner_user_id, name) DO UPDATE SET llm_score = excluded.llm_score",
             rusqlite::params![name, score, chrono::Utc::now().timestamp()],
         )
         .expect("set llm_score");

@@ -27,7 +27,7 @@ pub(super) fn read_project_context(cwd: &Path) -> String {
     // Router only needs project identity (RL project? Rust CLI? frontend?) +
     // domain-specific commands hint (kaiwu submit / runai install). Even
     // shorter context is enough for disambiguation. Smaller cap → less
-    // attention dilution on the actual user prompt + 30 candidate listings.
+    // attention dilution on the actual user prompt + bounded candidate list.
     const PER_FILE_LIMIT: usize = 800;
     const MAX_REFERENCED_FILES: usize = 2;
 
@@ -72,7 +72,8 @@ pub(super) fn read_project_context(cwd: &Path) -> String {
         }
     }
 
-    PROJECT_CONTEXT_TEMPLATE.replace("{PROJECT_DOCS}", &blocks.join("\n\n"))
+    crate::core::prompts::template_body(PROJECT_CONTEXT_TEMPLATE)
+        .replace("{PROJECT_DOCS}", &blocks.join("\n\n"))
 }
 
 fn format_doc_block(label: &str, body: &str, limit: usize) -> String {

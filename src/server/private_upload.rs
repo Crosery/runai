@@ -193,7 +193,8 @@ pub(super) async fn api_user_skills_list(
                 "SELECT r.name, COALESCE(r.description, ''), r.installed_at, \
                         r.publish_status, r.publish_reason, COALESCE(s.summary, '') \
                  FROM resources r \
-                 LEFT JOIN resource_ai_summary s ON s.name = r.name \
+                 LEFT JOIN resource_ai_summary s \
+                    ON s.owner_user_id = COALESCE(r.owner_user_id, '') AND s.name = r.name \
                  WHERE r.owner_user_id = ?1 AND r.kind = 'skill' \
                  ORDER BY r.installed_at DESC",
             )
@@ -286,7 +287,11 @@ pub(super) async fn api_publish_request(
         // before we let the user submit. Until enrich lands, the LLM
         // doesn't know what the skill is about and the admin has nothing
         // to review beyond the user-provided description.
-        let summary = db.skill_ai_summary(&name).map_err(ApiError::Internal)?;
+        let summary = db
+            .skill_ai_index_for_resource(&resource)
+            .map_err(ApiError::Internal)?
+            .map(|row| row.summary)
+            .unwrap_or_default();
         if summary.trim().is_empty() {
             return Err(ApiError::BadRequest(
                 "富集 (enrich) 还未完成,暂不能申请发布。等几分钟再试 — \

@@ -20,6 +20,8 @@ use super::config::{Provider, RecommendConfig};
 use super::lang_validation::summary_matches_lang;
 use super::llm_call::call_summary_llm;
 use super::prompts::{build_enrich_prompt, build_feedback_prompt};
+use crate::core::db::SkillAiIndex;
+use sha2::{Digest, Sha256};
 
 /// Outcome of an `enrich_skills` run.
 #[derive(Debug, Clone, Default)]
@@ -38,8 +40,8 @@ pub enum EnrichMode {
     /// a new skill is installed and only that one needs a first pass.
     MissingOnly,
     /// Default: enrich missing skills, plus re-enrich any skill whose
-    /// SKILL.md mtime is newer than the stored summary's updated_at
-    /// (the SKILL.md was edited after the last enrich pass).
+    /// source content or prompt layout hash changed since the stored index
+    /// was written.
     Stale,
     /// Re-enrich every skill regardless of state. Expensive — 343 LLM calls.
     Force,
@@ -49,8 +51,102 @@ pub enum EnrichMode {
 struct EnrichJob {
     name: String,
     description: String,
+    owner_user_id: Option<String>,
     skill_md_path: PathBuf,
     has_summary: bool,
+}
+
+fn sha256_hex(parts: &[&[u8]]) -> String {
+    let mut hasher = Sha256::new();
+    for part in parts {
+        hasher.update(part);
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+fn compact_text(text: &str, limit: usize) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(limit)
+        .collect()
+}
+
+fn parse_summary_field(summary: &str, label: &str) -> String {
+    for line in summary.lines() {
+        let trimmed = line.trim();
+        if let Some((lhs, rhs)) = trimmed.split_once([':', '：']) {
+            if lhs.trim().eq_ignore_ascii_case(label) {
+                return rhs.trim().to_string();
+            }
+        }
+    }
+    String::new()
+}
+
+fn build_search_doc(name: &str, description: &str, summary: &str, skill_md: &str) -> String {
+    let triggers = parse_summary_field(summary, "triggers");
+    let not_for = parse_summary_field(summary, "not-for");
+    compact_text(
+        &format!("{name} {description} {summary} {triggers} {not_for} {skill_md}",),
+        3000,
+    )
+}
+
+fn build_router_card(name: &str, description: &str, summary: &str) -> String {
+    let task = parse_summary_field(summary, "task");
+    let triggers = parse_summary_field(summary, "triggers");
+    let inputs = parse_summary_field(summary, "inputs");
+    let outputs = parse_summary_field(summary, "outputs");
+    let not_for = parse_summary_field(summary, "not-for");
+    let body = if task.is_empty() {
+        format!("{name} {description} {summary}")
+    } else {
+        format!("{name}: {task} | {triggers} | {inputs} | {outputs} | {not_for}")
+    };
+    compact_text(&body, 320)
+}
+
+fn prompt_layout_key(summary_lang: &str) -> &'static str {
+    match summary_lang.trim() {
+        "" | "zh" => "summary-task-triggers-inputs-outputs-not-for-score",
+        "en" => "summary-task-triggers-inputs-outputs-not-for-score",
+        "ja" => "summary-task-triggers-inputs-outputs-not-for-score",
+        "bilingual" => "summary-task-triggers-inputs-outputs-not-for-score",
+        _ => "summary-task-triggers-inputs-outputs-not-for-score",
+    }
+}
+
+fn make_index(
+    name: &str,
+    description: &str,
+    summary: &str,
+    score: i64,
+    skill_md: &str,
+    summary_lang: &str,
+) -> SkillAiIndex {
+    let search_doc = build_search_doc(name, description, summary, skill_md);
+    let router_card = build_router_card(name, description, summary);
+    let source_hash = sha256_hex(&[
+        name.as_bytes(),
+        b"\0",
+        description.as_bytes(),
+        b"\0",
+        skill_md.as_bytes(),
+    ]);
+    let prompt_key = prompt_layout_key(summary_lang);
+    let prompt_hash = sha256_hex(&[summary_lang.trim().as_bytes(), b"\0", prompt_key.as_bytes()]);
+    SkillAiIndex {
+        summary: summary.trim().to_string(),
+        search_doc,
+        router_card,
+        llm_score: score.clamp(0, 10),
+        updated_at: chrono::Utc::now().timestamp(),
+        source_hash,
+        prompt_hash,
+        format_key: prompt_key.to_string(),
+    }
 }
 
 /// Owner-aware enrich candidate enumeration: the public pool PLUS every user's
@@ -112,9 +208,10 @@ pub fn enrich_skills(
             .context("enrich: api_key not configured — run `runai recommend setup` first")?
     };
 
-    let existing = mgr.db().skill_ai_summary_all().unwrap_or_default();
-    let existing_ts: std::collections::HashMap<String, i64> =
-        mgr.db().skill_ai_summary_timestamps().unwrap_or_default();
+    let existing = mgr
+        .db()
+        .skill_ai_index_all_by_resource_key()
+        .unwrap_or_default();
     let resources = enrich_candidates(mgr.db())?;
     let only_set: Option<std::collections::HashSet<String>> =
         only_names.map(|v| v.iter().cloned().collect());
@@ -129,8 +226,8 @@ pub fn enrich_skills(
 
     // Plan the work first: decide for each skill whether it needs enriching.
     // When only_names is given the caller is signalling "this skill just
-    // changed, regenerate regardless of mtime" — mode is overridden to Force
-    // for that targeted subset.
+    // changed, regenerate regardless of freshness" — mode is overridden to
+    // Force for that targeted subset.
     let effective_mode = if only_set.is_some() {
         EnrichMode::Force
     } else {
@@ -140,22 +237,31 @@ pub fn enrich_skills(
     let mut jobs: Vec<EnrichJob> = Vec::new();
     for r in &skills {
         let skill_md = enrich_skill_md_path(r);
-        let has_summary = existing.contains_key(&r.name);
-        let is_stale = if has_summary {
-            match fs::metadata(&skill_md).and_then(|m| m.modified()) {
-                Ok(mtime) => {
-                    let mtime_ts = mtime
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_secs() as i64)
-                        .unwrap_or(0);
-                    let summary_ts = *existing_ts.get(&r.name).unwrap_or(&0);
-                    mtime_ts > summary_ts
-                }
-                Err(_) => false,
-            }
-        } else {
-            false
-        };
+        if !skill_md.exists() {
+            report.skipped_no_skill_md += 1;
+            continue;
+        }
+        let index_key = Database::skill_ai_index_key_for_resource(r);
+        let has_summary = existing.contains_key(&index_key);
+        let existing_row = existing.get(&index_key);
+        let current_skill_md = fs::read_to_string(&skill_md).unwrap_or_default();
+        let current_source_hash = sha256_hex(&[
+            r.name.as_bytes(),
+            b"\0",
+            r.description.as_bytes(),
+            b"\0",
+            current_skill_md.as_bytes(),
+        ]);
+        let current_prompt_hash = sha256_hex(&[
+            cfg.summary_lang.trim().as_bytes(),
+            b"\0",
+            prompt_layout_key(&cfg.summary_lang).as_bytes(),
+        ]);
+        let is_stale = existing_row
+            .map(|row| {
+                row.source_hash != current_source_hash || row.prompt_hash != current_prompt_hash
+            })
+            .unwrap_or(false);
         let should_process = match effective_mode {
             EnrichMode::Force => true,
             EnrichMode::Stale => !has_summary || is_stale,
@@ -165,13 +271,10 @@ pub fn enrich_skills(
             report.skipped_have_summary += 1;
             continue;
         }
-        if !skill_md.exists() {
-            report.skipped_no_skill_md += 1;
-            continue;
-        }
         jobs.push(EnrichJob {
             name: r.name.clone(),
             description: r.description.clone(),
+            owner_user_id: r.owner_user_id.clone(),
             skill_md_path: skill_md,
             has_summary,
         });
@@ -323,7 +426,19 @@ pub fn enrich_skills(
                         }
                     }
                     let capped: String = summary_clean.chars().take(600).collect();
-                    match db.set_skill_ai_summary_scored(&job.name, &capped, llm_score) {
+                    let index = make_index(
+                        &job.name,
+                        &job.description,
+                        &capped,
+                        llm_score,
+                        &body,
+                        &cfg.summary_lang,
+                    );
+                    match db.set_skill_ai_index_scoped(
+                        &job.name,
+                        job.owner_user_id.as_deref(),
+                        &index,
+                    ) {
                         Ok(()) => {
                             let mut rp = report_mu.lock().unwrap();
                             if job.has_summary {
@@ -389,11 +504,13 @@ pub fn reevaluate_skill(
     let skill_md_body = fs::read_to_string(&skill_md_path)
         .with_context(|| format!("read {}", skill_md_path.display()))?;
 
-    let old_summary = mgr
+    let old_index = mgr
         .db()
-        .skill_ai_summary(&resource.name)
+        .skill_ai_index_for_resource(&resource)
+        .unwrap_or_default()
         .unwrap_or_default();
-    let old_score = mgr.db().skill_llm_score(&resource.name).unwrap_or(5);
+    let old_summary = old_index.summary.clone();
+    let old_score = old_index.llm_score;
 
     let user_msg = build_feedback_prompt(
         &resource.name,
@@ -424,8 +541,19 @@ pub fn reevaluate_skill(
         );
     }
     let capped: String = summary_clean.chars().take(600).collect();
-    mgr.db()
-        .set_skill_ai_summary_scored(&resource.name, &capped, new_score)?;
+    let index = make_index(
+        &resource.name,
+        &resource.description,
+        &capped,
+        new_score,
+        &skill_md_body,
+        &cfg.summary_lang,
+    );
+    mgr.db().set_skill_ai_index_scoped(
+        &resource.name,
+        resource.owner_user_id.as_deref(),
+        &index,
+    )?;
     Ok(FeedbackReport {
         old_score,
         new_score,

@@ -76,8 +76,8 @@
 
 ### 2. LLM skill router（opt-in）
 
-- **Hook 集成** —— Claude Code 的 `UserPromptSubmit` hook → `runai recommend` → router 决策 → 输出作为额外 context 注入主 agent 的 prompt。
-- **BM25 prefilter + LLM rerank** —— 双语（latin + CJK）BM25 在 AI 生成的 summary 上跑，top 30 candidate 喂给 router LLM（默认 DeepSeek v4-flash；也支持任意 OpenAI 兼容 / Anthropic / `claude-cli` 后端）。混合分 = `BM25 × 0.4 + LLM 质量 × 0.6`。
+- **Hook 集成** —— Claude Code 的 `UserPromptSubmit` hook → `runai recommend` → router 决策 → 输出作为额外 context 注入主 agent 的 prompt。Dashboard / team 场景下，本地 hook 读取 `~/.runai-identity`；key 有效时使用该用户的网页偏好，key 过期时返回空 hook 输出，不再静默退回匿名默认偏好。
+- **BM25 prefilter + LLM rerank** —— 双语（latin + CJK）BM25 在 AI 生成的 summary 上跑，把受 `top_k` 约束的候选列表喂给 router LLM（默认 DeepSeek v4-flash；也支持任意 OpenAI 兼容 / Anthropic / `claude-cli` 后端）。混合分 = `BM25 × 0.4 + LLM 质量 × 0.6`。
 - **AI summary 富集** —— 每个 skill 都由同一个 LLM 用你选定的 `summary_lang` 生成结构化 summary（`task / triggers / inputs / outputs / not-for / score`），既当 BM25 索引文本也当 router 候选上下文。富集以显式选定语言为前提，且输出语言被强制校验（不符先重试、再不符就丢弃不写），索引保持单一语言；`triggers` 字段保留跨语言关键词以提升检索。SKILL.md 编辑后自动 refresh，`runai install` / `scan` 也会针对改动的 skill 单点 re-enrich。
 - **两种模式** —— `EXCLUSIVE` 让主 agent 在候选里挑；`COMPATIBLE` 一次加载多个互补 skill 适合工作流型 prompt（"整套调试链路" / "完整发版流程"）。同 session 去重，已采用的 skill 不再被重推。
 - **真采用计数** —— 主 agent 真的 `Read` 了 `<skills_dir>/<X>/SKILL.md` 时，`PostToolUse` hook 自动 bump `usage_count` 并写 session adoption 行。Self-report (`runai recommend used`) 是兜底。**信号来源是 Claude Code 自己的工具调用日志，不是 agent 自己说**。

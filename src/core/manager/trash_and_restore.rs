@@ -152,7 +152,7 @@ impl SkillManager {
         // dashboard's enrichment-progress count for a skill that's been
         // trashed. If the user restores the skill, they can re-run
         // `runai recommend enrich` to regenerate.
-        self.db.delete_skill_scoring(&resource.name)?;
+        self.db.delete_skill_scoring_for_resource(&resource)?;
         self.db.delete_resource(resource_id)?;
 
         let entry = TrashEntry {
@@ -230,7 +230,7 @@ impl SkillManager {
                 Linker::move_dir(&r.directory, &payload)?;
             }
             let group_ids = self.db.take_groups_for_resource(&r.id)?;
-            self.db.delete_skill_scoring(&r.name)?;
+            self.db.delete_skill_scoring_for_resource(r)?;
             self.db.delete_resource(&r.id)?;
             let entry = TrashEntry {
                 id: Self::trash_entry_id(&r.id, deleted_at_ms),

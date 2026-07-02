@@ -82,7 +82,7 @@ pub fn recent_transcript_pairs(transcript_path: &Path, n: usize) -> Vec<(String,
 /// follow-up prompts like "不对换一个" / "有没有其他的 ppt" carry zero
 /// keywords on their own — the topic ("ppt") lives in earlier user
 /// turns. Without history, ppt-related skills get filtered out of the
-/// top-30 candidate set before the LLM router ever sees them.
+/// bounded top-K candidate set before the LLM router ever sees them.
 pub fn recent_user_prompts_for_bm25(transcript_path: &Path, n: usize) -> String {
     let pairs = recent_transcript_pairs(transcript_path, n);
     pairs

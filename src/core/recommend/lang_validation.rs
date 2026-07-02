@@ -137,12 +137,16 @@ pub fn summary_matches_lang(summary: &str, summary_lang: &str) -> bool {
 /// subset that violated the language contract, without a full `--force` pass.
 pub fn find_language_mismatched_skills(mgr: &SkillManager) -> Result<Vec<String>> {
     let cfg = RecommendConfig::load(mgr.paths())?;
-    let all = mgr.db().skill_ai_summary_all().unwrap_or_default();
+    let all = mgr
+        .db()
+        .skill_ai_index_all_by_resource_key()
+        .unwrap_or_default();
     let mut out: Vec<String> = all
         .into_iter()
-        .filter(|(_, summary)| !summary_matches_lang(summary, &cfg.summary_lang))
-        .map(|(name, _)| name)
+        .filter(|(_, index)| !summary_matches_lang(&index.summary, &cfg.summary_lang))
+        .filter_map(|(key, _)| key.split('\0').next_back().map(str::to_string))
         .collect();
     out.sort();
+    out.dedup();
     Ok(out)
 }

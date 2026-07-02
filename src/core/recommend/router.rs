@@ -13,7 +13,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use crate::core::bm25;
-use crate::core::db::RouterEvent;
+use crate::core::db::{Database, RouterEvent};
 use crate::core::manager::SkillManager;
 use crate::core::paths::AppPaths;
 use crate::core::resource::ResourceKind;
@@ -26,20 +26,17 @@ use super::project_context::read_project_context;
 use super::server_helpers::default_local_server_url;
 use super::transcript::{recent_transcript_messages, recent_user_prompts_for_bm25};
 
-/// Skill prefilter cap: how many candidates the hybrid ranker keeps before
-/// the LLM precision-picks. Empirically top 30 (vs 10 / 50 / full) is the
-/// sweet spot — top 10 drops genuine matches like guizang-ppt-skill, top 50
-/// includes too much noise so LLM picks tangential skills. Override with
-/// `RUNAI_BM25_TOP_K=N` env var.
-const BM25_TOP_K: usize = 30;
+/// Safety bound for the optional `RUNAI_BM25_TOP_K=N` debug override. Normal
+/// routing uses `RecommendConfig::top_k` so the dashboard setting controls
+/// both hook output count and LLM candidate-list size.
+const BM25_TOP_K_MAX: usize = 50;
 /// If the user prompt tokenizes to fewer than this many terms, skip BM25 and
 /// pass the full candidate set. With the default `bm25_hybrid` mode this is
 /// only triggered for **empty** queries — hybrid scoring is
 /// `bm25 * 0.4 + llm_score/10 * 0.6`, so even single-token prompts where BM25
-/// degenerates to "any doc containing that token" still produce a sensible
-/// top-30 sorted by `llm_score`, far better than dumping all 327 candidates
-/// and paying 10× tokens. Empirical: `push` / `/init` used to land at 68-70 KB
-/// prompt_tokens; with this set to 1 they sit at ~7 KB like normal queries.
+/// degenerates to "any doc containing that token" still produce a bounded
+/// top-K sorted by `llm_score`, far better than dumping every candidate into
+/// the router prompt.
 const BM25_MIN_QUERY_TERMS: usize = 1;
 /// Minimum positive-score BM25 hits to trust the prefilter. Below this the
 /// query likely has zero / near-zero term overlap with the skill corpus —
@@ -209,40 +206,44 @@ pub fn recommend_for_user(
         _ => Vec::new(),
     };
 
-    let resources = mgr.list_resources(None, None)?;
-    let mut all_candidates: Vec<_> = resources
-        .into_iter()
-        .filter(|r| r.kind == ResourceKind::Skill)
-        .collect();
-
-    // Per-user filter (schema v15+). Bypassed when user_id is None — the
-    // CLI hook + legacy single-user server path go through that branch.
-    if let Some(uid) = user_id {
-        let db = mgr.db();
-        let user = db.find_user_by_id(uid).ok().flatten();
-        let prefs = user
-            .as_ref()
-            .map(|u| crate::core::prefs::UserPrefs::from_json_str(&u.prefs_json))
-            .unwrap_or_default();
-        if !prefs.allow_public_recommend {
-            // candidate = library names ∪ skills the user owns
-            let lib: std::collections::BTreeSet<String> = db
-                .library_list(uid)
-                .unwrap_or_default()
-                .into_iter()
-                .collect();
-            all_candidates.retain(|r| {
-                // Owned by this user → always in; otherwise must be in library
-                // and currently a public skill (no owner). resource.rs may not
-                // expose owner_user_id yet — defensive: if `owner_user_id` is
-                // ever added as a field we'll wire it here.
-                lib.contains(&r.name)
-            });
+    let db = mgr.db();
+    let mut all_candidates: Vec<_> = match user_id {
+        Some(uid) => {
+            let prefs = db
+                .find_user_by_id(uid)
+                .ok()
+                .flatten()
+                .map(|u| crate::core::prefs::UserPrefs::from_json_str(&u.prefs_json))
+                .unwrap_or_default();
+            if prefs.allow_public_recommend {
+                db.list_resources_for_user(Some(ResourceKind::Skill), Some(uid))?
+            } else {
+                let lib: std::collections::BTreeSet<String> = db
+                    .library_list(uid)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .collect();
+                db.list_resources_for_user(Some(ResourceKind::Skill), Some(uid))?
+                    .into_iter()
+                    .filter(|r| r.owner_user_id.as_deref() == Some(uid) || lib.contains(&r.name))
+                    .collect()
+            }
         }
-        // allow_public_recommend = true → no filter (= all skills the user
-        // can see; private-skill ownership filter is added when resource.rs
-        // gains the field in the installer/scanner pass).
-    }
+        None => mgr
+            .list_resources(Some(ResourceKind::Skill), None)?
+            .into_iter()
+            .filter(|r| r.owner_user_id.is_none())
+            .collect(),
+    };
+    all_candidates.sort_by(|a, b| {
+        a.name
+            .cmp(&b.name)
+            .then_with(|| b.owner_user_id.is_some().cmp(&a.owner_user_id.is_some()))
+            .then_with(|| b.installed_at.cmp(&a.installed_at))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    let mut seen_candidate_names = std::collections::HashSet::new();
+    all_candidates.retain(|r| seen_candidate_names.insert(r.name.clone()));
 
     if all_candidates.is_empty() {
         return Ok(RouterDecision {
@@ -261,17 +262,19 @@ pub fn recommend_for_user(
     // Short / ambiguous prompts (< 2 query terms) skip the prefilter — BM25
     // on a single token degenerates to "any doc containing that token" and
     // hides legitimate matches whose desc happens to use a synonym.
-    // Override top-K via env. Default 50; users testing aggressive prefilter
-    // can set RUNAI_BM25_TOP_K=10 to give LLM only the strongest matches.
+    // Override top-K via env for local experiments; otherwise align candidate
+    // injection with the persisted router setting so the dashboard's top_k
+    // value actually reduces the LLM input size.
     let top_k: usize = std::env::var("RUNAI_BM25_TOP_K")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(BM25_TOP_K);
+        .unwrap_or(cfg.top_k)
+        .clamp(1, BM25_TOP_K_MAX);
 
     let bm25_disabled = std::env::var("RUNAI_BM25_DISABLED").is_ok();
-    // Default: hybrid scoring (BM25 0.6 + LLM/10 0.25 + user/10 0.15) then
-    // top 30 → LLM. Empirically beats pure BM25 prefilter on prompts where
-    // descriptions are weak / cross-lingual.
+    // Default: hybrid scoring, then configured top-K → LLM. Empirically
+    // beats pure BM25 prefilter on prompts where descriptions are weak /
+    // cross-lingual.
     //
     // Escape hatches:
     //   RUNAI_BM25_PURE=1     → pure BM25 score ranking (no LLM/user weight)
@@ -284,8 +287,8 @@ pub fn recommend_for_user(
     // Query expansion (opt-in): rewrite short prompts via the LLM into a
     // BM25-friendly keyword list before prefilter. Off by default —
     // empirically in hybrid mode (`bm25 * 0.4 + llm_score/10 * 0.6`) the
-    // LLM-score weight dominates and reshuffling BM25 doesn't change the
-    // top-30; the rewrite call just adds ~400ms with no chosen-set change.
+    // LLM-score weight dominates and reshuffling BM25 rarely changes the
+    // bounded top-K; the rewrite call adds latency with no chosen-set change.
     // Worth enabling only with `RUNAI_QUERY_REWRITE_ENABLE=1`, typically
     // paired with `RUNAI_BM25_PURE=1` to give BM25 score more weight.
     // Failure falls back to the original prompt.
@@ -330,7 +333,10 @@ pub fn recommend_for_user(
     let q_terms = bm25::tokenize(&bm25_input_query);
     let mut bm25_fallback_reason: &'static str = "";
 
-    let summaries = mgr.db().skill_ai_summary_all().unwrap_or_default();
+    let indices = mgr
+        .db()
+        .skill_ai_index_all_by_resource_key()
+        .unwrap_or_default();
     let groups_by_resource = mgr.db().groups_for_all_resources().unwrap_or_default();
     let groups_of = |resource_id: &str| -> Vec<String> {
         groups_by_resource
@@ -349,19 +355,21 @@ pub fn recommend_for_user(
         bm25_fallback_reason = "query-too-short";
         all_candidates
     } else {
-        // BM25 doc text: prefer AI summary over raw description (summary is
-        // bilingual + structured task/triggers/inputs/outputs, much higher
-        // signal-to-noise than the typically-English crowdsourced
-        // description). Falls back to description only when enrich hasn't
-        // run for this skill yet.
+        // BM25 doc text: prefer the structured search_doc over the raw
+        // description. search_doc packs name + summary + trigger/not-for
+        // tokens and is built specifically for retrieval.
         let docs: Vec<String> = all_candidates
             .iter()
             .map(|r| {
-                let summary = summaries.get(&r.name).map(String::as_str).unwrap_or("");
-                let body = if summary.is_empty() {
-                    r.description.as_str()
+                let index_key = Database::skill_ai_index_key_for_resource(r);
+                let body = if let Some(index) = indices.get(&index_key) {
+                    if index.search_doc.is_empty() {
+                        r.description.as_str()
+                    } else {
+                        index.search_doc.as_str()
+                    }
                 } else {
-                    summary
+                    r.description.as_str()
                 };
                 let groups = groups_of(&r.id).join(" ");
                 if groups.is_empty() {
@@ -371,7 +379,7 @@ pub fn recommend_for_user(
                 }
             })
             .collect();
-        let ranked = bm25::rank(user_prompt, &docs);
+        let ranked = bm25::rank(&bm25_input_query, &docs);
         // Build normalised score map for the [bm25:0.XX] tag.
         let max_score = ranked.iter().map(|(_, s)| *s).fold(0.0_f64, f64::max);
         if max_score > 0.0 {
@@ -393,13 +401,13 @@ pub fn recommend_for_user(
             // pass owns quality scoring end-to-end (incorporating implicit
             // user feedback when re-enriching). Keeps the system one-axis
             // simpler and avoids the noise of sparse manual ratings.
-            let scores_map = mgr.db().skill_llm_scores_all().unwrap_or_default();
             let mut scored: Vec<(usize, f64)> = all_candidates
                 .iter()
                 .enumerate()
                 .map(|(i, r)| {
                     let bm = bm25_scores.get(&r.name).copied().unwrap_or(0.0);
-                    let llm = scores_map.get(&r.name).copied().unwrap_or(5);
+                    let index_key = Database::skill_ai_index_key_for_resource(r);
+                    let llm = indices.get(&index_key).map(|i| i.llm_score).unwrap_or(5);
                     let llm_val = (llm as f64) / 10.0;
                     let hybrid = bm * 0.4 + llm_val * 0.6;
                     (i, hybrid)
@@ -449,8 +457,6 @@ pub fn recommend_for_user(
     }
 
     // Per-skill quality score 0-10. Owned entirely by the LLM enrich pass.
-    let scores_map = mgr.db().skill_llm_scores_all().unwrap_or_default();
-    let combined_score = |name: &str| -> Option<i64> { scores_map.get(name).copied() };
     // bm25 tags are only emitted in signal mode; in prefilter mode the
     // score already determined which 50 skills landed here.
     let emit_bm25_tag = bm25_as_signal;
@@ -465,7 +471,8 @@ pub fn recommend_for_user(
             // ratings are no longer part of the pipeline; the tag is named
             // explicitly `llm:N` rather than generic `score:N` to make this
             // obvious to the router LLM (and to humans inspecting the prompt).
-            if let Some(s) = combined_score(&r.name) {
+            let index_key = Database::skill_ai_index_key_for_resource(r);
+            if let Some(s) = indices.get(&index_key).map(|row| row.llm_score) {
                 tags.push_str(&format!(" [llm:{}]", s));
             }
             if emit_bm25_tag {
@@ -478,11 +485,11 @@ pub fn recommend_for_user(
                 let shown: Vec<&str> = gs.iter().take(3).map(String::as_str).collect();
                 tags.push_str(&format!(" [group:{}]", shown.join(",")));
             }
-            // Show AI summary (bilingual + structured) when available — it's
-            // higher-signal than the raw description. Falls back to
-            // description for skills that haven't been enriched yet.
-            let body_for_llm = match summaries.get(&r.name) {
-                Some(s) if !s.is_empty() => s.as_str(),
+            // Show the short router card when available — it is the compact
+            // LLM-facing digest built specifically for this prompt. Falls
+            // back to the raw description when a skill has not been enriched.
+            let body_for_llm = match indices.get(&index_key) {
+                Some(index) if !index.router_card.is_empty() => index.router_card.as_str(),
                 _ => r.description.as_str(),
             };
             format!("- {}{tags}: {}", r.name, body_for_llm)
@@ -512,17 +519,20 @@ pub fn recommend_for_user(
     let history_block = if history.is_empty() {
         String::new()
     } else {
-        HISTORY_PREFIX_TEMPLATE.replace("{HISTORY}", &history)
+        crate::core::prompts::template_body(HISTORY_PREFIX_TEMPLATE).replace("{HISTORY}", &history)
     };
 
     let already_routed_block = if !inject_already_routed || already_routed.is_empty() {
         String::new()
     } else {
-        ALREADY_ROUTED_TEMPLATE.replace("{ALREADY_ROUTED}", &already_routed.join(", "))
+        crate::core::prompts::template_body(ALREADY_ROUTED_TEMPLATE)
+            .replace("{ALREADY_ROUTED}", &already_routed.join(", "))
     };
 
     let cwd_block = match cwd {
-        Some(c) if !c.is_empty() && inject_cwd => CWD_PREFIX_TEMPLATE.replace("{CWD}", c),
+        Some(c) if !c.is_empty() && inject_cwd => {
+            crate::core::prompts::template_body(CWD_PREFIX_TEMPLATE).replace("{CWD}", c)
+        }
         _ => String::new(),
     };
     let project_context_block = match cwd {
@@ -532,14 +542,14 @@ pub fn recommend_for_user(
         _ => String::new(),
     };
 
-    let user_msg = USER_MSG_TEMPLATE
+    let user_msg = crate::core::prompts::template_body(USER_MSG_TEMPLATE)
         .replace("{HISTORY_BLOCK}", &history_block)
         .replace("{ALREADY_ROUTED_BLOCK}", &already_routed_block)
         .replace("{CWD_BLOCK}", &cwd_block)
         .replace("{PROJECT_CONTEXT_BLOCK}", &project_context_block)
         .replace("{CANDIDATE_LISTING}", &candidate_listing)
         .replace("{USER_PROMPT}", user_prompt)
-        .replace("{TOP_K}", &cfg.top_k.to_string());
+        .replace("{TOP_K}", &top_k.to_string());
 
     // Build conversation history when this session has prior turns AND
     // Conversation mode is on. Oneshot keeps history empty regardless.
@@ -576,14 +586,14 @@ pub fn recommend_for_user(
         ),
     };
     // Drop names that the LLM hallucinated against the candidate set (they
-    // can't be loaded). Also drop anything in already_routed to enforce
-    // session memory at the runai layer regardless of LLM compliance.
-    let already_set: std::collections::HashSet<String> = already_routed.iter().cloned().collect();
+    // can't be loaded). Already-routed names stay eligible here: the prompt
+    // warns the router about them, but follow-up requests can still re-surface
+    // the same skill if it is the right answer again.
     let candidate_set: std::collections::HashSet<String> =
         candidates.iter().map(|r| r.name.clone()).collect();
     let chosen_names: Vec<String> = chosen_names
         .into_iter()
-        .filter(|n| candidate_set.contains(n) && !already_set.contains(n))
+        .filter(|n| candidate_set.contains(n))
         .collect();
     if std::env::var("RUNAI_RECOMMEND_DEBUG").is_ok() {
         eprintln!(
@@ -606,11 +616,12 @@ pub fn recommend_for_user(
     let mut out = Vec::new();
     for name in chosen_names.iter() {
         if let Some(r) = by_name.get(name) {
-            // Prefer the AI-generated summary (bilingual, structured
-            // task/triggers/inputs/outputs/not-for, 6 lines) over the raw
-            // crowdsourced description — higher signal density.
-            let desc_for_agent = match summaries.get(&r.name) {
-                Some(s) if !s.is_empty() => s.clone(),
+            // Prefer the compact router card when present; otherwise use
+            // the raw description.
+            let index_key = Database::skill_ai_index_key_for_resource(r);
+            let desc_for_agent = match indices.get(&index_key) {
+                Some(index) if !index.router_card.is_empty() => index.router_card.clone(),
+                Some(index) if !index.summary.is_empty() => index.summary.clone(),
                 _ => r.description.clone(),
             };
             out.push(RecommendedSkill {

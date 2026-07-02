@@ -1,4 +1,4 @@
-//! Schema creation + ALL migrations (v1–v16), monolithic.
+//! Schema creation + ALL migrations (v1–v21), monolithic.
 //!
 //! INVARIANT: keep `init_schema` and every versioned migration in this one
 //! file. Migrations run on every `open()` with no version lock; splitting them
@@ -394,6 +394,42 @@ impl Database {
 
                  DELETE FROM schema_version;
                  INSERT INTO schema_version VALUES (20);",
+            )?;
+        }
+
+        if version < 21 {
+            // Structured recommend index:
+            // - owner_user_id: '' for public-pool summary, uid for a user's
+            //   private same-named skill
+            // - summary: user-facing / publish gate summary
+            // - search_doc: BM25 retriever text
+            // - router_card: short router-facing candidate card
+            // - source_hash: content freshness (name + description + SKILL.md)
+            // - prompt_hash: layout freshness (summary_lang + output layout)
+            // - format_key: human-readable layout signature for debugging
+            self.conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS resource_ai_summary_v21 (
+                    owner_user_id TEXT NOT NULL DEFAULT '',
+                    name TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    llm_score INTEGER NOT NULL DEFAULT 5,
+                    search_doc TEXT NOT NULL DEFAULT '',
+                    router_card TEXT NOT NULL DEFAULT '',
+                    source_hash TEXT NOT NULL DEFAULT '',
+                    prompt_hash TEXT NOT NULL DEFAULT '',
+                    format_key TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY (owner_user_id, name)
+                 );
+                 INSERT OR REPLACE INTO resource_ai_summary_v21 (
+                    owner_user_id, name, summary, updated_at, llm_score
+                 )
+                 SELECT '', name, summary, updated_at, llm_score
+                   FROM resource_ai_summary;
+                 DROP TABLE resource_ai_summary;
+                 ALTER TABLE resource_ai_summary_v21 RENAME TO resource_ai_summary;
+                 DELETE FROM schema_version;
+                 INSERT INTO schema_version VALUES (21);",
             )?;
         }
 

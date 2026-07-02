@@ -72,9 +72,7 @@ pub(super) async fn api_skills(
     let resources = db
         .list_resources_for_user(None, owner_scope.as_deref())
         .map_err(ApiError::Internal)?;
-    let summaries = db.skill_ai_summary_all().unwrap_or_default();
-    let summaries_ts = db.skill_ai_summary_timestamps().unwrap_or_default();
-    let scores = db.skill_llm_scores_all().unwrap_or_default();
+    let indices = db.skill_ai_index_all_by_resource_key().unwrap_or_default();
 
     let mut skills = Vec::new();
     let mut enriched = 0usize;
@@ -83,20 +81,22 @@ pub(super) async fn api_skills(
         if r.kind != ResourceKind::Skill {
             continue;
         }
-        let summary = summaries.get(&r.name).cloned().unwrap_or_default();
+        let index_key = crate::core::db::Database::skill_ai_index_key_for_resource(&r);
+        let index = indices.get(&index_key);
+        let summary = index.map(|row| row.summary.clone()).unwrap_or_default();
         // 3-state: in-flight registry + summary timestamp decide 已富集 /
         // 富集中 / 未富集 (a re-enriched skill with a stale summary shows 富集中).
         let enrich_status = super::enrich_state::status_for(
             &r.name,
             !summary.is_empty(),
-            summaries_ts.get(&r.name).copied(),
+            index.map(|row| row.updated_at),
         );
         match enrich_status {
             "enriched" => enriched += 1,
             "enriching" => enriching += 1,
             _ => {}
         }
-        let llm_score = scores.get(&r.name).copied();
+        let llm_score = index.map(|row| row.llm_score);
         skills.push(SkillRow {
             name: r.name.clone(),
             description: r.description.clone(),
@@ -173,11 +173,15 @@ pub(super) async fn api_skill_detail(
         .find_resource_by_name_for_user(ResourceKind::Skill, &name, owner_scope.as_deref())
         .map_err(ApiError::Internal)?
         .ok_or(ApiError::NotFound)?;
-    let summary = db.skill_ai_summary(&name).unwrap_or_default();
+    let summary = db
+        .skill_ai_index_for_resource(&resource)
+        .unwrap_or_default()
+        .map(|row| row.summary)
+        .unwrap_or_default();
     let llm_score = if summary.is_empty() {
         None
     } else {
-        Some(db.skill_llm_score(&name).unwrap_or(5))
+        Some(db.skill_llm_score_for_resource(&resource).unwrap_or(5))
     };
     let skill_md_path = resource.directory.join("SKILL.md");
     const MAX_BYTES: usize = 60_000;

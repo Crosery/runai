@@ -13,7 +13,7 @@ fn migration_creates_schema_version() {
         .conn
         .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 20);
+    assert_eq!(version, 21);
 }
 
 #[test]
@@ -46,6 +46,57 @@ fn migration_v3_adds_usage_columns() {
     let loaded = db.get_resource("local:test").unwrap().unwrap();
     assert_eq!(loaded.usage_count, 0);
     assert_eq!(loaded.last_used_at, None);
+}
+
+#[test]
+fn migration_v21_moves_ai_summary_to_owner_scoped_key() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("legacy.db");
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER NOT NULL);
+             INSERT INTO schema_version VALUES (20);
+             CREATE TABLE resource_ai_summary (
+                name TEXT PRIMARY KEY,
+                summary TEXT NOT NULL,
+                updated_at INTEGER NOT NULL,
+                llm_score INTEGER NOT NULL DEFAULT 5
+             );
+             INSERT INTO resource_ai_summary (name, summary, updated_at, llm_score)
+             VALUES ('legacy', 'task: legacy public summary', 42, 8);",
+        )
+        .unwrap();
+    }
+
+    let db = Database::open(&db_path).unwrap();
+    assert_eq!(db.schema_version(), 21);
+    let loaded = db.skill_ai_index("legacy").unwrap().unwrap();
+    assert_eq!(loaded.summary, "task: legacy public summary");
+    assert_eq!(loaded.updated_at, 42);
+    assert_eq!(loaded.llm_score, 8);
+
+    let mut stmt = db
+        .conn_ref()
+        .prepare("PRAGMA table_info(resource_ai_summary)")
+        .unwrap();
+    let cols: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(1))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert!(cols.contains(&"owner_user_id".to_string()));
+    assert!(cols.contains(&"search_doc".to_string()));
+
+    let owner: String = db
+        .conn_ref()
+        .query_row(
+            "SELECT owner_user_id FROM resource_ai_summary WHERE name = 'legacy'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(owner, "");
 }
 
 #[test]
@@ -272,7 +323,7 @@ fn schema_at_v15_after_open() {
     // this test is kept for git-blame continuity; the v15 tables it
     // spot-checks below are still there post-v17, just behind a higher
     // version number.
-    assert_eq!(version, 20);
+    assert_eq!(version, 21);
 
     // Tables must exist
     for tbl in &["users", "user_skill_library"] {
@@ -406,6 +457,84 @@ fn library_crud_roundtrip() {
     db.library_add("u2", "overdrive").unwrap();
     assert_eq!(db.library_list("u1").unwrap(), vec!["bolder"]);
     assert_eq!(db.library_list("u2").unwrap(), vec!["overdrive"]);
+}
+
+#[test]
+fn ai_index_roundtrip() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(&tmp.path().join("ai.db")).unwrap();
+
+    let idx = crate::core::db::SkillAiIndex {
+        summary: "task: 生成文档\ntriggers: docx".into(),
+        search_doc: "docx 生成文档 trigger".into(),
+        router_card: "docx: 生成文档 | trigger".into(),
+        llm_score: 7,
+        updated_at: 123,
+        source_hash: "source".into(),
+        prompt_hash: "prompt".into(),
+        format_key: "summary-task-triggers-inputs-outputs-not-for-score".into(),
+    };
+    db.set_skill_ai_index("docx-skill", &idx).unwrap();
+
+    let loaded = db.skill_ai_index("docx-skill").unwrap().unwrap();
+    assert_eq!(loaded.summary, idx.summary);
+    assert_eq!(loaded.search_doc, idx.search_doc);
+    assert_eq!(loaded.router_card, idx.router_card);
+    assert_eq!(loaded.llm_score, idx.llm_score);
+    assert_eq!(loaded.updated_at, idx.updated_at);
+    assert_eq!(loaded.source_hash, idx.source_hash);
+    assert_eq!(loaded.prompt_hash, idx.prompt_hash);
+    assert_eq!(loaded.format_key, idx.format_key);
+}
+
+#[test]
+fn ai_index_scoped_roundtrip_keeps_same_name_isolated() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(&tmp.path().join("ai-scoped.db")).unwrap();
+
+    let public = crate::core::db::SkillAiIndex {
+        summary: "task: public summary".into(),
+        search_doc: "public searchable words".into(),
+        router_card: "public card".into(),
+        llm_score: 4,
+        updated_at: 10,
+        source_hash: "public-source".into(),
+        prompt_hash: "public-prompt".into(),
+        format_key: "fmt".into(),
+    };
+    let private = crate::core::db::SkillAiIndex {
+        summary: "task: private summary".into(),
+        search_doc: "private searchable words".into(),
+        router_card: "private card".into(),
+        llm_score: 9,
+        updated_at: 20,
+        source_hash: "private-source".into(),
+        prompt_hash: "private-prompt".into(),
+        format_key: "fmt".into(),
+    };
+
+    db.set_skill_ai_index("shared", &public).unwrap();
+    db.set_skill_ai_index_scoped("shared", Some("usr_alice"), &private)
+        .unwrap();
+
+    let loaded_public = db.skill_ai_index("shared").unwrap().unwrap();
+    let loaded_private = db
+        .skill_ai_index_scoped("shared", Some("usr_alice"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded_public.summary, "task: public summary");
+    assert_eq!(loaded_public.llm_score, 4);
+    assert_eq!(loaded_private.summary, "task: private summary");
+    assert_eq!(loaded_private.llm_score, 9);
+
+    let visible_public = db.skill_ai_index_all_visible(None).unwrap();
+    assert_eq!(visible_public["shared"].summary, "task: public summary");
+    let visible_alice = db.skill_ai_index_all_visible(Some("usr_alice")).unwrap();
+    assert_eq!(visible_alice["shared"].summary, "task: private summary");
+
+    let all = db.skill_ai_index_all_by_resource_key().unwrap();
+    assert!(all.contains_key(&Database::skill_ai_index_key(None, "shared")));
+    assert!(all.contains_key(&Database::skill_ai_index_key(Some("usr_alice"), "shared")));
 }
 
 // =========================================================================

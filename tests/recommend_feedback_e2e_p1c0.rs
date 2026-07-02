@@ -109,9 +109,9 @@ impl TestEnv {
     fn set_summary(&self, name: &str, summary: &str, llm_score: i64) {
         let conn = rusqlite::Connection::open(self.db_path()).expect("open test db");
         conn.execute(
-            "INSERT INTO resource_ai_summary (name, summary, llm_score, updated_at)
-             VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(name) DO UPDATE SET
+            "INSERT INTO resource_ai_summary (owner_user_id, name, summary, llm_score, updated_at)
+             VALUES ('', ?1, ?2, ?3, ?4)
+             ON CONFLICT(owner_user_id, name) DO UPDATE SET
                 summary = excluded.summary,
                 llm_score = excluded.llm_score,
                 updated_at = excluded.updated_at",
