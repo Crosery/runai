@@ -35,6 +35,10 @@
         const toggleDisableBtn = u.disabled
           ? `<button class="btn-small" data-act="enable" data-uid="${u.user_id}">启用</button>`
           : `<button class="btn-small" data-act="disable" data-uid="${u.user_id}" ${isSelf ? 'disabled' : ''}>禁用</button>`;
+        // Admin may reset their own password too (mirrors the server-side
+        // contract of POST /api/admin/users/{id}/reset-password, which
+        // explicitly allows self-reset) — no `isSelf` disabled guard here.
+        const resetPwBtn = `<button class="btn-small" data-act="reset-password" data-uid="${u.user_id}" data-uname="${escapeHTML(u.username)}">重置密码</button>`;
         const deleteBtn = `<button class="btn-small btn-danger" data-act="delete" data-uid="${u.user_id}" data-uname="${escapeHTML(u.username)}" ${isSelf ? 'disabled' : ''}>删除</button>`;
         row.innerHTML = `
           <div class="uname ${isSelf ? 'self' : ''}">${escapeHTML(u.username)}${isSelf ? ' (你)' : ''}</div>
@@ -43,7 +47,7 @@
           <div>${u.library_size}</div>
           <div>${u.event_count}</div>
           <div>${created}</div>
-          <div class="actions">${promoteBtn}${toggleDisableBtn}${deleteBtn}</div>
+          <div class="actions">${promoteBtn}${toggleDisableBtn}${resetPwBtn}${deleteBtn}</div>
         `;
         rowsEl.appendChild(row);
       }
@@ -66,6 +70,27 @@
         await api('POST', `/api/admin/users/${encodeURIComponent(userId)}`, {
           disabled: action === 'disable',
         });
+      } else if (action === 'reset-password') {
+        // window.prompt, same admin-only convenience as the publish-reject
+        // reason prompt in 19-admin-publish-review.js. Empty input cancels
+        // silently (no alert) — the admin changed their mind, not an error.
+        const newPw = window.prompt(
+          `为用户 ${username || userId} 设置新密码（至少 6 位）：`,
+          '',
+        );
+        if (newPw === null || !newPw.trim()) return;
+        const resp = await api(
+          'POST',
+          `/api/admin/users/${encodeURIComponent(userId)}/reset-password`,
+          { new_password: newPw.trim() },
+        );
+        await showInfo({
+          title: '密码已重置',
+          body: `用户 ${resp?.username || username || userId} 的密码已重置，请把新密码告知该用户；其旧 api_key/登录态已失效，需重新登录才能获得新凭据。`,
+          ok: '知道了',
+        });
+        await loadAdminUsers();
+        return;
       } else if (action === 'delete') {
         const ok = await showConfirm({
           title: '删除用户',

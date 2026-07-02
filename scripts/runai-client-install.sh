@@ -322,6 +322,9 @@ PY
       RESP_FILE=/tmp/runai-login-resp.$$
     elif [[ "$LOGIN_ONLY" -eq 1 ]]; then
       fail "登录失败 (HTTP $LOGIN_HTTP),且 --login-only 已开,不自动注册"
+      if [[ "$LOGIN_HTTP" == "401" ]]; then
+        warn "忘记密码请联系 server 管理员用 runai admin reset-password 重置"
+      fi
       rm -f /tmp/runai-login-resp.$$
       exit 1
     else
@@ -335,6 +338,9 @@ PY
         RESP_FILE=/tmp/runai-reg-resp.$$
       else
         fail "登录 + 注册都失败 (login=$LOGIN_HTTP register=$REG_HTTP)"
+        if [[ "$LOGIN_HTTP" == "401" ]]; then
+          warn "忘记密码请联系 server 管理员用 runai admin reset-password 重置"
+        fi
         printf "  ${D}server 返回:${R} " >&2
         cat /tmp/runai-reg-resp.$$ >&2 || true
         printf "\n" >&2

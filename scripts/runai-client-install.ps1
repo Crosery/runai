@@ -180,16 +180,23 @@ if ($DoAuth) {
         $resp = $null
         Write-Warn2 "trying sign-in as $RunaiUsername"
         $loginFailed = $false
+        $loginHttpStatus = $null
         try {
             $resp = Invoke-RestMethod -Method Post -Uri "$ServerUrl/auth/login" `
                 -ContentType "application/json; charset=utf-8" -Body $authBody
             Write-Ok "signed in as $RunaiUsername"
         } catch {
             $loginFailed = $true
+            if ($_.Exception.Response) {
+                try { $loginHttpStatus = [int]$_.Exception.Response.StatusCode } catch {}
+            }
         }
         if ($loginFailed) {
             if ($LoginOnly) {
                 Write-Fail2 "sign-in failed and RUNAI_PHASE=login-only is set"
+                if ($loginHttpStatus -eq 401) {
+                    Write-Warn2 "forgot your password? ask the server admin to reset it with runai admin reset-password"
+                }
                 exit 1
             }
             Write-Warn2 "user does not exist, registering"
@@ -199,6 +206,9 @@ if ($DoAuth) {
                 Write-Ok "registered $RunaiUsername"
             } catch {
                 Write-Fail2 "auth failed: $($_.Exception.Message)"
+                if ($loginHttpStatus -eq 401) {
+                    Write-Warn2 "forgot your password? ask the server admin to reset it with runai admin reset-password"
+                }
                 exit 1
             }
         }

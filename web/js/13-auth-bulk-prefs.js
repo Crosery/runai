@@ -131,7 +131,17 @@
       // shows zero usage_count for the user.
       await reloadCurrentView();
     } catch (e) {
-      err.textContent = e.message || (mode === 'register' ? '注册失败' : '登录失败');
+      if (mode === 'register') {
+        err.textContent = e.message || '注册失败';
+      } else if (e.status === 401) {
+        // Server replies with a uniform `invalid_credentials` for both
+        // "user doesn't exist" and "wrong password" (anti-enumeration,
+        // PLANNING §2.3 item 5) — keep that same non-distinguishing
+        // behavior here instead of surfacing the raw e.message.
+        err.textContent = '用户名或密码错误，请重试；忘记密码请联系管理员重置';
+      } else {
+        err.textContent = e.message || '登录失败';
+      }
       err.classList.remove('hide');
     }
   }
