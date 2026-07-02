@@ -394,6 +394,68 @@ fn trash_public_skill_still_uses_global_trash() {
     assert_eq!(entry.owner_user_id, None);
 }
 
+/// C5 (scan_findings.md): `SkillManager::find_resource_id` is documented as a
+/// PUBLIC-pool-only fuzzy lookup, and it feeds destructive local ops
+/// (`runai uninstall`, MCP `sm_delete`, `batch_delete`, group member
+/// resolution). Its fallback used `db.list_resources(None, None)` (ALL owners),
+/// so on a team box a name that only exists as a DIFFERENT user's private
+/// skill resolved to that private id — a destructive op documented as
+/// "public-pool only" could trash another user's private skill via a name
+/// collision the operator never saw.
+///
+/// Contract: a name that exists ONLY as a private row resolves to `None`;
+/// a github-sourced PUBLIC row (whose id the `github:{name}` prefix probe
+/// misses, so it relies on the fallback) still resolves.
+#[test]
+fn find_resource_id_is_public_pool_only() {
+    use runai::core::resource::Source;
+
+    let (_home, mgr) = setup();
+    let paths = mgr.paths();
+    let bob = "usr_bob00000";
+
+    // A skill that exists ONLY in bob's private pool.
+    paths.ensure_user_dirs(bob).unwrap();
+    let bob_root = paths.user_skills_dir(bob).unwrap();
+    write_skill(&bob_root, "privonly", "# bob private");
+    mgr.register_local_skill_for("privonly", Some(bob)).unwrap();
+
+    // find_resource_id must NOT reach into bob's private pool.
+    assert_eq!(
+        mgr.find_resource_id("privonly"),
+        None,
+        "a private-only skill name must not resolve through the public-pool-only entrypoint"
+    );
+
+    // A github-sourced PUBLIC skill: its id is `github:o/r:ghpub`, so the
+    // `github:ghpub` prefix probe misses and it depends on the fallback. The
+    // fallback must still find it (public rows, owner_user_id IS NULL).
+    let gh = Resource {
+        id: "github:o/r:ghpub".into(),
+        name: "ghpub".into(),
+        kind: ResourceKind::Skill,
+        description: "d".into(),
+        directory: paths.skills_dir().join("ghpub"),
+        source: Source::GitHub {
+            owner: "o".into(),
+            repo: "r".into(),
+            branch: "main".into(),
+        },
+        installed_at: 0,
+        enabled: std::collections::HashMap::new(),
+        usage_count: 0,
+        last_used_at: None,
+        owner_user_id: None,
+        publish_status: "draft".into(),
+    };
+    mgr.db().insert_resource(&gh).unwrap();
+    assert_eq!(
+        mgr.find_resource_id("ghpub").as_deref(),
+        Some("github:o/r:ghpub"),
+        "a public github-sourced skill must still resolve via the public-pool fallback"
+    );
+}
+
 // Compile-time check that we're exercising the public re-exports the
 // rest of the crate relies on. (Database is referenced indirectly via
 // `mgr.db()` returning `&Database`.)

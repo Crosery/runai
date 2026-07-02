@@ -113,7 +113,14 @@ impl SkillManager {
                 return Some(id);
             }
         }
-        if let Ok(all) = self.db.list_resources(None, None) {
+        // C5 (scan_findings.md): this entrypoint is public-pool-only (feeds
+        // destructive local ops — uninstall / sm_delete / batch_delete /
+        // group member resolution). The fallback must NOT reach another user's
+        // private row, or a name collision could trash their private skill.
+        // `list_resources_for_user(None, None)` filters `owner_user_id IS NULL`,
+        // still catching public rows (incl. github:owner/repo:name) whose id
+        // the prefix probes above miss.
+        if let Ok(all) = self.db.list_resources_for_user(None, None) {
             for r in all {
                 if r.name == name {
                     return Some(r.id);

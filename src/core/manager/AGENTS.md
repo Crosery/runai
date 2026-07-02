@@ -22,7 +22,7 @@ role: runtime
 - `trash_resource(id)` / `uninstall(id)` — move a skill/MCP into trash. `uninstall` is now a compatibility wrapper over `trash_resource`. Trash payload is owner-aware: public rows land in `<data>/trash/`, private rows land in `<data>/users/<uid>/trash/`. Restoration uses `entry.directory` (saved at trash time) so private skills come back to their per-user dir, never spilling into the public pool.
 - `list_trash()` / `find_trash_id(query)` / `restore_from_trash(id)` / `purge_trash(id)` / `empty_trash()`.
 - `list_resources(kind?, target?)` — unified listing (Skills from DB + MCPs by reading each CLI's config live via `mcp_discovery`). NOT owner-filtered — use `db.list_resources_for_user` directly for per-user views (the server's `/api/skills` handler does this).
-- `find_resource_id(name)` / `find_group_id(query)` — fuzzy lookup. Public-pool only; the server's owner-aware lookup goes through `db.find_resource_by_name_for_user`.
+- `find_resource_id(name)` / `find_group_id(query)` — fuzzy lookup. **Public-pool only, and enforced (C5):** the name-fallback goes through `db.list_resources_for_user(None, None)` (`owner_user_id IS NULL`), NEVER `db.list_resources(None, None)` (all owners) — otherwise a name that only exists as another user's private skill would resolve to that private id and feed destructive local ops (`uninstall` / `sm_delete` / `batch_delete` / group member resolution), letting an operator trash another user's private skill via a name collision. The server's owner-aware lookup goes through `db.find_resource_by_name_for_user`. Pinned by `tests/multiuser_owner_e2e.rs::find_resource_id_is_public_pool_only`.
 - `record_usage(name)` / `usage_stats()` — usage tracking (DB-backed).
 
 **Groups**:
