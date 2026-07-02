@@ -245,6 +245,76 @@ fn upload_eleventh_request_returns_429_empty_body() {
     );
 }
 
+/// C2 (scan_findings.md): `/api/users/me/skills/upload` — the actual
+/// user-facing private-pool upload endpoint after the issue #29 rewrite —
+/// must be throttled 10/hour/user, the same as its sibling
+/// `/api/community/upload` (which became admin-only). Without this an
+/// authenticated non-admin can flood the endpoint: each call extracts a
+/// tar.gz and forks a real `runai recommend enrich` LLM child → unbounded
+/// disk + LLM-provider spend. The 11th upload from the same Bearer user
+/// must be `429 + empty body`.
+#[test]
+fn private_upload_eleventh_request_returns_429_empty_body() {
+    let server = spawn_team_server();
+    let client = http_client();
+
+    // Register a user so we have a Bearer to send.
+    let reg = client
+        .post(format!("{}/users/register", server.base_url()))
+        .json(&serde_json::json!({
+            "username": "privuploader",
+            "password": "correct horse battery staple",
+        }))
+        .send()
+        .expect("POST /users/register");
+    assert_eq!(reg.status().as_u16(), 201);
+    let reg_body: serde_json::Value = reg.json().expect("register body");
+    let api_key = reg_body["api_key"].as_str().unwrap().to_string();
+
+    let mut last_status_in_quota = 0u16;
+    let start = Instant::now();
+    for i in 0..11 {
+        let resp = client
+            .post(format!("{}/api/users/me/skills/upload", server.base_url()))
+            .bearer_auth(&api_key)
+            // Deliberately empty / malformed body — the limiter runs before
+            // the handler, so the bucket counts regardless of whether the
+            // multipart body would have parsed.
+            .body("")
+            .send()
+            .expect("POST /api/users/me/skills/upload");
+        let status = resp.status().as_u16();
+        let body = resp.text().expect("body");
+        if i < 10 {
+            assert_ne!(
+                status,
+                429,
+                "request {} should pass the limiter (under quota); got 429 body={body:?}",
+                i + 1
+            );
+            last_status_in_quota = status;
+        } else {
+            assert_eq!(
+                status, 429,
+                "11th private upload from same user must be 429; got {status} body={body:?}",
+            );
+            assert!(
+                body.is_empty(),
+                "429 body must be empty (PLANNING §2.3 item 6); got {body:?}",
+            );
+        }
+    }
+    assert!(
+        last_status_in_quota > 0,
+        "should have seen at least one non-429 status before the cliff",
+    );
+    assert!(
+        start.elapsed() < Duration::from_secs(30),
+        "private upload limit test took too long ({:?}) — bucket may have rolled over",
+        start.elapsed()
+    );
+}
+
 /// PLANNING §2.3 item 6: `/skills/get/*` 20/sec/IP. We hammer a
 /// non-existent skill name to keep the handler cheap (`resolve_skill_dir`
 /// bails fast) and assert we see at least one 429 inside a 25-request

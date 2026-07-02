@@ -182,6 +182,16 @@ pub async fn serve_with(
     let skills_get_router = Router::new()
         .route("/skills/get/{name}", post(handle_skill_get))
         .layer(axum_middleware::from_fn(rate_limit::skills_get_limit));
+    // C2 (scan_findings.md): the user-facing private-pool upload endpoint gets
+    // the same 10/hour/user throttle as /api/community/upload. Mounted as its
+    // own sub-router so the limit confines to exactly this path (and picks up
+    // its own PrivateUpload bucket namespace). Keeps the 64 MiB body cap.
+    let private_upload_router = Router::new()
+        .route(
+            "/api/users/me/skills/upload",
+            post(api_user_skills_upload).layer(DefaultBodyLimit::max(64 * 1024 * 1024)),
+        )
+        .layer(axum_middleware::from_fn(rate_limit::private_upload_limit));
 
     let app = Router::new()
         .route("/", get(serve_index))
@@ -325,11 +335,9 @@ pub async fn serve_with(
         // PLANNING §1.4 rewrite — private skill upload entry point.
         // Multipart name+bundle, lands at <data>/users/<uid>/skills/<name>/
         // with publish_status='draft'. team mode only; owner mode 403.
-        // Body limit 64 MiB to match community/upload.
-        .route(
-            "/api/users/me/skills/upload",
-            post(api_user_skills_upload).layer(DefaultBodyLimit::max(64 * 1024 * 1024)),
-        )
+        // Mounted via the `private_upload_router` sub-router below so it picks
+        // up both the 64 MiB body limit AND the 10/hour/user rate limit
+        // (C2 — scan_findings.md).
         // PLANNING §1.4 C9e — caller lists their own private skills with
         // publish + enrich state so the CLI / dashboard can render
         // status badges and gate the publish-request button.
@@ -366,6 +374,7 @@ pub async fn serve_with(
         // Merge the rate-limited sub-routers and attach the shared state.
         .merge(login_router)
         .merge(upload_router)
+        .merge(private_upload_router)
         .merge(skills_get_router)
         // PLANNING §2.3 item 4 — every un-matched path returns a uniform
         // empty-body 404. No X-Powered-By, no JSON `{"error":"not found"}`,

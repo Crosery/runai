@@ -1,13 +1,14 @@
 //! Per-route fixed-window rate limiting (PLANNING.md §2.3 item 6).
 //!
-//! Three categories, all tuned around "an automated agent walks one endpoint
+//! Four categories, all tuned around "an automated agent walks one endpoint
 //! to abuse it":
 //!
-//! | endpoint                  | limit          | key      |
-//! |---------------------------|----------------|----------|
-//! | `POST /auth/login`        | 5 / minute     | client IP|
-//! | `POST /api/community/upload` | 10 / hour   | user_id  |
-//! | `*  /skills/get/*`        | 20 / second    | client IP|
+//! | endpoint                        | limit        | key      |
+//! |---------------------------------|--------------|----------|
+//! | `POST /auth/login`              | 5 / minute   | client IP|
+//! | `POST /api/community/upload`    | 10 / hour    | user_id  |
+//! | `POST /api/users/me/skills/upload` | 10 / hour | user_id  |
+//! | `*  /skills/get/*`              | 20 / second  | client IP|
 //!
 //! When the bucket is full, the request is short-circuited at the middleware
 //! layer with `429 + empty body` — no `Retry-After`, no JSON `{"error": ...}`,
@@ -54,6 +55,15 @@ enum RouteClass {
     /// the request is unauthenticated (which the upload handler would 401
     /// anyway, but the limiter runs first so we have to key on something).
     CommunityUpload,
+    /// `POST /api/users/me/skills/upload` — 10 / hour / user_id. The
+    /// user-facing private-pool upload endpoint (issue #29 made
+    /// `/api/community/upload` admin-only, so THIS is the path any non-admin
+    /// can flood). Each call extracts a tar.gz AND forks a `runai recommend
+    /// enrich` LLM child, so an unthrottled loop is a disk-fill + LLM-spend
+    /// DoS. Same 10/hour/user quota as `CommunityUpload` but a separate
+    /// bucket namespace (distinct `tag`), so the two upload surfaces don't
+    /// share a counter. (C2 — scan_findings.md.)
+    PrivateUpload,
     /// `* /skills/get/*` — 20 / second / IP. Defends against scraping the
     /// whole skill catalog one HTTP call at a time.
     SkillsGet,
@@ -63,7 +73,7 @@ impl RouteClass {
     fn window(self) -> Duration {
         match self {
             RouteClass::AuthLogin => Duration::from_secs(60),
-            RouteClass::CommunityUpload => Duration::from_secs(60 * 60),
+            RouteClass::CommunityUpload | RouteClass::PrivateUpload => Duration::from_secs(60 * 60),
             RouteClass::SkillsGet => Duration::from_secs(1),
         }
     }
@@ -71,7 +81,7 @@ impl RouteClass {
     fn quota(self) -> u32 {
         match self {
             RouteClass::AuthLogin => 5,
-            RouteClass::CommunityUpload => 10,
+            RouteClass::CommunityUpload | RouteClass::PrivateUpload => 10,
             RouteClass::SkillsGet => 20,
         }
     }
@@ -83,6 +93,7 @@ impl RouteClass {
         match self {
             RouteClass::AuthLogin => "login",
             RouteClass::CommunityUpload => "upload",
+            RouteClass::PrivateUpload => "priv-upload",
             RouteClass::SkillsGet => "get",
         }
     }
@@ -207,7 +218,7 @@ async fn rate_limit_layer(
 ) -> Result<Response, Response> {
     let principal = match class {
         RouteClass::AuthLogin | RouteClass::SkillsGet => principal_ip(&req),
-        RouteClass::CommunityUpload => principal_user(&req),
+        RouteClass::CommunityUpload | RouteClass::PrivateUpload => principal_user(&req),
     };
     maybe_sweep(class);
     if !check_and_record(class, &principal) {
@@ -230,6 +241,13 @@ pub(in crate::server) async fn login_limit(req: Request<Body>, next: Next) -> Re
 
 pub(in crate::server) async fn upload_limit(req: Request<Body>, next: Next) -> Response {
     match rate_limit_layer(RouteClass::CommunityUpload, req, next).await {
+        Ok(r) => r,
+        Err(r) => r,
+    }
+}
+
+pub(in crate::server) async fn private_upload_limit(req: Request<Body>, next: Next) -> Response {
+    match rate_limit_layer(RouteClass::PrivateUpload, req, next).await {
         Ok(r) => r,
         Err(r) => r,
     }
@@ -289,6 +307,21 @@ mod tests {
             !check_and_record(RouteClass::CommunityUpload, "u:abc"),
             "11th hit must be over the 10/hour quota"
         );
+    }
+
+    #[test]
+    fn private_upload_quota_is_ten() {
+        let _guard = test_guard();
+        for _ in 0..10 {
+            assert!(check_and_record(RouteClass::PrivateUpload, "u:priv"));
+        }
+        assert!(
+            !check_and_record(RouteClass::PrivateUpload, "u:priv"),
+            "11th hit must be over the 10/hour quota"
+        );
+        // Separate bucket namespace from CommunityUpload — same principal, the
+        // two upload surfaces must not share a counter.
+        assert!(check_and_record(RouteClass::CommunityUpload, "u:priv"));
     }
 
     #[test]
