@@ -12,7 +12,11 @@ impl SkillManager {
             crate::core::mcp_register::McpRegister::migrate_all(&home);
         }
 
-        let paths = AppPaths::default_path();
+        // issue #24: resolve() honors RUNE_DATA_DIR / SKILL_MANAGER_DATA_DIR so
+        // a manager built inside the server process (many handlers call
+        // `SkillManager::new()`) lands in the SAME data dir the server chose,
+        // never a second env-blind `~/.runai`.
+        let paths = AppPaths::resolve();
         paths.ensure_dirs()?;
         // Normalize MCP backups to canonical shape; quarantine corrupt ones.
         let _ = Self::migrate_mcp_backups(&paths);

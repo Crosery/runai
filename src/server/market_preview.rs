@@ -77,7 +77,7 @@ pub(super) async fn api_market_preview(
         // another mirror race. Cache hits (success or empty body) both
         // honor TTL; we keep failures only 5 min so a fluke network
         // blip doesn't poison the entry for an hour.
-        let paths_cache = AppPaths::default_path();
+        let paths_cache = AppPaths::resolve();
         let cache_dir = paths_cache
             .data_dir()
             .join("market-cache")
@@ -291,7 +291,7 @@ pub(super) async fn api_market_preview_files(
         // Disk cache lookup — preview-files results live 1h on disk so
         // repeat clicks on the same skill don't burn the GitHub API
         // budget (60 req/h unauth, 5000/h with GITHUB_TOKEN).
-        let paths = AppPaths::default_path();
+        let paths = AppPaths::resolve();
         let cache_dir = paths.data_dir().join("market-cache").join("preview-files");
         let _ = std::fs::create_dir_all(&cache_dir);
         let cache_key = format!(

@@ -7,6 +7,10 @@
 //! runs the full scenario in an isolated HOME AND a second time under a
 //! non-default `RUNE_DATA_DIR` (the 4-20 / 4-27 root-cause region), asserting
 //! it only ever touches the test data dir.
+//!
+//! Since issue #24 the server HONORS `RUNE_DATA_DIR` (resolves via
+//! `AppPaths::resolve()`), so the env run's data dir IS the `RUNE_DATA_DIR`
+//! tempdir — the cascade must operate there and leave `HOME/.runai` unused.
 
 #![cfg(not(target_os = "windows"))]
 
@@ -42,10 +46,14 @@ fn wait_for_port(port: u16, t: Duration) -> bool {
 struct ServerGuard {
     child: Child,
     _home: TempDir,
-    _decoy: Option<TempDir>,
-    /// The server's REAL data dir — always `<home>/.runai` (the server uses
-    /// `AppPaths::default_path()`, which ignores `RUNE_DATA_DIR`).
+    _rune: Option<TempDir>,
+    /// The server's data dir. Since issue #24 the server honors
+    /// `RUNE_DATA_DIR`, so this is the env tempdir when set, else
+    /// `<home>/.runai`.
     data: PathBuf,
+    /// What `HOME/.runai` resolves to — asserted UNUSED when a divergent
+    /// `RUNE_DATA_DIR` is in effect (no state split).
+    home_runai: PathBuf,
     port: u16,
 }
 impl ServerGuard {
@@ -59,22 +67,25 @@ impl Drop for ServerGuard {
         let _ = self.child.wait();
     }
 }
-/// Spawn a team server (always HOME-rooted data dir). When `with_decoy` is true,
-/// set `RUNE_DATA_DIR` to a second tempdir: the server still serves from
-/// `HOME/.runai` (it uses `AppPaths::default_path()`), so this asserts the
-/// cascade follows the SERVER's data dir, not the env one — even when the env
-/// var is set. (Aside: `main.rs` startup DOES read the env dir to init it, a
-/// separate pre-existing footgun tracked in its own issue; that's why we don't
-/// assert "decoy untouched" here.)
-fn spawn_server(with_decoy: bool) -> ServerGuard {
+/// Spawn a team server. When `with_rune_data_dir` is true, set `RUNE_DATA_DIR`
+/// to a SEPARATE tempdir: the server honors it (issue #24), so the cascade must
+/// operate on that env dir and `HOME/.runai` must stay unused — this pins the
+/// cross-`RUNE_DATA_DIR` behavior in the 4-20 / 4-27 root-cause region.
+fn spawn_server(with_rune_data_dir: bool) -> ServerGuard {
     let home = tempfile::tempdir().unwrap();
-    let data = home.path().join(".runai");
-    std::fs::create_dir_all(data.join("skills")).unwrap();
-    let decoy_dir = if with_decoy {
+    let home_runai = home.path().join(".runai");
+    let rune_dir = if with_rune_data_dir {
         Some(tempfile::tempdir().unwrap())
     } else {
         None
     };
+    // Post-#24 the server resolves via env, so its data dir is the env dir
+    // when set, else HOME/.runai.
+    let data = match &rune_dir {
+        Some(d) => d.path().to_path_buf(),
+        None => home_runai.clone(),
+    };
+    std::fs::create_dir_all(data.join("skills")).unwrap();
     let port = free_port();
     let mut cmd = runai_cmd();
     cmd.arg("server")
@@ -90,7 +101,7 @@ fn spawn_server(with_decoy: bool) -> ServerGuard {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    match &decoy_dir {
+    match &rune_dir {
         Some(d) => {
             cmd.env("RUNE_DATA_DIR", d.path());
         }
@@ -102,8 +113,9 @@ fn spawn_server(with_decoy: bool) -> ServerGuard {
     let g = ServerGuard {
         child,
         _home: home,
-        _decoy: decoy_dir,
+        _rune: rune_dir,
         data,
+        home_runai,
         port,
     };
     assert!(wait_for_port(g.port, Duration::from_secs(8)));
@@ -133,10 +145,9 @@ fn register(s: &ServerGuard, u: &str, p: &str) -> Account {
     }
 }
 /// Plant a private skill for `uid` directly via the lib DB + filesystem —
-/// deliberately NOT via the HTTP upload, because upload fires a `recommend
-/// enrich` CLI subprocess that (unlike the server) honors `RUNE_DATA_DIR` and
-/// would pollute the decoy, masking what we want to test: that the CASCADE
-/// itself never touches the env data dir.
+/// deliberately NOT via the HTTP upload, which fires a `recommend enrich`
+/// subprocess. Planting straight into the server's data dir keeps the
+/// scenario deterministic (no async enrich races) and focused on the cascade.
 fn plant_private(db: &runai::core::db::Database, data: &Path, uid: &str, name: &str) {
     use runai::core::resource::{Resource, ResourceKind, Source};
     let dir = data.join("users").join(uid).join("skills").join(name);
@@ -165,10 +176,10 @@ fn plant_private(db: &runai::core::db::Database, data: &Path, uid: &str, name: &
     .unwrap();
 }
 
-fn run_scenario(with_decoy: bool) {
+fn run_scenario(with_rune_data_dir: bool) {
     use runai::core::db::Database;
 
-    let s = spawn_server(with_decoy);
+    let s = spawn_server(with_rune_data_dir);
     let admin = register(&s, "admin", "pw admin 1234");
     let alice = register(&s, "alice", "pw alice 1234");
     let bob = register(&s, "bob", "pw bob 1234");
@@ -274,6 +285,16 @@ fn run_scenario(with_decoy: bool) {
             .exists(),
         "bob's private skill must be untouched"
     );
+
+    // 7. issue #24: when a divergent RUNE_DATA_DIR is in effect, the server
+    //    operated entirely on it — HOME/.runai was never used as a data dir.
+    if with_rune_data_dir {
+        assert!(
+            !s.home_runai.join("runai.db").exists(),
+            "server must not split state into HOME/.runai, found {:?}",
+            s.home_runai
+        );
+    }
 }
 
 #[test]
@@ -282,6 +303,6 @@ fn delete_user_cascades_default_home() {
 }
 
 #[test]
-fn delete_user_cascades_with_rune_data_dir_decoy() {
+fn delete_user_cascades_with_rune_data_dir() {
     run_scenario(true);
 }

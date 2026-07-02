@@ -134,7 +134,12 @@ pub async fn serve_with(
     // every wrapper signature.
     super::state::set_server_mode(mode);
 
-    let paths = AppPaths::default_path();
+    // issue #24: honor RUNE_DATA_DIR / SKILL_MANAGER_DATA_DIR so the server's
+    // data dir matches what `main.rs` and every CLI subcommand (incl. the
+    // `recommend enrich` child the server spawns) resolve to. Using the
+    // env-blind `default_path()` here split a `RUNE_DATA_DIR=B runai server`
+    // between HOME/.runai (server) and B (enrich child).
+    let paths = AppPaths::resolve();
     let state = Arc::new(AppState {
         db_path: paths.db_path(),
         mode,

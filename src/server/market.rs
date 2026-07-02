@@ -66,7 +66,7 @@ pub(super) async fn api_market_refresh(
     let resp = tokio::task::spawn_blocking(move || -> Result<MarketRefreshResp, ApiError> {
         let db = state.db().map_err(ApiError::Internal)?;
         require_user(&headers, &db)?;
-        let paths = AppPaths::default_path();
+        let paths = AppPaths::resolve();
         let data_dir = paths.data_dir().to_path_buf();
         let sources = mkt::load_sources(&data_dir);
         let rt =
@@ -190,7 +190,7 @@ pub(super) async fn api_market_list(
     let resp = tokio::task::spawn_blocking(move || -> Result<MarketListResp, ApiError> {
         let db = state.db().map_err(ApiError::Internal)?;
         let user = require_user(&headers, &db)?;
-        let paths = AppPaths::default_path();
+        let paths = AppPaths::resolve();
         let data_dir = paths.data_dir().to_path_buf();
         let sources = mkt::load_sources(&data_dir);
         // Never block this endpoint on GitHub. Returns whatever's cached;

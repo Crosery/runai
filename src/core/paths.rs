@@ -13,6 +13,10 @@
 //!   against "where the user would be without override" — `data_dir()` returns
 //!   the override, so it self-compares to true and the guard never fires. This
 //!   was the 2026-04-27 incident's root cause.
+//! - `AppPaths::resolve()` — env-honoring constructor (`RUNE_DATA_DIR` >
+//!   `SKILL_MANAGER_DATA_DIR` > `default_path`). THE canonical way for a
+//!   process to pick its data dir; server + `SkillManager::new` both use it so
+//!   a single process can't resolve two dirs (issue #24).
 //! - `AppPaths::default_path()` (runs migration on first call) / `with_base(base)`.
 //! - Public-pool subdirs off `base`: `data_dir`, `skills_dir`, `mcps_dir`,
 //!   `groups_dir`, `trash_dir`, `db_path`, `config_path`; `ensure_dirs()` mkdir-p's
@@ -194,6 +198,30 @@ impl AppPaths {
             "UPDATE resources SET source_meta = REPLACE(source_meta, ?1, ?2) WHERE source_meta LIKE '%' || ?1 || '%'",
             rusqlite::params![old_prefix, new_prefix],
         );
+    }
+
+    /// Resolve the active data directory honoring env overrides, falling back
+    /// to the platform default. This is THE canonical constructor for "where
+    /// does this process read/write runai data" — the server bootstrap
+    /// (`serve_with`), `SkillManager::new()`, and every per-request handler go
+    /// through it so a single process can never resolve two different data
+    /// dirs (issue #24: `serve_with` used `default_path()` — env-blind — while
+    /// `main.rs` used env-honoring `data_dir()`, splitting server state from
+    /// the enrich child it spawned).
+    ///
+    /// Precedence mirrors the standalone [`data_dir`]: `RUNE_DATA_DIR` >
+    /// `SKILL_MANAGER_DATA_DIR` > [`default_path`]. An env override maps to
+    /// [`with_base`] (no legacy `~/.skill-manager/` migration — the override
+    /// names a fresh explicit location, not the default that needs upgrading);
+    /// only the no-override branch runs migration via `default_path`.
+    pub fn resolve() -> Self {
+        if let Ok(dir) = std::env::var("RUNE_DATA_DIR") {
+            return Self::with_base(PathBuf::from(dir));
+        }
+        if let Ok(dir) = std::env::var("SKILL_MANAGER_DATA_DIR") {
+            return Self::with_base(PathBuf::from(dir));
+        }
+        Self::default_path()
     }
 
     pub fn with_base(base: PathBuf) -> Self {

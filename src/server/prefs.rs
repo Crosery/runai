@@ -130,7 +130,7 @@ pub(super) async fn api_get_settings(
         if private_data_locked(&db) {
             require_admin(&headers, &db)?;
         }
-        let paths = AppPaths::default_path();
+        let paths = AppPaths::resolve();
         let cfg = recommend::RecommendConfig::load(&paths).unwrap_or_default();
         Ok(render_settings(&cfg))
     })
@@ -161,7 +161,7 @@ pub(super) async fn api_post_settings(
         if private_data_locked(&db) {
             require_admin(&headers, &db)?;
         }
-        let paths = AppPaths::default_path();
+        let paths = AppPaths::resolve();
         let mut cfg = recommend::RecommendConfig::load(&paths).unwrap_or_default();
         if let Some(v) = patch.enabled {
             cfg.enabled = v;
@@ -236,7 +236,7 @@ pub(super) async fn api_upsert_provider(
                 )));
             }
         };
-        let paths = AppPaths::default_path();
+        let paths = AppPaths::resolve();
         let mut cfg = recommend::RecommendConfig::load(&paths).unwrap_or_default();
         // Preserve existing api_key when payload sends empty (UI never gets
         // the bytes, so empty here = "don't change").
@@ -277,7 +277,7 @@ pub(super) async fn api_delete_provider(
         if private_data_locked(&db) {
             require_admin(&headers, &db)?;
         }
-        let paths = AppPaths::default_path();
+        let paths = AppPaths::resolve();
         let mut cfg = recommend::RecommendConfig::load(&paths).unwrap_or_default();
         if !cfg.remove_provider(&id) {
             return Err(ApiError::BadRequest(format!("provider not found: {id}")));
@@ -300,7 +300,7 @@ pub(super) async fn api_activate_provider(
         if private_data_locked(&db) {
             require_admin(&headers, &db)?;
         }
-        let paths = AppPaths::default_path();
+        let paths = AppPaths::resolve();
         let mut cfg = recommend::RecommendConfig::load(&paths).unwrap_or_default();
         if !cfg.activate_provider(&id) {
             return Err(ApiError::BadRequest(format!("provider not found: {id}")));
@@ -323,7 +323,7 @@ pub(super) async fn api_test_provider(
         if private_data_locked(&db) {
             require_admin(&headers, &db)?;
         }
-        let paths = AppPaths::default_path();
+        let paths = AppPaths::resolve();
         let mut cfg = recommend::RecommendConfig::load(&paths).unwrap_or_default();
         if !cfg.activate_provider(&id) {
             return Err(ApiError::BadRequest(format!("provider not found: {id}")));
