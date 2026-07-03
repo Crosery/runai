@@ -80,8 +80,8 @@
 - **BM25 prefilter + LLM rerank** —— 双语（latin + CJK）BM25 在 AI 生成的 summary 上跑，把受 `top_k` 约束的候选列表喂给 router LLM（默认 DeepSeek v4-flash；也支持任意 OpenAI 兼容 / Anthropic / `claude-cli` 后端）。混合分 = `BM25 × 0.4 + LLM 质量 × 0.6`。
 - **AI summary 富集** —— 每个 skill 都由同一个 LLM 用你选定的 `summary_lang` 生成结构化 summary（`task / triggers / inputs / outputs / not-for / score`），既当 BM25 索引文本也当 router 候选上下文。富集以显式选定语言为前提，且输出语言被强制校验（不符先重试、再不符就丢弃不写），索引保持单一语言；`triggers` 字段保留跨语言关键词以提升检索。SKILL.md 编辑后自动 refresh，`runai install` / `scan` 也会针对改动的 skill 单点 re-enrich。
 - **两种模式** —— `EXCLUSIVE` 让主 agent 在候选里挑；`COMPATIBLE` 一次加载多个互补 skill 适合工作流型 prompt（"整套调试链路" / "完整发版流程"）。同 session 去重，已采用的 skill 不再被重推。
-- **真采用计数** —— 主 agent 真的 `Read` 了 `<skills_dir>/<X>/SKILL.md` 时，`PostToolUse` hook 自动 bump `usage_count` 并写 session adoption 行。Self-report (`runai recommend used`) 是兜底。**信号来源是 Claude Code 自己的工具调用日志，不是 agent 自己说**。
-- **`runai recommend get <skill>`** —— 原子激活：stdout = SKILL.md 全文，副作用 = usage_count +1 + session adoption。hook 输出给这条命令而不是原始路径，调用即采用。
+- **真采用计数** —— Hook 输出让主 agent 运行 `runai-client activate <skill>`。这个命令只有在 server 已 ACK `/skills/use/{name}`，或本地 durable outbox 已写入 `~/.runai/client-cache/servers/<server-key>/skills/<skill-key>/.outbox/` 后，才会把 `SKILL.md` 打到 stdout。
+- **客户端缓存** —— `runai-client activate` / `sync` 把 skill 内容缓存到 `~/.runai/client-cache`，永远不写入受管真实池 `~/.runai/skills`。缓存命中也会先发送或入队 usage event，再输出内容，所以降低内容请求压力不会丢采用计数。
 
 ### 3. 实时遥测仪表盘
 
@@ -130,7 +130,7 @@ runai
 
 # 2) 开启 LLM router (默认 DeepSeek v4-flash，约 $0.0001 / 次)
 runai recommend setup
-runai recommend install-hook          # 把 UserPromptSubmit + PostToolUse + SessionStart hook
+runai recommend install-hook          # 把 UserPromptSubmit + SessionStart hook
                                        # 写进 ~/.claude/settings.json（幂等，留 .runai-bak 备份）
 
 # 3) 启动一次 dashboard，之后 hook 会自动拉起
@@ -138,7 +138,7 @@ runai server --port 17888 --ensure
 runai server --install-hook            # 每个 Claude Code session 自动拉起
 ```
 
-第 2 步装完，每条 Claude Code prompt 都走 `runai recommend`，每次 SKILL.md `Read` 都记账，每条事件都进 dashboard。
+第 2 步装完，每条 Claude Code prompt 都走 `runai recommend`；被采用的 skill 通过 `runai-client activate` 激活，先记账或入队再输出缓存内容；每条 router 事件都会进 dashboard。
 
 ### 日常命令
 
@@ -268,7 +268,7 @@ curl -X POST http://<host>:17888/api/admin/users/<user_id>/reset-password \
 - **Trash-first 全员通用** —— 删除可恢复，直到 `runai trash purge`。备份带时间戳，可还原。
 - **单 binary，无运行时依赖** —— Web dashboard 资产 `include_str!` 进 binary。rusqlite bundled。无 node、无 python、无 Docker。
 - **Router opt-in** —— 默认 `enabled = false`；`runai recommend setup` 之前没有任何网络请求。
-- **真采用 > self-report** —— 计数靠 Claude Code 自己的工具调用日志（PostToolUse hook on `Read`），不是 agent 自己说。
+- **真采用 > self-report** —— 计数靠 `runai-client activate`：只有 `/skills/use/{name}` 已 ACK，或本地 durable outbox 已写入，才会输出缓存内容。
 - **破坏性 syscall 加 guard** —— `scan` / `adopt` 在 2026-04-27 事故后拒绝跨 data dir 做 `rename`。`tests/safety_e2e.rs` 物理 e2e 测试锁不变量。
 - **文档同步铁律** —— 每个代码改动同 commit 改 `*.LLM.md`（见 [AGENTS.md](AGENTS.md)）。
 

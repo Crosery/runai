@@ -263,11 +263,22 @@ pub(super) struct FeedbackBody {
 /// fully client-controlled and trivially forgeable, so trusting it for the
 /// audit-trail field would let any anonymous caller impersonate anyone in
 /// the response text.
+///
+/// Idempotency (PLANNING §1.3, optional): when the request carries an
+/// `X-Runai-Event-Id` header, the side effect is gated on the
+/// `usage_events` table (kind=`feedback`). First → reevaluate runs;
+/// Duplicate (same id + same payload hash) → 200 no-op; Conflict (same
+/// id, different hash) → 409. When the header is absent, the legacy
+/// non-idempotent path runs unchanged so pre-protocol callers (and the
+/// existing feedback_auth_e2e suite) keep working. The `runai-client`
+/// companion always sends the header, so the protocol lane is the live
+/// one for new deploys.
 pub(super) async fn handle_feedback(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(req): Json<FeedbackBody>,
+    body: axum::body::Bytes,
 ) -> Response {
+    use crate::core::db::UsageOutcome;
     let user = {
         let db = match state.db() {
             Ok(db) => db,
@@ -287,8 +298,57 @@ pub(super) async fn handle_feedback(
         }
     };
 
+    let req: FeedbackBody = match serde_json::from_slice::<FeedbackBody>(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+                format!("feedback error: invalid body: {e}\n"),
+            )
+                .into_response();
+        }
+    };
+
+    // Optional idempotency: only when X-Runai-Event-Id is present.
+    let event_id_opt = headers
+        .get("X-Runai-Event-Id")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let payload_hash = super::skills::canonical_payload_hash_pub(&body);
+    let event_id_for_task = event_id_opt.clone();
+    let user_id_for_task = user.user_id.clone();
+    let headers_for_task = headers.clone();
+    let state_for_task = state.clone();
+
     let join = tokio::task::spawn_blocking(move || -> Result<String> {
-        let mgr = SkillManager::new()?;
+        let mgr = SkillManager::with_base(state_for_task.db_path.parent().unwrap().to_path_buf())?;
+        let db = mgr.db();
+
+        if let Some(event_id) = event_id_for_task.as_deref() {
+            let outcome = db.record_usage_event(
+                event_id,
+                "feedback",
+                &req.skill,
+                &payload_hash,
+                "",
+                Some(user_id_for_task.as_str()),
+            )?;
+            match outcome {
+                UsageOutcome::Conflict => {
+                    anyhow::bail!("__conflict__");
+                }
+                UsageOutcome::Duplicate => {
+                    return Ok(format!(
+                        "feedback already applied by {}: {} (idempotent replay)\n",
+                        user.username, req.skill
+                    ));
+                }
+                UsageOutcome::First => { /* proceed to reevaluate */ }
+            }
+        }
+        let _ = headers_for_task; // reserved for future transport hinting
         let report = recommend::reevaluate_skill(&mgr, &req.skill, &req.note)?;
         Ok(format!(
             "feedback applied by {}: {} llm_score {} → {} (summary {} chars)\n",
@@ -300,6 +360,15 @@ pub(super) async fn handle_feedback(
     match join {
         Ok(Ok(s)) => ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], s).into_response(),
         Ok(Err(e)) => {
+            let msg = format!("{e:#}");
+            if msg.contains("__conflict__") {
+                return (
+                    StatusCode::CONFLICT,
+                    [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+                    "conflict: event_id already used with a different payload\n",
+                )
+                    .into_response();
+            }
             eprintln!("/feedback: {e:#}");
             (
                 StatusCode::BAD_REQUEST,

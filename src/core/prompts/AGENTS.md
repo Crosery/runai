@@ -27,7 +27,7 @@ structurally required as long as the recommend feature is enabled
 | `recommend_already_routed.md` | `PROMPT_RECOMMEND_ALREADY_ROUTED` | `recommend::router::recommend_for_user` (subbed into `{ALREADY_ROUTED_BLOCK}`) | `{ALREADY_ROUTED}` | block dropped to empty string when `prompt_injection_flags["recommend_already_routed"] == false` or already_routed list is empty |
 | `recommend_cwd_prefix.md` | `PROMPT_RECOMMEND_CWD_PREFIX` | `recommend::router::recommend_for_user` (subbed into `{CWD_BLOCK}`) | `{CWD}` | block dropped to empty string when `prompt_injection_flags["recommend_cwd_prefix"] == false` or cwd is empty |
 | `recommend_project_context.md` | `PROMPT_RECOMMEND_PROJECT_CONTEXT` | `recommend::project_context::read_project_context` (subbed into `{PROJECT_CONTEXT_BLOCK}`) | `{PROJECT_DOCS}` | block dropped to empty string when `prompt_injection_flags["recommend_project_context"] == false`, or `read_claude_md == false`, or CLAUDE.md is absent |
-| `hook_output.md` | `PROMPT_HOOK_OUTPUT` | `recommend::hook_output::render_hook_output` | `{MODE}`, `{REASONING_BLOCK}`, `{CANDIDATES_BLOCK}`, `{ACTIVATION_DIRECTIVE}`, `{SKIP_REMINDER_BLOCK}`, `{SERVER_URL}`, `{USER_HEADER}`, `{SESSION_HISTORY_BLOCK}`, `{FEEDBACK_PROTOCOL_BLOCK}` | rendered text returned as the `UserPromptSubmit` hook stdout |
+| `hook_output.md` | `PROMPT_HOOK_OUTPUT` | `recommend::hook_output::render_hook_output` | `{MODE}`, `{REASONING_BLOCK}`, `{CANDIDATES_BLOCK}`, `{ACTIVATION_DIRECTIVE}`, `{SKIP_REMINDER_BLOCK}`, `{SESSION_HISTORY_BLOCK}`, `{FEEDBACK_PROTOCOL_BLOCK}` | rendered text returned as the `UserPromptSubmit` hook stdout |
 
 ## Per-user toggle resolution
 - The map lives in `UserPrefs::prompt_injection_flags: HashMap<String, bool>`,

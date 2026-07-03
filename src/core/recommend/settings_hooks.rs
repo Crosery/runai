@@ -29,8 +29,8 @@ const LEGACY_POST_TOOL_HOOK_COMMAND: &str = "runai recommend post-tool";
 /// skills as additional context. Idempotent.
 ///
 /// As a side-effect, any legacy `runai recommend post-tool` entry in the
-/// PostToolUse array is removed: counting now flows exclusively through
-/// `runai recommend get`, so the PostToolUse path is no longer wired.
+/// PostToolUse array is removed: counting now flows through the activation
+/// protocol, so the PostToolUse path is no longer wired.
 pub fn install_claude_hook(home: &Path) -> Result<HookInstallStatus> {
     let claude_dir = home.join(".claude");
     let path = claude_dir.join("settings.json");

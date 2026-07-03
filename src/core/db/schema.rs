@@ -450,6 +450,41 @@ impl Database {
             )?;
         }
 
+        if version < 23 {
+            // Activation/feedback idempotency (PLANNING §1.3 protocol):
+            // every `POST /skills/use/{name}` and `POST /feedback` carries
+            // a client-generated `X-Runai-Event-Id`. The first request with
+            // a given id applies the side effect (usage_count bump, session
+            // adoption, feedback reevaluation); a replay with the SAME
+            // payload hash is a 200 no-op; a replay with a DIFFERENT payload
+            // hash is a 409 conflict. This table is the durable idempotency
+            // store — surviving server restarts, not in-memory — so a
+            // client retrying after a network blip can never double-count.
+            //
+            // `kind` distinguishes usage vs feedback events so the same
+            // event_id namespace can serve both without collision (a usage
+            // event_id and a feedback event_id are independent spaces).
+            // `payload_hash` is the sha256 of the canonical JSON body
+            // (sorted keys) so field-order drift does not manufacture a
+            // false conflict.
+            self.conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS usage_events (
+                    event_id TEXT NOT NULL,
+                    kind TEXT NOT NULL CHECK (kind IN ('usage', 'feedback')),
+                    skill_name TEXT NOT NULL,
+                    payload_hash TEXT NOT NULL,
+                    session_id TEXT NOT NULL DEFAULT '',
+                    user_id TEXT,
+                    ts INTEGER NOT NULL,
+                    PRIMARY KEY (event_id, kind)
+                 );
+                 CREATE INDEX IF NOT EXISTS idx_usage_events_skill
+                   ON usage_events(skill_name);
+                 DELETE FROM schema_version;
+                 INSERT INTO schema_version VALUES (23);",
+            )?;
+        }
+
         Ok(())
     }
 }

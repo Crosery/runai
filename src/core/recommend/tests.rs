@@ -320,8 +320,8 @@ fn decision(mode: RouterMode, skills: Vec<RecommendedSkill>) -> RouterDecision {
 }
 
 /// Test helper: render hook output with the local-default server URL
-/// and no user header. The unified template always emits a curl
-/// command; tests assert on the curl shape.
+/// and no user header. The unified template always emits a
+/// `runai-client activate` command; tests assert on that shape.
 const TEST_SERVER_URL: &str = "http://127.0.0.1:17888";
 fn fmt(decision: &RouterDecision) -> String {
     format_for_hook(decision, TEST_SERVER_URL, "")
@@ -333,10 +333,10 @@ fn format_empty_skills_returns_empty_string() {
 }
 
 #[test]
-fn format_single_match_emits_curl_not_raw_path() {
-    // Unified-protocol output is always a single curl call against
-    // /skills/get/<name>. No filesystem path may leak; no two
-    // activation shapes — the agent learns one protocol.
+fn format_single_match_emits_runai_client_activate_not_raw_path() {
+    // Protocol (PLANNING §1.3): output is always a single
+    // `runai-client activate <name>` call. No filesystem path may leak;
+    // no two activation shapes — the agent learns one protocol.
     let s = RecommendedSkill {
         name: "figma-alignment".into(),
         description: "align vue/h5 to figma".into(),
@@ -348,11 +348,19 @@ fn format_single_match_emits_curl_not_raw_path() {
         out.len()
     );
     assert!(out.contains("figma-alignment"));
-    assert!(out.contains("curl"));
-    assert!(out.contains("/skills/get/<skill_name>"));
+    assert!(out.contains("runai-client activate"));
+    assert!(out.contains("runai-client feedback"));
+    assert!(
+        !out.contains("curl -s -X POST"),
+        "activation must not use curl"
+    );
+    assert!(
+        !out.contains("/skills/get/"),
+        "activation must not reference /skills/get/"
+    );
     assert!(
         !out.contains("runai recommend get"),
-        "binary-form activation must not appear — protocol is unified to curl"
+        "binary-form activation must not appear — protocol is runai-client"
     );
 }
 
@@ -364,14 +372,14 @@ fn format_single_match_omits_filesystem_path() {
     };
     let out = fmt(&decision(RouterMode::Exclusive, vec![s]));
     assert!(out.len() < 4_000);
-    assert!(out.contains("curl"));
+    assert!(out.contains("runai-client activate"));
     assert!(out.contains("huge-skill"));
     assert!(!out.contains("/Users/"));
     assert!(!out.contains(".runai/skills/"));
 }
 
 #[test]
-fn format_exclusive_multi_surfaces_candidates_via_curl() {
+fn format_exclusive_multi_surfaces_candidates_via_runai_client() {
     let a = RecommendedSkill {
         name: "figma-alignment".into(),
         description: "align vue to figma".into(),
@@ -383,8 +391,8 @@ fn format_exclusive_multi_surfaces_candidates_via_curl() {
     let out = fmt(&decision(RouterMode::Exclusive, vec![a, b]));
     assert!(out.contains("- **figma-alignment**"));
     assert!(out.contains("- **figma-component-mapping**"));
-    assert!(out.contains("curl"));
-    assert!(out.contains("/skills/get/"));
+    assert!(out.contains("runai-client activate"));
+    assert!(!out.contains("/skills/get/"));
     assert!(!out.contains("runai recommend get"));
 }
 
@@ -401,7 +409,7 @@ fn format_compatible_multi_lists_all_candidates_via_curl() {
     let out = fmt(&decision(RouterMode::Compatible, vec![a, b]));
     assert!(out.contains("github"));
     assert!(out.contains("writing-skills"));
-    assert!(out.contains("curl"));
+    assert!(out.contains("runai-client activate"));
     assert!(!out.contains("runai recommend get"));
     assert!(out.len() < 10_000);
 }
@@ -439,10 +447,12 @@ fn format_hook_renders_missing_reasoning_marker_when_empty() {
 }
 
 #[test]
-fn format_hook_renders_user_header_in_curl() {
-    // Server-mode rendering: when called with a user header arg, the
-    // curl line must include `-H 'X-Runai-User: ...'` so the server
-    // can session-prefix the request.
+fn format_hook_does_not_inline_server_url_into_activate() {
+    // Protocol (PLANNING §1.3): `runai-client activate` reads identity
+    // from ~/.runai-identity itself — the hook output must NOT inline a
+    // server URL or user header into the activate line. This keeps the
+    // agent-facing protocol transport-agnostic and prevents a leaked
+    // hook stdout from exposing the server address.
     let s = RecommendedSkill {
         name: "alpha".into(),
         description: "test skill".into(),
@@ -452,8 +462,20 @@ fn format_hook_renders_user_header_in_curl() {
         "http://10.0.150.18:17888",
         " -H 'X-Runai-User: alice@host'",
     );
-    assert!(out.contains("http://10.0.150.18:17888/skills/get/"));
-    assert!(out.contains("X-Runai-User: alice@host"));
+    // The activate line itself must not carry the server URL.
+    for line in out.lines() {
+        if line.contains("runai-client activate") {
+            assert!(
+                !line.contains("http://"),
+                "activate line must not inline server URL: {line}"
+            );
+            assert!(
+                !line.contains("X-Runai-User"),
+                "activate line must not inline user header: {line}"
+            );
+        }
+    }
+    assert!(out.contains("runai-client activate"));
 }
 
 #[test]

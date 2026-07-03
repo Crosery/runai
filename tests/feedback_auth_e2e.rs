@@ -347,3 +347,85 @@ fn feedback_valid_bearer_succeeds_and_uses_authenticated_identity_not_forged_hea
         "response must NEVER echo the forged X-Runai-User header value, got: {body:?}"
     );
 }
+
+// ─── idempotency (PLANNING §1.3 protocol) ──────────────────────────────────
+
+/// A replayed `X-Runai-Event-Id` with the same payload is a 200 no-op: the
+/// server must NOT run `reevaluate_skill` a second time. The response text
+/// must indicate the idempotent-replay path.
+#[test]
+fn feedback_idempotent_replay_same_event_id_is_noop() {
+    let s = spawn_team_server();
+    let alice = register(&s, "alice-replay", "pw alice correct horse");
+    let mock = MockLlm::start(
+        "task: refined task\ntriggers: alpha\ninputs: x\noutputs: y\nnot-for: z\nscore: 3\n",
+    );
+    write_recommend_config(s.home.path(), mock.base_url());
+    plant_and_scan(s.home.path(), "alpha", "alpha skill description");
+
+    let first = http()
+        .post(format!("{}/feedback", s.base_url()))
+        .bearer_auth(&alice.api_key)
+        .header("X-Runai-Event-Id", "fb-e1")
+        .json(&json!({"skill": "alpha", "note": "first note"}))
+        .send()
+        .unwrap();
+    assert_eq!(first.status().as_u16(), 200, "first feedback must succeed");
+
+    let second = http()
+        .post(format!("{}/feedback", s.base_url()))
+        .bearer_auth(&alice.api_key)
+        .header("X-Runai-Event-Id", "fb-e1")
+        .json(&json!({"skill": "alpha", "note": "first note"}))
+        .send()
+        .unwrap();
+    assert_eq!(
+        second.status().as_u16(),
+        200,
+        "replay with same event_id + payload must be 200 no-op"
+    );
+    let body = second.text().unwrap();
+    assert!(
+        body.contains("already applied") || body.contains("idempotent"),
+        "replay response must indicate idempotent no-op: {body:?}"
+    );
+}
+
+/// Same `X-Runai-Event-Id` with a DIFFERENT payload is 409 conflict — the
+/// server must not silently overwrite the first event's effect.
+#[test]
+fn feedback_same_event_id_different_payload_returns_409() {
+    let s = spawn_team_server();
+    let alice = register(&s, "alice-conflict", "pw alice correct horse");
+    let mock = MockLlm::start(
+        "task: refined task\ntriggers: alpha\ninputs: x\noutputs: y\nnot-for: z\nscore: 3\n",
+    );
+    write_recommend_config(s.home.path(), mock.base_url());
+    plant_and_scan(s.home.path(), "alpha", "alpha skill description");
+
+    let first = http()
+        .post(format!("{}/feedback", s.base_url()))
+        .bearer_auth(&alice.api_key)
+        .header("X-Runai-Event-Id", "fb-c1")
+        .json(&json!({"skill": "alpha", "note": "first"}))
+        .send()
+        .unwrap();
+    assert_eq!(first.status().as_u16(), 200);
+
+    let second = http()
+        .post(format!("{}/feedback", s.base_url()))
+        .bearer_auth(&alice.api_key)
+        .header("X-Runai-Event-Id", "fb-c1")
+        .json(&json!({"skill": "alpha", "note": "different"}))
+        .send()
+        .unwrap();
+    assert_eq!(
+        second.status().as_u16(),
+        409,
+        "same event_id + different payload must be 409"
+    );
+    let body = second.text().unwrap();
+    for needle in ["/Users/", "/home/", ".runai/", "target/"] {
+        assert!(!body.contains(needle), "409 body leaks {needle}: {body:?}");
+    }
+}

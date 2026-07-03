@@ -23,12 +23,14 @@ mod router_stats;
 mod schema;
 mod trash;
 mod types;
+mod usage_events;
 mod users;
 
 pub use ai_summary::SkillAiIndex;
 pub use community::{CommunitySkill, CommunitySort};
 pub use core::Database;
 pub use types::{RouterEvent, RouterModelStat, RouterStatsSummary, TimelineBucket, User};
+pub use usage_events::UsageOutcome;
 
 #[cfg(test)]
 mod tests;

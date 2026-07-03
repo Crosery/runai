@@ -4,17 +4,20 @@
 use anyhow::{Context, Result, bail};
 use axum::{
     Json,
+    body::Bytes,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
+use crate::core::db::UsageOutcome;
 use crate::core::manager::SkillManager;
 
 use super::error::ApiError;
-use super::recommend::guess_server_url;
+use super::recommend::request_origin;
 use super::state::{AppState, current_user, resolve_skill_dir, resolve_skill_dir_scoped};
 use super::telemetry::EventJson;
 
@@ -449,6 +452,250 @@ pub(super) async fn api_skill_file(
     }))
 }
 
+/// Canonicalize a JSON request body for stable idempotency hashing.
+/// `serde_json` (without the `preserve_order` feature, which runai does
+/// not enable) stores objects in a BTreeMap, so `Value::to_string`
+/// already emits sorted keys — field-order drift in the client body does
+/// not manufacture a false conflict. An empty body hashes to the empty
+/// string so an unsupplied body is canonical across calls.
+pub(super) fn canonical_payload_hash_pub(body: &[u8]) -> String {
+    canonical_payload_hash(body)
+}
+
+fn canonical_payload_hash(body: &[u8]) -> String {
+    let canonical = if body.is_empty() {
+        String::new()
+    } else {
+        match serde_json::from_slice::<serde_json::Value>(body) {
+            Ok(v) => v.to_string(),
+            // Not valid JSON — hash the raw bytes so two identical bad
+            // bodies still dedupe; a structurally-different bad body
+            // still conflicts, which is the safe direction.
+            Err(_) => {
+                return hex_sha256(body);
+            }
+        }
+    };
+    hex_sha256(canonical.as_bytes())
+}
+
+fn hex_sha256(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+    let mut out = String::with_capacity(digest.len() * 2);
+    for b in digest {
+        out.push_str(&format!("{b:02x}"));
+    }
+    out
+}
+
+#[derive(Deserialize, Default)]
+struct SkillUseBody {
+    #[serde(default)]
+    session_id: String,
+    #[serde(default)]
+    include: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct SkillUseAck {
+    ok: bool,
+    skill: String,
+    usage_count: i64,
+    /// Sibling files (relative paths, forward slashes) the agent may want
+    /// to fetch via `/skills/file/{name}/{path}`. Empty when the skill is a
+    /// bare SKILL.md. NEVER contains `curl` commands — this is structured
+    /// data, not the human-readable appendix `/skills/get` returns.
+    files: Vec<String>,
+}
+
+/// `POST /skills/use/{name}` — the idempotent activation/usage endpoint
+/// for the runai-client activation/feedback protocol (PLANNING §1.3).
+///
+/// Replaces the side-effecting half of `POST /skills/get/{name}` for
+/// remote clients: instead of curl-and-pray, the `runai-client`
+/// companion records usage here with a client-generated
+/// `X-Runai-Event-Id`, and only prints the cached SKILL.md once the
+/// server ACKs (or once the event is durably queued in the local
+/// outbox — see `runai-client activate`).
+///
+/// Idempotency contract:
+///   - First `(event_id, payload_hash)` → 200, usage_count bumps, a
+///     `usage_events` row is inserted, session adoption is recorded.
+///   - Same `(event_id, payload_hash)` → 200 no-op, no bump.
+///   - Same `event_id`, different `payload_hash` → 409 conflict, no bump.
+///   - Missing `X-Runai-Event-Id` → 422.
+///
+/// Auth (A1): anonymous callers work — aligned with `/skills/get`. A
+/// present-but-stale Bearer fails closed with 401 + empty body (matches
+/// the `/recommend` + `/feedback` anti-enumeration style) so a rotated
+/// api_key cannot silently degrade into anonymous usage attribution.
+pub(super) async fn handle_skill_use(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    body: Bytes,
+) -> Response {
+    use crate::core::cli_target::CliTarget;
+    let _ = CliTarget::Claude; // silence unused-import in some cfgs
+
+    // event_id is mandatory — without it we cannot dedupe.
+    let event_id = match headers
+        .get("X-Runai-Event-Id")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    {
+        Some(eid) => eid,
+        None => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+                "event_id required\n",
+            )
+                .into_response();
+        }
+    };
+
+    // Stale-Bearer fail-closed (A1). A missing Authorization header is the
+    // legacy anonymous lane and is allowed; a present-but-unresolvable
+    // Bearer means the client is stale and must NOT silently fall back to
+    // anonymous, or usage attribution becomes forgeable.
+    let auth_header_present = headers.contains_key(header::AUTHORIZATION);
+    let me = if auth_header_present {
+        let db = match state.db() {
+            Ok(db) => db,
+            Err(e) => {
+                eprintln!("/skills/use: db open failed: {e:#}");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+                    "internal error\n",
+                )
+                    .into_response();
+            }
+        };
+        match current_user(&headers, &db) {
+            Ok(Some(u)) => Some(u),
+            _ => {
+                return (StatusCode::UNAUTHORIZED, "").into_response();
+            }
+        }
+    } else {
+        None
+    };
+
+    let payload_hash = canonical_payload_hash(&body);
+    let parsed: SkillUseBody = if body.is_empty() {
+        SkillUseBody::default()
+    } else {
+        serde_json::from_slice::<SkillUseBody>(&body).unwrap_or_default()
+    };
+
+    let headers_owned = headers.clone();
+    let name_for_task = name.clone();
+    let user_id = me.as_ref().map(|u| u.user_id.clone());
+    let session_id = parsed.session_id.clone();
+    let include = parsed.include.clone();
+    let state_clone = state.clone();
+    let join = tokio::task::spawn_blocking(move || -> Result<Response> {
+        let mgr = SkillManager::with_base(state_clone.db_path.parent().unwrap().to_path_buf())?;
+        let db = mgr.db();
+
+        // Resolve skill dir (404 on miss, 404 on traversal-flavored name
+        // via is_safe_skill_name inside resolve_skill_dir).
+        let (skill_dir, owner_uid) =
+            resolve_skill_dir(&headers_owned, db, mgr.paths(), &name_for_task)?;
+        let resource = db
+            .find_resource_by_name_for_user(
+                crate::core::resource::ResourceKind::Skill,
+                &name_for_task,
+                owner_uid.as_deref(),
+            )?
+            .ok_or_else(|| anyhow::anyhow!("skill not found: {name_for_task}"))?;
+
+        // Idempotency + side effects are one SQLite transaction. This is
+        // the server-side half of the hard activation guarantee: a server
+        // ACK cannot leave behind an idempotency row without the matching
+        // usage_count/session-adoption side effects.
+        let (outcome, usage_count) = db.record_activation_usage_event(
+            &event_id,
+            &name_for_task,
+            &payload_hash,
+            &session_id,
+            user_id.as_deref(),
+            &resource.id,
+        )?;
+        if outcome == UsageOutcome::Conflict {
+            // No internal paths in the body — anti-enumeration style.
+            return Ok((
+                StatusCode::CONFLICT,
+                [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+                "conflict: event_id already used with a different payload\n",
+            )
+                .into_response());
+        }
+
+        // Build the ACK. usage_count is read from the same transaction that
+        // performed the bump, so First reflects the new value and Duplicate
+        // returns the already-applied value without a second increment.
+
+        let mut files: Vec<String> = Vec::new();
+        let _ = walk_skill_dir_plain(&skill_dir, &skill_dir, &mut files);
+        files.sort();
+        files.retain(|p| p != "SKILL.md");
+        // `--include` is a client-side concern (which files to prewarm);
+        // echoing it back here lets the client verify the server saw the
+        // intended set without re-fetching the whole bundle. We do NOT
+        // gate files on `include` — the full sibling list is metadata, not
+        // content, and the client fetches only what it needs.
+        let _ = include;
+
+        let ack = SkillUseAck {
+            ok: true,
+            skill: name_for_task,
+            usage_count,
+            files,
+        };
+        Ok(Json(ack).into_response())
+    })
+    .await;
+
+    match join {
+        Ok(Ok(resp)) => resp,
+        Ok(Err(e)) => {
+            eprintln!("/skills/use: {e:#}");
+            // resolve_skill_dir bailing = 404; anything else = 500. We
+            // don't distinguish to avoid leaking the difference to a probe.
+            let msg = format!("{e:#}");
+            if msg.contains("not found") || msg.contains("unsafe skill name") {
+                return (
+                    StatusCode::NOT_FOUND,
+                    [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+                    "skill not found\n",
+                )
+                    .into_response();
+            }
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+                "internal error\n",
+            )
+                .into_response()
+        }
+        Err(e) => {
+            eprintln!("/skills/use: spawn_blocking join failed: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+                "internal error\n",
+            )
+                .into_response()
+        }
+    }
+}
+
 /// Query string for /skills/get/{name}: optional `session_id` used to
 /// session-prefix the adoption row.
 #[derive(Deserialize)]
@@ -477,7 +724,7 @@ pub(super) async fn handle_skill_get(
         .to_string();
     let claude_sid = q.session_id;
 
-    let server_url_for_get = guess_server_url(&headers);
+    let server_url_for_get = request_origin(&headers);
     let user_header_arg = if user_prefix.is_empty() {
         String::new()
     } else {

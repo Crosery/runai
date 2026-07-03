@@ -1,4 +1,4 @@
-<!-- prompt: hook_output | callers: recommend::hook_output::render_hook_output | vars: {MODE},{REASONING_BLOCK},{CANDIDATES_BLOCK},{ACTIVATION_DIRECTIVE},{SKIP_REMINDER_BLOCK},{SERVER_URL},{USER_HEADER},{SESSION_HISTORY_BLOCK},{FEEDBACK_PROTOCOL_BLOCK} -->
+<!-- prompt: hook_output | callers: recommend::hook_output::render_hook_output | vars: {MODE},{REASONING_BLOCK},{CANDIDATES_BLOCK},{ACTIVATION_DIRECTIVE},{SKIP_REMINDER_BLOCK},{SESSION_HISTORY_BLOCK},{FEEDBACK_PROTOCOL_BLOCK} -->
 runai 推荐 (mode={MODE})
 
 {REASONING_BLOCK}候选：
@@ -7,9 +7,9 @@ runai 推荐 (mode={MODE})
 
 激活方式：每个 skill 跑一次 Bash
 
-  curl -s -X POST '{SERVER_URL}/skills/get/<skill_name>'{USER_HEADER}
+  runai-client activate <skill_name> --session-id "$CLAUDE_SESSION_ID"
 
-stdout 是 SKILL.md 全文，按内容执行用户原 prompt。runai 自动记 usage_count 并把当前 session 标记为已推过。
+stdout 是 SKILL.md 全文，按内容执行用户原 prompt。runai-client 会向 server 记 usage_count 并把当前 session 标记为已推过；server 不可达时，usage event 写入本地 outbox（`~/.runai/client-cache/servers/<server-key>/skills/<skill-key>/.outbox/`），缓存命中也会先确保 usage 已 ACK 或已入队再打印 SKILL.md。激活指令本身不带 server URL — runai-client 自己读 `~/.runai-identity`。
 
 {ACTIVATION_DIRECTIVE}
 {SKIP_REMINDER_BLOCK}

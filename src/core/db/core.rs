@@ -7,6 +7,7 @@
 use anyhow::Result;
 use rusqlite::Connection;
 use std::path::Path;
+use std::time::Duration;
 
 pub struct Database {
     pub(super) conn: Connection,
@@ -15,6 +16,11 @@ pub struct Database {
 impl Database {
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)?;
+        // The dashboard server opens one rusqlite connection per request.
+        // Protocol endpoints such as `/skills/use/{name}` can receive the
+        // same idempotency key concurrently, so let SQLite serialize short
+        // write bursts instead of surfacing immediate SQLITE_BUSY failures.
+        conn.busy_timeout(Duration::from_secs(5))?;
         let db = Self { conn };
         db.init_schema()?;
         Ok(db)

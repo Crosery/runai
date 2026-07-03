@@ -201,5 +201,5 @@ fn recommend_get_missing_skill_exits_nonzero_and_does_not_touch_db() {
     assert!(!env.has_session_adoption("sess-X", "ghost"));
 }
 
-// PostToolUse and `Used` are gone — the only path to bump usage_count is
-// `runai recommend get`. Tests above already lock that contract.
+// PostToolUse and `Used` are gone — legacy local `recommend get` remains
+// tested here, while new agent-facing adoption goes through runai-client.

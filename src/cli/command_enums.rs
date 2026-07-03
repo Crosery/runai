@@ -307,12 +307,10 @@ pub enum RecommendCommands {
         #[arg(long)]
         note: String,
     },
-    /// Fetch a skill's SKILL.md content AND record adoption atomically.
+    /// Legacy/local fetch of a skill's SKILL.md content and adoption signal.
     /// Stdout = SKILL.md body. Side effects: usage_count +1, session
-    /// adoption row written (if CLAUDE_SESSION_ID is set). The hook output
-    /// no longer exposes any skill path, so the main agent must run this
-    /// command to obtain a recommended skill's contents — making this the
-    /// single source of truth for "skill adopted" signal.
+    /// adoption row written (if CLAUDE_SESSION_ID is set). New hook output
+    /// uses `runai-client activate`, which adds cache + durable outbox.
     Get {
         /// Skill name (must exist under <data_dir>/skills/<name>/SKILL.md)
         skill: String,

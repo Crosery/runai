@@ -240,6 +240,20 @@ fn team_mode_install_script_excludes_binary_management_commands() {
         body.contains("/users/register"),
         "script should call /users/register"
     );
+    // PLANNING §1.3: the team-mode install body must ship the
+    // runai-client activation/feedback/sync/flush subcommands + the
+    // client-cache dir (NEVER ~/.runai/skills/ as cache). Activation
+    // is now client-mediated, not a bare curl against /skills/get.
+    for needle in &[
+        "runai-client activate",
+        "runai-client feedback",
+        "client-cache",
+    ] {
+        assert!(
+            body.contains(needle),
+            "team mode /install body must contain {needle:?}"
+        );
+    }
 }
 
 /// PLANNING §1.2 (c): non-interactive flow — env vars supplant TTY prompts.

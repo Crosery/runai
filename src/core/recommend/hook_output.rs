@@ -12,22 +12,12 @@ const HOOK_OUTPUT_TEMPLATE: &str = crate::core::prompts::PROMPT_HOOK_OUTPUT;
 
 /// Format the router decision as the `UserPromptSubmit` hook stdout. Single
 /// unified template (`hook_output.md`) that renders **exactly one**
-/// activation flavour — `curl` against a runai server URL. Every
-/// instruction the main Claude agent ever sees (activation, recall,
-/// feedback) uses this HTTP shape, so there is no per-machine "do I have
-/// the binary on PATH?" branch. Local users still have the `runai`
-/// CLI available for scripts and manual use, but the agent-facing
-/// protocol is uniformly HTTP.
-///
-/// `server_url` is the base of the runai server the agent should curl —
-/// `http://127.0.0.1:17888` for local users (the dashboard server already
-/// runs there via `ensure_running`), or the LAN URL when a teammate's
-/// hook proxied through it.
-///
-/// `user_header` is the literal CLI arg fragment to attach to every
-/// curl call. Empty means no header; otherwise it's of the form
-/// ` -H 'X-Runai-User: <user>@<host>'` and gets pasted straight after
-/// the URL.
+/// activation flavour — `runai-client activate <skill>`. Every instruction
+/// the main Claude agent ever sees (activation, recall, feedback) uses the
+/// local companion command, so hook output never exposes server URLs, API
+/// keys, raw filesystem paths, or SKILL.md bytes. `server_url` and
+/// `user_header` remain in the public function signature for older callers,
+/// but the renderer deliberately ignores them.
 pub fn format_for_hook(decision: &RouterDecision, server_url: &str, user_header: &str) -> String {
     render_hook_output(decision, "", &[], server_url, user_header, "")
 }
@@ -67,10 +57,10 @@ pub fn format_for_hook_full(
 
 fn render_hook_output(
     decision: &RouterDecision,
-    session_id: &str,
+    _session_id: &str,
     session_history: &[String],
-    server_url: &str,
-    user_header: &str,
+    _server_url: &str,
+    _user_header: &str,
     skip_reminder: &str,
 ) -> String {
     let skills = &decision.skills;
@@ -87,11 +77,11 @@ fn render_hook_output(
     let activation_directive = match (decision.mode, skills.len()) {
         (RouterMode::Exclusive, 1) => "对口就跑命令激活；不对口忽略即可。".to_string(),
         (RouterMode::Exclusive, _) => {
-            "一句话让用户挑（单选或多选都行），用户挑完对每个选中的 skill 各跑一次激活 curl。"
+            "一句话让用户挑（单选或多选都行），用户挑完对每个选中的 skill 各跑一次 runai-client activate。"
                 .to_string()
         }
         (RouterMode::Compatible, _) => {
-            "互补激活：对每个候选 skill 各跑一次激活 curl，跑完立即组合执行用户原 prompt。"
+            "互补激活：对每个候选 skill 各跑一次 runai-client activate，跑完立即组合执行用户原 prompt。"
                 .to_string()
         }
     };
@@ -108,9 +98,9 @@ fn render_hook_output(
     };
 
     // Session-recall list: names the router has shown earlier in this
-    // session, minus the ones currently on screen. Uses the same curl
-    // activation shape as the primary block so the agent never has to
-    // learn two protocols.
+    // session, minus the ones currently on screen. Uses the same
+    // `runai-client activate` shape as the primary block so the agent
+    // never has to learn two protocols.
     let current: std::collections::HashSet<&str> = skills.iter().map(|s| s.name.as_str()).collect();
     let history_filtered: Vec<&str> = session_history
         .iter()
@@ -118,12 +108,11 @@ fn render_hook_output(
         .filter(|n| !current.contains(n))
         .take(10)
         .collect();
-    let _ = session_id; // session id is currently not embedded in the recall block; reserved for future use
     let session_history_block = if history_filtered.is_empty() {
         String::new()
     } else {
         format!(
-            "\n本 session runai 已经看过的 skill（**参考池，用户随时可挑这里的任何一个，没被排除**）：{}\n如果用户当前 prompt 跟这里某个对口（包括 \"换一个 / 有其他的吗 / 找补充\" 这种 follow-up），直接跑 `curl -s -X POST '{server_url}/skills/get/<name>'{user_header}` 激活。\n",
+            "\n本 session runai 已经看过的 skill（**参考池，用户随时可挑这里的任何一个，没被排除**）：{}\n如果用户当前 prompt 跟这里某个对口（包括 \"换一个 / 有其他的吗 / 找补充\" 这种 follow-up），直接跑 `runai-client activate <name> --session-id \"$CLAUDE_SESSION_ID\"` 激活。\n",
             history_filtered.join(", ")
         )
     };
@@ -134,7 +123,7 @@ fn render_hook_output(
         .collect::<Vec<_>>()
         .join(", ");
     let feedback_protocol_block = format!(
-        "\n反馈协议（被动）：用户明确正向（\"完美 / 好用 / 就这个\"）或负向（\"不对 / 换一个 / 不好用\"）评价时，在回复末尾跑：\n  curl -s -X POST '{server_url}/feedback'{user_header} -H 'Content-Type: application/json' -d '{{\"skill\":\"<skill-name>\",\"note\":\"<场景或原话>\"}}'\n用户没评价就不调用。\n当前推的 skill: {names}\n"
+        "\n反馈协议（被动）：用户明确正向（\"完美 / 好用 / 就这个\"）或负向（\"不对 / 换一个 / 不好用\"）评价时，在回复末尾跑：\n  runai-client feedback <skill-name> --note \"<场景或原话>\"\n用户没评价就不调用。\n当前推的 skill: {names}\n"
     );
 
     let skip_reminder_block = if skip_reminder.trim().is_empty() {
@@ -149,8 +138,6 @@ fn render_hook_output(
         .replace("{CANDIDATES_BLOCK}", &candidates_block)
         .replace("{ACTIVATION_DIRECTIVE}", &activation_directive)
         .replace("{SKIP_REMINDER_BLOCK}", &skip_reminder_block)
-        .replace("{SERVER_URL}", server_url)
-        .replace("{USER_HEADER}", user_header)
         .replace("{SESSION_HISTORY_BLOCK}", &session_history_block)
         .replace("{FEEDBACK_PROTOCOL_BLOCK}", &feedback_protocol_block)
 }

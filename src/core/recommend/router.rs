@@ -84,10 +84,10 @@ pub struct RouterTurn {
     pub assistant: String,
 }
 
-/// A single recommended skill. The router never sends the SKILL.md body or
-/// path to the main agent — activation flows exclusively through
-/// `runai recommend get <name>`, so all we ship is the human-readable name
-/// and a short description for the candidate list.
+/// A single recommended skill. The router never sends the SKILL.md body,
+/// server URL, API key, or filesystem path to the main agent — activation
+/// flows through `runai-client activate <name>`, so all we ship is the
+/// human-readable name and a short description for the candidate list.
 #[derive(Debug, Clone)]
 pub struct RecommendedSkill {
     pub name: String,
@@ -705,10 +705,10 @@ pub fn recommend_for_user(
     };
     let _ = mgr.db().insert_router_event(&ev);
 
-    // usage_count and session-adoption are bumped exclusively by
-    // `runai recommend get <skill>` invoked from the main agent (see
-    // src/cli/mod.rs Get handler). Recommending ≠ adopting — the router
-    // never bumps counts on its own, no matter the mode.
+    // usage_count and session-adoption are bumped exclusively by the
+    // activation command (`runai-client activate <skill>`) that the main
+    // agent runs after accepting a recommendation. Recommending ≠ adopting
+    // — the router never bumps counts on its own, no matter the mode.
 
     if let Some(err) = error_msg {
         bail!(err);

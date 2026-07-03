@@ -8,7 +8,7 @@
 //! Coverage map vs. plan §5.7:
 //!   1. `recommend_disabled_no_llm_call`   → [`disabled_recommend_emits_no_router_event`]
 //!      + [`disabled_recommend_writes_bootstrap_seen_then_stays_silent`]
-//!   6. `recommend_hook_output_format_safe` → [`mock_llm_recommend_emits_curl_activation`]
+//!   6. `recommend_hook_output_format_safe` → [`mock_llm_recommend_emits_runai_client_activation`]
 //!   7. `recommend_router_telemetry_persisted_even_on_error`
 //!      → [`mock_llm_http_500_persists_error_router_event`]
 //!
@@ -415,7 +415,7 @@ session_history_limit = 0
 // ─── 6. Hook output format safety (real router round-trip) ──────────────────
 
 #[test]
-fn mock_llm_recommend_emits_curl_activation() {
+fn mock_llm_recommend_emits_runai_client_activation() {
     // Plan 5.7 #6: when the router returns a real skill name, the binary's
     // hook stdout must use the unified curl-based activation protocol and
     // must not leak filesystem paths. We exercise the full pipeline:
@@ -442,14 +442,28 @@ fn mock_llm_recommend_emits_curl_activation() {
     );
 
     let stdout = String::from_utf8_lossy(&out.stdout);
-    // The hook protocol mandates a curl invocation against /skills/get.
+    // The hook protocol now mandates a `runai-client activate` invocation
+    // (PLANNING §1.3 activation/feedback protocol) — NOT a curl against
+    // /skills/get. The agent-facing activation is client-mediated.
     assert!(
-        stdout.contains("curl"),
-        "hook output must include a curl command, got:\n{stdout}"
+        stdout.contains("runai-client activate"),
+        "hook output must include a runai-client activate command, got:\n{stdout}"
     );
     assert!(
-        stdout.contains("/skills/get/"),
-        "hook output must include the unified activation URL, got:\n{stdout}"
+        stdout.contains("runai-client feedback"),
+        "hook output must include the feedback protocol command, got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("curl -s -X POST"),
+        "hook output must NOT use curl for activation, got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("/skills/get/"),
+        "hook output must NOT reference /skills/get/, got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("/feedback\""),
+        "hook output must NOT use bare curl /feedback, got:\n{stdout}"
     );
     // The chosen skill name MUST appear in the candidate list.
     assert!(

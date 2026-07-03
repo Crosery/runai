@@ -47,7 +47,7 @@ use super::private_upload::{api_publish_request, api_user_skills_list, api_user_
 use super::recommend::{handle_feedback, handle_recommend};
 use super::skills::{
     api_skill_detail, api_skill_file, api_skill_files, api_skills, handle_skill_bundle,
-    handle_skill_file, handle_skill_get,
+    handle_skill_file, handle_skill_get, handle_skill_use,
 };
 use super::state::AppState;
 use super::telemetry::{api_event_by_id, api_events, api_summary, api_timeline};
@@ -181,6 +181,7 @@ pub async fn serve_with(
         .layer(axum_middleware::from_fn(rate_limit::upload_limit));
     let skills_get_router = Router::new()
         .route("/skills/get/{name}", post(handle_skill_get))
+        .route("/skills/use/{name}", post(handle_skill_use))
         .layer(axum_middleware::from_fn(rate_limit::skills_get_limit));
     // C2 (scan_findings.md): the user-facing private-pool upload endpoint gets
     // the same 10/hour/user throttle as /api/community/upload. Mounted as its

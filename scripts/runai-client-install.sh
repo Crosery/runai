@@ -633,6 +633,11 @@ set -euo pipefail
 
 IDENTITY_PATH="${RUNAI_IDENTITY:-$HOME/.runai-identity}"
 
+# Lightweight stderr printers (the install script's ok/warn/die live
+# outside this heredoc; the companion needs its own).
+warn() { echo "runai-client: $*" >&2; }
+die() { echo "runai-client: $*" >&2; exit 1; }
+
 resolve_server() {
   if [[ -n "${RUNAI_SERVER:-}" ]]; then
     printf '%s' "$RUNAI_SERVER"
@@ -691,6 +696,18 @@ Subcommands:
   list           List skills currently on the server's community pool.
   install        Install a community skill into the server's private copy
                  of your account: runai-client install <uploader_uid> <name>
+  activate       Fetch a skill's SKILL.md + record a usage event
+                 (idempotent / outbox-backed). Prints SKILL.md to stdout.
+                   runai-client activate <skill> [--session-id <id>]
+                 Cache lands at ~/.runai/client-cache/servers/<server-key>/
+                 skills/<skill-key>/ (NEVER ~/.runai/skills/). Network failures queue the usage
+                 event in a durable local outbox; `flush` replays it.
+  feedback       Send a passive feedback note for a skill.
+                   runai-client feedback <skill> --note "<text>"
+                 Idempotent + outbox-backed (same protocol as activate).
+  sync           Prewarm the cache for one or more skills without
+                 printing. --all fetches full bundles.
+  flush          Replay every queued outbox event in mtime order.
   --help, -h     Print this help and exit.
 
 Environment:
@@ -703,6 +720,10 @@ Examples:
   runai-client upload --path ./my-skill --name my-skill
   runai-client list
   runai-client install u_abc123 my-skill
+  runai-client activate my-skill --session-id "$CLAUDE_SESSION_ID"
+  runai-client feedback my-skill --note "works great for X"
+  runai-client sync my-skill other-skill
+  runai-client flush
 
 Run "runai-client <subcommand> --help" for subcommand-specific options.
 HELP
@@ -1094,6 +1115,507 @@ EOF
   [[ $fail -eq 0 ]]
 }
 
+# ─── activation / feedback protocol (PLANNING §1.3) ───────────────────────────
+# runai-client activate / feedback / sync / flush + the client-side cache
+# and durable outbox. The cache lives at
+# ~/.runai/client-cache/servers/<server-key>/skills/<skill-key>/
+# (NEVER ~/.runai/skills/ — that path is reserved for the runai binary's
+# managed pool and writing here would collide with the owner-pool
+# invariant on machines that also run `runai`). The outbox lives inside
+# that server-scoped skill cache as `.outbox/<ts>-<event_id>.json` — one
+# file per event, replayed in mtime order by `flush`.
+#
+# Activate contract (铁律): SKILL.md is printed ONLY after a usage event
+# has been either ACKed by the server (200 from /skills/use) or durably
+# queued in the local outbox. If neither is true (401/403/409/404),
+# activate fails without printing. A cold cache + network failure still
+# queues the event but cannot print (no content), so it fails too — the
+# outbox entry survives for the next `flush`.
+
+client_cache_root() {
+  printf '%s' "${HOME}/.runai/client-cache"
+}
+
+cache_key() {
+  python3 -c 'import hashlib, sys; print(hashlib.sha256(sys.argv[1].encode("utf-8")).hexdigest())' "$1"
+}
+
+server_cache_root() {
+  local server_key; server_key=$(cache_key "$SERVER")
+  printf '%s/servers/%s' "$(client_cache_root)" "$server_key"
+}
+
+skill_cache_dir() {
+  local skill_key; skill_key=$(cache_key "$1")
+  printf '%s/skills/%s' "$(server_cache_root)" "$skill_key"
+}
+
+gen_uuid() {
+  if command -v uuidgen >/dev/null 2>&1; then
+    uuidgen
+  elif [[ -r /proc/sys/kernel/random/uuid ]]; then
+    cat /proc/sys/kernel/random/uuid
+  else
+    python3 -c 'import uuid; print(uuid.uuid4())'
+  fi
+}
+
+# Atomic write: stage to <dest>.tmp.$$ then mv -f. Caller passes the
+# final destination path; we derive the tmp sibling.
+atomic_write() {
+  local dest="$1"
+  local tmp="${dest}.tmp.$$"
+  cat > "$tmp" || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$dest"
+}
+
+# GET a single file from /skills/file/{name}/{rel} into <dest> (atomic).
+# Rejects traversal in <rel> so `--include ../../etc/passwd` cannot escape.
+fetch_file() {
+  local name="$1" rel="$2" dest="$3"
+  case "$rel" in
+    *..*|/*|*\$'\t'*)
+      echo "runai-client: refusing traversal include path: $rel" >&2
+      return 1
+      ;;
+  esac
+  local AUTH=()
+  [[ -n "$API_KEY" ]] && AUTH=(-H "Authorization: Bearer $API_KEY")
+  mkdir -p "$(dirname "$dest")"
+  local tmp="${dest}.tmp.$$"
+  local code
+  code=$(curl -sS -m 30 -w '%{http_code}' -o "$tmp" \
+    "${AUTH[@]}" "$SERVER/skills/file/$name/$rel" 2>/dev/null) || { rm -f "$tmp"; return 1; }
+  if [[ "$code" != "200" ]]; then
+    rm -f "$tmp"
+    return 1
+  fi
+  mv -f "$tmp" "$dest"
+  chmod 600 "$dest" 2>/dev/null
+  return 0
+}
+
+# GET /skills/bundle/{name} and extract into <dest_dir>. Extraction is
+# staged into <dest_dir>.new.$$ then atomically swapped in so a half-
+# extracted tree never replaces a good cache.
+fetch_bundle() {
+  local name="$1" dest_dir="$2"
+  local AUTH=()
+  [[ -n "$API_KEY" ]] && AUTH=(-H "Authorization: Bearer $API_KEY")
+  mkdir -p "$dest_dir"
+  local stage; stage=$(mktemp -d "${dest_dir}.new.XXXXXX")
+  local tgz="$stage/bundle.tar.gz"
+  local code
+  code=$(curl -sS -m 60 -w '%{http_code}' -o "$tgz" \
+    "${AUTH[@]}" "$SERVER/skills/bundle/$name" 2>/dev/null) || { rm -rf "$stage"; return 1; }
+  if [[ "$code" != "200" ]]; then
+    rm -rf "$stage"
+    return 1
+  fi
+  if ! tar -xzf "$tgz" -C "$stage" 2>/dev/null; then
+    rm -rf "$stage"
+    return 1
+  fi
+  rm -f "$tgz"
+  # tar layout is <name>/...; flatten into stage root so files land at
+  # $stage/SKILL.md, $stage/references/... — then swap.
+  local inner="$stage/$name"
+  if [[ -d "$inner" ]]; then
+    mv "$inner"/* "$inner"/.* "$stage/" 2>/dev/null || true
+    rmdir "$inner" 2>/dev/null || true
+  fi
+  rm -rf "${dest_dir:?}"
+  mv "$stage" "$dest_dir"
+  chmod -R go-rwx "$dest_dir" 2>/dev/null || true
+  return 0
+}
+
+# Write a durable outbox entry. Atomic + crash-conscious: write a tmp
+# sibling, flush+fsync it, rename into place, then fsync the directory when
+# the platform allows it. If this function returns 0, activate may print
+# cached SKILL.md even when the server is offline.
+outbox_write() {
+  local kind="$1" event_id="$2" skill="$3" body="$4" session_id="$5" note="${6:-}"
+  local outbox; outbox="$(skill_cache_dir "$skill")/.outbox"
+  mkdir -p "$outbox"
+  local ts; ts=$(date +%s)
+  python3 - "$outbox" "$event_id" "$kind" "$skill" "$body" "$session_id" "$note" "$ts" <<'PY'
+import json, os, sys
+outbox, eid, kind, skill, body, sid, note, ts = sys.argv[1:9]
+os.makedirs(outbox, mode=0o700, exist_ok=True)
+entry = {
+    "event_id": eid,
+    "kind": kind,
+    "skill": skill,
+    "body": body,
+    "session_id": sid,
+    "note": note,
+    "ts": int(ts),
+    "attempts": 0,
+}
+tmp = os.path.join(outbox, f".tmp.{os.getpid()}.{eid}")
+final = os.path.join(outbox, f"{ts}-{eid}.json")
+try:
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(entry, fh, separators=(",", ":"))
+        fh.write("\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, final)
+    os.chmod(final, 0o600)
+    try:
+        dfd = os.open(outbox, os.O_RDONLY)
+        try:
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
+    except OSError:
+        pass
+except Exception:
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    raise
+PY
+}
+
+# Replay one outbox entry. Returns 0 if the entry is resolved (deleted),
+# 1 if retained for a later retry. Auth failures (401/403) are dropped
+# (deleted) — they will never succeed on retry. 5xx / network failures
+# increment attempts and keep the file.
+outbox_replay() {
+  local f="$1"
+  local AUTH=()
+  [[ -n "$API_KEY" ]] && AUTH=(-H "Authorization: Bearer $API_KEY")
+  local event_id kind skill body session_id note attempts
+  event_id=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('event_id',''))" "$f")
+  kind=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('kind',''))" "$f")
+  skill=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('skill',''))" "$f")
+  body=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('body',''))" "$f")
+  note=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('note',''))" "$f")
+  attempts=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('attempts',0))" "$f")
+  local url
+  if [[ "$kind" == "usage" ]]; then
+    url="$SERVER/skills/use/$skill"
+  else
+    url="$SERVER/feedback"
+  fi
+  local code
+  code=$(curl -sS -m 15 -o /dev/null -w '%{http_code}' -X POST \
+    "${AUTH[@]}" \
+    -H "X-Runai-Event-Id: $event_id" \
+    -H 'Content-Type: application/json' \
+    -d "$body" \
+    "$url" 2>/dev/null) || code="000"
+  case "$code" in
+    200|409)
+      # 200 = applied now; 409 = already applied with a different payload
+      # (treat as resolved — the event is durably recorded either way).
+      rm -f "$f"
+      return 0
+      ;;
+    401|403)
+      echo "runai-client flush: dropping $kind event $event_id (auth failure $code)" >&2
+      rm -f "$f"
+      return 0
+      ;;
+    422)
+      # Malformed — missing event_id we should have set. Drop; never retryable.
+      echo "runai-client flush: dropping malformed $kind event $event_id (422)" >&2
+      rm -f "$f"
+      return 0
+      ;;
+    000|5*)
+      # network / 5xx — increment attempts, keep for next flush.
+      python3 - "$f" "$((attempts+1))" <<'PY'
+import json, sys
+p, n = sys.argv[1], sys.argv[2]
+d = json.load(open(p))
+d['attempts'] = int(n)
+tmp = p + '.tmp'
+with open(tmp, 'w') as fh:
+    json.dump(d, fh)
+import os
+os.replace(tmp, p)
+PY
+      return 1
+      ;;
+    *)
+      echo "runai-client flush: unexpected HTTP $code for $kind event $event_id — retaining" >&2
+      return 1
+      ;;
+  esac
+}
+
+usage_activate() {
+  cat <<'HELP'
+runai-client activate — fetch a skill's SKILL.md and record a usage event.
+
+Usage:
+  runai-client activate <skill> [options]
+
+Options:
+  --session-id <id>   Claude session id (threaded into the usage event).
+  --refresh           Re-fetch SKILL.md even if a warm cache exists.
+  --include <relpath> Also fetch this sibling file into the cache (repeatable).
+  --all               Fetch the whole skill bundle into the cache.
+  --event-id <id>     Override the auto-generated event id (for replay).
+  --help, -h          Print this help and exit.
+
+Cache layout (never written to ~/.runai/skills/):
+  ~/.runai/client-cache/servers/<server-key>/skills/<skill-key>/SKILL.md
+  ~/.runai/client-cache/servers/<server-key>/skills/<skill-key>/files/<relpath>
+  ~/.runai/client-cache/servers/<server-key>/skills/<skill-key>/.outbox/<ts>-<event_id>.json
+
+Contract: SKILL.md is printed to stdout ONLY after the usage event is
+ACKed by the server OR durably queued in the local outbox. A cold cache
++ network failure queues the event but does NOT print (no content).
+HELP
+}
+
+usage_feedback() {
+  cat <<'HELP'
+runai-client feedback — send a passive feedback note for a skill.
+
+Usage:
+  runai-client feedback <skill> --note "<text>" [options]
+
+Options:
+  --note <text>       The feedback note (required).
+  --event-id <id>     Override the auto-generated event id (for replay).
+  --help, -h          Print this help and exit.
+
+Network failures queue the event in the local outbox (replayed by
+`runai-client flush`). 401/403 do NOT queue — auth failures are never
+retryable.
+HELP
+}
+
+usage_sync() {
+  cat <<'HELP'
+runai-client sync — prewarm the local cache for one or more skills.
+
+Usage:
+  runai-client sync <skill> [<skill> ...]
+  runai-client sync --all   (prewarm bundles for every listed skill)
+
+Options:
+  --all   Fetch full bundles (not just SKILL.md) into each cache dir.
+  --help, -h   Print this help and exit.
+
+Unknown skills are skipped with a warning (exit 0) so a stale list does
+not abort a prewarm loop.
+HELP
+}
+
+cmd_activate() {
+  local SKILL="" SESSION_ID="" REFRESH=0 EVENT_ID="" ALL=0
+  local -a INCLUDES=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --session-id) SESSION_ID="$2"; shift 2 ;;
+      --refresh) REFRESH=1; shift ;;
+      --include) INCLUDES+=("$2"); shift 2 ;;
+      --all) ALL=1; shift ;;
+      --event-id) EVENT_ID="$2"; shift 2 ;;
+      --help|-h) usage_activate; return 0 ;;
+      *)
+        if [[ -z "$SKILL" ]]; then SKILL="$1"; shift; continue; fi
+        echo "runai-client activate: 未知参数: $1" >&2
+        return 1
+        ;;
+    esac
+  done
+  if [[ -z "$SKILL" ]]; then
+    echo "runai-client activate: 需要 skill name" >&2
+    usage_activate >&2
+    return 2
+  fi
+  ensure_creds
+  [[ -z "$EVENT_ID" ]] && EVENT_ID="$(gen_uuid)"
+
+  local CACHE_BASE; CACHE_BASE=$(client_cache_root)
+  local CACHE_ROOT; CACHE_ROOT=$(server_cache_root)
+  local CACHE_DIR; CACHE_DIR=$(skill_cache_dir "$SKILL")
+  local SKILL_MD="$CACHE_DIR/SKILL.md"
+  mkdir -p "$CACHE_DIR/files" "$CACHE_DIR/.outbox"
+  chmod 700 "$HOME/.runai" "$CACHE_BASE" "$CACHE_BASE/servers" "$CACHE_ROOT" "$CACHE_ROOT/skills" "$CACHE_DIR" 2>/dev/null || true
+
+  # Canonical payload (server re-sorts keys for hashing, so our field
+  # order only needs to be self-consistent).
+  local includes_str; includes_str=$(printf '%s\n' ${INCLUDES[@]+"${INCLUDES[@]}"})
+  local BODY; BODY=$(python3 -c \
+    "import json,sys; print(json.dumps({'session_id': sys.argv[1], 'include': [x for x in sys.argv[2].splitlines() if x]}))" \
+    "$SESSION_ID" "$includes_str")
+
+  local AUTH=()
+  [[ -n "$API_KEY" ]] && AUTH=(-H "Authorization: Bearer $API_KEY")
+  local RESP HTTP BODY_RESP
+  RESP=$(curl -sS -m 15 -w '\n__HTTP_CODE__%{http_code}' -X POST \
+    "${AUTH[@]}" \
+    -H "X-Runai-Event-Id: $EVENT_ID" \
+    -H 'Content-Type: application/json' \
+    -d "$BODY" \
+    "$SERVER/skills/use/$SKILL" 2>/dev/null) || RESP=""
+  HTTP="${RESP##*__HTTP_CODE__}"
+  BODY_RESP="${RESP%__HTTP_CODE__*}"
+
+  case "$HTTP" in
+    200) : ;;  # ACKed
+    409) echo "runai-client activate: event_id 冲突 (HTTP 409)" >&2; return 1 ;;
+    401|403) echo "runai-client activate: 鉴权失败 (HTTP $HTTP)" >&2; return 1 ;;
+    404) echo "runai-client activate: server 找不到该 skill" >&2; return 1 ;;
+    ""|000|5*)
+      # network / 5xx → durable outbox
+      outbox_write "usage" "$EVENT_ID" "$SKILL" "$BODY" "$SESSION_ID"
+      ;;
+    *) echo "runai-client activate: 意外 HTTP $HTTP" >&2; return 1 ;;
+  esac
+
+  # Ensure content. Cache hit unless --refresh.
+  if [[ $REFRESH -eq 0 && -f "$SKILL_MD" ]]; then
+    : # use cache
+  else
+    if ! fetch_file "$SKILL" "SKILL.md" "$SKILL_MD"; then
+      if [[ -f "$SKILL_MD" ]]; then
+        warn "拉取失败,使用旧缓存 $SKILL"
+      else
+        # cold cache + fetch failure. Outbox already has the event if
+        # we queued it. Contract: fail WITHOUT printing.
+        echo "runai-client activate: 无法拉取 SKILL.md 且无缓存" >&2
+        return 1
+      fi
+    fi
+  fi
+
+  # Fetch --include / --all
+  if [[ $ALL -eq 1 ]]; then
+    fetch_bundle "$SKILL" "$CACHE_DIR/files" || warn "bundle 拉取失败: $SKILL"
+  else
+    for rel in ${INCLUDES[@]+"${INCLUDES[@]}"}; do
+      fetch_file "$SKILL" "$rel" "$CACHE_DIR/files/$rel" || warn "include 拉取失败: $rel"
+    done
+  fi
+
+  # Contract: ACK or outbox succeeded → safe to print.
+  cat "$SKILL_MD"
+}
+
+cmd_feedback() {
+  local SKILL="" NOTE="" EVENT_ID=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --note) NOTE="$2"; shift 2 ;;
+      --event-id) EVENT_ID="$2"; shift 2 ;;
+      --help|-h) usage_feedback; return 0 ;;
+      *)
+        if [[ -z "$SKILL" ]]; then SKILL="$1"; shift; continue; fi
+        echo "runai-client feedback: 未知参数: $1" >&2
+        return 1
+        ;;
+    esac
+  done
+  if [[ -z "$SKILL" ]]; then
+    echo "runai-client feedback: 需要 skill name" >&2
+    usage_feedback >&2
+    return 2
+  fi
+  if [[ -z "$NOTE" ]]; then
+    echo "runai-client feedback: --note required" >&2
+    return 2
+  fi
+  ensure_creds
+  [[ -z "$EVENT_ID" ]] && EVENT_ID="$(gen_uuid)"
+
+  local BODY; BODY=$(python3 -c \
+    "import json,sys; print(json.dumps({'skill': sys.argv[1], 'note': sys.argv[2]}))" \
+    "$SKILL" "$NOTE")
+
+  local AUTH=()
+  [[ -n "$API_KEY" ]] && AUTH=(-H "Authorization: Bearer $API_KEY")
+  local RESP HTTP
+  RESP=$(curl -sS -m 15 -w '\n__HTTP_CODE__%{http_code}' -X POST \
+    "${AUTH[@]}" \
+    -H "X-Runai-Event-Id: $EVENT_ID" \
+    -H 'Content-Type: application/json' \
+    -d "$BODY" \
+    "$SERVER/feedback" 2>/dev/null) || RESP=""
+  HTTP="${RESP##*__HTTP_CODE__}"
+  case "$HTTP" in
+    200) return 0 ;;
+    409) return 0 ;;  # idempotent — already applied with this payload
+    401|403) echo "runai-client feedback: 鉴权失败 (HTTP $HTTP)" >&2; return 1 ;;
+    ""|000|5*)
+      outbox_write "feedback" "$EVENT_ID" "$SKILL" "$BODY" "" "$NOTE"
+      return 0
+      ;;
+    *) echo "runai-client feedback: 意外 HTTP $HTTP" >&2; return 1 ;;
+  esac
+}
+
+cmd_sync() {
+  local ALL=0
+  local -a SKILLS=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --all) ALL=1; shift ;;
+      --help|-h) usage_sync; return 0 ;;
+      *) SKILLS+=("$1"); shift ;;
+    esac
+  done
+  if [[ ${#SKILLS[@]} -eq 0 ]]; then
+    echo "runai-client sync: 至少指定一个 skill (或用 --all 预暖所有已知 skill)" >&2
+    usage_sync >&2
+    return 2
+  fi
+  ensure_creds
+  local CACHE_BASE; CACHE_BASE=$(client_cache_root)
+  local CACHE_ROOT; CACHE_ROOT=$(server_cache_root)
+  chmod 700 "$HOME/.runai" "$CACHE_BASE" "$CACHE_BASE/servers" "$CACHE_ROOT" "$CACHE_ROOT/skills" 2>/dev/null || true
+  local ok=0 skip=0
+  for s in "${SKILLS[@]}"; do
+    local dir; dir=$(skill_cache_dir "$s")
+    mkdir -p "$dir/files" "$dir/.outbox"
+    chmod 700 "$dir" 2>/dev/null || true
+    chmod 700 "$CACHE_ROOT" "$dir" 2>/dev/null || true
+    if ! fetch_file "$s" "SKILL.md" "$dir/SKILL.md"; then
+      echo "runai-client sync: 跳过 $s (server 返回非 200 或不可达)" >&2
+      skip=$((skip+1))
+      continue
+    fi
+    if [[ $ALL -eq 1 ]]; then
+      fetch_bundle "$s" "$dir/files" || warn "sync: bundle 拉取失败: $s"
+    fi
+    ok=$((ok+1))
+  done
+  echo "sync: 预暖 $ok / 跳过 $skip"
+  return 0
+}
+
+cmd_flush() {
+  ensure_creds
+  local CACHE_ROOT; CACHE_ROOT=$(client_cache_root)
+  local outbox_files=()
+  if [[ -d "$CACHE_ROOT" ]]; then
+    # mtime-ordered list of every outbox entry across all skills.
+    while IFS= read -r f; do
+      [[ -n "$f" ]] && outbox_files+=("$f")
+    done < <(find "$CACHE_ROOT" -type f -path '*/.outbox/*.json' 2>/dev/null \
+      | xargs -r ls -t 2>/dev/null)
+  fi
+  if [[ ${#outbox_files[@]} -eq 0 ]]; then
+    echo "flush: outbox 为空"
+    return 0
+  fi
+  local ok=0 retain=0
+  for f in "${outbox_files[@]}"; do
+    if outbox_replay "$f"; then ok=$((ok+1)); else retain=$((retain+1)); fi
+  done
+  echo "flush: 已重放 $ok / 保留 $retain"
+  return 0
+}
+
 case "${1:-}" in
   ""|--help|-h|help)
     usage_root
@@ -1118,6 +1640,22 @@ case "${1:-}" in
   install)
     shift
     cmd_install "$@"
+    ;;
+  activate)
+    shift
+    cmd_activate "$@"
+    ;;
+  feedback)
+    shift
+    cmd_feedback "$@"
+    ;;
+  sync)
+    shift
+    cmd_sync "$@"
+    ;;
+  flush)
+    shift
+    cmd_flush "$@"
     ;;
   *)
     echo "runai-client: unknown subcommand: $1" >&2

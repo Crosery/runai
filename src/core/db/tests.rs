@@ -14,7 +14,7 @@ fn migration_creates_schema_version() {
         .conn
         .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 22);
+    assert_eq!(version, 23);
 }
 
 #[test]
@@ -71,7 +71,7 @@ fn migration_v21_moves_ai_summary_to_owner_scoped_key() {
     }
 
     let db = Database::open(&db_path).unwrap();
-    assert_eq!(db.schema_version(), 22);
+    assert_eq!(db.schema_version(), 23);
     let loaded = db.skill_ai_index("legacy").unwrap().unwrap();
     assert_eq!(loaded.summary, "task: legacy public summary");
     assert_eq!(loaded.updated_at, 42);
@@ -324,7 +324,7 @@ fn schema_at_v15_after_open() {
     // this test is kept for git-blame continuity; the v15 tables it
     // spot-checks below are still there post-v17, just behind a higher
     // version number.
-    assert_eq!(version, 22);
+    assert_eq!(version, 23);
 
     // Tables must exist
     for tbl in &["users", "user_skill_library"] {
