@@ -56,6 +56,34 @@ impl Database {
         Ok(user)
     }
 
+    /// Look up a user by the SHA-256 hash of their browser-session token
+    /// (issue #35). Only the cookie auth lane consults this; the Bearer lane
+    /// stays `find_user_by_api_key_hash`-only so a leaked session token can
+    /// never double as a hook credential.
+    pub fn find_user_by_session_key_hash(&self, session_key_hash: &str) -> Result<Option<User>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT user_id, username, password_hash, api_key_hash,
+                    is_admin, disabled, prefs_json, created_at
+             FROM users WHERE session_key_hash = ?1",
+        )?;
+        let user = stmt.query_row(params![session_key_hash], row_to_user).ok();
+        Ok(user)
+    }
+
+    /// Set (Some) or clear (None) the browser-session token hash. One slot
+    /// per user: a new dashboard login replaces the previous session.
+    pub fn set_session_key_hash(
+        &self,
+        user_id: &str,
+        session_key_hash: Option<&str>,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE users SET session_key_hash = ?1 WHERE user_id = ?2",
+            params![session_key_hash, user_id],
+        )?;
+        Ok(())
+    }
+
     pub fn find_user_by_id(&self, user_id: &str) -> Result<Option<User>> {
         let mut stmt = self.conn.prepare(
             "SELECT user_id, username, password_hash, api_key_hash,
@@ -113,17 +141,18 @@ impl Database {
     }
 
     /// Reset a user's credentials in one atomic UPDATE: overwrite the argon2
-    /// `password_hash` AND rotate the `api_key_hash`. Used by the admin
-    /// "reset any user's password" surface (server `POST /api/admin/users/
-    /// {user_id}/reset-password` + local CLI `runai admin reset-password`).
+    /// `password_hash`, rotate the `api_key_hash`, AND clear the browser
+    /// session (issue #35). Used by the admin "reset any user's password"
+    /// surface (server `POST /api/admin/users/{user_id}/reset-password` +
+    /// local CLI `runai admin reset-password`).
     ///
-    /// Rotating the api_key alongside the password is load-bearing: a reset
-    /// implies the old secret is compromised / forgotten, so every previously
-    /// issued Bearer (browser cookie + `~/.runai-identity`) must die and the
-    /// user must log in again with the new password to mint a fresh key.
-    /// Callers pass the SHA-256 hash of a freshly minted `new_api_key()`; the
-    /// plaintext key is intentionally NOT persisted or returned — the user
-    /// obtains a new one only by logging in.
+    /// Revoking every credential alongside the password is load-bearing: a
+    /// reset implies the old secret is compromised / forgotten, so every
+    /// previously issued Bearer (`~/.runai-identity`) and session cookie must
+    /// die and the user must log in again with the new password. Callers pass
+    /// the SHA-256 hash of a freshly minted `new_api_key()`; the plaintext key
+    /// is intentionally NOT persisted or returned — the user obtains a new one
+    /// only by logging in.
     pub fn set_user_credentials(
         &self,
         user_id: &str,
@@ -131,7 +160,9 @@ impl Database {
         new_api_key_hash: &str,
     ) -> Result<()> {
         self.conn.execute(
-            "UPDATE users SET password_hash = ?1, api_key_hash = ?2 WHERE user_id = ?3",
+            "UPDATE users SET password_hash = ?1, api_key_hash = ?2,
+                              session_key_hash = NULL
+             WHERE user_id = ?3",
             params![password_hash, new_api_key_hash, user_id],
         )?;
         Ok(())

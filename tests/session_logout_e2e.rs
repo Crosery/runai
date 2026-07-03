@@ -145,10 +145,14 @@ fn logout_everywhere_rotates_and_invalidates_old_key() {
         "the old api_key must be invalid after logout-everywhere rotated it"
     );
 
-    // re-login mints a fresh working key.
+    // re-login (script-style, rotate_api_key) mints a fresh working key.
     let r = http()
         .post(format!("{}/auth/login", s.base_url()))
-        .json(&json!({"username": "alice", "password": "pw alice 1234"}))
+        .json(&json!({
+            "username": "alice",
+            "password": "pw alice 1234",
+            "rotate_api_key": true
+        }))
         .send()
         .unwrap();
     assert_eq!(r.status().as_u16(), 200);

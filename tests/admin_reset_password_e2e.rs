@@ -125,11 +125,16 @@ fn register(server: &ServerGuard, username: &str, password: &str) -> (String, St
     (user_id, api_key)
 }
 
-/// Attempt login. Returns (status_code, Option<api_key>).
+/// Attempt login (script-style, rotate_api_key so a 200 carries the key).
+/// Returns (status_code, Option<api_key>).
 fn login(server: &ServerGuard, username: &str, password: &str) -> (u16, Option<String>) {
     let resp = http_client()
         .post(format!("{}/auth/login", server.base_url()))
-        .json(&json!({ "username": username, "password": password }))
+        .json(&json!({
+            "username": username,
+            "password": password,
+            "rotate_api_key": true
+        }))
         .send()
         .expect("login request");
     let status = resp.status().as_u16();

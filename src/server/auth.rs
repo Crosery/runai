@@ -105,6 +105,11 @@ pub(super) async fn api_register(
 pub(super) struct LoginReq {
     username: String,
     password: String,
+    /// Issue #35: only credential-persisting clients (the install script,
+    /// which writes ~/.runai-identity) ask for a rotation. The dashboard
+    /// omits it — a browser login must not revoke installed hook clients.
+    #[serde(default)]
+    rotate_api_key: bool,
 }
 
 #[derive(Serialize)]
@@ -112,7 +117,10 @@ pub(super) struct LoginResp {
     user_id: String,
     username: String,
     is_admin: bool,
-    api_key: String,
+    /// Present only on `rotate_api_key: true` logins. A dashboard login
+    /// authenticates via the session cookie alone and never sees a key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    api_key: Option<String>,
 }
 
 /// Canonical failure body for /auth/login. Used for BOTH "user does not
@@ -135,9 +143,18 @@ fn login_failure() -> Response {
 }
 
 /// POST /auth/login
-/// body: {"username": "...", "password": "..."}
-/// Returns the api_key in JSON and sets the runai_session cookie. Either
-/// channel can be used afterwards.
+/// body: {"username": "...", "password": "...", "rotate_api_key": bool?}
+///
+/// Two lanes (issue #35):
+/// - default (dashboard): verifies the password, mints an independent
+///   `rnai_sess_...` session token (hash stored in `users.session_key_hash`),
+///   sets it as the runai_session cookie, and leaves the api_key untouched —
+///   a browser login must not revoke installed hook clients. The response
+///   body carries NO api_key.
+/// - `rotate_api_key: true` (install script, which persists the key to
+///   ~/.runai-identity): mints a fresh api_key, replaces `api_key_hash`
+///   (revoking all previous copies), and returns it in JSON. The session
+///   slot is untouched so an active browser session survives.
 ///
 /// Failure shape: always 401 + `{"error":"invalid_credentials"}` — same
 /// body for "no such user" / "wrong password" / "account disabled" so an
@@ -149,11 +166,14 @@ pub(super) async fn api_login(
     Json(req): Json<LoginReq>,
 ) -> Response {
     // Outer Result is Internal (5xx) vs login-flow (success-or-401).
-    // The login-flow branch is `Result<LoginResp, ()>` — the `Err(())`
-    // payload is intentionally type-erased because all three failure
-    // reasons collapse to the same wire response.
+    // The login-flow branch is `Result<(LoginResp, cookie_token), ()>` —
+    // the `Err(())` payload is intentionally type-erased because all three
+    // failure reasons collapse to the same wire response. cookie_token is
+    // None on the rotate lane (the script ignores cookies; setting one
+    // would serve no client).
+    type LoginOk = (LoginResp, Option<String>);
     let join =
-        tokio::task::spawn_blocking(move || -> Result<Result<LoginResp, ()>, anyhow::Error> {
+        tokio::task::spawn_blocking(move || -> Result<Result<LoginOk, ()>, anyhow::Error> {
             let db = state.db()?;
             let user = match db.find_user_by_username(&req.username)? {
                 Some(u) => u,
@@ -166,21 +186,39 @@ pub(super) async fn api_login(
                 return Ok(Err(()));
             }
 
-            // On login we rotate-issue: re-emit the api_key from the row.
-            // We cannot recover the original secret from the hash, so login
-            // must mint a new api_key and update the hash. This invalidates
-            // any previously-installed client that hasn't logged in since —
-            // intentional: the password is the source of truth.
-            let new_key = authmod::new_api_key();
-            let new_hash = authmod::key_hash(&authmod::BearerToken(new_key.clone()));
-            db.rotate_api_key(&user.user_id, &new_hash)?;
-
-            Ok(Ok(LoginResp {
-                user_id: user.user_id,
-                username: user.username,
-                is_admin: user.is_admin,
-                api_key: new_key,
-            }))
+            if req.rotate_api_key {
+                // Script lane: we cannot recover the original secret from the
+                // hash, so handing out a key means minting a new one and
+                // updating the hash. This invalidates any previously-installed
+                // client that hasn't re-run the install script since — the
+                // password is the source of truth.
+                let new_key = authmod::new_api_key();
+                let new_hash = authmod::key_hash(&authmod::BearerToken(new_key.clone()));
+                db.rotate_api_key(&user.user_id, &new_hash)?;
+                Ok(Ok((
+                    LoginResp {
+                        user_id: user.user_id,
+                        username: user.username,
+                        is_admin: user.is_admin,
+                        api_key: Some(new_key),
+                    },
+                    None,
+                )))
+            } else {
+                // Dashboard lane: independent session token, api_key untouched.
+                let session_token = authmod::new_session_token();
+                let session_hash = authmod::key_hash(&authmod::BearerToken(session_token.clone()));
+                db.set_session_key_hash(&user.user_id, Some(&session_hash))?;
+                Ok(Ok((
+                    LoginResp {
+                        user_id: user.user_id,
+                        username: user.username,
+                        is_admin: user.is_admin,
+                        api_key: None,
+                    },
+                    Some(session_token),
+                )))
+            }
         })
         .await;
 
@@ -190,14 +228,22 @@ pub(super) async fn api_login(
             return ApiError::Internal(anyhow::anyhow!(e)).into_response();
         }
     };
-    let resp = match inner {
+    let (resp, cookie_token) = match inner {
         Ok(Ok(r)) => r,
         Ok(Err(())) => return login_failure(),
         Err(e) => return ApiError::Internal(e).into_response(),
     };
 
-    let cookie = authmod::build_session_cookie(&resp.api_key, false, 60 * 60 * 24 * 30);
     let body = serde_json::to_string(&resp).unwrap_or_else(|_| "{}".into());
+    let Some(token) = cookie_token else {
+        return (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/json".to_string())],
+            body,
+        )
+            .into_response();
+    };
+    let cookie = authmod::build_session_cookie(&token, false, 60 * 60 * 24 * 30);
     (
         StatusCode::OK,
         [
@@ -224,12 +270,13 @@ pub(super) async fn api_logout() -> Response {
 }
 
 /// Log out EVERYWHERE (E1): plain `api_logout` only forgets the current
-/// browser's cookie — but the cookie value IS the long-lived api_key, so a copy
-/// captured before logout (devtools / a proxy / `~/.runai-identity`) keeps
-/// authenticating. This rotates the api_key (invalidating every existing copy,
-/// incl. the caller's own cookie) then clears the cookie. The user must log in
-/// again for a fresh key; previously-installed hook clients must re-run the
-/// install script. Requires an authenticated caller.
+/// browser's cookie — a copy of the session token captured before logout
+/// (devtools / a proxy), and the hook's `~/.runai-identity` key, keep
+/// authenticating. This is the real revoke: it rotates the api_key AND
+/// clears the session slot (issue #35), invalidating every existing
+/// credential incl. the caller's own cookie, then clears the cookie. The
+/// user must log in again; previously-installed hook clients must re-run
+/// the install script. Requires an authenticated caller.
 pub(super) async fn api_logout_everywhere(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -240,6 +287,8 @@ pub(super) async fn api_logout_everywhere(
         let new_key = authmod::new_api_key();
         let new_hash = authmod::key_hash(&authmod::BearerToken(new_key));
         db.rotate_api_key(&user.user_id, &new_hash)
+            .map_err(ApiError::Internal)?;
+        db.set_session_key_hash(&user.user_id, None)
             .map_err(ApiError::Internal)?;
         Ok(())
     })

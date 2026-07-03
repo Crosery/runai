@@ -80,8 +80,10 @@ pub fn user_id_from_token(token: &BearerToken) -> String {
 //  v15 multi-user primitives
 // ===================================================================
 
-/// Cookie name carrying the session token (= raw api_key, same Bearer
-/// the hook uses). Keeps a single source of truth for "who is this".
+/// Cookie name carrying the browser session token. Since issue #35 the
+/// session token is an independent secret (`rnai_sess_...`, hashed into
+/// `users.session_key_hash`) — NOT the api_key. Pre-#35 cookies held the
+/// raw api_key; the cookie auth lane still accepts those for back-compat.
 pub const SESSION_COOKIE_NAME: &str = "runai_session";
 
 /// Generate a fresh opaque user_id: `usr_` + 16 base32-no-padding chars
@@ -103,6 +105,20 @@ pub fn new_api_key() -> String {
     let suffix =
         base32::encode(base32::Alphabet::Rfc4648 { padding: false }, &bytes).to_ascii_lowercase();
     format!("rnai_live_{suffix}")
+}
+
+/// Generate a fresh browser-session token: `rnai_sess_` + 32 base32
+/// chars (~160 bits). Minted on every dashboard login, stored hashed in
+/// `users.session_key_hash`, carried only by the `runai_session` cookie.
+/// Deliberately a distinct prefix from `rnai_live_` so a leaked cookie
+/// value is recognizable and never doubles as a hook Bearer (the Bearer
+/// lane only consults `api_key_hash`).
+pub fn new_session_token() -> String {
+    let mut bytes = [0u8; 20];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    let suffix =
+        base32::encode(base32::Alphabet::Rfc4648 { padding: false }, &bytes).to_ascii_lowercase();
+    format!("rnai_sess_{suffix}")
 }
 
 /// Hash a password with argon2id. Returns the PHC-format string suitable

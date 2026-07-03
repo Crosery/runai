@@ -121,12 +121,21 @@ pub(super) fn current_user(headers: &HeaderMap, db: &Database) -> Result<Option<
         }
     }
 
-    // 2. Cookie session (dashboard path) — cookie value is the raw api_key
+    // 2. Cookie session (dashboard path) — since issue #35 the cookie
+    //    carries an independent `rnai_sess_...` token (session_key_hash
+    //    lookup). Pre-#35 cookies held the raw api_key; keep accepting
+    //    those so live browser sessions survive the upgrade. The Bearer
+    //    lane above deliberately does NOT get the session fallback — a
+    //    leaked cookie token must never work as a hook credential.
     let cookie_hdr = headers.get(header::COOKIE).and_then(|v| v.to_str().ok());
     if let Some(tok) = authmod::parse_session_cookie(cookie_hdr) {
         let token = authmod::BearerToken(tok);
         let h = authmod::key_hash(&token);
-        if let Some(u) = db.find_user_by_api_key_hash(&h)? {
+        let hit = match db.find_user_by_session_key_hash(&h)? {
+            Some(u) => Some(u),
+            None => db.find_user_by_api_key_hash(&h)?,
+        };
+        if let Some(u) = hit {
             if u.disabled {
                 return Ok(None);
             }

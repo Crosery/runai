@@ -177,13 +177,16 @@ if ($DoAuth) {
         }
 
         $authBody = @{ username = $RunaiUsername; password = $RunaiPassword } | ConvertTo-Json -Compress
+        # rotate_api_key: this installer persists the key to ~/.runai-identity,
+        # so it opts into rotation. A plain (dashboard) login never rotates.
+        $loginBody = @{ username = $RunaiUsername; password = $RunaiPassword; rotate_api_key = $true } | ConvertTo-Json -Compress
         $resp = $null
         Write-Warn2 "trying sign-in as $RunaiUsername"
         $loginFailed = $false
         $loginHttpStatus = $null
         try {
             $resp = Invoke-RestMethod -Method Post -Uri "$ServerUrl/auth/login" `
-                -ContentType "application/json; charset=utf-8" -Body $authBody
+                -ContentType "application/json; charset=utf-8" -Body $loginBody
             Write-Ok "signed in as $RunaiUsername"
         } catch {
             $loginFailed = $true

@@ -14,7 +14,7 @@ fn migration_creates_schema_version() {
         .conn
         .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 21);
+    assert_eq!(version, 22);
 }
 
 #[test]
@@ -71,7 +71,7 @@ fn migration_v21_moves_ai_summary_to_owner_scoped_key() {
     }
 
     let db = Database::open(&db_path).unwrap();
-    assert_eq!(db.schema_version(), 21);
+    assert_eq!(db.schema_version(), 22);
     let loaded = db.skill_ai_index("legacy").unwrap().unwrap();
     assert_eq!(loaded.summary, "task: legacy public summary");
     assert_eq!(loaded.updated_at, 42);
@@ -324,7 +324,7 @@ fn schema_at_v15_after_open() {
     // this test is kept for git-blame continuity; the v15 tables it
     // spot-checks below are still there post-v17, just behind a higher
     // version number.
-    assert_eq!(version, 21);
+    assert_eq!(version, 22);
 
     // Tables must exist
     for tbl in &["users", "user_skill_library"] {
@@ -415,6 +415,76 @@ fn user_crud_roundtrip() {
         .unwrap();
     let list = db.list_users().unwrap();
     assert_eq!(list.len(), 2);
+}
+
+/// v22 (issue #35): the browser-session slot is independent from the api_key.
+#[test]
+fn session_key_hash_roundtrip_and_reset_clears_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(&tmp.path().join("sess.db")).unwrap();
+    db.create_user("u1", "alice", "phash1", "akhash1", false)
+        .unwrap();
+
+    // No session yet.
+    assert!(
+        db.find_user_by_session_key_hash("shash1")
+            .unwrap()
+            .is_none()
+    );
+
+    // Set → lookup hits; api_key lane untouched.
+    db.set_session_key_hash("u1", Some("shash1")).unwrap();
+    assert_eq!(
+        db.find_user_by_session_key_hash("shash1")
+            .unwrap()
+            .unwrap()
+            .user_id,
+        "u1"
+    );
+    assert!(db.find_user_by_api_key_hash("akhash1").unwrap().is_some());
+    // A session hash never resolves on the api_key lane and vice versa.
+    assert!(db.find_user_by_api_key_hash("shash1").unwrap().is_none());
+    assert!(
+        db.find_user_by_session_key_hash("akhash1")
+            .unwrap()
+            .is_none()
+    );
+
+    // Replace (new browser login) → old session token dies.
+    db.set_session_key_hash("u1", Some("shash2")).unwrap();
+    assert!(
+        db.find_user_by_session_key_hash("shash1")
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        db.find_user_by_session_key_hash("shash2")
+            .unwrap()
+            .is_some()
+    );
+
+    // Clear (logout-everywhere).
+    db.set_session_key_hash("u1", None).unwrap();
+    assert!(
+        db.find_user_by_session_key_hash("shash2")
+            .unwrap()
+            .is_none()
+    );
+
+    // Credential reset clears the session alongside password + api_key.
+    db.set_session_key_hash("u1", Some("shash3")).unwrap();
+    db.set_user_credentials("u1", "phash_new", "akhash_new")
+        .unwrap();
+    assert!(
+        db.find_user_by_session_key_hash("shash3")
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        db.find_user_by_api_key_hash("akhash_new")
+            .unwrap()
+            .is_some()
+    );
 }
 
 #[test]

@@ -433,6 +433,23 @@ impl Database {
             )?;
         }
 
+        if version < 22 {
+            // Issue #35 — browser sessions decouple from the api_key.
+            // Dashboard login mints an independent `rnai_sess_...` token
+            // (hash stored here) instead of rotating the api_key, so a web
+            // login no longer revokes every installed hook client's
+            // ~/.runai-identity. NULL = no active browser session.
+            // Tolerate the ALTER failing in case a stray run already added
+            // the column; the version bump is the canonical marker.
+            let _ = self
+                .conn
+                .execute("ALTER TABLE users ADD COLUMN session_key_hash TEXT", []);
+            self.conn.execute_batch(
+                "DELETE FROM schema_version;
+                 INSERT INTO schema_version VALUES (22);",
+            )?;
+        }
+
         Ok(())
     }
 }

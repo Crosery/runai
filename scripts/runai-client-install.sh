@@ -310,13 +310,17 @@ PY
     AUTH_BODY=$(printf '{"username":"%s","password":"%s"}' \
       "$(printf '%s' "$RUNAI_USERNAME" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read())[1:-1])')" \
       "$(printf '%s' "$RUNAI_PASSWORD" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read())[1:-1])')")
+    # rotate_api_key: this installer persists the key to ~/.runai-identity, so
+    # it opts into rotation. A plain (dashboard) login never rotates and gets
+    # no api_key back — without this flag the extract step below would fail.
+    LOGIN_BODY="${AUTH_BODY%\}},\"rotate_api_key\":true}"
 
     # Try login first. Any HTTP 2xx → logged in. Otherwise fall through to register.
     warn "用 ${B}${RUNAI_USERNAME}${R} 登录中"
     LOGIN_HTTP=$(curl -s -o /tmp/runai-login-resp.$$ -w '%{http_code}' \
       -X POST "$SERVER_URL/auth/login" \
       -H 'Content-Type: application/json' \
-      -d "$AUTH_BODY" || echo 000)
+      -d "$LOGIN_BODY" || echo 000)
     if [[ "$LOGIN_HTTP" == "200" ]]; then
       ok "登录成功 — ${B}${RUNAI_USERNAME}${R}"
       RESP_FILE=/tmp/runai-login-resp.$$

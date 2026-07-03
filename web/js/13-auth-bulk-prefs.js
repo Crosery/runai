@@ -116,9 +116,10 @@
     try {
       const path = mode === 'register' ? '/users/register' : '/auth/login';
       const resp = await api('POST', path, { username, password });
-      // Persist api_key locally so the dashboard survives cookie wipes
-      // / browser restarts. Both /users/register and /auth/login return
-      // an api_key in their JSON body.
+      // /users/register still returns an api_key; /auth/login no longer
+      // does (issue #35 — a dashboard login mints a session cookie only
+      // and never rotates the hook's key). setStoredApiKey is a no-op
+      // stub; this stays for the register path's shape only.
       if (resp && resp.api_key) setStoredApiKey(resp.api_key);
       hideAuthModal();
       $('#auth-username').value = '';

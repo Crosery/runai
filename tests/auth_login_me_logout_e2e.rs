@@ -4,8 +4,11 @@
 //!   GET  /api/me        (returns user info via Bearer or cookie)
 //!   GET  /api/prefs     (per-user prefs, requires auth)
 //!
-//! Also pins the login api_key ROTATION contract: every successful
-//! /auth/login mints a fresh api_key and old keys stop working.
+//! Also pins the login api_key rotation contract (issue #35): a plain
+//! (dashboard) login mints an independent session token and leaves the
+//! api_key alone; only `rotate_api_key: true` (install-script path) mints
+//! a fresh api_key and revokes old ones. The full new-contract matrix
+//! lives in tests/login_session_rotation_e2e.rs.
 
 #![cfg(not(target_os = "windows"))]
 
@@ -105,7 +108,7 @@ fn register(s: &ServerGuard, u: &str, p: &str) -> (String, String) {
 // ─── POST /auth/login ──────────────────────────────────────────────
 
 #[test]
-fn login_success_returns_user_and_api_key_and_sets_cookie() {
+fn login_success_returns_user_and_sets_cookie_without_api_key() {
     let s = spawn_team_server();
     let _ = register(&s, "alice", "pw alice 1234");
     let r = http()
@@ -114,12 +117,20 @@ fn login_success_returns_user_and_api_key_and_sets_cookie() {
         .send()
         .unwrap();
     assert_eq!(r.status().as_u16(), 200);
-    // Cookie must be set
+    // Cookie must be set — an independent rnai_sess_ token, not the api_key
     let cookie = r.headers().get("set-cookie").expect("set-cookie header");
-    assert!(cookie.to_str().unwrap().contains("runai_session="));
+    assert!(
+        cookie
+            .to_str()
+            .unwrap()
+            .contains("runai_session=rnai_sess_")
+    );
     let b: Value = r.json().unwrap();
     assert_eq!(b["username"].as_str().unwrap(), "alice");
-    assert!(b["api_key"].as_str().unwrap().starts_with("rnai_live_"));
+    assert!(
+        b.get("api_key").is_none() || b["api_key"].is_null(),
+        "dashboard login must not return an api_key (issue #35), got {b}"
+    );
     assert!(b["user_id"].as_str().unwrap().starts_with("usr_"));
 }
 
@@ -160,7 +171,7 @@ fn login_unknown_user_returns_401_same_shape_as_wrong_password() {
 }
 
 #[test]
-fn login_rotates_api_key_invalidating_old_one() {
+fn rotate_login_rotates_api_key_invalidating_old_one() {
     let s = spawn_team_server();
     let (_uid, key_v1) = register(&s, "alice", "pw alice 1234");
     // confirm v1 works
@@ -171,10 +182,14 @@ fn login_rotates_api_key_invalidating_old_one() {
         .unwrap();
     assert_eq!(r0.status().as_u16(), 200);
 
-    // login → mint v2
+    // script-style login (rotate_api_key) → mint v2
     let r = http()
         .post(format!("{}/auth/login", s.base_url()))
-        .json(&json!({"username":"alice","password":"pw alice 1234"}))
+        .json(&json!({
+            "username":"alice",
+            "password":"pw alice 1234",
+            "rotate_api_key": true
+        }))
         .send()
         .unwrap();
     let b: Value = r.json().unwrap();
