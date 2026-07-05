@@ -5,6 +5,7 @@
 //! Contract under test:
 //!   - stdout contains `runai-client activate <name>`
 //!   - stdout contains `runai-client feedback <name> --note`
+//!   - stdout contains `runai-client file <name> <relpath>` guidance
 //!   - stdout does NOT contain `curl -s -X POST`, `/skills/get/`, or a
 //!     bare `curl .../feedback`
 //!   - the `runai-client activate` line does NOT inline an `http://`
@@ -266,6 +267,10 @@ fn assert_protocol(stdout: &str) {
     assert!(
         stdout.contains("runai-client feedback"),
         "hook output must use runai-client feedback, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("runai-client file"),
+        "hook output must tell agents to read support files through runai-client file, got:\n{stdout}"
     );
     assert!(
         !stdout.contains("curl -s -X POST"),

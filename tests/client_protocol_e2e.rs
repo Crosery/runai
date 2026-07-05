@@ -1,7 +1,7 @@
-//! Phase 3 e2e: the runai-client activation/feedback/sync/flush protocol
-//! (PLANNING §1.3) — bash companion. Covers activate, feedback, sync,
-//! flush, the client-cache layout invariant (NEVER ~/.runai/skills/),
-//! and the durable outbox.
+//! Phase 3 e2e: the runai-client activation/file/feedback/sync/flush protocol
+//! (PLANNING §1.3) — bash companion. Covers activate, cached support-file
+//! reads, feedback, sync, flush, the client-cache layout invariant (NEVER
+//! ~/.runai/skills/), and the durable outbox.
 //!
 //! All tests run against an isolated HOME tempdir + RUNE_DATA_DIR; the
 //! real `~/.runai/` is never touched. The server runs in team mode so
@@ -279,10 +279,90 @@ fn activate_warm_path_prints_skill_md_and_records_usage() {
     let cached =
         std::fs::read_to_string(cache_dir(home.path(), &server, "foo").join("SKILL.md")).unwrap();
     assert!(cached.contains("# foo"));
+    let cached_ref = cache_dir(home.path(), &server, "foo").join("files/references/ref-a.md");
+    assert!(
+        cached_ref.exists(),
+        "activate must cache the whole skill, including references: {cached_ref:?}"
+    );
+    assert_eq!(std::fs::read_to_string(cached_ref).unwrap(), "ref body");
     // 铁律: NEVER write to ~/.runai/skills/ on the client
     assert!(
         !home.path().join(".runai/skills").exists(),
         "client must NOT write to ~/.runai/skills/"
+    );
+}
+
+#[test]
+fn activate_default_caches_entire_skill_bundle() {
+    let server = Server::spawn();
+    server.plant(
+        "impeccable",
+        "needs supporting references",
+        &[
+            ("references/rubric.md", "rubric body"),
+            ("scripts/check.sh", "#!/bin/sh\necho ok\n"),
+        ],
+    );
+    let (home, key) = install_client(&server, &format!("bundle-{}", std::process::id()));
+
+    let (ok, stdout, stderr) = run_client(home.path(), &server, &key, &["activate", "impeccable"]);
+    assert!(ok, "activate should succeed: stderr=\n{stderr}");
+    assert!(stdout.contains("# impeccable"));
+
+    let files = cache_dir(home.path(), &server, "impeccable").join("files");
+    assert_eq!(
+        std::fs::read_to_string(files.join("references/rubric.md")).unwrap(),
+        "rubric body"
+    );
+    assert_eq!(
+        std::fs::read_to_string(files.join("scripts/check.sh")).unwrap(),
+        "#!/bin/sh\necho ok\n"
+    );
+    assert!(
+        !home.path().join(".runai/skills").exists(),
+        "client cache must never use ~/.runai/skills"
+    );
+}
+
+#[test]
+fn file_subcommand_prints_cached_support_file_without_server() {
+    let mut server = Server::spawn();
+    server.plant(
+        "impeccable",
+        "needs supporting references",
+        &[("references/rubric.md", "rubric body")],
+    );
+    let (home, key) = install_client(&server, &format!("file-{}", std::process::id()));
+    let (ok, _, stderr) = run_client(home.path(), &server, &key, &["activate", "impeccable"]);
+    assert!(ok, "activate should succeed: stderr=\n{stderr}");
+
+    let _ = server.child.kill();
+    let _ = server.child.wait();
+
+    let (ok2, stdout, stderr2) = run_client(
+        home.path(),
+        &server,
+        &key,
+        &["file", "impeccable", "references/rubric.md"],
+    );
+    assert!(
+        ok2,
+        "runai-client file should read cached support files offline: stderr=\n{stderr2}"
+    );
+    assert_eq!(stdout, "rubric body");
+}
+
+#[test]
+fn file_subcommand_rejects_cache_traversal() {
+    let server = Server::spawn();
+    server.plant("foo", "foo", &[("references/ref-a.md", "ref")]);
+    let (home, key) = install_client(&server, &format!("filetr-{}", std::process::id()));
+    let (ok, _stdout, stderr) =
+        run_client(home.path(), &server, &key, &["file", "foo", "../SKILL.md"]);
+    assert!(!ok, "traversal file read must fail");
+    assert!(
+        stderr.contains("traversal") || stderr.contains("refusing"),
+        "stderr should explain traversal rejection: {stderr}"
     );
 }
 
@@ -436,6 +516,30 @@ fn activate_refresh_refetches_skill_md() {
     let cached =
         std::fs::read_to_string(cache_dir(home.path(), &server, "foo").join("SKILL.md")).unwrap();
     assert!(cached.contains("foo v2"));
+}
+
+#[test]
+fn activate_refresh_replaces_cached_support_files() {
+    let server = Server::spawn();
+    server.plant("foo", "foo", &[("references/ref-a.md", "v1")]);
+    let (home, key) = install_client(&server, &format!("refextra-{}", std::process::id()));
+    let (ok, _, stderr) = run_client(home.path(), &server, &key, &["activate", "foo"]);
+    assert!(ok, "initial activate should succeed: stderr=\n{stderr}");
+
+    std::fs::write(
+        server.home().join(".runai/skills/foo/references/ref-a.md"),
+        "v2",
+    )
+    .unwrap();
+    let (ok2, _, stderr2) = run_client(
+        home.path(),
+        &server,
+        &key,
+        &["activate", "foo", "--refresh"],
+    );
+    assert!(ok2, "refresh should succeed: stderr=\n{stderr2}");
+    let cached = cache_dir(home.path(), &server, "foo").join("files/references/ref-a.md");
+    assert_eq!(std::fs::read_to_string(cached).unwrap(), "v2");
 }
 
 #[test]

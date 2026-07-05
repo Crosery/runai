@@ -3,7 +3,8 @@
 //! `render_hook_output` is the single template-driven renderer for
 //! `hook_output.md`; the three `format_for_hook*` wrappers vary only in how
 //! much session/skip-reminder context they thread through. Every activation
-//! the main agent sees is a `curl` against `/skills/get/<name>` — no
+//! the main agent sees is `runai-client activate <name>`; support-file reads
+//! go through `runai-client file <name> <relpath>` — no server URL, no
 //! filesystem paths, no SKILL.md bytes.
 
 use super::router::{RouterDecision, RouterMode};

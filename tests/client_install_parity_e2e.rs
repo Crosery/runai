@@ -1,7 +1,7 @@
 //! Phase 4 e2e: install-body parity for the runai-client activation/
 //! feedback protocol (PLANNING §1.3). Both `/install` (bash) and
 //! `/install.ps1` (PowerShell) rendered bodies must:
-//!   - name the new subcommands (activate / feedback / sync / flush)
+//!   - name the new subcommands (activate / feedback / sync / flush / file)
 //!   - reference the client-cache dir (NEVER ~/.runai/skills/ as cache)
 //!   - NOT use bare `curl .../skills/get` / `Invoke-RestMethod .../skills/get`
 //!     as the activation instruction (the hook output protocol now drives
@@ -109,7 +109,7 @@ fn install_body(server: &Server, path: &str) -> String {
 fn bash_install_body_contains_new_subcommands() {
     let s = spawn_server();
     let body = install_body(&s, "/install");
-    for needle in &["activate", "feedback", "sync", "flush"] {
+    for needle in &["activate", "feedback", "sync", "flush", "file"] {
         assert!(
             body.contains(needle),
             "bash /install body missing subcommand `{needle}`"
@@ -141,7 +141,7 @@ fn bash_install_body_hook_calls_runai_client_activate() {
 fn ps1_install_body_contains_new_subcommands() {
     let s = spawn_server();
     let body = install_body(&s, "/install.ps1");
-    for needle in &["activate", "feedback", "sync", "flush"] {
+    for needle in &["activate", "feedback", "sync", "flush", "file"] {
         assert!(
             body.contains(needle),
             "ps1 /install.ps1 body missing subcommand `{needle}`"
@@ -171,6 +171,10 @@ fn ps1_install_body_writes_runai_client_companion() {
         body.contains("Invoke-Activate"),
         "ps1 install body must define Invoke-Activate"
     );
+    assert!(
+        body.contains("Invoke-File"),
+        "ps1 install body must define Invoke-File"
+    );
 }
 
 #[test]
@@ -178,7 +182,7 @@ fn both_bodies_have_symmetric_subcommand_set() {
     let s = spawn_server();
     let bash = install_body(&s, "/install");
     let ps1 = install_body(&s, "/install.ps1");
-    for sub in &["activate", "feedback", "sync", "flush"] {
+    for sub in &["activate", "feedback", "sync", "flush", "file"] {
         assert!(
             bash.contains(sub) && ps1.contains(sub),
             "subcommand `{sub}` must appear in BOTH install bodies"

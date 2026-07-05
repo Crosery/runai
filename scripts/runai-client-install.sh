@@ -603,8 +603,9 @@ PY
 fi
 
 # §1.4 — install the `runai-client` companion command (bash) at
-# ~/.local/bin/runai-client. Subcommands: upload / list / install / --help.
-# Idempotent: overwrites any previous copy at the same path. Designed to
+# ~/.local/bin/runai-client. Subcommands: upload / list / install / activate /
+# file / feedback / sync / flush / --help. Idempotent: overwrites any previous
+# copy at the same path. Designed to
 # work with or without fzf — if fzf is missing the upload subcommand
 # falls back to non-interactive `--path / --name` mode and prints an
 # install hint for the user's package manager.
@@ -696,17 +697,19 @@ Subcommands:
   list           List skills currently on the server's community pool.
   install        Install a community skill into the server's private copy
                  of your account: runai-client install <uploader_uid> <name>
-  activate       Fetch a skill's SKILL.md + record a usage event
-                 (idempotent / outbox-backed). Prints SKILL.md to stdout.
+  activate       Fetch a whole skill bundle + record a usage event
+                 (idempotent / outbox-backed). Prints only SKILL.md to stdout.
                    runai-client activate <skill> [--session-id <id>]
                  Cache lands at ~/.runai/client-cache/servers/<server-key>/
                  skills/<skill-key>/ (NEVER ~/.runai/skills/). Network failures queue the usage
                  event in a durable local outbox; `flush` replays it.
+  file           Print a cached support file fetched by activate/sync.
+                   runai-client file <skill> <relpath>
   feedback       Send a passive feedback note for a skill.
                    runai-client feedback <skill> --note "<text>"
                  Idempotent + outbox-backed (same protocol as activate).
-  sync           Prewarm the cache for one or more skills without
-                 printing. --all fetches full bundles.
+  sync           Prewarm the whole-skill cache for one or more skills without
+                 printing. --all is accepted for compatibility.
   flush          Replay every queued outbox event in mtime order.
   --help, -h     Print this help and exit.
 
@@ -721,6 +724,7 @@ Examples:
   runai-client list
   runai-client install u_abc123 my-skill
   runai-client activate my-skill --session-id "$CLAUDE_SESSION_ID"
+  runai-client file my-skill references/guide.md
   runai-client feedback my-skill --note "works great for X"
   runai-client sync my-skill other-skill
   runai-client flush
@@ -1230,6 +1234,33 @@ fetch_bundle() {
   return 0
 }
 
+cache_bundle() {
+  local skill="$1" cache_dir="$2" skill_md="$3"
+  local files_dir="$cache_dir/files"
+  local marker="$cache_dir/.bundle-ok"
+  if ! fetch_bundle "$skill" "$files_dir"; then
+    return 1
+  fi
+  if [[ ! -f "$files_dir/SKILL.md" ]]; then
+    rm -f "$marker"
+    return 1
+  fi
+  cp "$files_dir/SKILL.md" "$skill_md"
+  rm -f "$files_dir/SKILL.md"
+  touch "$marker"
+  chmod 600 "$skill_md" "$marker" 2>/dev/null || true
+  chmod -R go-rwx "$cache_dir" 2>/dev/null || true
+  return 0
+}
+
+valid_cache_relpath() {
+  local rel="$1"
+  case "$rel" in
+    ""|/*|*..*|*\\*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
 # Write a durable outbox entry. Atomic + crash-conscious: write a tmp
 # sibling, flush+fsync it, rename into place, then fsync the directory when
 # the platform allows it. If this function returns 0, activate may print
@@ -1350,22 +1381,24 @@ PY
 
 usage_activate() {
   cat <<'HELP'
-runai-client activate — fetch a skill's SKILL.md and record a usage event.
+runai-client activate — fetch a whole skill bundle and record a usage event.
 
 Usage:
   runai-client activate <skill> [options]
 
 Options:
   --session-id <id>   Claude session id (threaded into the usage event).
-  --refresh           Re-fetch SKILL.md even if a warm cache exists.
-  --include <relpath> Also fetch this sibling file into the cache (repeatable).
-  --all               Fetch the whole skill bundle into the cache.
+  --refresh           Re-fetch the whole skill bundle even if a warm cache exists.
+  --include <relpath> Compatibility alias; activate already caches the bundle.
+  --all               Compatibility no-op; activate already caches the bundle.
   --event-id <id>     Override the auto-generated event id (for replay).
   --help, -h          Print this help and exit.
 
 Cache layout (never written to ~/.runai/skills/):
   ~/.runai/client-cache/servers/<server-key>/skills/<skill-key>/SKILL.md
   ~/.runai/client-cache/servers/<server-key>/skills/<skill-key>/files/<relpath>
+
+Use `runai-client file <skill> <relpath>` to print cached support files.
   ~/.runai/client-cache/servers/<server-key>/skills/<skill-key>/.outbox/<ts>-<event_id>.json
 
 Contract: SKILL.md is printed to stdout ONLY after the usage event is
@@ -1394,18 +1427,32 @@ HELP
 
 usage_sync() {
   cat <<'HELP'
-runai-client sync — prewarm the local cache for one or more skills.
+runai-client sync — prewarm the whole-skill cache for one or more skills.
 
 Usage:
   runai-client sync <skill> [<skill> ...]
-  runai-client sync --all   (prewarm bundles for every listed skill)
+  runai-client sync --all   (accepted for compatibility)
 
 Options:
-  --all   Fetch full bundles (not just SKILL.md) into each cache dir.
+  --all   Compatibility no-op; sync always fetches full bundles.
   --help, -h   Print this help and exit.
 
 Unknown skills are skipped with a warning (exit 0) so a stale list does
 not abort a prewarm loop.
+HELP
+}
+
+usage_file() {
+  cat <<'HELP'
+runai-client file — print a cached support file for an activated skill.
+
+Usage:
+  runai-client file <skill> <relpath>
+
+The file is read from ~/.runai/client-cache. Run `runai-client activate
+<skill>` first to cache the whole skill bundle. `SKILL.md` is available as
+`runai-client activate <skill>` stdout; this command is for referenced files
+such as references/*.md, scripts/*, or templates/*.
 HELP
 }
 
@@ -1439,6 +1486,7 @@ cmd_activate() {
   local CACHE_ROOT; CACHE_ROOT=$(server_cache_root)
   local CACHE_DIR; CACHE_DIR=$(skill_cache_dir "$SKILL")
   local SKILL_MD="$CACHE_DIR/SKILL.md"
+  local BUNDLE_MARKER="$CACHE_DIR/.bundle-ok"
   mkdir -p "$CACHE_DIR/files" "$CACHE_DIR/.outbox"
   chmod 700 "$HOME/.runai" "$CACHE_BASE" "$CACHE_BASE/servers" "$CACHE_ROOT" "$CACHE_ROOT/skills" "$CACHE_DIR" 2>/dev/null || true
 
@@ -1473,13 +1521,15 @@ cmd_activate() {
     *) echo "runai-client activate: 意外 HTTP $HTTP" >&2; return 1 ;;
   esac
 
-  # Ensure content. Cache hit unless --refresh.
-  if [[ $REFRESH -eq 0 && -f "$SKILL_MD" ]]; then
-    : # use cache
+  # Ensure the whole skill is cached. Cache hit requires both SKILL.md
+  # and the bundle marker, so older SKILL.md-only caches self-heal when
+  # the server is reachable.
+  if [[ $REFRESH -eq 0 && -f "$SKILL_MD" && -f "$BUNDLE_MARKER" ]]; then
+    : # use complete cache
   else
-    if ! fetch_file "$SKILL" "SKILL.md" "$SKILL_MD"; then
+    if ! cache_bundle "$SKILL" "$CACHE_DIR" "$SKILL_MD"; then
       if [[ -f "$SKILL_MD" ]]; then
-        warn "拉取失败,使用旧缓存 $SKILL"
+        warn "拉取完整 bundle 失败,使用旧缓存 $SKILL"
       else
         # cold cache + fetch failure. Outbox already has the event if
         # we queued it. Contract: fail WITHOUT printing.
@@ -1489,17 +1539,55 @@ cmd_activate() {
     fi
   fi
 
-  # Fetch --include / --all
-  if [[ $ALL -eq 1 ]]; then
-    fetch_bundle "$SKILL" "$CACHE_DIR/files" || warn "bundle 拉取失败: $SKILL"
-  else
-    for rel in ${INCLUDES[@]+"${INCLUDES[@]}"}; do
-      fetch_file "$SKILL" "$rel" "$CACHE_DIR/files/$rel" || warn "include 拉取失败: $rel"
-    done
-  fi
+  # Compatibility: explicit includes are still accepted, but normal
+  # activate already fetched the whole bundle.
+  for rel in ${INCLUDES[@]+"${INCLUDES[@]}"}; do
+    valid_cache_relpath "$rel" || { warn "include 路径非法: $rel"; continue; }
+    [[ -f "$CACHE_DIR/files/$rel" ]] || fetch_file "$SKILL" "$rel" "$CACHE_DIR/files/$rel" || warn "include 拉取失败: $rel"
+  done
 
   # Contract: ACK or outbox succeeded → safe to print.
   cat "$SKILL_MD"
+}
+
+cmd_file() {
+  local SKILL="" REL=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --help|-h) usage_file; return 0 ;;
+      *)
+        if [[ -z "$SKILL" ]]; then SKILL="$1"; shift; continue; fi
+        if [[ -z "$REL" ]]; then REL="$1"; shift; continue; fi
+        echo "runai-client file: 未知参数: $1" >&2
+        return 1
+        ;;
+    esac
+  done
+  if [[ -z "$SKILL" || -z "$REL" ]]; then
+    echo "runai-client file: 需要 skill 和 relpath" >&2
+    usage_file >&2
+    return 2
+  fi
+  if ! valid_cache_relpath "$REL"; then
+    echo "runai-client file: refusing traversal path: $REL" >&2
+    return 2
+  fi
+  ensure_creds
+  local CACHE_DIR; CACHE_DIR=$(skill_cache_dir "$SKILL")
+  local TARGET
+  if [[ "$REL" == "SKILL.md" ]]; then
+    TARGET="$CACHE_DIR/SKILL.md"
+  else
+    TARGET="$CACHE_DIR/files/$REL"
+  fi
+  if [[ ! -f "$TARGET" ]]; then
+    mkdir -p "$(dirname "$TARGET")"
+    fetch_file "$SKILL" "$REL" "$TARGET" || {
+      echo "runai-client file: cache miss for $SKILL/$REL; run runai-client activate $SKILL first" >&2
+      return 1
+    }
+  fi
+  cat "$TARGET"
 }
 
 cmd_feedback() {
@@ -1579,13 +1667,10 @@ cmd_sync() {
     mkdir -p "$dir/files" "$dir/.outbox"
     chmod 700 "$dir" 2>/dev/null || true
     chmod 700 "$CACHE_ROOT" "$dir" 2>/dev/null || true
-    if ! fetch_file "$s" "SKILL.md" "$dir/SKILL.md"; then
+    if ! cache_bundle "$s" "$dir" "$dir/SKILL.md"; then
       echo "runai-client sync: 跳过 $s (server 返回非 200 或不可达)" >&2
       skip=$((skip+1))
       continue
-    fi
-    if [[ $ALL -eq 1 ]]; then
-      fetch_bundle "$s" "$dir/files" || warn "sync: bundle 拉取失败: $s"
     fi
     ok=$((ok+1))
   done
@@ -1644,6 +1729,10 @@ case "${1:-}" in
   activate)
     shift
     cmd_activate "$@"
+    ;;
+  file)
+    shift
+    cmd_file "$@"
     ;;
   feedback)
     shift
