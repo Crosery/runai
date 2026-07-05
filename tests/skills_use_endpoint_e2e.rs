@@ -272,15 +272,26 @@ fn skills_use_missing_event_id_returns_422() {
 fn skills_use_session_id_propagates_to_session_adoptions() {
     let s = Server::spawn();
     s.plant("foo", "foo", &[]);
+    let sid = "rnai_sess_0123456789abcdef0123456789abcdef";
+    let (status, body) = post_use(&s, "foo", Some("e-sess"), &json!({"session_id": sid}), None);
+    assert_eq!(status, 200, "body: {body}");
+    assert_eq!(s.session_adoption_count(sid, "foo"), 1);
+}
+
+#[test]
+fn skills_use_rejects_non_runai_session_id() {
+    let s = Server::spawn();
+    s.plant("foo", "foo", &[]);
     let (status, body) = post_use(
         &s,
         "foo",
-        Some("e-sess"),
+        Some("e-bad-sess"),
         &json!({"session_id": "sess-xyz"}),
         None,
     );
-    assert_eq!(status, 200, "body: {body}");
-    assert_eq!(s.session_adoption_count("sess-xyz", "foo"), 1);
+    assert_eq!(status, 422, "bad session_id should be rejected: {body}");
+    assert_eq!(s.usage_event_count("e-bad-sess"), 0);
+    assert_eq!(s.session_adoption_count("sess-xyz", "foo"), 0);
 }
 
 #[test]

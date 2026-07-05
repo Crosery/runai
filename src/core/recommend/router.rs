@@ -24,6 +24,7 @@ use super::hook_output::format_for_hook_full;
 use super::llm_call::{RouterCallStats, call_anthropic, call_claude_cli, call_openai_compat};
 use super::project_context::read_project_context;
 use super::server_helpers::default_local_server_url;
+use super::session_id::runai_session_id_from_native;
 use super::transcript::{recent_transcript_messages, recent_user_prompts_for_bm25};
 
 /// Safety bound for the optional `RUNAI_BM25_TOP_K=N` debug override. Normal
@@ -141,6 +142,8 @@ pub fn recommend_for_user(
     cwd: Option<&str>,
     user_id: Option<&str>,
 ) -> Result<RouterDecision> {
+    let session_id_owned = session_id.and_then(|sid| runai_session_id_from_native(user_id, sid));
+    let session_id = session_id_owned.as_deref();
     let mut cfg = RecommendConfig::load(mgr.paths())?;
     // v15 multi-user + PLANNING §1.3 prompt injection toggles. When an
     // authenticated user is on the request, their per-user UserPrefs

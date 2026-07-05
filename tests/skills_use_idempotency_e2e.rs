@@ -211,7 +211,10 @@ fn idempotency_payload_hash_ignores_field_order() {
         .post(format!("{}/skills/use/foo", s.base()))
         .header("X-Runai-Event-Id", "e-ord")
         // body1: session_id first, include second
-        .json(&json!({"session_id": "s", "include": ["a"]}))
+        .json(&json!({
+            "session_id": "rnai_sess_66666666666666666666666666666666",
+            "include": ["a"]
+        }))
         .send()
         .unwrap();
     assert_eq!(r1.status().as_u16(), 200);
@@ -220,7 +223,10 @@ fn idempotency_payload_hash_ignores_field_order() {
         .post(format!("{}/skills/use/foo", s.base()))
         .header("X-Runai-Event-Id", "e-ord")
         // body2: include first, session_id second — same logical payload
-        .json(&json!({"include": ["a"], "session_id": "s"}))
+        .json(&json!({
+            "include": ["a"],
+            "session_id": "rnai_sess_66666666666666666666666666666666"
+        }))
         .send()
         .unwrap();
     assert_eq!(

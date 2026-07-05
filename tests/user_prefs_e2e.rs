@@ -21,7 +21,9 @@ use std::time::{Duration, Instant};
 
 use assert_cmd::cargo::CommandCargoExt;
 use runai::core::manager::SkillManager;
-use runai::core::recommend::{Provider, RecommendConfig, SessionMode};
+use runai::core::recommend::{
+    Provider, RecommendConfig, SessionMode, runai_session_id_from_native,
+};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -786,7 +788,10 @@ fn frontend_prompt_injection_toggle_changes_router_llm_input() {
         .send()
         .expect("POST /recommend off");
     assert_eq!(off_recommend.status().as_u16(), 200);
-    let off_input = latest_llm_input_by_session(&server.data_dir, "frontend-toggle-off", &user_id);
+    let off_session =
+        runai_session_id_from_native(Some(&format!("user:{user_id}")), "frontend-toggle-off")
+            .expect("derive runai session id");
+    let off_input = latest_llm_input_by_session(&server.data_dir, &off_session, &user_id);
     assert!(
         !off_input.contains("当前项目背景"),
         "frontend OFF payload must remove project-context prompt block: {off_input}"
@@ -821,7 +826,10 @@ fn frontend_prompt_injection_toggle_changes_router_llm_input() {
         .send()
         .expect("POST /recommend on");
     assert_eq!(on_recommend.status().as_u16(), 200);
-    let on_input = latest_llm_input_by_session(&server.data_dir, "frontend-toggle-on", &user_id);
+    let on_session =
+        runai_session_id_from_native(Some(&format!("user:{user_id}")), "frontend-toggle-on")
+            .expect("derive runai session id");
+    let on_input = latest_llm_input_by_session(&server.data_dir, &on_session, &user_id);
     assert!(
         on_input.contains("当前项目背景"),
         "frontend ON payload must inject project-context prompt block: {on_input}"

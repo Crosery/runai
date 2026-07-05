@@ -65,14 +65,14 @@ pub(in crate::cli) fn handle_recommend(
             // Stdin-JSON mode lets the router see recent conversation history,
             // which is how "use figma-component-mapping" replies get auto-routed
             // to the right skill on the next round.
-            let (user_prompt, transcript_path, session_id, cwd) = match prompt_opt {
+            let (user_prompt, transcript_path, native_session_id, cwd) = match prompt_opt {
                 Some(p) => (p, None, None, None),
                 None => {
                     use std::io::Read;
                     let mut buf = String::new();
                     if std::io::stdin().read_to_string(&mut buf).is_err() || buf.trim().is_empty() {
                         anyhow::bail!(
-                            "usage: runai recommend <prompt> | runai recommend setup | runai recommend status | runai recommend hook-snippet\n(or pipe Claude Code's UserPromptSubmit hook JSON via stdin)"
+                            "usage: runai recommend <prompt> | runai recommend setup | runai recommend status | runai recommend hook-snippet\n(or pipe a UserPromptSubmit-style hook JSON via stdin)"
                         );
                     }
                     let v: serde_json::Value = serde_json::from_str(&buf)
@@ -88,8 +88,9 @@ pub(in crate::cli) fn handle_recommend(
                         .and_then(|x| x.as_str())
                         .map(std::path::PathBuf::from);
                     let sid = v
-                        .get("session_id")
+                        .get("runai_session_id")
                         .and_then(|x| x.as_str())
+                        .or_else(|| v.get("session_id").and_then(|x| x.as_str()))
                         .map(String::from);
                     let cwd_s = v.get("cwd").and_then(|x| x.as_str()).map(String::from);
                     (p, tp, sid, cwd_s)
@@ -120,6 +121,18 @@ pub(in crate::cli) fn handle_recommend(
                     return Ok(());
                 }
             };
+
+            let host_kind = std::env::var("RUNAI_HOST_KIND")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| "claude".to_string());
+            let session_scope = match user_id {
+                Some(uid) => format!("user:{uid}:host:{host_kind}"),
+                None => format!("host:{host_kind}"),
+            };
+            let session_id = native_session_id.as_deref().and_then(|sid| {
+                crate::core::recommend::runai_session_id_from_native(Some(&session_scope), sid)
+            });
 
             match crate::core::recommend::recommend_for_user(
                 mgr,
@@ -370,7 +383,15 @@ To install/uninstall automatically (preserves existing hooks and theme):
             };
             // Atomic: read succeeded → record adoption.
             let _ = mgr.record_usage(&skill);
-            let sid = std::env::var("CLAUDE_SESSION_ID").unwrap_or_default();
+            let sid = std::env::var("RUNAI_SESSION_ID")
+                .ok()
+                .filter(|s| crate::core::recommend::is_runai_session_id(s))
+                .or_else(|| {
+                    std::env::var("CLAUDE_SESSION_ID").ok().and_then(|s| {
+                        crate::core::recommend::runai_session_id_from_native(Some("claude"), &s)
+                    })
+                })
+                .unwrap_or_default();
             if !sid.is_empty() {
                 let _ = mgr.db().record_session_adoption(&sid, &skill);
             }

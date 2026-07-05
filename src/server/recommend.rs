@@ -30,14 +30,13 @@ fn payload_str(payload: &serde_json::Value, key: &str) -> String {
 
 /// POST /recommend — runai's remote skill router.
 ///
-/// Body: the standard Claude Code UserPromptSubmit hook JSON (fields used:
-/// `prompt`, `session_id`, `cwd`, `transcript_path`).
+/// Body: hook JSON (fields used: `prompt`, `session_id`, `runai_session_id`,
+/// `client_kind`, `cwd`, `transcript_path`).
 ///
-/// Optional `X-Runai-User: {user}@{host}` header — when present, the
-/// teammate's identity is prefixed into the `session_id` so multiple
-/// teammates' sessions don't collide in the router's per-session memory.
-/// The install script writes this header automatically; manual callers can
-/// omit it.
+/// Optional `X-Runai-User: {user}@{host}` header scopes the native session key
+/// before deriving the opaque `rnai_sess_*` id, so multiple teammates' sessions
+/// do not collide in router memory. The install script writes this header
+/// automatically; manual callers can omit it.
 ///
 /// Returns the hook output string (markdown to be injected into the
 /// teammate's Claude Code prompt) as plain text. Errors fall through to
@@ -101,28 +100,38 @@ pub(super) async fn handle_recommend(
         }
         let cwd = payload_str(&payload, "cwd");
         let transcript = payload_str(&payload, "transcript_path");
-        let claude_sid = payload_str(&payload, "session_id");
+        let mut native_sid = payload_str(&payload, "runai_session_id");
+        if native_sid.is_empty() {
+            native_sid = payload_str(&payload, "session_id");
+        }
+        let mut host_kind = payload_str(&payload, "client_kind");
+        if host_kind.is_empty() {
+            host_kind = payload_str(&payload, "host_kind");
+        }
 
-        // session_id is `{user_prefix}:{claude_sid}` when both present;
-        // either alone when only one; empty when neither (single-user
-        // local-test path).
-        let sid_string: String = match (user_prefix.is_empty(), claude_sid.is_empty()) {
-            (false, false) => format!("{user_prefix}:{claude_sid}"),
-            (false, true) => user_prefix.clone(),
-            (true, false) => claude_sid.clone(),
-            (true, true) => String::new(),
+        // The host-native session key is scoped before hashing so two
+        // teammates or host integrations cannot collide in router memory.
+        let sid_scope = match (
+            user_id_opt.as_deref(),
+            user_prefix.is_empty(),
+            host_kind.is_empty(),
+        ) {
+            (Some(uid), _, false) => format!("user:{uid}:host:{host_kind}"),
+            (Some(uid), _, true) => format!("user:{uid}"),
+            (None, false, false) => format!("header:{user_prefix}:host:{host_kind}"),
+            (None, false, true) => format!("header:{user_prefix}"),
+            (None, true, false) => format!("anon:host:{host_kind}"),
+            (None, true, true) => "anon".to_string(),
         };
+        let sid_string =
+            crate::core::recommend::runai_session_id_from_native(Some(&sid_scope), &native_sid);
 
         let tpath_pb = if transcript.is_empty() {
             None
         } else {
             Some(std::path::PathBuf::from(&transcript))
         };
-        let sid_opt = if sid_string.is_empty() {
-            None
-        } else {
-            Some(sid_string.as_str())
-        };
+        let sid_opt = sid_string.as_deref();
         let cwd_opt = if cwd.is_empty() {
             None
         } else {

@@ -24,6 +24,7 @@ mod project_context;
 mod prompts;
 mod router;
 mod server_helpers;
+mod session_id;
 mod settings_hooks;
 mod transcript;
 
@@ -39,6 +40,7 @@ pub use router::{
     RecommendedSkill, RouterDecision, RouterMode, RouterTurn, recommend, recommend_for_user,
 };
 pub use server_helpers::{default_local_server_url, local_ipv4};
+pub use session_id::{is_runai_session_id, runai_session_id_from_native};
 pub use settings_hooks::{
     HookInstallStatus, install_claude_hook, install_session_start_hook, uninstall_claude_hook,
     uninstall_session_start_hook,

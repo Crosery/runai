@@ -116,7 +116,7 @@ impl Sandbox {
 
     fn run_with_session(&self, session_id: &str, args: &[&str]) -> std::process::Output {
         let mut cmd = self.cmd(args);
-        cmd.env("CLAUDE_SESSION_ID", session_id);
+        cmd.env("RUNAI_SESSION_ID", session_id);
         cmd.output().expect("runai binary spawn")
     }
 
@@ -177,7 +177,7 @@ fn recommend_get_counts_adoption() {
     sb.plant_skill("alpha", "test skill alpha body");
     assert_eq!(sb.usage_count("alpha"), 0, "precondition: usage_count == 0");
 
-    let session = "test-session-123";
+    let session = "rnai_sess_22222222222222222222222222222222";
     let out = sb.run_with_session(session, &["recommend", "get", "alpha"]);
     assert!(
         out.status.success(),
@@ -222,7 +222,7 @@ fn recommend_get_counts_adoption() {
     );
     assert!(
         sb.has_session_adoption(session, "alpha"),
-        "router_session_adoptions row must be written when CLAUDE_SESSION_ID is set"
+        "router_session_adoptions row must be written when RUNAI_SESSION_ID is set"
     );
 }
 
@@ -387,7 +387,8 @@ fn recommend_get_symmetric_across_targets() {
     // Single get call: usage_count must be exactly 1 — proving that
     // `recommend get` always counts into the shared `resources` row,
     // not into per-target shadows.
-    let out = sb.run_with_session("sess-omni", &["recommend", "get", "omni"]);
+    let session = "rnai_sess_33333333333333333333333333333333";
+    let out = sb.run_with_session(session, &["recommend", "get", "omni"]);
     assert!(
         out.status.success(),
         "recommend get must succeed for a multi-target-enabled skill (stderr={})",
@@ -407,7 +408,7 @@ fn recommend_get_symmetric_across_targets() {
 
     // A second call increments by exactly 1 more — confirming the row is
     // unique and we're not accidentally racing against per-target shadows.
-    let _ = sb.run_with_session("sess-omni", &["recommend", "get", "omni"]);
+    let _ = sb.run_with_session(session, &["recommend", "get", "omni"]);
     assert_eq!(
         sb.usage_count("omni"),
         2,
@@ -415,5 +416,5 @@ fn recommend_get_symmetric_across_targets() {
     );
 
     // Session adoption is per-(session, skill), not per-target.
-    assert!(sb.has_session_adoption("sess-omni", "omni"));
+    assert!(sb.has_session_adoption(session, "omni"));
 }

@@ -10,6 +10,8 @@
 //!     bare `curl .../feedback`
 //!   - the `runai-client activate` line does NOT inline an `http://`
 //!     server URL (identity is read by the client)
+//!   - the activation session argument is a literal `rnai_sess_*`, never
+//!     a host-specific environment variable such as `CLAUDE_SESSION_ID`
 //!   - multi-candidate decisions render one `runai-client activate`
 //!     mention per candidate
 //!
@@ -284,21 +286,25 @@ fn assert_protocol(stdout: &str) {
         !stdout.contains("/feedback\""),
         "hook output must NOT use bare curl /feedback, got:\n{stdout}"
     );
-    // The activate line must not inline an http:// server URL.
+    // The activate line must not inline an http:// server URL or host env var.
     for line in stdout.lines() {
         if line.contains("runai-client activate") {
             assert!(
                 !line.contains("http://"),
                 "activate line must not inline server URL: {line}"
             );
+            assert!(
+                !line.contains("CLAUDE_SESSION_ID"),
+                "activate line must not use host-specific env vars: {line}"
+            );
         }
     }
 }
 
 #[test]
-fn hook_output_passes_session_id_env() {
-    // The activation directive references the session-id flag form so
-    // the agent threads the Claude session into the usage event.
+fn hook_output_passes_literal_runai_session_id() {
+    // The activation directive carries a runai-owned literal session id so
+    // host-specific session variables do not leak into agent instructions.
     let s = Server::spawn();
     s.plant("beta-skill", "beta desc");
     let mock_content = "EXCLUSIVE\nreasoning: matches beta\nbeta-skill\n";
@@ -311,7 +317,11 @@ fn hook_output_passes_session_id_env() {
         return;
     }
     assert!(
-        stdout.contains("--session-id"),
-        "hook output must pass --session-id, got:\n{stdout}"
+        stdout.contains("--session-id \"rnai_sess_"),
+        "hook output must pass a literal runai session id, got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("CLAUDE_SESSION_ID") && !stdout.contains("sess-hook"),
+        "hook output must not leak host session identifiers, got:\n{stdout}"
     );
 }

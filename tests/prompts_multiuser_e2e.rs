@@ -492,9 +492,11 @@ fn unauthenticated_request_uses_defaults_and_does_not_read_user_prefs() {
     let transcript = paths.data_dir().join("session.jsonl");
     write_transcript(&transcript, &["earlier turn"]);
 
-    // Pre-seed an already-routed entry for this session so the
+    // Pre-seed an already-routed entry for this normalized session so the
     // already_routed block has content to render — proves the block was
     // actually injected, not just absent for lack of input data.
+    let anon_session = recommend::runai_session_id_from_native(None, "session-anon")
+        .expect("derive anonymous runai session id");
     let event = runai::core::db::RouterEvent {
         id: None,
         ts: chrono::Utc::now().timestamp(),
@@ -511,7 +513,7 @@ fn unauthenticated_request_uses_defaults_and_does_not_read_user_prefs() {
         candidate_count: 1,
         status: "ok".into(),
         error_msg: None,
-        session_id: "session-anon".into(),
+        session_id: anon_session,
         mode: "exclusive".into(),
         user_prompt: "earlier".into(),
         cwd: "".into(),
@@ -749,8 +751,10 @@ fn switching_logged_in_account_picks_up_new_prefs_immediately() {
     let a_uid = make_user(&mgr, "alice", &a_prefs);
     let b_uid = make_user(&mgr, "bob", &b_prefs);
 
-    // Pre-seed an already-routed skill in the shared session id so the
-    // block has content when the toggle is on.
+    // Pre-seed an already-routed skill in B's normalized session id so the
+    // block has content when B's toggle is on.
+    let b_session = recommend::runai_session_id_from_native(Some(&b_uid), "shared-session")
+        .expect("derive user-scoped runai session id");
     let event = runai::core::db::RouterEvent {
         id: None,
         ts: chrono::Utc::now().timestamp(),
@@ -767,7 +771,7 @@ fn switching_logged_in_account_picks_up_new_prefs_immediately() {
         candidate_count: 1,
         status: "ok".into(),
         error_msg: None,
-        session_id: "shared-session".into(),
+        session_id: b_session,
         mode: "exclusive".into(),
         user_prompt: "earlier".into(),
         cwd: "".into(),

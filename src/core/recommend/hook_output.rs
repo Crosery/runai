@@ -8,6 +8,7 @@
 //! filesystem paths, no SKILL.md bytes.
 
 use super::router::{RouterDecision, RouterMode};
+use super::session_id::is_runai_session_id;
 
 const HOOK_OUTPUT_TEMPLATE: &str = crate::core::prompts::PROMPT_HOOK_OUTPUT;
 
@@ -58,7 +59,7 @@ pub fn format_for_hook_full(
 
 fn render_hook_output(
     decision: &RouterDecision,
-    _session_id: &str,
+    session_id: &str,
     session_history: &[String],
     _server_url: &str,
     _user_header: &str,
@@ -74,6 +75,12 @@ fn render_hook_output(
         .map(|s| format!("- **{}** — {}", s.name, s.description))
         .collect::<Vec<_>>()
         .join("\n");
+
+    let session_id_arg = if is_runai_session_id(session_id) {
+        format!(" --session-id \"{session_id}\"")
+    } else {
+        String::new()
+    };
 
     let activation_directive = match (decision.mode, skills.len()) {
         (RouterMode::Exclusive, 1) => "对口就跑命令激活；不对口忽略即可。".to_string(),
@@ -113,7 +120,7 @@ fn render_hook_output(
         String::new()
     } else {
         format!(
-            "\n本 session runai 已经看过的 skill（**参考池，用户随时可挑这里的任何一个，没被排除**）：{}\n如果用户当前 prompt 跟这里某个对口（包括 \"换一个 / 有其他的吗 / 找补充\" 这种 follow-up），直接跑 `runai-client activate <name> --session-id \"$CLAUDE_SESSION_ID\"` 激活。\n",
+            "\n本 session runai 已经看过的 skill（**参考池，用户随时可挑这里的任何一个，没被排除**）：{}\n如果用户当前 prompt 跟这里某个对口（包括 \"换一个 / 有其他的吗 / 找补充\" 这种 follow-up），直接跑 `runai-client activate <name>{session_id_arg}` 激活。\n",
             history_filtered.join(", ")
         )
     };
@@ -137,6 +144,7 @@ fn render_hook_output(
         .replace("{MODE}", decision.mode.as_str())
         .replace("{REASONING_BLOCK}", &reasoning_block)
         .replace("{CANDIDATES_BLOCK}", &candidates_block)
+        .replace("{SESSION_ID_ARG}", &session_id_arg)
         .replace("{ACTIVATION_DIRECTIVE}", &activation_directive)
         .replace("{SKIP_REMINDER_BLOCK}", &skip_reminder_block)
         .replace("{SESSION_HISTORY_BLOCK}", &session_history_block)

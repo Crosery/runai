@@ -309,8 +309,10 @@ pub enum RecommendCommands {
     },
     /// Legacy/local fetch of a skill's SKILL.md content and adoption signal.
     /// Stdout = SKILL.md body. Side effects: usage_count +1, session
-    /// adoption row written (if CLAUDE_SESSION_ID is set). New hook output
-    /// uses `runai-client activate`, which adds cache + durable outbox.
+    /// adoption row written when RUNAI_SESSION_ID is set (CLAUDE_SESSION_ID
+    /// is accepted only as legacy input and normalized to rnai_sess_*). New
+    /// hook output uses `runai-client activate`, which adds cache + durable
+    /// outbox.
     Get {
         /// Skill name (must exist under <data_dir>/skills/<name>/SKILL.md)
         skill: String,

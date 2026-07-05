@@ -593,6 +593,17 @@ pub(super) async fn handle_skill_use(
         serde_json::from_slice::<SkillUseBody>(&body).unwrap_or_default()
     };
 
+    if !parsed.session_id.is_empty()
+        && !crate::core::recommend::is_runai_session_id(&parsed.session_id)
+    {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+            "invalid session_id\n",
+        )
+            .into_response();
+    }
+
     let headers_owned = headers.clone();
     let name_for_task = name.clone();
     let user_id = me.as_ref().map(|u| u.user_id.clone());
@@ -696,8 +707,8 @@ pub(super) async fn handle_skill_use(
     }
 }
 
-/// Query string for /skills/get/{name}: optional `session_id` used to
-/// session-prefix the adoption row.
+/// Query string for /skills/get/{name}: optional host-native `session_id`
+/// normalized to an opaque runai session id before adoption is recorded.
 #[derive(Deserialize)]
 pub(super) struct SkillGetQuery {
     #[serde(default)]
@@ -711,7 +722,8 @@ pub(super) struct SkillGetQuery {
 ///   - record_usage: bumps the skill's usage_count
 ///   - record_session_adoption: writes (session_id, skill_name) row
 ///
-/// session id = `{X-Runai-User}:{session_id query}` when both present.
+/// session id = `rnai_sess_*`, derived from `{X-Runai-User}:{session_id}`
+/// when both present.
 pub(super) async fn handle_skill_get(
     headers: HeaderMap,
     Path(name): Path<String>,
@@ -722,7 +734,7 @@ pub(super) async fn handle_skill_get(
         .and_then(|h| h.to_str().ok())
         .unwrap_or("")
         .to_string();
-    let claude_sid = q.session_id;
+    let native_sid = q.session_id;
 
     let server_url_for_get = request_origin(&headers);
     let user_header_arg = if user_prefix.is_empty() {
@@ -741,14 +753,15 @@ pub(super) async fn handle_skill_get(
             .with_context(|| format!("read {}", skill_md.display()))?;
 
         let _ = mgr.record_usage(&name);
-        let sid_string = match (user_prefix.is_empty(), claude_sid.is_empty()) {
-            (false, false) => format!("{user_prefix}:{claude_sid}"),
-            (false, true) => user_prefix.clone(),
-            (true, false) => claude_sid.clone(),
-            (true, true) => String::new(),
+        let sid_scope = if user_prefix.is_empty() {
+            "legacy-skills-get".to_string()
+        } else {
+            format!("legacy-skills-get:{user_prefix}")
         };
-        if !sid_string.is_empty() {
-            let _ = mgr.db().record_session_adoption(&sid_string, &name);
+        if let Some(sid) =
+            crate::core::recommend::runai_session_id_from_native(Some(&sid_scope), &native_sid)
+        {
+            let _ = mgr.db().record_session_adoption(&sid, &name);
         }
 
         // List sibling files inside the skill directory so the remote

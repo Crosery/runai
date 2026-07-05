@@ -154,6 +154,20 @@ impl ServerEnv {
         .is_ok()
     }
 
+    fn session_adoption_ids(&self, skill_name: &str) -> Vec<String> {
+        let conn = rusqlite::Connection::open(self.db_path()).expect("open test db");
+        let mut stmt = conn
+            .prepare(
+                "SELECT session_id FROM router_session_adoptions \
+                 WHERE skill_name = ?1 ORDER BY session_id",
+            )
+            .expect("prepare session adoption query");
+        stmt.query_map(rusqlite::params![skill_name], |r| r.get::<_, String>(0))
+            .expect("query session adoptions")
+            .map(|r| r.expect("session adoption row"))
+            .collect()
+    }
+
     fn router_events_count(&self) -> i64 {
         let conn = rusqlite::Connection::open(self.db_path()).expect("open test db");
         conn.query_row("SELECT COUNT(*) FROM router_events", [], |r| r.get(0))
@@ -328,9 +342,9 @@ fn recommend_endpoint_tolerates_missing_optional_fields() {
     );
 }
 
-/// X-Runai-User is woven into session id only when paired with a
-/// claude session_id. When user_prefix is empty AND session_id is
-/// empty the router never sees a session. handle_recommend should
+/// X-Runai-User scopes a native session id only when one is present.
+/// When user_prefix is empty AND session_id is empty the router never
+/// sees a session. handle_recommend should
 /// happily accept "no user, no session" requests (the local
 /// single-user case).
 #[test]
@@ -358,7 +372,7 @@ fn recommend_endpoint_accepts_no_user_no_session() {
 /// Happy path: a planted+scanned skill is reachable, SKILL.md flows
 /// out verbatim, sibling files surface in the curl appendix,
 /// usage_count is bumped, and a session_adoptions row appears under
-/// the bare session_id (no user header here).
+/// a runai-owned rnai_sess_* id (no raw host id here).
 #[test]
 fn skill_get_returns_md_appendix_and_records_adoption() {
     let env = ServerEnv::spawn();
@@ -404,16 +418,18 @@ fn skill_get_returns_md_appendix_and_records_adoption() {
         1,
         "usage_count must increment by 1 after one /skills/get"
     );
+    let ids = env.session_adoption_ids("demo");
+    assert_eq!(ids.len(), 1, "exactly one adoption row must be written");
     assert!(
-        env.has_session_adoption("sess-A", "demo"),
-        "session_adoptions row must be written for the bare session_id when no user header"
+        ids[0].starts_with("rnai_sess_"),
+        "session adoption must use a runai-owned id, got {ids:?}"
     );
+    assert_ne!(ids[0], "sess-A", "raw host session id must not be stored");
 }
 
-/// X-Runai-User + session_id ⇒ session id = `{user}:{session}` so
-/// concurrent teammates don't collide in the per-session router
-/// memory. Lock that wiring on both the DB row and the appendix
-/// (each curl line must carry the same user header back).
+/// X-Runai-User + session_id is scoped before normalization so
+/// concurrent teammates don't collide in per-session router memory.
+/// The DB row stores only the resulting rnai_sess_* id.
 #[test]
 fn skill_get_with_user_header_prefixes_session_id() {
     let env = ServerEnv::spawn();
@@ -430,24 +446,29 @@ fn skill_get_with_user_header_prefixes_session_id() {
     );
 
     assert_eq!(status.as_u16(), 200, "request must succeed");
-    // The appendix-empty case still works (no siblings planted) and
-    // the file response itself does not embed user_header_arg, so we
-    // only assert it when the appendix exists. Either way the DB
-    // session_id must be the prefixed form.
+    let ids = env.session_adoption_ids("test-skill");
+    assert_eq!(
+        ids.len(),
+        1,
+        "exactly one adoption row must be written, body:\n{body}"
+    );
     assert!(
-        env.has_session_adoption("alice@host:local-id", "test-skill"),
-        "session_adoptions must be keyed by `{{user}}:{{session}}`, body:\n{body}"
+        ids[0].starts_with("rnai_sess_"),
+        "session_adoptions must be keyed by rnai_sess_*, got {ids:?}"
+    );
+    assert!(
+        !env.has_session_adoption("alice@host:local-id", "test-skill"),
+        "the prefixed raw session_id must NOT be written"
     );
     assert!(
         !env.has_session_adoption("local-id", "test-skill"),
-        "the bare session_id must NOT be written when a user header is present"
+        "the bare raw session_id must NOT be written when a user header is present"
     );
 }
 
-/// X-Runai-User with no session_id ⇒ session id = user_prefix alone.
-/// Also exercises the appendix's user_header_arg interpolation when
-/// sibling files are present, since the empty-session case used to
-/// trip an "alice@host:" key by accident.
+/// X-Runai-User with no session_id must not fabricate a session.
+/// This still exercises the appendix's user_header_arg interpolation
+/// when sibling files are present.
 #[test]
 fn skill_get_appendix_propagates_user_header_into_curl_lines() {
     let env = ServerEnv::spawn();
@@ -473,8 +494,8 @@ fn skill_get_appendix_propagates_user_header_into_curl_lines() {
         "appendix curl lines must propagate the user header, body:\n{body}"
     );
     assert!(
-        env.has_session_adoption("bob@host", "with-refs"),
-        "session_id must collapse to the bare user prefix when no claude session id is given"
+        env.session_adoption_ids("with-refs").is_empty(),
+        "no native session id means no session_adoption row"
     );
 }
 

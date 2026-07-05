@@ -277,9 +277,12 @@ try {
     `$stdin = [Console]::OpenStandardInput()
     `$reader = New-Object System.IO.StreamReader(`$stdin, [System.Text.UTF8Encoding]::new(`$false))
     `$payload = `$reader.ReadToEnd()
+    `$json = `$payload | ConvertFrom-Json
+    `$json | Add-Member -NotePropertyName client_kind -NotePropertyValue 'claude' -Force
+    `$payload = `$json | ConvertTo-Json -Depth 20 -Compress
 
     # Encode body as UTF-8 bytes for Invoke-RestMethod so the HTTP body
-    # is exactly the bytes Claude Code wrote, not a re-encoded version.
+    # carries the original hook fields plus runai's host marker.
     `$bodyBytes = [System.Text.Encoding]::UTF8.GetBytes(`$payload)
 
     `$headers = @{ 'X-Runai-User' = "`$env:USERNAME@`$env:COMPUTERNAME" }

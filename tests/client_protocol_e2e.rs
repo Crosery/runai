@@ -266,7 +266,12 @@ fn activate_warm_path_prints_skill_md_and_records_usage() {
         home.path(),
         &server,
         &key,
-        &["activate", "foo", "--session-id", "s1"],
+        &[
+            "activate",
+            "foo",
+            "--session-id",
+            "rnai_sess_11111111111111111111111111111111",
+        ],
     );
     assert!(ok, "activate should succeed: stderr=\n{stderr}");
     assert!(

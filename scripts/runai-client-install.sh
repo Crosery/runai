@@ -529,7 +529,17 @@ except Exception:
   fi
 fi
 
-curl -s --max-time 30 \
+PAYLOAD=$(python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+data["client_kind"] = "claude"
+print(json.dumps(data, separators=(",", ":")))
+' 2>/dev/null) || exit 0
+
+printf '%s' "$PAYLOAD" | curl -s --max-time 30 \
   -X POST "$RUNAI_SERVER/recommend" \
   -H "Content-Type: application/json" \
   -H "X-Runai-User: $USER@$(hostname -s)" \
@@ -723,7 +733,7 @@ Examples:
   runai-client upload --path ./my-skill --name my-skill
   runai-client list
   runai-client install u_abc123 my-skill
-  runai-client activate my-skill --session-id "$CLAUDE_SESSION_ID"
+  runai-client activate my-skill --session-id "rnai_sess_..."
   runai-client file my-skill references/guide.md
   runai-client feedback my-skill --note "works great for X"
   runai-client sync my-skill other-skill
@@ -1387,7 +1397,7 @@ Usage:
   runai-client activate <skill> [options]
 
 Options:
-  --session-id <id>   Claude session id (threaded into the usage event).
+  --session-id <id>   Runai session id (rnai_sess_*, threaded into usage).
   --refresh           Re-fetch the whole skill bundle even if a warm cache exists.
   --include <relpath> Compatibility alias; activate already caches the bundle.
   --all               Compatibility no-op; activate already caches the bundle.

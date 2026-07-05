@@ -71,6 +71,7 @@ impl TestEnv {
             .env("HOME", self.home())
             .env_remove("RUNE_DATA_DIR")
             .env_remove("SKILL_MANAGER_DATA_DIR")
+            .env_remove("RUNAI_SESSION_ID")
             .env_remove("CLAUDE_SESSION_ID");
         cmd.output().expect("runai binary spawn")
     }
@@ -81,7 +82,7 @@ impl TestEnv {
             .env("HOME", self.home())
             .env_remove("RUNE_DATA_DIR")
             .env_remove("SKILL_MANAGER_DATA_DIR")
-            .env("CLAUDE_SESSION_ID", session_id);
+            .env("RUNAI_SESSION_ID", session_id);
         cmd.output().expect("runai binary spawn")
     }
 
@@ -116,7 +117,8 @@ fn recommend_get_returns_skill_md_and_increments_usage_count() {
     env.plant_skill("alpha", "test skill alpha");
     assert_eq!(env.usage_count("alpha"), 0, "precondition: usage starts 0");
 
-    let out = env.run_with_session("sess-A", &["recommend", "get", "alpha"]);
+    let session_a = "rnai_sess_44444444444444444444444444444444";
+    let out = env.run_with_session(session_a, &["recommend", "get", "alpha"]);
     assert!(
         out.status.success(),
         "get must exit 0 for an existing skill (stderr={})",
@@ -150,8 +152,8 @@ fn recommend_get_returns_skill_md_and_increments_usage_count() {
         "usage_count must be 1 after one get call"
     );
     assert!(
-        env.has_session_adoption("sess-A", "alpha"),
-        "session_adoptions row must be written when CLAUDE_SESSION_ID is set"
+        env.has_session_adoption(session_a, "alpha"),
+        "session_adoptions row must be written when RUNAI_SESSION_ID is set"
     );
 }
 
@@ -160,14 +162,15 @@ fn recommend_get_idempotent_in_session_increments_each_call() {
     let env = TestEnv::new();
     env.plant_skill("beta", "test skill beta");
 
-    let _ = env.run_with_session("sess-B", &["recommend", "get", "beta"]);
-    let _ = env.run_with_session("sess-B", &["recommend", "get", "beta"]);
-    let _ = env.run_with_session("sess-B", &["recommend", "get", "beta"]);
+    let session_b = "rnai_sess_55555555555555555555555555555555";
+    let _ = env.run_with_session(session_b, &["recommend", "get", "beta"]);
+    let _ = env.run_with_session(session_b, &["recommend", "get", "beta"]);
+    let _ = env.run_with_session(session_b, &["recommend", "get", "beta"]);
 
     // usage_count is a raw counter: 3 calls → 3 increments.
     // (Session dedup happens at the router-recommend layer, not here.)
     assert_eq!(env.usage_count("beta"), 3);
-    assert!(env.has_session_adoption("sess-B", "beta"));
+    assert!(env.has_session_adoption(session_b, "beta"));
 }
 
 #[test]

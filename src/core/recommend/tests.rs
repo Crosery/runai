@@ -7,7 +7,8 @@ use super::project_context::{extract_at_references, read_project_context};
 use super::router::{parse_lines, split_mode_and_names};
 use super::{
     HookInstallStatus, Provider, RecommendConfig, RecommendedSkill, RouterDecision, RouterMode,
-    format_for_hook, install_claude_hook, recent_user_prompts_for_bm25, summary_matches_lang,
+    format_for_hook, format_for_hook_full, install_claude_hook, is_runai_session_id,
+    recent_user_prompts_for_bm25, runai_session_id_from_native, summary_matches_lang,
     uninstall_claude_hook,
 };
 
@@ -330,6 +331,80 @@ fn fmt(decision: &RouterDecision) -> String {
 #[test]
 fn format_empty_skills_returns_empty_string() {
     assert!(fmt(&decision(RouterMode::Exclusive, vec![])).is_empty());
+}
+
+#[test]
+fn runai_session_id_from_native_is_stable_scoped_and_opaque() {
+    let a = runai_session_id_from_native(Some("pi"), "native-session-a").unwrap();
+    let a_again = runai_session_id_from_native(Some("pi"), "native-session-a").unwrap();
+    let b = runai_session_id_from_native(Some("pi"), "native-session-b").unwrap();
+    let scoped = runai_session_id_from_native(Some("codex"), "native-session-a").unwrap();
+
+    assert_eq!(a, a_again);
+    assert_ne!(a, b);
+    assert_ne!(a, scoped);
+    assert!(is_runai_session_id(&a));
+    assert!(a.starts_with("rnai_sess_"));
+    assert!(!a.contains("native-session-a"));
+    assert_eq!(runai_session_id_from_native(Some("pi"), ""), None);
+}
+
+#[test]
+fn format_full_uses_literal_runai_session_id_not_host_env() {
+    let s = RecommendedSkill {
+        name: "figma-alignment".into(),
+        description: "align vue/h5 to figma".into(),
+    };
+    let out = format_for_hook_full(
+        &decision(RouterMode::Exclusive, vec![s]),
+        "rnai_sess_0123456789abcdef0123456789abcdef",
+        &[],
+        TEST_SERVER_URL,
+        "",
+        "",
+    );
+    assert!(out.contains("--session-id \"rnai_sess_0123456789abcdef0123456789abcdef\""));
+    assert!(!out.contains("CLAUDE_SESSION_ID"));
+}
+
+#[test]
+fn format_full_without_session_omits_session_flag() {
+    let s = RecommendedSkill {
+        name: "figma-alignment".into(),
+        description: "align vue/h5 to figma".into(),
+    };
+    let out = format_for_hook_full(
+        &decision(RouterMode::Exclusive, vec![s]),
+        "",
+        &[],
+        TEST_SERVER_URL,
+        "",
+        "",
+    );
+    assert!(out.contains("runai-client activate <skill_name>"));
+    assert!(!out.contains("--session-id"));
+    assert!(!out.contains("CLAUDE_SESSION_ID"));
+}
+
+#[test]
+fn session_history_activation_uses_same_literal_runai_session_id() {
+    let s = RecommendedSkill {
+        name: "current".into(),
+        description: "current skill".into(),
+    };
+    let history = vec!["previous".to_string()];
+    let out = format_for_hook_full(
+        &decision(RouterMode::Exclusive, vec![s]),
+        "rnai_sess_abcdefabcdefabcdefabcdefabcdefab",
+        &history,
+        TEST_SERVER_URL,
+        "",
+        "",
+    );
+    assert!(out.contains(
+        "runai-client activate <name> --session-id \"rnai_sess_abcdefabcdefabcdefabcdefabcdefab\""
+    ));
+    assert!(!out.contains("CLAUDE_SESSION_ID"));
 }
 
 #[test]
