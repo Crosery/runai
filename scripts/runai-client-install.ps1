@@ -565,7 +565,8 @@ function Invoke-File {
         $dir = Split-Path $target -Parent
         if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
         if (-not (Invoke-FetchFile -Skill $Skill -Rel $Rel -Dest $target)) {
-            Write-RunaiDie "cache miss for $Skill/$Rel; run runai-client activate $Skill first"
+            Write-RunaiWarn "not found in skill bundle: $Skill/$Rel"
+            Write-RunaiDie "this command only reads files inside the managed skill directory cached by activate/sync; runtime paths such as ~/.ppt-anything must be read from the local filesystem."
         }
     }
     Get-Content $target -Raw

@@ -272,7 +272,11 @@ fn assert_protocol(stdout: &str) {
     );
     assert!(
         stdout.contains("runai-client file"),
-        "hook output must tell agents to read support files through runai-client file, got:\n{stdout}"
+        "hook output must tell agents to read bundle support files through runai-client file, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("skill bundle") && stdout.contains("运行时用户数据"),
+        "hook output must distinguish bundle files from runtime user data, got:\n{stdout}"
     );
     assert!(
         !stdout.contains("curl -s -X POST"),

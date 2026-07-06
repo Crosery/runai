@@ -81,7 +81,7 @@
 - **AI summary 富集** —— 每个 skill 都由同一个 LLM 用你选定的 `summary_lang` 生成结构化 summary（`task / triggers / inputs / outputs / not-for / score`），既当 BM25 索引文本也当 router 候选上下文。富集以显式选定语言为前提，且输出语言被强制校验（不符先重试、再不符就丢弃不写），索引保持单一语言；`triggers` 字段保留跨语言关键词以提升检索。SKILL.md 编辑后自动 refresh，`runai install` / `scan` 也会针对改动的 skill 单点 re-enrich。
 - **两种模式** —— `EXCLUSIVE` 让主 agent 在候选里挑；`COMPATIBLE` 一次加载多个互补 skill 适合工作流型 prompt（"整套调试链路" / "完整发版流程"）。同 session 去重，已采用的 skill 不再被重推。
 - **真采用计数** —— Hook 输出让主 agent 运行 `runai-client activate <skill>`，必要时附带 runai 自己生成的 literal `rnai_sess_*` 会话 id。这个命令只有在 server 已 ACK `/skills/use/{name}`，或本地 durable outbox 已写入 `~/.runai/client-cache/servers/<server-key>/skills/<skill-key>/.outbox/` 后，才会把 `SKILL.md` 打到 stdout。
-- **客户端缓存** —— `runai-client activate` / `sync` 把整个 skill 目录缓存到 `~/.runai/client-cache`，永远不写入受管真实池 `~/.runai/skills`。缓存命中也会先发送或入队 usage event，再输出 `SKILL.md`，所以降低内容请求压力不会丢采用计数。SKILL.md 引用的附属文件由 agent 通过 `runai-client file <skill> <relpath>` 从 cache 读取。
+- **客户端缓存** —— `runai-client activate` / `sync` 把整个 skill 目录缓存到 `~/.runai/client-cache`，永远不写入受管真实池 `~/.runai/skills`。缓存命中也会先发送或入队 usage event，再输出 `SKILL.md`，所以降低内容请求压力不会丢采用计数。SKILL.md 引用的 bundle 内附属文件由 agent 通过 `runai-client file <skill> <relpath>` 从 cache 读取；`~/.tool-name/...` 这类运行时 / 用户目录仍是本机文件系统数据，不属于 bundle。
 
 ### 3. 实时遥测仪表盘
 

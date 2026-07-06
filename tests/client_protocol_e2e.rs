@@ -358,6 +358,36 @@ fn file_subcommand_prints_cached_support_file_without_server() {
 }
 
 #[test]
+fn file_subcommand_missing_bundle_file_does_not_blame_activation() {
+    let server = Server::spawn();
+    server.plant(
+        "ppt-anything",
+        "runtime assets live elsewhere",
+        &[("tools/README.md", "tool docs")],
+    );
+    let (home, key) = install_client(&server, &format!("filemiss-{}", std::process::id()));
+    let (ok, _stdout, stderr) = run_client(
+        home.path(),
+        &server,
+        &key,
+        &[
+            "file",
+            "ppt-anything",
+            "styles/anime-chibi-default/outline_template.md",
+        ],
+    );
+    assert!(!ok, "missing bundle file must fail");
+    assert!(
+        stderr.contains("not found in skill bundle"),
+        "stderr should explain the real boundary, got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("run runai-client activate ppt-anything first"),
+        "missing server-side files are not fixed by activation: {stderr}"
+    );
+}
+
+#[test]
 fn file_subcommand_rejects_cache_traversal() {
     let server = Server::spawn();
     server.plant("foo", "foo", &[("references/ref-a.md", "ref")]);

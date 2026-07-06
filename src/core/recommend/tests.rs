@@ -480,6 +480,8 @@ fn format_single_match_emits_runai_client_activate_not_raw_path() {
     assert!(out.contains("runai-client activate"));
     assert!(out.contains("runai-client feedback"));
     assert!(out.contains("runai-client file"));
+    assert!(out.contains("skill bundle"));
+    assert!(out.contains("运行时用户数据"));
     assert!(
         !out.contains("curl -s -X POST"),
         "activation must not use curl"
@@ -504,6 +506,7 @@ fn format_single_match_omits_filesystem_path() {
     assert!(out.len() < 4_000);
     assert!(out.contains("runai-client activate"));
     assert!(out.contains("runai-client file"));
+    assert!(out.contains("skill bundle"));
     assert!(out.contains("huge-skill"));
     assert!(!out.contains("/Users/"));
     assert!(!out.contains(".runai/skills/"));

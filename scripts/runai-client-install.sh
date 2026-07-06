@@ -713,7 +713,7 @@ Subcommands:
                  Cache lands at ~/.runai/client-cache/servers/<server-key>/
                  skills/<skill-key>/ (NEVER ~/.runai/skills/). Network failures queue the usage
                  event in a durable local outbox; `flush` replays it.
-  file           Print a cached support file fetched by activate/sync.
+  file           Print a cached bundle support file fetched by activate/sync.
                    runai-client file <skill> <relpath>
   feedback       Send a passive feedback note for a skill.
                    runai-client feedback <skill> --note "<text>"
@@ -1408,7 +1408,7 @@ Cache layout (never written to ~/.runai/skills/):
   ~/.runai/client-cache/servers/<server-key>/skills/<skill-key>/SKILL.md
   ~/.runai/client-cache/servers/<server-key>/skills/<skill-key>/files/<relpath>
 
-Use `runai-client file <skill> <relpath>` to print cached support files.
+Use `runai-client file <skill> <relpath>` to print cached support files that live inside the skill bundle.
   ~/.runai/client-cache/servers/<server-key>/skills/<skill-key>/.outbox/<ts>-<event_id>.json
 
 Contract: SKILL.md is printed to stdout ONLY after the usage event is
@@ -1454,15 +1454,12 @@ HELP
 
 usage_file() {
   cat <<'HELP'
-runai-client file — print a cached support file for an activated skill.
+runai-client file — print a cached bundle support file for an activated skill.
 
 Usage:
   runai-client file <skill> <relpath>
 
-The file is read from ~/.runai/client-cache. Run `runai-client activate
-<skill>` first to cache the whole skill bundle. `SKILL.md` is available as
-`runai-client activate <skill>` stdout; this command is for referenced files
-such as references/*.md, scripts/*, or templates/*.
+The file is read from ~/.runai/client-cache, which contains only the managed skill directory cached by activate/sync. `SKILL.md` is available as `runai-client activate <skill>` stdout; this command is for referenced bundle files such as references/*.md, scripts/*, or templates/*. Runtime/user-home paths such as ~/.tool-name/... must be read from the local filesystem, not via runai-client file.
 HELP
 }
 
@@ -1593,7 +1590,8 @@ cmd_file() {
   if [[ ! -f "$TARGET" ]]; then
     mkdir -p "$(dirname "$TARGET")"
     fetch_file "$SKILL" "$REL" "$TARGET" || {
-      echo "runai-client file: cache miss for $SKILL/$REL; run runai-client activate $SKILL first" >&2
+      echo "runai-client file: not found in skill bundle: $SKILL/$REL" >&2
+      echo "runai-client file: this command only reads files inside the managed skill directory cached by activate/sync; runtime paths such as ~/.ppt-anything must be read from the local filesystem." >&2
       return 1
     }
   fi

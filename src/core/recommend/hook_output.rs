@@ -4,8 +4,10 @@
 //! `hook_output.md`; the three `format_for_hook*` wrappers vary only in how
 //! much session/skip-reminder context they thread through. Every activation
 //! the main agent sees is `runai-client activate <name>`; support-file reads
-//! go through `runai-client file <name> <relpath>` — no server URL, no
-//! filesystem paths, no SKILL.md bytes.
+//! inside the skill bundle go through `runai-client file <name> <relpath>` —
+//! no server URL, no filesystem paths, no SKILL.md bytes. Runtime/user-home
+//! paths remain local filesystem data and must not be implied to live in the
+//! bundle cache.
 
 use super::router::{RouterDecision, RouterMode};
 use super::session_id::is_runai_session_id;
