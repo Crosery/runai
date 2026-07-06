@@ -353,13 +353,24 @@
       const event = kind === 'textarea' ? 'blur' : 'change';
       el.addEventListener(event, () => {
         if (!account.me || !account.prefs) return;
-        const v = kind === 'checkbox' ? el.checked : el.value;
+        let v;
+        if (kind === 'checkbox') {
+          v = el.checked;
+        } else if (kind === 'number') {
+          v = Number.parseInt(el.value, 10);
+          if (!Number.isFinite(v)) return;
+        } else {
+          v = el.value;
+        }
         account.prefs[key] = v;
         savePrefs();
       });
     };
     wirePref('set-enabled', 'recommend_enabled', 'checkbox');
     wirePref('set-read-claude-md', 'read_claude_md', 'checkbox');
+    wirePref('set-intent-memory-enabled', 'intent_memory_enabled', 'checkbox');
+    wirePref('set-intent-memory-limit', 'intent_memory_limit', 'number');
+    wirePref('set-bm25-candidate-limit', 'bm25_candidate_limit', 'number');
     wirePref('set-skip-reminder', 'skip_reminder_enabled', 'checkbox');
     wirePref('set-skip-reminder-template', 'skip_reminder_template', 'textarea');
     const globalEnabled = document.getElementById('set-global-enabled');

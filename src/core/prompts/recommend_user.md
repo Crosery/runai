@@ -1,11 +1,19 @@
-<!-- prompt: recommend_user | callers: recommend::router::recommend_for_user | vars: {USER_PROMPT},{CWD_BLOCK},{PROJECT_CONTEXT_BLOCK},{HISTORY_BLOCK},{ALREADY_ROUTED_BLOCK},{CANDIDATE_LISTING},{TOP_K} -->
+<!-- prompt: recommend_user | callers: recommend::router::recommend_for_user_with_client | vars: {USER_PROMPT},{INTENT_SUMMARY},{BM25_CANDIDATE_LIMIT},{CWD_BLOCK},{PROJECT_CONTEXT_BLOCK},{HISTORY_BLOCK},{ALREADY_ROUTED_BLOCK},{CANDIDATE_LISTING},{TOP_K} -->
 ## 用户当前 prompt (最高优先级，必须先看这段判断意图)
 
 ```
 {USER_PROMPT}
 ```
 
-{CWD_BLOCK}{PROJECT_CONTEXT_BLOCK}{HISTORY_BLOCK}{ALREADY_ROUTED_BLOCK}候选 skill:
+{CWD_BLOCK}{PROJECT_CONTEXT_BLOCK}{HISTORY_BLOCK}{ALREADY_ROUTED_BLOCK}## 意图摘要（BM25 查询来源）
+
+下面是 runai 根据当前输入和当前 session 短记忆整理出的检索摘要。BM25 默认 {BM25_CANDIDATE_LIMIT} 个 skill 候选来自这段摘要；最终判断仍以用户当前 prompt 为最高优先级。
+
+```text
+{INTENT_SUMMARY}
+```
+
+候选 skill:
 {CANDIDATE_LISTING}
 
 ---

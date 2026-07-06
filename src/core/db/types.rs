@@ -64,6 +64,16 @@ pub struct User {
     pub created_at: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RouterIntentMemoryItem {
+    pub id: i64,
+    pub ts: i64,
+    pub session_id: String,
+    pub user_id: Option<String>,
+    pub client_kind: String,
+    pub memory: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct RouterModelStat {
     pub model: String,

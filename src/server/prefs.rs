@@ -486,6 +486,23 @@ mod tests {
     }
 
     #[test]
+    fn merge_accepts_intent_memory_numeric_prefs() {
+        let mut current = json!({
+            "intent_memory_enabled": true,
+            "intent_memory_limit": 10,
+            "bm25_candidate_limit": 30,
+        });
+        merge_prefs_patch(
+            &mut current,
+            json!({"intent_memory_limit": 7, "bm25_candidate_limit": 42}),
+        );
+        let prefs = UserPrefs::from_json_str(&current.to_string());
+        assert!(prefs.intent_memory_enabled);
+        assert_eq!(prefs.intent_memory_limit, 7);
+        assert_eq!(prefs.bm25_candidate_limit, 42);
+    }
+
+    #[test]
     fn merge_null_inside_flags_drops_the_key() {
         let mut current = json!({
             "prompt_injection_flags": {

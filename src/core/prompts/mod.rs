@@ -21,9 +21,9 @@
 pub const PROMPT_RECOMMEND_SYSTEM: &str = include_str!("recommend_system.md");
 
 /// recommend_user.md — user-turn scaffold built per request, with placeholders
-/// `{USER_PROMPT}` / `{CWD_BLOCK}` / `{PROJECT_CONTEXT_BLOCK}` /
+/// `{USER_PROMPT}` / `{INTENT_SUMMARY}` / `{CWD_BLOCK}` / `{PROJECT_CONTEXT_BLOCK}` /
 /// `{HISTORY_BLOCK}` / `{ALREADY_ROUTED_BLOCK}` / `{CANDIDATE_LISTING}` /
-/// `{TOP_K}`. Always rendered — toggling the surrounding blocks is what users
+/// `{TOP_K}` / `{BM25_CANDIDATE_LIMIT}`. Always rendered — toggling the surrounding blocks is what users
 /// configure, not this skeleton.
 pub const PROMPT_RECOMMEND_USER: &str = include_str!("recommend_user.md");
 
@@ -139,6 +139,8 @@ mod tests {
         assert!(PROMPT_RECOMMEND_CWD_PREFIX.contains("{CWD}"));
         assert!(PROMPT_RECOMMEND_PROJECT_CONTEXT.contains("{PROJECT_DOCS}"));
         assert!(PROMPT_RECOMMEND_USER.contains("{USER_PROMPT}"));
+        assert!(PROMPT_RECOMMEND_USER.contains("{INTENT_SUMMARY}"));
+        assert!(PROMPT_RECOMMEND_USER.contains("{BM25_CANDIDATE_LIMIT}"));
         assert!(PROMPT_HOOK_OUTPUT.contains("{CANDIDATES_BLOCK}"));
     }
 

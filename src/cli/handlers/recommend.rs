@@ -65,37 +65,45 @@ pub(in crate::cli) fn handle_recommend(
             // Stdin-JSON mode lets the router see recent conversation history,
             // which is how "use figma-component-mapping" replies get auto-routed
             // to the right skill on the next round.
-            let (user_prompt, transcript_path, native_session_id, cwd) = match prompt_opt {
-                Some(p) => (p, None, None, None),
-                None => {
-                    use std::io::Read;
-                    let mut buf = String::new();
-                    if std::io::stdin().read_to_string(&mut buf).is_err() || buf.trim().is_empty() {
-                        anyhow::bail!(
-                            "usage: runai recommend <prompt> | runai recommend setup | runai recommend status | runai recommend hook-snippet\n(or pipe a UserPromptSubmit-style hook JSON via stdin)"
-                        );
+            let (user_prompt, transcript_path, native_session_id, cwd, payload_host_kind) =
+                match prompt_opt {
+                    Some(p) => (p, None, None, None, None),
+                    None => {
+                        use std::io::Read;
+                        let mut buf = String::new();
+                        if std::io::stdin().read_to_string(&mut buf).is_err()
+                            || buf.trim().is_empty()
+                        {
+                            anyhow::bail!(
+                                "usage: runai recommend <prompt> | runai recommend setup | runai recommend status | runai recommend hook-snippet\n(or pipe a UserPromptSubmit-style hook JSON via stdin)"
+                            );
+                        }
+                        let v: serde_json::Value = serde_json::from_str(&buf)
+                            .map_err(|e| anyhow::anyhow!("parse hook stdin JSON: {e}"))?;
+                        let p = v
+                            .get("prompt")
+                            .and_then(|x| x.as_str())
+                            .or_else(|| v.get("user_prompt").and_then(|x| x.as_str()))
+                            .unwrap_or("")
+                            .to_string();
+                        let tp = v
+                            .get("transcript_path")
+                            .and_then(|x| x.as_str())
+                            .map(std::path::PathBuf::from);
+                        let sid = v
+                            .get("runai_session_id")
+                            .and_then(|x| x.as_str())
+                            .or_else(|| v.get("session_id").and_then(|x| x.as_str()))
+                            .map(String::from);
+                        let cwd_s = v.get("cwd").and_then(|x| x.as_str()).map(String::from);
+                        let host = v
+                            .get("client_kind")
+                            .and_then(|x| x.as_str())
+                            .or_else(|| v.get("host_kind").and_then(|x| x.as_str()))
+                            .map(String::from);
+                        (p, tp, sid, cwd_s, host)
                     }
-                    let v: serde_json::Value = serde_json::from_str(&buf)
-                        .map_err(|e| anyhow::anyhow!("parse hook stdin JSON: {e}"))?;
-                    let p = v
-                        .get("prompt")
-                        .and_then(|x| x.as_str())
-                        .or_else(|| v.get("user_prompt").and_then(|x| x.as_str()))
-                        .unwrap_or("")
-                        .to_string();
-                    let tp = v
-                        .get("transcript_path")
-                        .and_then(|x| x.as_str())
-                        .map(std::path::PathBuf::from);
-                    let sid = v
-                        .get("runai_session_id")
-                        .and_then(|x| x.as_str())
-                        .or_else(|| v.get("session_id").and_then(|x| x.as_str()))
-                        .map(String::from);
-                    let cwd_s = v.get("cwd").and_then(|x| x.as_str()).map(String::from);
-                    (p, tp, sid, cwd_s)
-                }
-            };
+                };
 
             let cfg = RecommendConfig::load(mgr.paths())?;
             // First-run guidance: if the user hasn't configured the router
@@ -122,8 +130,9 @@ pub(in crate::cli) fn handle_recommend(
                 }
             };
 
-            let host_kind = std::env::var("RUNAI_HOST_KIND")
-                .ok()
+            let host_kind = payload_host_kind
+                .filter(|s| !s.trim().is_empty())
+                .or_else(|| std::env::var("RUNAI_HOST_KIND").ok())
                 .filter(|s| !s.trim().is_empty())
                 .unwrap_or_else(|| "claude".to_string());
             let session_scope = match user_id {
@@ -134,13 +143,14 @@ pub(in crate::cli) fn handle_recommend(
                 crate::core::recommend::runai_session_id_from_native(Some(&session_scope), sid)
             });
 
-            match crate::core::recommend::recommend_for_user(
+            match crate::core::recommend::recommend_for_user_with_client(
                 mgr,
                 &user_prompt,
                 transcript_path.as_deref(),
                 session_id.as_deref(),
                 cwd.as_deref(),
                 user_id,
+                Some(&host_kind),
             ) {
                 Ok(decision) => {
                     // Re-format with the actual session_id + this session's

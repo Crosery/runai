@@ -169,6 +169,34 @@ impl TestEnv {
         rows.filter_map(|r| r.ok()).collect()
     }
 
+    fn router_llm_inputs(&self) -> Vec<String> {
+        if !self.db_path().exists() {
+            return Vec::new();
+        }
+        let conn = rusqlite::Connection::open(self.db_path()).expect("open test db");
+        let mut stmt = conn
+            .prepare("SELECT llm_input FROM router_events ORDER BY id ASC")
+            .expect("prepare");
+        let rows = stmt
+            .query_map(rusqlite::params![], |r| r.get::<_, String>(0))
+            .expect("query_map");
+        rows.filter_map(|r| r.ok()).collect()
+    }
+
+    fn router_intent_memories(&self) -> Vec<String> {
+        if !self.db_path().exists() {
+            return Vec::new();
+        }
+        let conn = rusqlite::Connection::open(self.db_path()).expect("open test db");
+        let mut stmt = conn
+            .prepare("SELECT memory FROM router_intent_memory ORDER BY id ASC")
+            .expect("prepare");
+        let rows = stmt
+            .query_map(rusqlite::params![], |r| r.get::<_, String>(0))
+            .expect("query_map");
+        rows.filter_map(|r| r.ok()).collect()
+    }
+
     fn write_recommend_config(&self, body: &str) {
         // The binary expects `config.toml` to live under `<data_dir>/config.toml`.
         std::fs::write(self.config_path(), body).expect("write config.toml");
@@ -499,6 +527,70 @@ fn mock_llm_recommend_emits_runai_client_activation() {
         statuses
     );
     assert_eq!(statuses[0], "ok", "successful LLM call → status=ok");
+}
+
+#[test]
+fn stdin_json_client_kind_cwd_and_session_memory_feed_router_input() {
+    let env = TestEnv::new();
+    env.plant_skill("alpha-skill", "test skill alpha");
+    std::fs::write(env.bootstrap_seen_path(), "1").unwrap();
+
+    let mock = MockLlm::start(MockBehavior::OkPickSkill(
+        "alpha-skill",
+        "matches the current intent",
+    ));
+    enable_recommend_config(&env, mock.base_url());
+
+    let cwd = env.home().join("project-runai");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let payload1 = serde_json::json!({
+        "prompt": "first runai intent memory alpha",
+        "session_id": "native-session-1",
+        "client_kind": "codex",
+        "cwd": cwd.display().to_string(),
+    });
+    let out1 = env.run_with_input(&["recommend"], &payload1.to_string());
+    assert!(
+        out1.status.success(),
+        "first stdin recommend must succeed (stderr={})",
+        String::from_utf8_lossy(&out1.stderr)
+    );
+
+    let payload2 = serde_json::json!({
+        "prompt": "second turn keeps alpha context",
+        "session_id": "native-session-1",
+        "client_kind": "codex",
+        "cwd": cwd.display().to_string(),
+    });
+    let out2 = env.run_with_input(&["recommend"], &payload2.to_string());
+    assert!(
+        out2.status.success(),
+        "second stdin recommend must succeed (stderr={})",
+        String::from_utf8_lossy(&out2.stderr)
+    );
+
+    let statuses = env.router_event_status_list();
+    assert_eq!(statuses, vec!["ok".to_string(), "ok".to_string()]);
+
+    let memories = env.router_intent_memories();
+    assert_eq!(
+        memories,
+        vec![
+            "first runai intent memory alpha".to_string(),
+            "second turn keeps alpha context".to_string(),
+        ]
+    );
+
+    let inputs = env.router_llm_inputs();
+    assert_eq!(inputs.len(), 2);
+    let second = &inputs[1];
+    assert!(second.contains("## 意图摘要（BM25 查询来源）"));
+    assert!(second.contains("agent_cli: codex"));
+    assert!(second.contains(cwd.display().to_string().as_str()));
+    assert!(second.contains("first runai intent memory alpha"));
+    assert!(second.contains("second turn keeps alpha context"));
+    assert!(second.contains("默认 30 个 skill 候选"));
+    assert!(!second.contains("CLAUDE_SESSION_ID"));
 }
 
 // ─── 7. Telemetry persisted even on LLM error ──────────────────────────────

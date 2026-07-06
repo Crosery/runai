@@ -21,16 +21,18 @@ use crate::core::resource::ResourceKind;
 use super::config::{Provider, RecommendConfig, SessionMode};
 use super::enrich::rewrite_query_for_bm25;
 use super::hook_output::format_for_hook_full;
+use super::intent::{build_intent_memory_from_prompt, build_intent_summary};
 use super::llm_call::{RouterCallStats, call_anthropic, call_claude_cli, call_openai_compat};
 use super::project_context::read_project_context;
 use super::server_helpers::default_local_server_url;
 use super::session_id::runai_session_id_from_native;
-use super::transcript::{recent_transcript_messages, recent_user_prompts_for_bm25};
+use super::transcript::recent_transcript_messages;
 
-/// Safety bound for the optional `RUNAI_BM25_TOP_K=N` debug override. Normal
-/// routing uses `RecommendConfig::top_k` so the dashboard setting controls
-/// both hook output count and LLM candidate-list size.
-const BM25_TOP_K_MAX: usize = 50;
+/// Safety bound for the optional `RUNAI_BM25_TOP_K=N` debug override and the
+/// per-user BM25 candidate limit. Final hook output remains controlled by
+/// `RecommendConfig::top_k`; this limit controls how many retrieved skills the
+/// router LLM may inspect before choosing.
+const BM25_TOP_K_MAX: usize = 100;
 /// If the user prompt tokenizes to fewer than this many terms, skip BM25 and
 /// pass the full candidate set. With the default `bm25_hybrid` mode this is
 /// only triggered for **empty** queries — hybrid scoring is
@@ -106,6 +108,34 @@ pub struct RouterDecision {
     pub skills: Vec<RecommendedSkill>,
 }
 
+pub(super) struct RouterUserMessageParts<'a> {
+    pub(super) user_prompt: &'a str,
+    pub(super) cwd_block: &'a str,
+    pub(super) project_context_block: &'a str,
+    pub(super) history_block: &'a str,
+    pub(super) already_routed_block: &'a str,
+    pub(super) intent_summary: &'a str,
+    pub(super) candidate_listing: &'a str,
+    pub(super) top_k: usize,
+    pub(super) bm25_candidate_limit: usize,
+}
+
+pub(super) fn build_router_user_message(parts: RouterUserMessageParts<'_>) -> String {
+    crate::core::prompts::template_body(USER_MSG_TEMPLATE)
+        .replace("{HISTORY_BLOCK}", parts.history_block)
+        .replace("{ALREADY_ROUTED_BLOCK}", parts.already_routed_block)
+        .replace("{CWD_BLOCK}", parts.cwd_block)
+        .replace("{PROJECT_CONTEXT_BLOCK}", parts.project_context_block)
+        .replace("{INTENT_SUMMARY}", parts.intent_summary)
+        .replace("{CANDIDATE_LISTING}", parts.candidate_listing)
+        .replace("{USER_PROMPT}", parts.user_prompt)
+        .replace("{TOP_K}", &parts.top_k.to_string())
+        .replace(
+            "{BM25_CANDIDATE_LIMIT}",
+            &parts.bm25_candidate_limit.to_string(),
+        )
+}
+
 /// Top-level entry: run the router and return the list of recommended skills.
 /// Returns `Ok(Vec::new())` when nothing matches, when disabled, or when prompt
 /// is too short.
@@ -141,6 +171,26 @@ pub fn recommend_for_user(
     session_id: Option<&str>,
     cwd: Option<&str>,
     user_id: Option<&str>,
+) -> Result<RouterDecision> {
+    recommend_for_user_with_client(
+        mgr,
+        user_prompt,
+        transcript_path,
+        session_id,
+        cwd,
+        user_id,
+        Some("claude"),
+    )
+}
+
+pub fn recommend_for_user_with_client(
+    mgr: &SkillManager,
+    user_prompt: &str,
+    transcript_path: Option<&Path>,
+    session_id: Option<&str>,
+    cwd: Option<&str>,
+    user_id: Option<&str>,
+    client_kind: Option<&str>,
 ) -> Result<RouterDecision> {
     let session_id_owned = session_id.and_then(|sid| runai_session_id_from_native(user_id, sid));
     let session_id = session_id_owned.as_deref();
@@ -191,6 +241,38 @@ pub fn recommend_for_user(
         cfg.effective_api_key()
             .context("recommend api_key not configured: run `runai recommend setup` or set RUNAI_RECOMMEND_API_KEY")?
     };
+
+    let client_kind = client_kind
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("claude");
+    let intent_memory_limit = if user_prefs.intent_memory_enabled {
+        user_prefs.intent_memory_limit as usize
+    } else {
+        0
+    };
+    let mut intent_memory = Vec::new();
+    if let Some(sid) = session_id
+        && !sid.is_empty()
+        && intent_memory_limit > 0
+    {
+        let memory = build_intent_memory_from_prompt(user_prompt);
+        let _ = mgr.db().append_router_intent_memory(
+            sid,
+            user_id,
+            client_kind,
+            &memory,
+            intent_memory_limit,
+        );
+        intent_memory = mgr
+            .db()
+            .router_intent_memory(sid, user_id, client_kind, intent_memory_limit)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|i| i.memory)
+            .collect();
+    }
+    let intent_summary = build_intent_summary(user_prompt, cwd, client_kind, &intent_memory);
 
     // `already_routed` is the dedup signal handed to the router LLM. It is
     // the **full** recommendation history this session (every skill the
@@ -260,18 +342,14 @@ pub fn recommend_for_user(
     // BM25 prefilter. Without it the LLM sees all ~343 candidates and gets
     // noise-flooded — empirically this is what tanks chosen-rate to ~46%
     // even when a relevant skill exists. After prefilter the LLM sees a
-    // focused top-K with strong term-overlap with the user prompt.
-    //
-    // Short / ambiguous prompts (< 2 query terms) skip the prefilter — BM25
-    // on a single token degenerates to "any doc containing that token" and
-    // hides legitimate matches whose desc happens to use a synonym.
-    // Override top-K via env for local experiments; otherwise align candidate
-    // injection with the persisted router setting so the dashboard's top_k
-    // value actually reduces the LLM input size.
-    let top_k: usize = std::env::var("RUNAI_BM25_TOP_K")
+    // focused candidate set with strong term-overlap with the current
+    // intent summary. `output_top_k` controls final recommendations;
+    // `bm25_candidate_limit` controls how many candidates the router LLM sees.
+    let output_top_k: usize = cfg.top_k.clamp(1, BM25_TOP_K_MAX);
+    let bm25_candidate_limit: usize = std::env::var("RUNAI_BM25_TOP_K")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(cfg.top_k)
+        .unwrap_or(user_prefs.bm25_candidate_limit as usize)
         .clamp(1, BM25_TOP_K_MAX);
 
     let bm25_disabled = std::env::var("RUNAI_BM25_DISABLED").is_ok();
@@ -296,7 +374,7 @@ pub fn recommend_for_user(
     // paired with `RUNAI_BM25_PURE=1` to give BM25 score more weight.
     // Failure falls back to the original prompt.
     let rewrite_enabled = std::env::var("RUNAI_QUERY_REWRITE_ENABLE").is_ok();
-    let expanded_query = if !rewrite_enabled || user_prompt.chars().count() > 50 {
+    let expanded_query = if !rewrite_enabled || intent_summary.chars().count() > 800 {
         None
     } else {
         let api_key_for_rewrite = if cfg.provider == Provider::ClaudeCli {
@@ -305,32 +383,15 @@ pub fn recommend_for_user(
             cfg.effective_api_key().unwrap_or_default()
         };
         if cfg.provider == Provider::ClaudeCli || !api_key_for_rewrite.is_empty() {
-            rewrite_query_for_bm25(&cfg, &api_key_for_rewrite, user_prompt)
+            rewrite_query_for_bm25(&cfg, &api_key_for_rewrite, &intent_summary)
         } else {
             None
         }
     };
-    // Stitch recent user-turn history into the BM25 query. Short follow-up
-    // prompts like "不对换一个" / "有没有其他的" carry zero keywords on
-    // their own — the topic ("ppt", "debug", whatever) lives in earlier
-    // user turns. Without history, topical skills get filtered out of the
-    // top-K before the LLM router ever sees them. Assistant turns are not
-    // stitched: they're prior router output and would self-bias the
-    // prefilter toward whatever the agent just talked about.
-    let bm25_history_recall = transcript_path
-        .map(|p| recent_user_prompts_for_bm25(p, 3))
-        .unwrap_or_default();
 
-    let bm25_input_query: String = {
-        let base = match &expanded_query {
-            Some(expanded) => format!("{user_prompt} {expanded}"),
-            None => user_prompt.to_string(),
-        };
-        if bm25_history_recall.is_empty() {
-            base
-        } else {
-            format!("{base} {bm25_history_recall}")
-        }
+    let bm25_input_query: String = match &expanded_query {
+        Some(expanded) => format!("{intent_summary}\n{expanded}"),
+        None => intent_summary.clone(),
     };
 
     let q_terms = bm25::tokenize(&bm25_input_query);
@@ -422,14 +483,14 @@ pub fn recommend_for_user(
             bm25_fallback_reason = "bm25-hybrid";
             scored
                 .into_iter()
-                .take(top_k)
+                .take(bm25_candidate_limit)
                 .map(|(i, _)| all_candidates[i].clone())
                 .collect()
         } else {
             let positive: Vec<(usize, f64)> = ranked
                 .into_iter()
                 .filter(|(_, s)| *s > 0.0)
-                .take(top_k)
+                .take(bm25_candidate_limit)
                 .collect();
             if positive.len() < BM25_MIN_POSITIVE_HITS {
                 bm25_fallback_reason = if positive.is_empty() {
@@ -461,7 +522,7 @@ pub fn recommend_for_user(
 
     // Per-skill quality score 0-10. Owned entirely by the LLM enrich pass.
     // bm25 tags are only emitted in signal mode; in prefilter mode the
-    // score already determined which 50 skills landed here.
+    // score already determined which candidates landed here.
     let emit_bm25_tag = bm25_as_signal;
     let candidate_listing: String = candidates
         .iter()
@@ -545,14 +606,17 @@ pub fn recommend_for_user(
         _ => String::new(),
     };
 
-    let user_msg = crate::core::prompts::template_body(USER_MSG_TEMPLATE)
-        .replace("{HISTORY_BLOCK}", &history_block)
-        .replace("{ALREADY_ROUTED_BLOCK}", &already_routed_block)
-        .replace("{CWD_BLOCK}", &cwd_block)
-        .replace("{PROJECT_CONTEXT_BLOCK}", &project_context_block)
-        .replace("{CANDIDATE_LISTING}", &candidate_listing)
-        .replace("{USER_PROMPT}", user_prompt)
-        .replace("{TOP_K}", &top_k.to_string());
+    let user_msg = build_router_user_message(RouterUserMessageParts {
+        user_prompt,
+        cwd_block: &cwd_block,
+        project_context_block: &project_context_block,
+        history_block: &history_block,
+        already_routed_block: &already_routed_block,
+        intent_summary: &intent_summary,
+        candidate_listing: &candidate_listing,
+        top_k: output_top_k,
+        bm25_candidate_limit,
+    });
 
     // Build conversation history when this session has prior turns AND
     // Conversation mode is on. Oneshot keeps history empty regardless.

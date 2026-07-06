@@ -3,7 +3,12 @@
 //! The on-disk shape is loose by design:
 //! - empty / malformed JSON → defaults
 //! - missing fields → individual `serde(default = ...)` per field
-//! - `candidate_limit` is clamped to `[1, 5]` on load
+//! - numeric limits are clamped on load
+//!
+//! Recommend context controls live here too: `intent_memory_enabled`,
+//! `intent_memory_limit` (default 10, drop-oldest queue), and
+//! `bm25_candidate_limit` (default 30) are per-user dashboard preferences,
+//! not global `RecommendConfig` values.
 //!
 //! This makes the column safe to evolve: adding a field never breaks an
 //! old prefs blob, and dropping one is a no-op for unknown keys.
@@ -71,6 +76,19 @@ pub struct UserPrefs {
     /// server's `skip_reminder_template` config.
     #[serde(default)]
     pub skip_reminder_template: String,
+    /// Whether the recommender keeps a bounded short-memory queue for the
+    /// current `rnai_sess_*` and uses it to build the BM25 query.
+    #[serde(default = "default_true")]
+    pub intent_memory_enabled: bool,
+    /// Max short-memory items retained per current runai session. `0` means
+    /// disabled for storage/injection; values above [`INTENT_MEMORY_LIMIT_MAX`]
+    /// are clamped when prefs load.
+    #[serde(default = "default_intent_memory_limit")]
+    pub intent_memory_limit: usize,
+    /// Number of BM25-ranked skill candidates shown to the router LLM before
+    /// it picks the final `candidate_limit` / `RecommendConfig::top_k` output.
+    #[serde(default = "default_bm25_candidate_limit")]
+    pub bm25_candidate_limit: usize,
     /// Per-user injection toggles for centralised prompt templates (PLANNING
     /// §1.3). Map key is the canonical prompt name as listed in
     /// `crate::core::prompts::PROMPT_NAMES`; value is whether the prompt is
@@ -100,6 +118,14 @@ fn default_candidate_limit() -> u8 {
     3
 }
 
+fn default_intent_memory_limit() -> usize {
+    10
+}
+
+fn default_bm25_candidate_limit() -> usize {
+    30
+}
+
 fn default_recommend_mode() -> RecommendMode {
     RecommendMode::Compatible
 }
@@ -107,6 +133,9 @@ fn default_recommend_mode() -> RecommendMode {
 /// Minimum / maximum allowed value of [`UserPrefs::candidate_limit`].
 const CANDIDATE_LIMIT_MIN: u8 = 1;
 const CANDIDATE_LIMIT_MAX: u8 = 5;
+const INTENT_MEMORY_LIMIT_MAX: usize = 50;
+const BM25_CANDIDATE_LIMIT_MIN: usize = 5;
+const BM25_CANDIDATE_LIMIT_MAX: usize = 100;
 
 impl Default for UserPrefs {
     fn default() -> Self {
@@ -121,6 +150,9 @@ impl Default for UserPrefs {
             read_claude_md: default_true(),
             skip_reminder_enabled: false,
             skip_reminder_template: String::new(),
+            intent_memory_enabled: default_true(),
+            intent_memory_limit: default_intent_memory_limit(),
+            bm25_candidate_limit: default_bm25_candidate_limit(),
             prompt_injection_flags: HashMap::new(),
         }
     }
@@ -131,7 +163,7 @@ impl UserPrefs {
     /// - empty input → defaults
     /// - invalid JSON → defaults
     /// - partial JSON → individual fields filled with defaults via serde
-    /// - `candidate_limit` clamped to `[1, 5]`
+    /// - numeric limits clamped to their supported ranges
     pub fn from_json_str(s: &str) -> Self {
         let trimmed = s.trim();
         if trimmed.is_empty() {
@@ -144,6 +176,10 @@ impl UserPrefs {
         prefs.candidate_limit = prefs
             .candidate_limit
             .clamp(CANDIDATE_LIMIT_MIN, CANDIDATE_LIMIT_MAX);
+        prefs.intent_memory_limit = prefs.intent_memory_limit.min(INTENT_MEMORY_LIMIT_MAX);
+        prefs.bm25_candidate_limit = prefs
+            .bm25_candidate_limit
+            .clamp(BM25_CANDIDATE_LIMIT_MIN, BM25_CANDIDATE_LIMIT_MAX);
         prefs
     }
 
@@ -165,6 +201,21 @@ mod tests {
         assert!(p.show_feedback_protocol);
         assert_eq!(p.recommend_mode, RecommendMode::Compatible);
         assert_eq!(p.candidate_limit, 3);
+        assert!(p.intent_memory_enabled);
+        assert_eq!(p.intent_memory_limit, 10);
+        assert_eq!(p.bm25_candidate_limit, 30);
+    }
+
+    #[test]
+    fn test_intent_memory_limits_clamp() {
+        let hi =
+            UserPrefs::from_json_str(r#"{"intent_memory_limit":200,"bm25_candidate_limit":500}"#);
+        assert_eq!(hi.intent_memory_limit, 50);
+        assert_eq!(hi.bm25_candidate_limit, 100);
+
+        let lo = UserPrefs::from_json_str(r#"{"intent_memory_limit":0,"bm25_candidate_limit":1}"#);
+        assert_eq!(lo.intent_memory_limit, 0);
+        assert_eq!(lo.bm25_candidate_limit, 5);
     }
 
     #[test]
@@ -211,6 +262,9 @@ mod tests {
             read_claude_md: false,
             skip_reminder_enabled: true,
             skip_reminder_template: "use sparingly".into(),
+            intent_memory_enabled: true,
+            intent_memory_limit: 7,
+            bm25_candidate_limit: 42,
             prompt_injection_flags: flags,
         };
         let json = p.to_json_str();

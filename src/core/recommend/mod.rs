@@ -4,7 +4,8 @@
 //! reachable as `crate::core::recommend::X` is re-exported here unchanged so
 //! consumers (cli / server / mcp) need zero edits. The split:
 //! - `config` — `RecommendConfig` + provider library + toml load/save
-//! - `router` — `recommend()` / `recommend_for_user()` + BM25 prefilter + domain types
+//! - `router` — `recommend()` / `recommend_for_user()` + intent-memory BM25 prefilter + domain types
+//! - `intent` — bounded current-session short memory + compact BM25 query text
 //! - `enrich` — `enrich_skills()` worker pool + `reevaluate_skill()`
 //! - `lang_validation` — deterministic per-field language enforcement
 //! - `prompts` — enrich/feedback prompt builders + router system prompt
@@ -18,6 +19,7 @@
 mod config;
 mod enrich;
 mod hook_output;
+mod intent;
 mod lang_validation;
 mod llm_call;
 mod project_context;
@@ -38,6 +40,7 @@ pub use lang_validation::{find_language_mismatched_skills, summary_matches_lang}
 pub use llm_call::{ProviderTestResult, test_provider_request};
 pub use router::{
     RecommendedSkill, RouterDecision, RouterMode, RouterTurn, recommend, recommend_for_user,
+    recommend_for_user_with_client,
 };
 pub use server_helpers::{default_local_server_url, local_ipv4};
 pub use session_id::{is_runai_session_id, runai_session_id_from_native};

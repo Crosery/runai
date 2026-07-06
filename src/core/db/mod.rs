@@ -29,7 +29,9 @@ mod users;
 pub use ai_summary::SkillAiIndex;
 pub use community::{CommunitySkill, CommunitySort};
 pub use core::Database;
-pub use types::{RouterEvent, RouterModelStat, RouterStatsSummary, TimelineBucket, User};
+pub use types::{
+    RouterEvent, RouterIntentMemoryItem, RouterModelStat, RouterStatsSummary, TimelineBucket, User,
+};
 pub use usage_events::UsageOutcome;
 
 #[cfg(test)]

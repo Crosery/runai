@@ -129,6 +129,15 @@
       el.disabled = !loggedIn;
       el.value = loggedIn ? (p[key] ?? fallback) : '';
     };
+    const setNumber = (id, key, fallback) => {
+      const el = $(`#${id}`);
+      if (!el) return;
+      el.disabled = !loggedIn;
+      el.value = loggedIn ? (p[key] ?? fallback) : '';
+    };
+    setSwitch('set-intent-memory-enabled', 'intent_memory_enabled', true);
+    setNumber('set-intent-memory-limit', 'intent_memory_limit', 10);
+    setNumber('set-bm25-candidate-limit', 'bm25_candidate_limit', 30);
     setSwitch('set-allow-public-recommend', 'allow_public_recommend', false);
     setSwitch('set-enabled', 'recommend_enabled', true);
     setSwitch('set-read-claude-md', 'read_claude_md', true);

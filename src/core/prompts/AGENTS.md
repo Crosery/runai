@@ -22,7 +22,7 @@ structurally required as long as the recommend feature is enabled
 | File | Public const in `mod.rs` | Caller | Variables (`{PLACEHOLDER}`) | Output contract |
 |---|---|---|---|---|
 | `recommend_system.md` | `PROMPT_RECOMMEND_SYSTEM` | `recommend::llm_call::call_openai_compat` / `call_anthropic` / `call_claude_cli` (via `recommend::prompts::system_prompt_template`) | none | system message body sent to router LLM after frontmatter stripping |
-| `recommend_user.md` | `PROMPT_RECOMMEND_USER` | `recommend::router::recommend_for_user` | `{USER_PROMPT}` (×2), `{CWD_BLOCK}`, `{PROJECT_CONTEXT_BLOCK}`, `{HISTORY_BLOCK}`, `{ALREADY_ROUTED_BLOCK}`, `{CANDIDATE_LISTING}`, `{TOP_K}` | user message body sent to router LLM |
+| `recommend_user.md` | `PROMPT_RECOMMEND_USER` | `recommend::router::recommend_for_user_with_client` | `{USER_PROMPT}` (×2), `{INTENT_SUMMARY}`, `{BM25_CANDIDATE_LIMIT}`, `{CWD_BLOCK}`, `{PROJECT_CONTEXT_BLOCK}`, `{HISTORY_BLOCK}`, `{ALREADY_ROUTED_BLOCK}`, `{CANDIDATE_LISTING}`, `{TOP_K}` | user message body sent to router LLM; BM25 candidates are recalled from the compact intent summary while the current prompt stays highest priority |
 | `recommend_history_prefix.md` | `PROMPT_RECOMMEND_HISTORY_PREFIX` | `recommend::router::recommend_for_user` (subbed into `{HISTORY_BLOCK}`) | `{HISTORY}` | block dropped to empty string when `prompt_injection_flags["recommend_history_prefix"] == false` or transcript history is empty |
 | `recommend_already_routed.md` | `PROMPT_RECOMMEND_ALREADY_ROUTED` | `recommend::router::recommend_for_user` (subbed into `{ALREADY_ROUTED_BLOCK}`) | `{ALREADY_ROUTED}` | block dropped to empty string when `prompt_injection_flags["recommend_already_routed"] == false` or already_routed list is empty |
 | `recommend_cwd_prefix.md` | `PROMPT_RECOMMEND_CWD_PREFIX` | `recommend::router::recommend_for_user` (subbed into `{CWD_BLOCK}`) | `{CWD}` | block dropped to empty string when `prompt_injection_flags["recommend_cwd_prefix"] == false` or cwd is empty |
@@ -37,7 +37,7 @@ structurally required as long as the recommend feature is enabled
 - Unauthenticated request (no Bearer / unknown api_key) → server passes
   `user_id_opt = None` to `recommend_for_user`; the router loads no user
   prefs and uses the default map = every toggleable prompt enabled.
-- `recommend_for_user` reads `find_user_by_id(uid).prefs_json` **on every
+- `recommend_for_user_with_client` reads `find_user_by_id(uid).prefs_json` **on every
   request**, freshly per call. There is no in-process prefs cache —
   switching the logged-in api_key picks up the new account's prefs on the
   very next `/recommend` hit (covered by `tests/prompts_multiuser_e2e.rs::switch_account_no_stale_prefs`).

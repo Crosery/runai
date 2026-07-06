@@ -16,7 +16,7 @@
 //! `router_events_since_ordered_preserves_user_id`.
 
 use super::Database;
-use super::types::RouterEvent;
+use super::types::{RouterEvent, RouterIntentMemoryItem};
 use anyhow::Result;
 use rusqlite::params;
 
@@ -76,6 +76,94 @@ impl Database {
              LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![name, limit as i64], row_to_router_event)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    pub fn append_router_intent_memory(
+        &self,
+        session_id: &str,
+        user_id: Option<&str>,
+        client_kind: &str,
+        memory: &str,
+        limit: usize,
+    ) -> Result<()> {
+        let session_id = session_id.trim();
+        let client_kind = client_kind.trim();
+        let memory = memory.trim();
+        if session_id.is_empty() || memory.is_empty() || limit == 0 {
+            return Ok(());
+        }
+        let user_scope = user_id.unwrap_or("").trim();
+        let memory_capped: String = memory.chars().take(240).collect();
+        let now = chrono::Utc::now().timestamp();
+        self.conn.execute(
+            "INSERT INTO router_intent_memory (ts, session_id, user_id, client_kind, memory)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![now, session_id, user_scope, client_kind, memory_capped],
+        )?;
+        self.conn.execute(
+            "DELETE FROM router_intent_memory
+             WHERE session_id = ?1 AND user_id = ?2 AND client_kind = ?3
+               AND id IN (
+                    SELECT id FROM router_intent_memory
+                    WHERE session_id = ?1 AND user_id = ?2 AND client_kind = ?3
+                    ORDER BY id DESC
+                    LIMIT -1 OFFSET ?4
+               )",
+            params![session_id, user_scope, client_kind, limit as i64],
+        )?;
+        Ok(())
+    }
+
+    pub fn router_intent_memory(
+        &self,
+        session_id: &str,
+        user_id: Option<&str>,
+        client_kind: &str,
+        limit: usize,
+    ) -> Result<Vec<RouterIntentMemoryItem>> {
+        if session_id.trim().is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let user_scope = user_id.unwrap_or("").trim();
+        let mut stmt = self.conn.prepare(
+            "SELECT id, ts, session_id, user_id, client_kind, memory
+             FROM (
+                SELECT id, ts, session_id, user_id, client_kind, memory
+                FROM router_intent_memory
+                WHERE session_id = ?1 AND user_id = ?2 AND client_kind = ?3
+                ORDER BY id DESC
+                LIMIT ?4
+             )
+             ORDER BY id ASC",
+        )?;
+        let rows = stmt.query_map(
+            params![
+                session_id.trim(),
+                user_scope,
+                client_kind.trim(),
+                limit as i64
+            ],
+            |r| {
+                let user_raw: String = r.get(3)?;
+                Ok(RouterIntentMemoryItem {
+                    id: r.get(0)?,
+                    ts: r.get(1)?,
+                    session_id: r.get(2)?,
+                    user_id: if user_raw.is_empty() {
+                        None
+                    } else {
+                        Some(user_raw)
+                    },
+                    client_kind: r.get(4)?,
+                    memory: r.get(5)?,
+                })
+            },
+        )?;
         let mut out = Vec::new();
         for row in rows {
             out.push(row?);

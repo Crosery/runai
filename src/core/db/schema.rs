@@ -1,4 +1,4 @@
-//! Schema creation + ALL migrations (v1–v21), monolithic.
+//! Schema creation + ALL migrations, monolithic.
 //!
 //! INVARIANT: keep `init_schema` and every versioned migration in this one
 //! file. Migrations run on every `open()` with no version lock; splitting them
@@ -482,6 +482,28 @@ impl Database {
                    ON usage_events(skill_name);
                  DELETE FROM schema_version;
                  INSERT INTO schema_version VALUES (23);",
+            )?;
+        }
+
+        if version < 24 {
+            // Per-session bounded intent memory for the recommend router.
+            // Rows are scoped by (session_id, user_id, client_kind) so Pi,
+            // Codex, Claude, and other hosts do not leak short-memory hints
+            // into one another. The router keeps only the newest configured
+            // N rows per scope; no raw transcript history is stored here.
+            self.conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS router_intent_memory (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts INTEGER NOT NULL,
+                    session_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL DEFAULT '',
+                    client_kind TEXT NOT NULL DEFAULT '',
+                    memory TEXT NOT NULL
+                 );
+                 CREATE INDEX IF NOT EXISTS idx_router_intent_memory_scope
+                   ON router_intent_memory(session_id, user_id, client_kind, id);
+                 DELETE FROM schema_version;
+                 INSERT INTO schema_version VALUES (24);",
             )?;
         }
 

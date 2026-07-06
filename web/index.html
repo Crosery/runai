@@ -722,6 +722,31 @@
           </div>
 
           <div class="settings-section">
+            <div class="label">我的偏好 · 推荐上下文 <span class="helper">当前 session 短记忆 · BM25 召回</span></div>
+            <div class="setting-row">
+              <div class="setting-meta">
+                <div class="setting-title">启用当前 session 记忆</div>
+                <div class="setting-hint">把每轮输入提炼成短记忆，只保留最近 N 条，用来构造 BM25 查询</div>
+              </div>
+              <label class="switch"><input type="checkbox" id="set-intent-memory-enabled" disabled><span></span></label>
+            </div>
+            <div class="setting-row">
+              <div class="setting-meta">
+                <div class="setting-title">session 记忆条数</div>
+                <div class="setting-hint">默认 10；超过后丢弃最旧的信息，当前输入仍参与本轮判断</div>
+              </div>
+              <input type="number" id="set-intent-memory-limit" min="0" max="50" step="1" disabled>
+            </div>
+            <div class="setting-row">
+              <div class="setting-meta">
+                <div class="setting-title">BM25 候选数</div>
+                <div class="setting-hint">默认 30；控制进入推荐模型的候选 skill 数量，不等于最终推荐数量</div>
+              </div>
+              <input type="number" id="set-bm25-candidate-limit" min="5" max="100" step="1" disabled>
+            </div>
+          </div>
+
+          <div class="settings-section">
             <div class="label">我的偏好 · Hook 行为</div>
             <div class="setting-row">
               <div class="setting-meta">

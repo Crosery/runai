@@ -138,13 +138,14 @@ pub(super) async fn handle_recommend(
             Some(cwd.as_str())
         };
 
-        let decision = recommend::recommend_for_user(
+        let decision = recommend::recommend_for_user_with_client(
             &mgr,
             &prompt,
             tpath_pb.as_deref(),
             sid_opt,
             cwd_opt,
             user_id_opt.as_deref(),
+            Some(&host_kind),
         )?;
 
         let history = match sid_opt {

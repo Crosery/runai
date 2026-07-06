@@ -1,6 +1,6 @@
 use super::Database;
 use crate::core::cli_target::CliTarget;
-use crate::core::db::RouterEvent;
+use crate::core::db::{RouterEvent, RouterIntentMemoryItem};
 use crate::core::resource::{Resource, ResourceKind, Source, TrashEntry};
 use rusqlite::params;
 use std::collections::HashMap;
@@ -14,7 +14,64 @@ fn migration_creates_schema_version() {
         .conn
         .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 23);
+    assert_eq!(version, 24);
+}
+
+#[test]
+fn router_intent_memory_appends_and_drops_oldest() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(&tmp.path().join("test.db")).unwrap();
+
+    for i in 1..=4 {
+        db.append_router_intent_memory(
+            "rnai_sess_test",
+            Some("u1"),
+            "pi",
+            &format!("memory {i}"),
+            3,
+        )
+        .unwrap();
+    }
+
+    let items = db
+        .router_intent_memory("rnai_sess_test", Some("u1"), "pi", 10)
+        .unwrap();
+    let memories: Vec<String> = items.into_iter().map(|i| i.memory).collect();
+    assert_eq!(memories, vec!["memory 2", "memory 3", "memory 4"]);
+}
+
+#[test]
+fn router_intent_memory_is_scoped_by_session_user_and_client() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(&tmp.path().join("test.db")).unwrap();
+
+    db.append_router_intent_memory("rnai_sess_a", Some("u1"), "pi", "pi memory", 10)
+        .unwrap();
+    db.append_router_intent_memory("rnai_sess_a", Some("u1"), "codex", "codex memory", 10)
+        .unwrap();
+    db.append_router_intent_memory("rnai_sess_a", Some("u2"), "pi", "other user", 10)
+        .unwrap();
+    db.append_router_intent_memory("rnai_sess_b", Some("u1"), "pi", "other session", 10)
+        .unwrap();
+
+    let items = db
+        .router_intent_memory("rnai_sess_a", Some("u1"), "pi", 10)
+        .unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].memory, "pi memory");
+}
+
+#[test]
+fn router_intent_memory_zero_limit_saves_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(&tmp.path().join("test.db")).unwrap();
+
+    db.append_router_intent_memory("rnai_sess_zero", None, "claude", "ignored", 0)
+        .unwrap();
+    let items: Vec<RouterIntentMemoryItem> = db
+        .router_intent_memory("rnai_sess_zero", None, "claude", 10)
+        .unwrap();
+    assert!(items.is_empty());
 }
 
 #[test]
@@ -71,7 +128,7 @@ fn migration_v21_moves_ai_summary_to_owner_scoped_key() {
     }
 
     let db = Database::open(&db_path).unwrap();
-    assert_eq!(db.schema_version(), 23);
+    assert_eq!(db.schema_version(), 24);
     let loaded = db.skill_ai_index("legacy").unwrap().unwrap();
     assert_eq!(loaded.summary, "task: legacy public summary");
     assert_eq!(loaded.updated_at, 42);
@@ -324,7 +381,7 @@ fn schema_at_v15_after_open() {
     // this test is kept for git-blame continuity; the v15 tables it
     // spot-checks below are still there post-v17, just behind a higher
     // version number.
-    assert_eq!(version, 23);
+    assert_eq!(version, 24);
 
     // Tables must exist
     for tbl in &["users", "user_skill_library"] {

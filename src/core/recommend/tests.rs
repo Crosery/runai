@@ -2,9 +2,12 @@ use std::fs;
 
 use crate::core::paths::AppPaths;
 
+use super::intent::{build_intent_memory_from_prompt, build_intent_summary};
 use super::lang_validation::prose_fields;
 use super::project_context::{extract_at_references, read_project_context};
-use super::router::{parse_lines, split_mode_and_names};
+use super::router::{
+    RouterUserMessageParts, build_router_user_message, parse_lines, split_mode_and_names,
+};
 use super::{
     HookInstallStatus, Provider, RecommendConfig, RecommendedSkill, RouterDecision, RouterMode,
     format_for_hook, format_for_hook_full, install_claude_hook, is_runai_session_id,
@@ -231,6 +234,57 @@ fn recent_user_prompts_for_bm25_filters_assistant_and_concatenates() {
 fn recent_user_prompts_returns_empty_for_missing_file() {
     let out = recent_user_prompts_for_bm25(std::path::Path::new("/nonexistent.jsonl"), 5);
     assert!(out.is_empty());
+}
+
+#[test]
+fn intent_memory_from_prompt_is_short_and_normalized() {
+    let long = format!(
+        "  请帮我设计 runai recommend 的提示词注入队列。{}  ",
+        "补充 ".repeat(80)
+    );
+    let memory = build_intent_memory_from_prompt(&long);
+    assert!(memory.starts_with("请帮我设计 runai recommend"));
+    assert!(!memory.contains("  "));
+    assert!(memory.chars().count() <= 240);
+}
+
+#[test]
+fn intent_summary_includes_current_prompt_memory_cwd_and_client_kind() {
+    let memory = vec![
+        "用户要求当前 session 记忆默认 10 条".to_string(),
+        "超过上限后丢最旧的信息".to_string(),
+    ];
+    let summary = build_intent_summary(
+        "给 runai 推荐模型加 BM25 查询前的意图整理",
+        Some("/repo/runai"),
+        "pi",
+        &memory,
+    );
+    assert!(summary.contains("给 runai 推荐模型加 BM25 查询前的意图整理"));
+    assert!(summary.contains("用户要求当前 session 记忆默认 10 条"));
+    assert!(summary.contains("/repo/runai"));
+    assert!(summary.contains("agent_cli: pi"));
+}
+
+#[test]
+fn router_user_message_uses_intent_summary_and_client_context() {
+    let msg = build_router_user_message(RouterUserMessageParts {
+        user_prompt: "原始 prompt 很长，里面可能有旧对话",
+        cwd_block: "cwd: `/repo/runai`\n",
+        project_context_block: "",
+        history_block: "",
+        already_routed_block: "",
+        intent_summary: "intent: 设计 runai 推荐模型记忆队列\nagent_cli: codex",
+        candidate_listing: "- test-driven-development: TDD",
+        top_k: 8,
+        bm25_candidate_limit: 30,
+    });
+    assert!(msg.contains("## 意图摘要（BM25 查询来源）"));
+    assert!(msg.contains("intent: 设计 runai 推荐模型记忆队列"));
+    assert!(msg.contains("agent_cli: codex"));
+    assert!(msg.contains("cwd: `/repo/runai`"));
+    assert!(msg.contains("- test-driven-development: TDD"));
+    assert!(msg.contains("默认 30 个 skill 候选"));
 }
 
 #[test]
