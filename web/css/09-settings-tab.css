@@ -26,6 +26,26 @@
 .setting-textarea:focus{outline:none;border-left-color:var(--ink)}
 .setting-textarea:disabled{color:var(--ink-3);border-left-color:var(--line)}
 
+.setting-number-input{
+  flex:0 0 62px;width:62px;
+  background:transparent;border:none;
+  border-bottom:1px dotted var(--line);
+  font-family:var(--mono);font-size:13px;line-height:1.4;
+  color:var(--ink);text-align:right;
+  padding:4px 0 5px;letter-spacing:0.02em;
+  font-variant-numeric:tabular-nums;
+  appearance:textfield;-moz-appearance:textfield;
+}
+.setting-number-input:hover{border-bottom-color:var(--ink-3)}
+.setting-number-input:focus{outline:none;border-bottom-color:var(--ink)}
+.setting-number-input:disabled{
+  color:var(--ink-3);border-bottom-color:var(--line-soft);cursor:not-allowed;
+}
+.setting-number-input::-webkit-outer-spin-button,
+.setting-number-input::-webkit-inner-spin-button{
+  -webkit-appearance:none;margin:0;
+}
+
 /* iOS-style switch */
 .switch{
   position:relative;display:inline-block;
