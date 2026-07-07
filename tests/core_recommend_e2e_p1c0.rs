@@ -25,7 +25,7 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -263,6 +263,55 @@ impl TestEnv {
         )
         .expect("force ai index");
     }
+
+    /// Seed `sessions` distinct chosen-sessions for `skill` in `router_events`
+    /// (each choosing the skill), and mark `adopted` of them adopted via
+    /// `router_session_adoptions`. Drives `skill_router_stats` so the
+    /// `[adopt:NN%]` marker renders on the next real recommend.
+    fn seed_router_history(&self, skill: &str, sessions: usize, adopted: usize) {
+        let conn = rusqlite::Connection::open(self.db_path()).expect("open test db");
+        let now = chrono::Utc::now().timestamp();
+        let chosen = serde_json::json!([skill]).to_string();
+        for i in 0..sessions {
+            let sid = format!("seed-sess-{i}");
+            conn.execute(
+                "INSERT INTO router_events
+                    (ts, provider, model, session_id, chosen_skills_json, bm25_candidates_json, llm_input, status)
+                 VALUES (?1, 'mock', 'mock', ?2, ?3, ?3, '', 'ok')",
+                rusqlite::params![now, sid, chosen],
+            )
+            .expect("seed router_event");
+            if i < adopted {
+                conn.execute(
+                    "INSERT INTO router_session_adoptions (session_id, skill_name, ts)
+                     VALUES (?1, ?2, ?3)",
+                    rusqlite::params![sid, skill, now],
+                )
+                .expect("seed adoption");
+            }
+        }
+    }
+
+    /// Seed `pos` positive + `neg` negative explicit feedback rows for `skill`
+    /// so the `[fb:+P/-N]` marker renders on the next real recommend.
+    fn seed_feedback(&self, skill: &str, pos: usize, neg: usize) {
+        let conn = rusqlite::Connection::open(self.db_path()).expect("open test db");
+        let now = chrono::Utc::now().timestamp();
+        for _ in 0..pos {
+            conn.execute(
+                "INSERT INTO skill_feedback (ts, skill_name, verdict) VALUES (?1, ?2, 1)",
+                rusqlite::params![now, skill],
+            )
+            .expect("seed pos feedback");
+        }
+        for _ in 0..neg {
+            conn.execute(
+                "INSERT INTO skill_feedback (ts, skill_name, verdict) VALUES (?1, ?2, -1)",
+                rusqlite::params![now, skill],
+            )
+            .expect("seed neg feedback");
+        }
+    }
 }
 
 // ─── 1. Disabled router path ────────────────────────────────────────────────
@@ -380,6 +429,7 @@ enum MockBehavior {
 struct MockLlm {
     addr: String,
     stop: Arc<AtomicBool>,
+    requests: Arc<AtomicUsize>,
     handle: Option<thread::JoinHandle<()>>,
 }
 
@@ -392,6 +442,8 @@ impl MockLlm {
         let addr = format!("http://{}", listener.local_addr().unwrap());
         let stop = Arc::new(AtomicBool::new(false));
         let stop_for_thread = stop.clone();
+        let requests = Arc::new(AtomicUsize::new(0));
+        let requests_for_thread = requests.clone();
         let handle = thread::spawn(move || {
             // We accept up to a handful of connections to be safe; the
             // binary may issue one request, but we don't want to hang the
@@ -412,6 +464,7 @@ impl MockLlm {
                         // we write a response.
                         let mut buf = [0u8; 8192];
                         let _ = stream.read(&mut buf);
+                        requests_for_thread.fetch_add(1, Ordering::SeqCst);
                         let resp = match behavior {
                             MockBehavior::OkPickSkill(skill, reasoning) => {
                                 // OpenAI-compatible /chat/completions shape.
@@ -457,12 +510,18 @@ impl MockLlm {
         Self {
             addr,
             stop,
+            requests,
             handle: Some(handle),
         }
     }
 
     fn base_url(&self) -> &str {
         &self.addr
+    }
+
+    /// How many HTTP requests the mock has served so far.
+    fn request_count(&self) -> usize {
+        self.requests.load(Ordering::SeqCst)
     }
 }
 
@@ -996,6 +1055,96 @@ fn mock_llm_http_500_persists_error_router_event() {
     assert!(
         lower.contains("500") || lower.contains("router http") || lower.contains("status"),
         "error_msg must surface HTTP failure, got: {msg}"
+    );
+}
+
+// ─── Harness message pre-gate (zero LLM calls, zero telemetry) ─────────────
+
+#[test]
+fn harness_message_makes_no_llm_call_and_no_router_event() {
+    // A host-injected `<task-notification>` envelope is never a human asking
+    // for a skill. It must be dropped before either LLM wave and before any
+    // router_events write — silent like the disabled path.
+    let env = TestEnv::new();
+    env.plant_skill("alpha-skill", "test skill alpha");
+    std::fs::write(env.bootstrap_seen_path(), "1").unwrap();
+
+    let mock = MockLlm::start(MockBehavior::OkPickSkill(
+        "alpha-skill",
+        "this reasoning must never be produced",
+    ));
+    enable_recommend_config(&env, mock.base_url());
+
+    let out = env.run(&[
+        "recommend",
+        "<task-notification>build queue drained, 3 jobs done",
+    ]);
+    assert!(
+        out.status.success(),
+        "harness gate must exit 0 (stderr={})",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.is_empty(),
+        "harness message must produce silent hook output, got:\n{stdout}"
+    );
+
+    // Allow a beat for any (erroneous) in-flight request to land.
+    std::thread::sleep(Duration::from_millis(150));
+    assert_eq!(
+        mock.request_count(),
+        0,
+        "harness message must NOT reach the LLM (0 requests expected)"
+    );
+    assert_eq!(
+        env.router_events_count(),
+        0,
+        "harness message must NOT write a router_events row"
+    );
+}
+
+// ─── Feedback signal surfaces on the Stage-2 candidate line ─────────────────
+
+#[test]
+fn seeded_adoption_and_feedback_render_markers_in_router_input() {
+    // With real adoption + explicit feedback history in the DB, the Stage-2
+    // router input's candidate line must carry `[adopt:NN%]` and `[fb:+P/-N]`.
+    let env = TestEnv::new();
+    env.plant_skill("alpha-skill", "alpha skill for markers");
+    env.force_ai_index(
+        "alpha-skill",
+        "alpha-skill alpha marker test skill 处理 alpha 任务",
+        "alpha-skill: task: 处理 alpha 任务 triggers: alpha inputs: x outputs: y",
+        6,
+    );
+    std::fs::write(env.bootstrap_seen_path(), "1").unwrap();
+
+    // 4 chosen-sessions, 3 adopted → adopt = 75%. 2 up / 1 down feedback.
+    env.seed_router_history("alpha-skill", 4, 3);
+    env.seed_feedback("alpha-skill", 2, 1);
+
+    let mock = MockLlm::start(MockBehavior::Sequence(&[
+        "intent: 处理 alpha 任务\ninclude_terms: alpha",
+        "EXCLUSIVE\nreasoning: alpha matches\nalpha-skill\n",
+    ]));
+    enable_recommend_config(&env, mock.base_url());
+
+    let out = env.run(&["recommend", "帮我处理 alpha 任务"]);
+    assert!(
+        out.status.success(),
+        "recommend must succeed (stderr={})",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // Seeded rows carry empty llm_input; the real recommend row names the
+    // candidate and must show both markers on its candidate line.
+    let inputs = env.router_llm_inputs();
+    assert!(
+        inputs.iter().any(|i| i.contains("- alpha-skill")
+            && i.contains("[adopt:75%]")
+            && i.contains("[fb:+2/-1]")),
+        "stage-2 router input must carry adopt/feedback markers, got: {inputs:?}"
     );
 }
 

@@ -115,6 +115,74 @@ pub struct RouterDecision {
     pub skills: Vec<RecommendedSkill>,
 }
 
+/// Harness system messages are host-injected envelopes (task queue pings,
+/// inter-agent chatter, local slash-command echoes), never a human asking for
+/// a skill. Routing them wastes two LLM waves that almost always end in an
+/// empty push, and — worse — writing a `router_events` row for them pollutes
+/// the adoption / precision funnel that feeds candidate ranking. Gate them out
+/// before any LLM call or DB write.
+///
+/// Match is prefix-only on the trimmed prompt: the four envelopes always lead
+/// the message. A prefix appearing mid-body is a real prompt quoting one, and
+/// must still route.
+pub(super) fn is_harness_message(prompt: &str) -> bool {
+    const HARNESS_PREFIXES: [&str; 4] = [
+        "<task-notification>",
+        "<agent-message",
+        "<teammate-message",
+        "<local-command-",
+    ];
+    let trimmed = prompt.trim();
+    HARNESS_PREFIXES.iter().any(|p| trimmed.starts_with(p))
+}
+
+/// Hybrid candidate score used to pick which BM25 survivors reach the Stage-2
+/// router LLM. Default blends three signals; `feedback_disabled` reverts to the
+/// original two-signal weights (`RUNAI_FEEDBACK_DISABLED=1` escape hatch).
+///
+/// - default:  `bm25 * 0.35 + llm/10 * 0.45 + feedback_factor * 0.20`
+/// - disabled: `bm25 * 0.40 + llm/10 * 0.60`
+///
+/// `bm25_norm` and `llm_val` are already normalised to `0..1`;
+/// `feedback_factor` is the `0..1` scalar from `skill_metrics::feedback_factor`
+/// (neutral 0.5 when a skill has no adoption / rating history).
+pub(super) fn hybrid_score(
+    bm25_norm: f64,
+    llm_val: f64,
+    feedback_factor: f64,
+    feedback_disabled: bool,
+) -> f64 {
+    if feedback_disabled {
+        bm25_norm * 0.4 + llm_val * 0.6
+    } else {
+        bm25_norm * 0.35 + llm_val * 0.45 + feedback_factor * 0.20
+    }
+}
+
+/// The ` [adopt:NN%] [fb:+P/-N]` marker suffix appended to a candidate line so
+/// the Stage-2 router sees real behavioural signal, not just the enrich-pass
+/// `[llm:N]` guess. `[adopt:]` only renders once a skill has been chosen in at
+/// least 3 distinct sessions (below that the ratio is too noisy to trust);
+/// `[fb:]` renders whenever any explicit thumbs up/down exists. Returns an
+/// empty string when neither threshold is met.
+pub(super) fn feedback_markers(
+    chosen_sessions: i64,
+    adopted_sessions: i64,
+    pos: i64,
+    neg: i64,
+) -> String {
+    let mut out = String::new();
+    if chosen_sessions >= 3 {
+        let pct =
+            ((adopted_sessions.max(0) as f64 / chosen_sessions as f64) * 100.0).round() as i64;
+        out.push_str(&format!(" [adopt:{pct}%]"));
+    }
+    if pos + neg > 0 {
+        out.push_str(&format!(" [fb:+{pos}/-{neg}]"));
+    }
+    out
+}
+
 pub(super) struct CandidateRelevanceInput<'a> {
     pub(super) name: &'a str,
     pub(super) search_doc: &'a str,
@@ -448,6 +516,20 @@ pub fn recommend_for_user_with_client(
         });
     }
 
+    // Harness system messages (task-notification / agent-message /
+    // teammate-message / local-command envelopes) are never a human asking
+    // for a skill. Short-circuit BEFORE the intent/router LLM calls and
+    // BEFORE any router_events write — silent like the disabled path, so we
+    // neither burn two LLM waves nor pollute the adoption funnel with rows
+    // that could never be adopted.
+    if is_harness_message(user_prompt) {
+        return Ok(RouterDecision {
+            mode: RouterMode::Exclusive,
+            reasoning: String::new(),
+            skills: Vec::new(),
+        });
+    }
+
     // PLANNING §1.3: per-user injection flags strip optional blocks before
     // prompt construction. The intent layer shares the same cwd switch so a
     // disabled cwd block cannot leak through `{INTENT_SUMMARY}`.
@@ -667,6 +749,45 @@ pub fn recommend_for_user_with_client(
             .unwrap_or_default()
     };
 
+    // Aggregated behavioural feedback, fetched ONCE for the whole candidate
+    // set (never inside a per-candidate loop). Two signals:
+    //   - `router_stats`: per-skill funnel counts (candidate/chosen events,
+    //     chosen/adopted sessions) over the last 90 days.
+    //   - `feedback_counts`: explicit thumbs up/down per skill.
+    // They drive both the hybrid re-rank weight (deliverable 1) and the
+    // `[adopt:] [fb:]` candidate-line markers (deliverable 2).
+    //
+    // `RUNAI_FEEDBACK_DISABLED=1` reverts to the legacy 0.4/0.6 weights and
+    // suppresses the markers entirely — a full "old behaviour" escape hatch,
+    // named to match the existing `RUNAI_BM25_*` family.
+    //
+    // A DB read failure must never break recommend: `unwrap_or_default()`
+    // yields empty maps, so every skill degrades to `feedback_factor(0,0,0,0)`
+    // = neutral 0.5 and no markers, and routing proceeds normally.
+    let feedback_disabled = std::env::var("RUNAI_FEEDBACK_DISABLED").is_ok();
+    let (router_stats, feedback_counts) = if feedback_disabled {
+        (
+            std::collections::HashMap::new(),
+            std::collections::HashMap::new(),
+        )
+    } else {
+        let since_ts = chrono::Utc::now().timestamp() - 90 * 86_400;
+        (
+            mgr.db().skill_router_stats(since_ts).unwrap_or_default(),
+            mgr.db().skill_feedback_counts_all().unwrap_or_default(),
+        )
+    };
+    let feedback_factor_of = |name: &str| -> f64 {
+        let stats = router_stats.get(name).copied().unwrap_or_default();
+        let (pos, neg) = feedback_counts.get(name).copied().unwrap_or((0, 0));
+        crate::core::skill_metrics::feedback_factor(
+            stats.adopted_sessions,
+            stats.chosen_sessions,
+            pos,
+            neg,
+        )
+    };
+
     all_candidates.retain(|r| {
         let index_key = Database::skill_ai_index_key_for_resource(r);
         let search_doc = indices
@@ -750,11 +871,17 @@ pub fn recommend_for_user_with_client(
             bm25_fallback_reason = "bm25-as-signal";
             all_candidates
         } else if bm25_hybrid {
-            // Hybrid score = BM25 * 0.4 + LLM/10 * 0.6
-            // User-side ratings are intentionally NOT used — the LLM enrich
-            // pass owns quality scoring end-to-end (incorporating implicit
-            // user feedback when re-enriching). Keeps the system one-axis
-            // simpler and avoids the noise of sparse manual ratings.
+            // Hybrid score = BM25 * 0.35 + LLM/10 * 0.45 + feedback * 0.20
+            // (legacy BM25 * 0.4 + LLM/10 * 0.6 under RUNAI_FEEDBACK_DISABLED).
+            //
+            // The `feedback` term is `skill_metrics::feedback_factor` — an
+            // aggregate of real adoption rate + explicit thumbs — NOT the bare
+            // subjective ratings the earlier note warned against. It blends
+            // behavioural signal (did the main agent actually adopt this skill
+            // when the router offered it?) with structured feedback, so it is a
+            // harder relevance signal than the enrich-pass `llm_score` alone.
+            // Zero-history skills stay neutral (0.5), so this never penalises a
+            // freshly-installed skill relative to the old two-signal formula.
             let mut scored: Vec<(usize, f64)> = all_candidates
                 .iter()
                 .enumerate()
@@ -763,7 +890,8 @@ pub fn recommend_for_user_with_client(
                     let index_key = Database::skill_ai_index_key_for_resource(r);
                     let llm = indices.get(&index_key).map(|i| i.llm_score).unwrap_or(5);
                     let llm_val = (llm as f64) / 10.0;
-                    let hybrid = bm * 0.4 + llm_val * 0.6;
+                    let ff = feedback_factor_of(&r.name);
+                    let hybrid = hybrid_score(bm, llm_val, ff, feedback_disabled);
                     (i, hybrid)
                 })
                 .collect();
@@ -832,6 +960,20 @@ pub fn recommend_for_user_with_client(
             let index_key = Database::skill_ai_index_key_for_resource(r);
             if let Some(s) = indices.get(&index_key).map(|row| row.llm_score) {
                 tags.push_str(&format!(" [llm:{}]", s));
+            }
+            // Real behavioural signal after [llm:]: [adopt:NN%] = of sessions
+            // where the router chose this skill, how many the main agent
+            // actually adopted; [fb:+P/-N] = explicit thumbs. Suppressed
+            // entirely under RUNAI_FEEDBACK_DISABLED (maps are empty there).
+            if !feedback_disabled {
+                let stats = router_stats.get(&r.name).copied().unwrap_or_default();
+                let (pos, neg) = feedback_counts.get(&r.name).copied().unwrap_or((0, 0));
+                tags.push_str(&feedback_markers(
+                    stats.chosen_sessions,
+                    stats.adopted_sessions,
+                    pos,
+                    neg,
+                ));
             }
             if emit_bm25_tag {
                 let b = bm25_scores.get(&r.name).copied().unwrap_or(0.0);

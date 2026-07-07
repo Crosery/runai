@@ -9,7 +9,8 @@ use super::lang_validation::prose_fields;
 use super::project_context::{extract_at_references, read_project_context};
 use super::router::{
     CandidateRelevanceInput, RouterUserMessageParts, build_router_user_message,
-    candidate_allowed_by_intent, parse_lines, split_mode_and_names,
+    candidate_allowed_by_intent, feedback_markers, hybrid_score, is_harness_message, parse_lines,
+    split_mode_and_names,
 };
 use super::{
     HookInstallStatus, Provider, RecommendConfig, RecommendedSkill, RouterDecision, RouterMode,
@@ -1007,4 +1008,107 @@ fn effective_api_key_prefers_config() {
     unsafe {
         std::env::remove_var("RUNAI_RECOMMEND_API_KEY");
     }
+}
+
+// ── Deliverable 4: harness message gating ──────────────────────────────────
+
+#[test]
+fn harness_messages_are_gated_by_leading_envelope() {
+    // All four host-injected envelopes gate.
+    assert!(is_harness_message("<task-notification>queue drained"));
+    assert!(is_harness_message("<agent-message from=planner>go"));
+    assert!(is_harness_message("<teammate-message id=7>ping"));
+    assert!(is_harness_message("<local-command-stdout>ok"));
+}
+
+#[test]
+fn harness_gate_tolerates_leading_whitespace() {
+    assert!(is_harness_message("   <task-notification>x"));
+    assert!(is_harness_message("\n\t<agent-message>x"));
+}
+
+#[test]
+fn harness_gate_ignores_prefix_in_body() {
+    // A real user prompt that merely quotes an envelope mid-text must still
+    // route — only a leading envelope is a harness message.
+    assert!(!is_harness_message(
+        "look at this <task-notification> and explain it"
+    ));
+    assert!(!is_harness_message("帮我写个 PPT 介绍强化学习"));
+    assert!(!is_harness_message(""));
+}
+
+// ── Deliverable 2: candidate-line adopt / feedback markers ─────────────────
+
+#[test]
+fn adopt_marker_hidden_below_three_chosen_sessions() {
+    // chosen_sessions < 3 → no adopt marker regardless of adoption.
+    assert_eq!(feedback_markers(0, 0, 0, 0), "");
+    assert_eq!(feedback_markers(2, 2, 0, 0), "");
+}
+
+#[test]
+fn adopt_marker_shows_rounded_percent_at_and_above_threshold() {
+    // 100% adoption at exactly the threshold.
+    assert_eq!(feedback_markers(3, 3, 0, 0), " [adopt:100%]");
+    // 0% adoption still shows once the session floor is reached.
+    assert_eq!(feedback_markers(4, 0, 0, 0), " [adopt:0%]");
+    // 1/3 rounds to 33%.
+    assert_eq!(feedback_markers(3, 1, 0, 0), " [adopt:33%]");
+}
+
+#[test]
+fn feedback_marker_shows_only_with_votes() {
+    // No votes → no [fb:] segment.
+    assert_eq!(feedback_markers(0, 0, 0, 0), "");
+    // Any vote total > 0 shows the exact +P/-N tally.
+    assert_eq!(feedback_markers(0, 0, 2, 1), " [fb:+2/-1]");
+    assert_eq!(feedback_markers(0, 0, 0, 3), " [fb:+0/-3]");
+}
+
+#[test]
+fn both_markers_render_together_in_order() {
+    assert_eq!(feedback_markers(5, 4, 3, 0), " [adopt:80%] [fb:+3/-0]");
+}
+
+// ── Deliverable 1: hybrid weight switch + feedback-driven reorder ──────────
+
+#[test]
+fn hybrid_score_uses_new_weights_by_default_and_legacy_under_escape_hatch() {
+    let bm = 0.5;
+    let llm = 0.5;
+    let ff = 1.0;
+    let new = hybrid_score(bm, llm, ff, false);
+    let legacy = hybrid_score(bm, llm, ff, true);
+    assert!((new - (0.5 * 0.35 + 0.5 * 0.45 + 1.0 * 0.20)).abs() < 1e-9);
+    assert!((legacy - (0.5 * 0.4 + 0.5 * 0.6)).abs() < 1e-9);
+    // The legacy formula has no feedback term, so a max feedback_factor is
+    // ignored there but lifts the default formula.
+    assert!(new > legacy);
+}
+
+#[test]
+fn feedback_factor_flips_candidate_order_unless_escape_hatch() {
+    // Two candidates with identical bm25 + llm signal but opposite feedback.
+    let bm = 0.3;
+    let llm = 0.6;
+    let ff_good = crate::core::skill_metrics::feedback_factor(10, 10, 20, 0);
+    let ff_bad = crate::core::skill_metrics::feedback_factor(0, 10, 0, 20);
+    assert!(ff_good > ff_bad, "sanity: good feedback outscores bad");
+
+    // Default: the strongly-adopted skill ranks strictly higher.
+    let good = hybrid_score(bm, llm, ff_good, false);
+    let bad = hybrid_score(bm, llm, ff_bad, false);
+    assert!(
+        good > bad,
+        "feedback_factor must reorder equal bm25/llm candidates: {good} vs {bad}"
+    );
+
+    // Escape hatch: feedback ignored → identical scores → no reorder.
+    let good_off = hybrid_score(bm, llm, ff_good, true);
+    let bad_off = hybrid_score(bm, llm, ff_bad, true);
+    assert!(
+        (good_off - bad_off).abs() < 1e-9,
+        "RUNAI_FEEDBACK_DISABLED must make feedback_factor inert"
+    );
 }
