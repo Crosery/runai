@@ -91,7 +91,7 @@ fn render_hook_output(
                 .to_string()
         }
         (RouterMode::Compatible, _) => {
-            "互补激活：对每个候选 skill 各跑一次 runai-client activate，跑完立即组合执行用户原 prompt。"
+            "COMPATIBLE 互补组合：默认按候选顺序全部激活，对每个 skill 各跑一次 runai-client activate；不要把它当成工具选择题。若执行前发现缺关键输入、权限确认、高成本或不可逆操作风险，只问一个最小必要问题，再组合执行用户原 prompt。"
                 .to_string()
         }
     };

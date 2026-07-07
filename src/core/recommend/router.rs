@@ -185,6 +185,30 @@ pub(super) fn candidate_allowed_by_intent(
         return has_any(&positive, ANDROID_BASE);
     }
 
+    if intent.has(ScenarioConstraint::ImageReferenceRegeneration) {
+        const IMAGE_GENERATION_TERMS: &[&str] = &[
+            "image",
+            "图片",
+            "图像",
+            "生图",
+            "画图",
+            "绘图",
+            "插画",
+            "改图",
+            "编辑图片",
+            "生成图片",
+            "参考图",
+            "reference image",
+            "img2img",
+            "image-to-image",
+            "图生图",
+            "generate image",
+            "edit image",
+            "illustration",
+        ];
+        return has_any(&positive, IMAGE_GENERATION_TERMS);
+    }
+
     if intent.has(ScenarioConstraint::PromptRouterAudit) {
         const ROUTER_TERMS: &[&str] = &[
             "router",
@@ -799,10 +823,16 @@ pub fn recommend_for_user_with_client(
     // the same skill if it is the right answer again.
     let candidate_set: std::collections::HashSet<String> =
         candidates.iter().map(|r| r.name.clone()).collect();
-    let chosen_names: Vec<String> = chosen_names
+    let mut chosen_names: Vec<String> = chosen_names
         .into_iter()
         .filter(|n| candidate_set.contains(n))
         .collect();
+    if mode == RouterMode::Exclusive
+        && recognized_intent.has(ScenarioConstraint::ImageReferenceRegeneration)
+        && chosen_names.len() > 1
+    {
+        chosen_names.truncate(1);
+    }
     if std::env::var("RUNAI_RECOMMEND_DEBUG").is_ok() {
         eprintln!(
             "[recommend debug] candidates={}, chosen={:?}, latency_ms={}, tokens={}",

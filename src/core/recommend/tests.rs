@@ -340,6 +340,71 @@ fn ktv_webview_emulator_prompt_keeps_vehicle_candidate() {
 }
 
 #[test]
+fn recognize_image_regeneration_reference_prompt_summarizes_before_bm25() {
+    let memory = vec![
+        "换成 mox-image 这个 cli 去生图就行，风格我要水彩风格".to_string(),
+        "需要搭子形象参考图，保持角色一致".to_string(),
+    ];
+    let intent = recognize_intent(
+        "没有用搭子形象的参考图啊你这个，重新生成",
+        &memory,
+        Some("/repo/runai"),
+        Some("pi"),
+    );
+    assert!(
+        intent
+            .scenario_constraints
+            .contains(&ScenarioConstraint::ImageReferenceRegeneration)
+    );
+    assert!(intent.domain_tags.iter().any(|t| t == "image-generation"));
+    assert!(intent.domain_tags.iter().any(|t| t == "reference-image"));
+    assert!(intent.include_terms.iter().any(|t| t == "参考图"));
+    assert!(intent.include_terms.iter().any(|t| t == "角色一致"));
+    assert!(intent.intent_summary.contains("重新生成图片"));
+    assert!(intent.intent_summary.contains("搭子形象参考图"));
+    assert!(intent.intent_summary.contains("角色一致"));
+    assert!(intent.intent_summary.contains("水彩风格"));
+    assert!(intent.intent_summary.contains("img2img"));
+    assert!(
+        !intent
+            .intent_summary
+            .contains("没有用搭子形象的参考图啊你这个，重新生成"),
+        "BM25 摘要必须是概括后的任务意图，不能照搬抱怨原文: {}",
+        intent.intent_summary
+    );
+}
+
+#[test]
+fn intent_summary_extracts_tail_intent_from_long_pasted_context() {
+    let pasted = format!(
+        "{}\n\n---\n用户最后真正要的是：重新生成图片，必须使用搭子形象参考图，水彩风格",
+        "旧对话日志 不相关候选 skill router 输出 ".repeat(80)
+    );
+    let summary = build_intent_summary(&pasted, Some("/repo/runai"), "pi", &[]);
+    assert!(summary.contains("重新生成图片"));
+    assert!(summary.contains("搭子形象参考图"));
+    assert!(summary.contains("水彩风格"));
+    assert!(summary.contains("reference image"));
+    assert!(
+        !summary.contains("旧对话日志 不相关候选 skill router 输出 旧对话日志"),
+        "长文本 BM25 摘要必须提取尾部真实意图，而不是截断开头日志: {summary}"
+    );
+}
+
+#[test]
+fn not_for_text_does_not_block_generic_android_candidate_as_positive_vehicle_evidence() {
+    let intent = recognize_intent("帮我调试下安卓模拟器", &[], None, Some("claude"));
+    let android = CandidateRelevanceInput {
+        name: "android-cli",
+        search_doc: "task: Android adb logcat emulator 调试 not-for: KTV 车机 WebView H5",
+        router_card: "task: 通用 Android 模拟器调试 not-for: KTV 车机 WebView H5 专用链路",
+        description: "通用 Android 调试",
+        groups: &["mobile-dev"],
+    };
+    assert!(candidate_allowed_by_intent(&intent, &android));
+}
+
+#[test]
 fn intent_summary_includes_current_prompt_memory_cwd_and_client_kind() {
     let memory = vec![
         "用户要求当前 session 记忆默认 10 条".to_string(),
@@ -351,7 +416,7 @@ fn intent_summary_includes_current_prompt_memory_cwd_and_client_kind() {
         "pi",
         &memory,
     );
-    assert!(summary.contains("给 runai 推荐模型加 BM25 查询前的意图整理"));
+    assert!(summary.contains("审查 runai 推荐模型"));
     assert!(summary.contains("用户要求当前 session 记忆默认 10 条"));
     assert!(summary.contains("/repo/runai"));
     assert!(summary.contains("agent_cli: pi"));
@@ -402,6 +467,10 @@ fn system_prompt_precision_contract() {
     assert!(system.contains("精准优先"));
     assert!(system.contains("同组不是共载理由"));
     assert!(system.contains("not-for"));
+    assert!(system.contains("先概括简述当前任务"));
+    assert!(system.contains("固定组合"));
+    assert!(system.contains("COMPATIBLE 默认组合执行"));
+    assert!(system.contains("最小必要问题"));
     assert!(!system.contains("宁多勿少"));
     assert!(!system.contains("只要候选 skill 描述里有相关迹象就推"));
 }
@@ -650,7 +719,7 @@ fn format_exclusive_multi_surfaces_candidates_via_runai_client() {
 }
 
 #[test]
-fn format_compatible_multi_lists_all_candidates_via_curl() {
+fn format_compatible_multi_lists_all_candidates_and_defaults_to_combo_execution() {
     let a = RecommendedSkill {
         name: "github".into(),
         description: "gh cli wrapper".into(),
@@ -663,6 +732,10 @@ fn format_compatible_multi_lists_all_candidates_via_curl() {
     assert!(out.contains("github"));
     assert!(out.contains("writing-skills"));
     assert!(out.contains("runai-client activate"));
+    assert!(out.contains("默认按候选顺序全部激活"));
+    assert!(out.contains("不要把它当成工具选择题"));
+    assert!(out.contains("最小必要问题"));
+    assert!(!out.contains("一句话让用户挑"));
     assert!(!out.contains("runai recommend get"));
     assert!(out.len() < 10_000);
 }

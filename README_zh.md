@@ -77,9 +77,9 @@
 ### 2. LLM skill router（opt-in）
 
 - **Hook 集成** —— Claude Code 的 `UserPromptSubmit` hook → `runai recommend` → router 决策 → 输出作为额外 context 注入主 agent 的 prompt。Dashboard / team 场景下，本地 hook 读取 `~/.runai-identity`；key 有效时使用该用户的网页偏好，key 过期时返回空 hook 输出，不再静默退回匿名默认偏好。
-- **意图识别 + BM25 prefilter + LLM rerank** —— 每个 `rnai_sess_*` 维护当前 session 的短记忆队列（默认 10 条，Settings 可配置；溢出时丢最旧项）。BM25 不直接吃原始长 prompt，而是先用当前输入 + 历史短记忆 + cwd + agent CLI 做结构化意图识别，产出 domain tags / include terms / exclude terms，再用这段意图摘要召回候选（默认 30 个候选；默认 DeepSeek v4-flash；也支持任意 OpenAI 兼容 / Anthropic / `claude-cli` 后端）。普通 Android 模拟器调试会在 LLM 前过滤 KTV/车机/WebView 专用候选。
+- **意图识别 + BM25 prefilter + LLM rerank** —— 每个 `rnai_sess_*` 维护当前 session 的短记忆队列（默认 10 条，Settings 可配置；溢出时丢最旧项）。BM25 不直接吃原始长 prompt，而是先用当前输入 + 历史短记忆 + cwd + agent CLI 提取压缩后的真实意图，产出 domain tags / include terms / exclude terms，再用这段意图摘要召回候选（默认 30 个候选；默认 DeepSeek v4-flash；也支持任意 OpenAI 兼容 / Anthropic / `claude-cli` 后端）。普通 Android 模拟器调试会在 LLM 前过滤 KTV/车机/WebView 专用候选；带参考图约束的返工生图会先规整成“重新生成图片 + 参考图/角色一致”再召回。
 - **AI summary 富集** —— 每个 skill 都由同一个 LLM 用你选定的 `summary_lang` 生成结构化 summary（`task / triggers / inputs / outputs / not-for / score`）；正向字段进入 BM25 索引，`not-for` 保留为负向准入信号和 router 上下文。富集以显式选定语言为前提，且输出语言被强制校验（不符先重试、再不符就丢弃不写），索引保持单一语言；`triggers` 字段保留跨语言关键词以提升检索。SKILL.md 编辑后自动 refresh，`runai install` / `scan` 也会针对改动的 skill 单点 re-enrich。
-- **两种模式** —— `EXCLUSIVE` 让主 agent 在候选里挑；`COMPATIBLE` 一次加载多个互补 skill 适合工作流型 prompt（"整套调试链路" / "完整发版流程"）。同 session 去重，已采用的 skill 不再被重推。
+- **两种模式** —— `EXCLUSIVE` 用于互斥替代或歧义，主 agent 可以让用户选择；`COMPATIBLE` 用于固定互补工作流（"整套调试链路" / "完整发版流程"），hook 输出默认让 agent 激活全部候选组合执行，但缺关键输入、权限确认、高成本或不可逆风险时仍可问一个最小必要问题。同 session 去重，已采用的 skill 不再被重推。
 - **真采用计数** —— Hook 输出让主 agent 运行 `runai-client activate <skill>`，必要时附带 runai 自己生成的 literal `rnai_sess_*` 会话 id。这个命令只有在 server 已 ACK `/skills/use/{name}`，或本地 durable outbox 已写入 `~/.runai/client-cache/servers/<server-key>/skills/<skill-key>/.outbox/` 后，才会把 `SKILL.md` 打到 stdout。
 - **客户端缓存** —— `runai-client activate` / `sync` 把整个 skill 目录缓存到 `~/.runai/client-cache`，永远不写入受管真实池 `~/.runai/skills`。缓存命中也会先发送或入队 usage event，再输出 `SKILL.md`，所以降低内容请求压力不会丢采用计数。SKILL.md 引用的 bundle 内附属文件由 agent 通过 `runai-client file <skill> <relpath>` 从 cache 读取；`~/.tool-name/...` 这类运行时 / 用户目录仍是本机文件系统数据，不属于 bundle。
 

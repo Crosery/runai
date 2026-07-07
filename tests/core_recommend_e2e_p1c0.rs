@@ -466,6 +466,14 @@ fn openai_response(content: &str) -> String {
     )
 }
 
+fn intent_summary_from_llm_input(input: &str) -> &str {
+    input
+        .split("```text")
+        .nth(1)
+        .and_then(|s| s.split("```").next())
+        .unwrap_or("")
+}
+
 fn plant_android_debug_fixture(env: &TestEnv) {
     env.plant_skill(
         "android-cli",
@@ -496,6 +504,49 @@ fn plant_android_debug_fixture(env: &TestEnv) {
         "ktv-car-debug-suite KTVLite 车机 WebView H5 android emulator adb 白屏 调试套件 真车 理想 SS4",
         "ktv-car-debug-suite: task: KTV 车机 WebView/H5 调试套件 triggers: KTV, 车机, WebView, H5, emulator, adb inputs: KTV 车机场景 outputs: 车机 H5 调试链路 not-for: 普通 Android 模拟器调试, 通用 adb/logcat",
         10,
+    );
+}
+
+fn plant_image_regeneration_fixture(env: &TestEnv) {
+    env.plant_skill(
+        "generate-image",
+        "解决生成图片任务，如绘图、插画、海报、或基于参考图进行改图",
+    );
+    env.force_ai_index(
+        "generate-image",
+        "task: 生成或编辑图片 triggers: 生图 画图 参考图 reference image img2img 图生图 inputs: 提示词 参考图片 outputs: PNG 图像 not-for: 视频生成",
+        "generate-image: task: 解决生成图片任务，支持参考图改图和图生图 triggers: reference image, img2img, 生图 inputs: 提示词, 参考图片 outputs: PNG not-for: 视频生成",
+        9,
+    );
+    env.plant_skill(
+        "mmx-cli",
+        "通过 MiniMax AI 平台生成文本、图片、视频、语音和音乐内容",
+    );
+    env.force_ai_index(
+        "mmx-cli",
+        "task: 使用 MiniMax 生成图片和多模态内容 triggers: 文生图 图生图 图片生成 inputs: 提示词 图片文件 outputs: 图片文件 not-for: 代码调试",
+        "mmx-cli: task: 通过 MiniMax 平台生成图片，支持图片文件输入 triggers: 文生图, 图生图 inputs: 提示词, 图片文件 outputs: 图片",
+        8,
+    );
+    env.plant_skill(
+        "imagegen",
+        "生成或编辑栅格图像（照片、插图、精灵、产品矢量背景等）",
+    );
+    env.force_ai_index(
+        "imagegen",
+        "task: 生成或编辑栅格图像 triggers: image generation create image edit image illustration inputs: 图片描述 约束 outputs: 图像文件 not-for: 视频",
+        "imagegen: task: 生成或编辑栅格图像 triggers: image generation, edit image inputs: 图片描述, 约束 outputs: 图像文件",
+        7,
+    );
+    env.plant_skill(
+        "interview-script",
+        "生成基于 JTBD 的用户访谈脚本，挖掘过去真实行为和替代方案",
+    );
+    env.force_ai_index(
+        "interview-script",
+        "task: 生成用户访谈脚本 triggers: 访谈 JTBD 用户调研 inputs: 产品想法 outputs: 访谈脚本 not-for: 图片生成, 参考图改图",
+        "interview-script: task: 生成用户访谈脚本 not-for: 图片生成, 参考图改图",
+        9,
     );
 }
 
@@ -720,6 +771,73 @@ fn mock_llm_android_emulator_does_not_emit_ktv_candidate() {
     assert!(chosen[0].contains("android-cli"));
     assert!(chosen[0].contains("emulator-launch"));
     assert!(!chosen[0].contains("ktv-car-debug-suite"));
+}
+
+#[test]
+fn image_regeneration_reference_prompt_uses_compressed_intent_and_single_direct_match() {
+    let env = TestEnv::new();
+    plant_image_regeneration_fixture(&env);
+    std::fs::write(env.bootstrap_seen_path(), "1").unwrap();
+
+    let mock = MockLlm::start(MockBehavior::OkRaw(
+        "EXCLUSIVE\nreasoning: mock returns multiple image alternatives\ngenerate-image\nmmx-cli\nimagegen\ninterview-script\n",
+    ));
+    enable_recommend_config(&env, mock.base_url());
+
+    let payload = serde_json::json!({
+        "prompt": "没有用搭子形象的参考图啊你这个，重新生成",
+        "session_id": "image-regen-session",
+        "client_kind": "pi",
+        "cwd": env.home().display().to_string(),
+    });
+    let out = env.run_with_input(&["recommend"], &payload.to_string());
+    assert!(
+        out.status.success(),
+        "image regeneration recommend must succeed (stderr={})",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let inputs = env.router_llm_inputs();
+    assert_eq!(inputs.len(), 1);
+    let intent_summary = intent_summary_from_llm_input(&inputs[0]);
+    assert!(intent_summary.contains("重新生成图片"), "{intent_summary}");
+    assert!(
+        intent_summary.contains("搭子形象参考图"),
+        "{intent_summary}"
+    );
+    assert!(intent_summary.contains("角色一致"), "{intent_summary}");
+    assert!(
+        intent_summary.contains("reference image"),
+        "{intent_summary}"
+    );
+    assert!(
+        !intent_summary.contains("没有用搭子形象的参考图啊你这个，重新生成"),
+        "BM25 intent summary must not copy the complaint verbatim: {intent_summary}"
+    );
+    assert!(inputs[0].contains("- generate-image"));
+    assert!(inputs[0].contains("- mmx-cli"));
+    assert!(inputs[0].contains("- imagegen"));
+    assert!(
+        !inputs[0].contains("- interview-script"),
+        "non-image product research skill must be gated before LLM input: {}",
+        inputs[0]
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("generate-image"), "stdout={stdout}");
+    assert!(
+        !stdout.contains("一句话让用户挑"),
+        "single direct image-regeneration match should not ask user to choose: {stdout}"
+    );
+    assert!(
+        !stdout.contains("mmx-cli"),
+        "exclusive single-task postprocess should keep only the first direct match: {stdout}"
+    );
+    let chosen = env.router_chosen_skills_jsons();
+    assert_eq!(chosen.len(), 1);
+    assert!(chosen[0].contains("generate-image"));
+    assert!(!chosen[0].contains("mmx-cli"));
+    assert!(!chosen[0].contains("imagegen"));
 }
 
 #[test]
