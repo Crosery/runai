@@ -25,8 +25,12 @@ use super::intent::{
     RecognizedIntent, ScenarioConstraint, build_intent_memory_from_prompt, build_intent_summary,
     recognize_intent,
 };
-use super::llm_call::{RouterCallStats, call_anthropic, call_claude_cli, call_openai_compat};
+use super::llm_call::{
+    RouterCallStats, call_anthropic, call_anthropic_with_system, call_claude_cli,
+    call_claude_cli_with_system, call_openai_compat, call_openai_compat_with_system,
+};
 use super::project_context::read_project_context;
+use super::prompts::intent_prompt_template;
 use super::server_helpers::default_local_server_url;
 use super::session_id::runai_session_id_from_native;
 use super::transcript::recent_transcript_messages;
@@ -258,6 +262,93 @@ pub(super) fn build_router_user_message(parts: RouterUserMessageParts<'_>) -> St
         )
 }
 
+fn build_intent_user_message(
+    user_prompt: &str,
+    deterministic_fallback: &str,
+    cwd: Option<&str>,
+    client_kind: &str,
+    memory: &[String],
+) -> String {
+    let session_memory = if memory.is_empty() {
+        "(empty)".to_string()
+    } else {
+        memory
+            .iter()
+            .filter(|m| !m.trim().is_empty())
+            .enumerate()
+            .map(|(idx, m)| format!("{}. {}", idx + 1, m.trim()))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    intent_prompt_template()
+        .replace("{USER_PROMPT}", user_prompt)
+        .replace("{DETERMINISTIC_FALLBACK}", deterministic_fallback)
+        .replace("{CWD}", cwd.unwrap_or(""))
+        .replace("{CLIENT_KIND}", client_kind)
+        .replace("{SESSION_MEMORY}", &session_memory)
+}
+
+fn clean_intent_model_output(raw: &str, fallback: &str) -> String {
+    let mut text = raw.trim().to_string();
+    if text.starts_with("```") {
+        let lines = text.lines().collect::<Vec<_>>();
+        if lines.len() >= 2 {
+            let body = lines[1..]
+                .iter()
+                .copied()
+                .take_while(|l| !l.trim_start().starts_with("```"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            text = body.trim().to_string();
+        }
+    }
+    let lines = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter(|line| {
+            let upper = line.to_ascii_uppercase();
+            upper != "EXCLUSIVE" && upper != "COMPATIBLE"
+        })
+        .take(8)
+        .collect::<Vec<_>>();
+    let mut out = lines.join("\n");
+    if !out.contains("intent:") && !out.contains("intent：") {
+        out = format!("intent: {}", out.trim());
+    }
+    if out.trim() == "intent:" || out.trim().is_empty() {
+        out = fallback.trim().to_string();
+    }
+    out.chars().take(2000).collect::<String>()
+}
+
+fn add_stats(a: &RouterCallStats, b: &RouterCallStats) -> RouterCallStats {
+    RouterCallStats {
+        prompt_tokens: a.prompt_tokens + b.prompt_tokens,
+        completion_tokens: a.completion_tokens + b.completion_tokens,
+        reasoning_tokens: a.reasoning_tokens + b.reasoning_tokens,
+        total_tokens: a.total_tokens + b.total_tokens,
+        cache_hit_tokens: a.cache_hit_tokens + b.cache_hit_tokens,
+        cache_miss_tokens: a.cache_miss_tokens + b.cache_miss_tokens,
+    }
+}
+
+fn call_intent_recognition(
+    cfg: &RecommendConfig,
+    api_key: &str,
+    user_msg: &str,
+) -> Result<(String, RouterCallStats)> {
+    let history: &[RouterTurn] = &[];
+    let system = intent_prompt_template();
+    match cfg.provider {
+        Provider::OpenaiCompat => {
+            call_openai_compat_with_system(cfg, api_key, system, user_msg, history)
+        }
+        Provider::Anthropic => call_anthropic_with_system(cfg, api_key, system, user_msg, history),
+        Provider::ClaudeCli => call_claude_cli_with_system(cfg, system, user_msg),
+    }
+}
+
 /// Top-level entry: run the router and return the list of recommended skills.
 /// Returns `Ok(Vec::new())` when nothing matches, when disabled, or when prompt
 /// is too short.
@@ -379,12 +470,11 @@ pub fn recommend_for_user_with_client(
         .filter(|s| !s.is_empty())
         .unwrap_or("claude");
     let intent_memory_limit = if user_prefs.intent_memory_enabled {
-        user_prefs.intent_memory_limit as usize
+        user_prefs.intent_memory_limit
     } else {
         0
     };
     let mut intent_memory = Vec::new();
-    let mut current_intent_memory: Option<String> = None;
     if let Some(sid) = session_id
         && !sid.is_empty()
         && intent_memory_limit > 0
@@ -396,17 +486,40 @@ pub fn recommend_for_user_with_client(
             .into_iter()
             .map(|i| i.memory)
             .collect();
-        current_intent_memory = Some(build_intent_memory_from_prompt(user_prompt));
     }
-    let recognized_intent = recognize_intent(
+
+    let deterministic_intent =
+        build_intent_summary(user_prompt, cwd_for_intent, client_kind, &intent_memory);
+    let intent_llm_input = build_intent_user_message(
         user_prompt,
+        &deterministic_intent,
+        cwd_for_intent,
+        client_kind,
+        &intent_memory,
+    );
+    let intent_call = call_intent_recognition(&cfg, &api_key, &intent_llm_input);
+    let (intent_summary, _intent_raw_response, intent_status, intent_error_msg, intent_stats) =
+        match intent_call {
+            Ok((raw, stats)) => {
+                let cleaned = clean_intent_model_output(&raw, &deterministic_intent);
+                (cleaned, raw, "ok".to_string(), None, stats)
+            }
+            Err(e) => (
+                deterministic_intent.clone(),
+                String::new(),
+                "fallback".to_string(),
+                Some(e.to_string()),
+                RouterCallStats::default(),
+            ),
+        };
+    let recognized_intent = recognize_intent(
+        &intent_summary,
         &intent_memory,
         cwd_for_intent,
         Some(client_kind),
     );
-    let intent_summary =
-        build_intent_summary(user_prompt, cwd_for_intent, client_kind, &intent_memory);
-    if let (Some(sid), Some(memory)) = (session_id, current_intent_memory.as_deref())
+    let current_intent_memory = build_intent_memory_from_prompt(&intent_summary);
+    if let Some(sid) = session_id
         && !sid.is_empty()
         && intent_memory_limit > 0
     {
@@ -414,7 +527,7 @@ pub fn recommend_for_user_with_client(
             sid,
             user_id,
             client_kind,
-            memory,
+            &current_intent_memory,
             intent_memory_limit,
         );
     }
@@ -494,7 +607,7 @@ pub fn recommend_for_user_with_client(
     let bm25_candidate_limit: usize = std::env::var("RUNAI_BM25_TOP_K")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(user_prefs.bm25_candidate_limit as usize)
+        .unwrap_or(user_prefs.bm25_candidate_limit)
         .clamp(1, BM25_TOP_K_MAX);
 
     let bm25_disabled = std::env::var("RUNAI_BM25_DISABLED").is_ok();
@@ -697,6 +810,10 @@ pub fn recommend_for_user_with_client(
         );
     }
 
+    let bm25_candidate_names: Vec<String> = candidates.iter().map(|r| r.name.clone()).collect();
+    let bm25_candidates_json =
+        serde_json::to_string(&bm25_candidate_names).unwrap_or_else(|_| "[]".to_string());
+
     // Per-skill quality score 0-10. Owned entirely by the LLM enrich pass.
     // bm25 tags are only emitted in signal mode; in prefilter mode the
     // score already determined which candidates landed here.
@@ -803,20 +920,22 @@ pub fn recommend_for_user_with_client(
     let call_result = call_router(&cfg, &api_key, &user_msg, &history_turns);
     let latency_ms = started.elapsed().as_millis() as i64;
 
-    let (mode, reasoning, chosen_names, stats, status, error_msg, llm_raw) = match call_result {
-        Ok((mode, reasoning, names, stats, raw)) => {
-            (mode, reasoning, names, stats, "ok".to_string(), None, raw)
-        }
-        Err(e) => (
-            RouterMode::Exclusive,
-            String::new(),
-            Vec::new(),
-            RouterCallStats::default(),
-            "error".to_string(),
-            Some(e.to_string()),
-            String::new(),
-        ),
-    };
+    let (mode, reasoning, chosen_names, router_stats, status, error_msg, llm_raw) =
+        match call_result {
+            Ok((mode, reasoning, names, stats, raw)) => {
+                (mode, reasoning, names, stats, "ok".to_string(), None, raw)
+            }
+            Err(e) => (
+                RouterMode::Exclusive,
+                String::new(),
+                Vec::new(),
+                RouterCallStats::default(),
+                "error".to_string(),
+                Some(e.to_string()),
+                String::new(),
+            ),
+        };
+    let stats = add_stats(&intent_stats, &router_stats);
     // Drop names that the LLM hallucinated against the candidate set (they
     // can't be loaded). Already-routed names stay eligible here: the prompt
     // warns the router about them, but follow-up requests can still re-surface
@@ -939,6 +1058,11 @@ pub fn recommend_for_user_with_client(
         llm_raw_response: llm_raw,
         hook_output: hook_output.clone(),
         llm_input: user_msg.clone(),
+        intent_llm_input,
+        intent_llm_output: intent_summary.clone(),
+        intent_status,
+        intent_error_msg,
+        bm25_candidates_json,
         user_id: user_id.map(|s| s.to_string()),
     };
     let _ = mgr.db().insert_router_event(&ev);

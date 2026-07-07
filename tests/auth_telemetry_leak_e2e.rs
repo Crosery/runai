@@ -133,6 +133,11 @@ fn seed_one_event(server: &ServerGuard) {
         llm_raw_response: "synthetic raw response".into(),
         hook_output: "synthetic hook output".into(),
         llm_input: "synthetic llm input".into(),
+        intent_llm_input: "synthetic intent input".into(),
+        intent_llm_output: "intent: synthetic".into(),
+        intent_status: "ok".into(),
+        intent_error_msg: None,
+        bm25_candidates_json: "[]".into(),
         user_id: None,
     };
     db.insert_router_event(&ev).expect("seed router event");

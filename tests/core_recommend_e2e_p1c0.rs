@@ -183,6 +183,30 @@ impl TestEnv {
         rows.filter_map(|r| r.ok()).collect()
     }
 
+    fn router_stage_fields(&self) -> Vec<(String, String, String, String)> {
+        if !self.db_path().exists() {
+            return Vec::new();
+        }
+        let conn = rusqlite::Connection::open(self.db_path()).expect("open test db");
+        let mut stmt = conn
+            .prepare(
+                "SELECT intent_llm_input, intent_llm_output, intent_status, bm25_candidates_json
+                 FROM router_events ORDER BY id ASC",
+            )
+            .expect("prepare");
+        let rows = stmt
+            .query_map(rusqlite::params![], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            })
+            .expect("query_map");
+        rows.filter_map(|r| r.ok()).collect()
+    }
+
     fn router_chosen_skills_jsons(&self) -> Vec<String> {
         if !self.db_path().exists() {
             return Vec::new();
@@ -342,8 +366,9 @@ fn disabled_recommend_writes_bootstrap_seen_then_stays_silent() {
 enum MockBehavior {
     /// 200 OK + canned OpenAI-compat response that picks one skill name.
     OkPickSkill(&'static str, &'static str), // (skill_name, reasoning)
-    /// 200 OK + canned OpenAI-compat response with exact router text.
-    OkRaw(&'static str),
+    /// 200 OK responses returned in request order. Used for stage 1 intent
+    /// recognition followed by stage 2 router selection.
+    Sequence(&'static [&'static str]),
     /// HTTP 500 with an error body.
     InternalError,
 }
@@ -372,6 +397,7 @@ impl MockLlm {
             // binary may issue one request, but we don't want to hang the
             // thread if it makes a probe call.
             let started = std::time::Instant::now();
+            let mut request_idx = 0usize;
             while !stop_for_thread.load(Ordering::SeqCst)
                 && started.elapsed() < Duration::from_secs(30)
             {
@@ -398,7 +424,15 @@ impl MockLlm {
                                     format!("EXCLUSIVE\nreasoning: {reasoning}\n{skill}\n");
                                 openai_response(&content)
                             }
-                            MockBehavior::OkRaw(content) => openai_response(content),
+                            MockBehavior::Sequence(contents) => {
+                                let content = contents
+                                    .get(request_idx)
+                                    .or_else(|| contents.last())
+                                    .copied()
+                                    .unwrap_or("");
+                                request_idx += 1;
+                                openai_response(content)
+                            }
                             MockBehavior::InternalError => {
                                 let body_str = "{\"error\":\"mock-500\"}";
                                 format!(
@@ -664,10 +698,12 @@ fn stdin_json_client_kind_cwd_and_session_memory_feed_router_input() {
     env.plant_skill("alpha-skill", "test skill alpha");
     std::fs::write(env.bootstrap_seen_path(), "1").unwrap();
 
-    let mock = MockLlm::start(MockBehavior::OkPickSkill(
-        "alpha-skill",
-        "matches the current intent",
-    ));
+    let mock = MockLlm::start(MockBehavior::Sequence(&[
+        "intent: first compact alpha intent\ninclude_terms: alpha, runai intent memory",
+        "EXCLUSIVE\nreasoning: matches the current intent\nalpha-skill\n",
+        "intent: second compact alpha intent with prior context\ninclude_terms: alpha, second turn",
+        "EXCLUSIVE\nreasoning: matches the current intent\nalpha-skill\n",
+    ]));
     enable_recommend_config(&env, mock.base_url());
 
     let cwd = env.home().join("project-runai");
@@ -705,29 +741,36 @@ fn stdin_json_client_kind_cwd_and_session_memory_feed_router_input() {
     assert_eq!(
         memories,
         vec![
-            "first runai intent memory alpha".to_string(),
-            "second turn keeps alpha context".to_string(),
+            "intent: first compact alpha intent include_terms: alpha, runai intent memory".to_string(),
+            "intent: second compact alpha intent with prior context include_terms: alpha, second turn".to_string(),
         ]
     );
 
     let inputs = env.router_llm_inputs();
     assert_eq!(inputs.len(), 2);
+    let stage_fields = env.router_stage_fields();
+    assert_eq!(stage_fields.len(), 2);
+    assert!(stage_fields[1].0.contains("agent_cli"));
+    assert!(stage_fields[1].0.contains("codex"));
+    assert!(
+        stage_fields[1]
+            .0
+            .contains(cwd.display().to_string().as_str())
+    );
+    assert!(stage_fields[1].0.contains("first compact alpha intent"));
+    assert!(
+        !stage_fields[1]
+            .0
+            .contains("first runai intent memory alpha\n"),
+        "stage-1 memory must contain compact intent, not raw previous prompt"
+    );
     let second = &inputs[1];
     assert!(second.contains("## 意图摘要（BM25 查询来源）"));
-    assert!(second.contains("agent_cli: codex"));
-    assert!(second.contains(cwd.display().to_string().as_str()));
-    assert!(second.contains("first runai intent memory alpha"));
-    assert!(second.contains("second turn keeps alpha context"));
+    assert!(second.contains("second compact alpha intent"));
     assert!(second.contains("默认 30 个 skill 候选"));
-    let session_memory_section = second
-        .split("session_memory:")
-        .nth(1)
-        .and_then(|s| s.split("候选 skill:").next())
-        .unwrap_or("");
-    assert!(session_memory_section.contains("first runai intent memory alpha"));
     assert!(
-        !session_memory_section.contains("second turn keeps alpha context"),
-        "current prompt must not be duplicated into this turn's session_memory: {session_memory_section}"
+        !second.contains("first compact alpha intent"),
+        "second-wave router input should use the current compact intent; prior memory is visible in first-wave input"
     );
     assert!(!second.contains("CLAUDE_SESSION_ID"));
 }
@@ -738,9 +781,10 @@ fn mock_llm_android_emulator_does_not_emit_ktv_candidate() {
     plant_android_debug_fixture(&env);
     std::fs::write(env.bootstrap_seen_path(), "1").unwrap();
 
-    let mock = MockLlm::start(MockBehavior::OkRaw(
+    let mock = MockLlm::start(MockBehavior::Sequence(&[
+        "intent: 调试 Android 模拟器，关注 adb/logcat/emulator/AVD；非 KTV/车机/WebView/H5 场景\ninclude_terms: Android, adb, logcat, emulator, AVD, 模拟器\nexclude_terms: KTV, 车机, WebView, H5",
         "COMPATIBLE\nreasoning: mock deliberately returns every candidate\nandroid-cli\nemulator-launch\nktv-car-debug-suite\n",
-    ));
+    ]));
     enable_recommend_config(&env, mock.base_url());
 
     let out = env.run(&["recommend", "帮我调试下安卓模拟器"]);
@@ -779,9 +823,10 @@ fn image_regeneration_reference_prompt_uses_compressed_intent_and_single_direct_
     plant_image_regeneration_fixture(&env);
     std::fs::write(env.bootstrap_seen_path(), "1").unwrap();
 
-    let mock = MockLlm::start(MockBehavior::OkRaw(
+    let mock = MockLlm::start(MockBehavior::Sequence(&[
+        "intent: 重新生成图片；必须使用搭子形象参考图；保持角色一致；水彩风格；reference image / img2img\ninclude_terms: 参考图, 搭子形象, 图生图, 角色一致, 水彩风格\nexclude_terms: 视频生成, 用户访谈",
         "EXCLUSIVE\nreasoning: mock returns multiple image alternatives\ngenerate-image\nmmx-cli\nimagegen\ninterview-script\n",
-    ));
+    ]));
     enable_recommend_config(&env, mock.base_url());
 
     let payload = serde_json::json!({
@@ -799,6 +844,15 @@ fn image_regeneration_reference_prompt_uses_compressed_intent_and_single_direct_
 
     let inputs = env.router_llm_inputs();
     assert_eq!(inputs.len(), 1);
+    let stage_fields = env.router_stage_fields();
+    assert_eq!(stage_fields.len(), 1);
+    let (intent_input, intent_output, intent_status, bm25_candidates_json) = &stage_fields[0];
+    assert!(intent_input.contains("第一波"), "{intent_input}");
+    assert!(intent_input.contains("没有用搭子形象"), "{intent_input}");
+    assert_eq!(intent_status, "ok");
+    assert!(intent_output.contains("重新生成图片"), "{intent_output}");
+    assert!(intent_output.contains("搭子形象参考图"), "{intent_output}");
+
     let intent_summary = intent_summary_from_llm_input(&inputs[0]);
     assert!(intent_summary.contains("重新生成图片"), "{intent_summary}");
     assert!(
@@ -822,6 +876,15 @@ fn image_regeneration_reference_prompt_uses_compressed_intent_and_single_direct_
         "non-image product research skill must be gated before LLM input: {}",
         inputs[0]
     );
+    assert!(bm25_candidates_json.contains("generate-image"));
+    assert!(bm25_candidates_json.contains("mmx-cli"));
+    assert!(bm25_candidates_json.contains("imagegen"));
+    assert!(!bm25_candidates_json.contains("interview-script"));
+
+    let memories = env.router_intent_memories();
+    assert_eq!(memories.len(), 1);
+    assert!(memories[0].contains("重新生成图片"));
+    assert!(!memories[0].contains("没有用搭子形象的参考图啊你这个"));
 
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("generate-image"), "stdout={stdout}");
@@ -846,9 +909,10 @@ fn mock_llm_ktv_webview_emulator_can_emit_ktv_candidate() {
     plant_android_debug_fixture(&env);
     std::fs::write(env.bootstrap_seen_path(), "1").unwrap();
 
-    let mock = MockLlm::start(MockBehavior::OkRaw(
+    let mock = MockLlm::start(MockBehavior::Sequence(&[
+        "intent: 调试 KTV/车机 WebView/H5 的 Android 模拟器问题\ninclude_terms: KTV, 车机, WebView, H5, android, emulator\ndomain_tags: ktv, vehicle, webview, h5",
         "COMPATIBLE\nreasoning: KTV vehicle WebView emulator workflow\nktv-car-debug-suite\nandroid-cli\nemulator-launch\n",
-    ));
+    ]));
     enable_recommend_config(&env, mock.base_url());
 
     let out = env.run(&[

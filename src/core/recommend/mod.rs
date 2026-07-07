@@ -4,8 +4,8 @@
 //! reachable as `crate::core::recommend::X` is re-exported here unchanged so
 //! consumers (cli / server / mcp) need zero edits. The split:
 //! - `config` — `RecommendConfig` + provider library + toml load/save
-//! - `router` — `recommend()` / `recommend_for_user()` + structured-intent candidate gating + BM25 prefilter + domain types
-//! - `intent` — bounded current-session short memory + deterministic intent recognition + compact BM25 query text
+//! - `router` — `recommend()` / `recommend_for_user()` + Stage-1 model intent compression + candidate gating + BM25 prefilter + Stage-2 router domain types
+//! - `intent` — bounded current-session short memory + deterministic fallback/classification + compact BM25 query text
 //! - `enrich` — `enrich_skills()` worker pool + `reevaluate_skill()`
 //! - `lang_validation` — deterministic per-field language enforcement
 //! - `prompts` — enrich/feedback prompt builders + router system prompt

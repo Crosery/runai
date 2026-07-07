@@ -12,6 +12,10 @@ pub(super) fn system_prompt_template() -> &'static str {
     crate::core::prompts::template_body(crate::core::prompts::PROMPT_RECOMMEND_SYSTEM)
 }
 
+pub(super) fn intent_prompt_template() -> &'static str {
+    crate::core::prompts::template_body(crate::core::prompts::PROMPT_RECOMMEND_INTENT)
+}
+
 /// The hard language directive injected into every enrich / feedback prompt.
 ///
 /// Strengthened over the original one-liner because weak / free models were

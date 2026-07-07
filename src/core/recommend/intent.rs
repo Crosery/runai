@@ -259,15 +259,37 @@ pub(super) fn recognize_intent(
     ];
 
     let prompt = compact_true_intent(user_prompt);
+    let positive_prompt = prompt
+        .lines()
+        .filter(|line| {
+            let lower = line.trim_start().to_lowercase();
+            !lower.starts_with("exclude_terms") && !lower.starts_with("exclude terms")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
     let memory_context = memory.join("\n");
     let combined_context = format!("{prompt}\n{memory_context}");
     let mut intent = RecognizedIntent::default();
-    let android = contains_any(&prompt, ANDROID_TERMS);
-    let vehicle = contains_any(&prompt, VEHICLE_TERMS);
-    let prompt_router = contains_any(&prompt, PROMPT_ROUTER_TERMS);
-    let meta_feedback = contains_any(&prompt, META_FEEDBACK_TERMS);
-    let follow_up = contains_any(&prompt, FOLLOW_UP_TERMS);
-    let workflow = contains_any(&prompt, WORKFLOW_TERMS);
+    let android = contains_any(&positive_prompt, ANDROID_TERMS);
+    let vehicle_positive = contains_any(&positive_prompt, VEHICLE_TERMS);
+    let vehicle_negated = contains_any(
+        &positive_prompt,
+        &[
+            "非 ktv",
+            "非ktv",
+            "不是 ktv",
+            "不是ktv",
+            "非车机",
+            "不是车机",
+            "非 webview",
+            "非webview",
+        ],
+    );
+    let vehicle = vehicle_positive && !vehicle_negated;
+    let prompt_router = contains_any(&positive_prompt, PROMPT_ROUTER_TERMS);
+    let meta_feedback = contains_any(&positive_prompt, META_FEEDBACK_TERMS);
+    let follow_up = contains_any(&positive_prompt, FOLLOW_UP_TERMS);
+    let workflow = contains_any(&positive_prompt, WORKFLOW_TERMS);
     let image_related = contains_any(&combined_context, IMAGE_TERMS);
     let image_regen = contains_any(&prompt, IMAGE_REGEN_TERMS) && image_related;
     let reference_image = contains_any(&combined_context, REFERENCE_TERMS);

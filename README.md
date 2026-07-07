@@ -57,7 +57,7 @@ On top of that core, an opt-in LLM skill **router** auto-picks the right skill f
 | 2000+ skills out there, no way to browse without leaving the terminal | Built-in market: `runai market` browses cached index, Enter to install |
 | Hard-deleted skills can't be recovered when you change your mind | Trash-first: `runai uninstall` moves to `~/.runai/trash/`, `runai trash restore` brings it back |
 | "Did I enable that skill?" — `ls` four directories, compare with config files, hope they agree | Source of truth = symlink existence + config entry presence; `runai status` reads filesystem live |
-| No idea which skills you actually use, no idea what the router is doing per turn | Dashboard at 127.0.0.1:17888 — every router call logged with chosen skill, BM25 hits, full LLM input, hook output, latency, tokens |
+| No idea which skills you actually use, no idea what the router is doing per turn | Dashboard at 127.0.0.1:17888 — every router call logged with chosen skill, Stage-1 intent recognition, BM25 candidates, Stage-2 router input/output, hook output, latency, tokens |
 
 ---
 
@@ -84,7 +84,7 @@ On top of that core, an opt-in LLM skill **router** auto-picks the right skill f
 
 - **Single binary, no CDN** — `runai server` boots an embedded axum HTTP server; `web/{index.html,app.css,app.js}` are `include_str!`'d into the Rust binary.
 - **Auto-launch on every Claude Code session** — `runai server --install-hook` adds a `SessionStart` hook so the dashboard is always at `http://127.0.0.1:17888` when you open Claude Code.
-- **Every router call instrumented** — Per-event: model + provider, mode (compat / excl), candidate count, BM25 kept, prompt / completion / total tokens, latency, chosen skills, status, error, full user prompt, working dir, full LLM input string (64 KB cap, including the intent summary), full hook output the agent received.
+- **Every router call instrumented** — Per-event: model + provider, mode (compat / excl), candidate count, BM25 kept, prompt / completion / total tokens, latency, chosen skills, status, error, full user prompt, working dir, Stage-1 intent LLM input/output/status, Stage-1 BM25 candidate names, Stage-2 router LLM input/raw output, and the full hook output the agent received.
 - **Admin provider checks** — Dashboard Admin separates the global recommend switch from per-user preferences and can test a saved provider by sending a tiny real model request, surfacing success or the provider error inline. Provider/model changes are global config; prompt-injection toggles, recommend context controls (session memory on/off + queue limit + BM25 candidate count), reminder text, and library scope are per-user preferences and only affect authenticated `/recommend` calls or local hooks with a valid identity.
 - **Per-skill drill-down** — `/skills` lists every managed skill with usage count, LLM quality score, AI summary; click into one to see its full directory tree (browse SKILL.md + supporting files), recent usage events, raw description vs. enriched summary.
 - **Live polling** — 5s refresh with `inFlight` guard and `visibilitychange` pause. Per-boot cache-buster on static assets means a server restart after `cargo install` propagates without a hard refresh.

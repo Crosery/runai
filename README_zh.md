@@ -47,7 +47,7 @@
 在这套核心之上：
 
 - **LLM skill router** 选 (opt-in)：每条 user prompt 自动选最合适的 skill 注入主 agent 上下文（BM25 prefilter + LLM rerank + 真采用计数）
-- **本地 dashboard** 在 `http://127.0.0.1:17888`：每次 hook 触发、token 成本、延迟、被选 skill、完整 LLM 输入 都实时记录
+- **本地 dashboard** 在 `http://127.0.0.1:17888`：每次 hook 触发、token 成本、延迟、被选 skill、第一波意图识别和第二波 router 输入输出都实时记录
 
 ---
 
@@ -60,7 +60,7 @@
 | 2000+ skill 散在 GitHub，没办法在终端里浏览 | 内置 market：`runai market` 浏览本地缓存索引，Enter 直接装 |
 | 删了的 skill 想恢复回不来 | Trash-first：`runai uninstall` 进 `~/.runai/trash/`，`runai trash restore` 拉回来 |
 | "我到底启用了哪些 skill？" —— `ls` 四个目录、对比配置文件、祈祷它们一致 | 真值 = symlink 存在 + 配置条目存在；`runai status` 实时读文件系统 |
-| 不知道自己实际用了哪些 skill，不知道 router 每轮在干嘛 | Dashboard 在 127.0.0.1:17888 —— 每次 router 调用都记下被选 skill / BM25 命中 / 完整 LLM 输入 / hook 输出 / 延迟 / token |
+| 不知道自己实际用了哪些 skill，不知道 router 每轮在干嘛 | Dashboard 在 127.0.0.1:17888 —— 每次 router 调用都记下被选 skill / 第一波意图识别 / BM25 候选 / 第二波 router 输入输出 / hook 输出 / 延迟 / token |
 
 ---
 
@@ -87,7 +87,7 @@
 
 - **单一 binary 无 CDN** —— `runai server` 启动嵌入的 axum HTTP server；`web/{index.html,app.css,app.js}` 通过 `include_str!` 编译进 Rust 二进制。
 - **每个 Claude Code 会话自动拉起** —— `runai server --install-hook` 加 `SessionStart` hook，让 dashboard 永远在 `http://127.0.0.1:17888`。
-- **每次 router 调用都有埋点** —— 每条事件：model + provider，mode (compat / excl)，候选数，BM25 kept，prompt / completion / total tokens，延迟，被选 skill，状态，错误，完整 user prompt，工作目录，完整 LLM 输入字符串（64 KB cap，包含意图摘要），完整 hook 输出。
+- **每次 router 调用都有埋点** —— 每条事件：model + provider，mode (compat / excl)，候选数，BM25 kept，prompt / completion / total tokens，延迟，被选 skill，状态，错误，完整 user prompt，工作目录，第一波意图识别 LLM 输入/输出/状态，第一波 BM25 候选名，第二波 router LLM 输入/原始输出，以及完整 hook 输出。
 - **Admin 运营商检查** —— Dashboard Admin 把全局 recommend 总开关和个人偏好分开，并能对已保存 provider 发一条短模型请求，直接显示成功或 provider 返回的错误。Provider / model 是全局配置；prompt 注入开关、推荐上下文设置（session 记忆开关 + 队列上限 + BM25 候选数）、跳过提醒、我的库范围是用户偏好，只影响带有效身份的 `/recommend` 请求或本地 hook。
 - **Skill 详情下钻** —— `/skills` 列出每个 skill 的使用次数、LLM 质量分、AI summary；点进去看完整目录树（浏览 SKILL.md + 配套文件）、最近使用历史、原始 description vs 富集后的 summary。
 - **实时刷新** —— 5 秒轮询 + `inFlight` 防并发 + `visibilitychange` 切后台自动暂停。静态资源每次 boot 加 `?v=<时间戳>` cache buster，`cargo install` 升级 binary 后浏览器普通 reload 就拿新版，不用 hard refresh。

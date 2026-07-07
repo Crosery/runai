@@ -507,6 +507,32 @@ impl Database {
             )?;
         }
 
+        if version < 25 {
+            // Two-stage recommend telemetry. Stage 1 asks the same recommend
+            // model to compress the user's current turn into a compact BM25
+            // intent artifact; Stage 2 routes over the retrieved candidates.
+            // Keep both prompts/outputs visible in router_events so the
+            // dashboard can show the two waves separately.
+            let has_router_events: i64 = self.conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='router_events'",
+                [],
+                |r| r.get(0),
+            )?;
+            if has_router_events > 0 {
+                self.conn.execute_batch(
+                    "ALTER TABLE router_events ADD COLUMN intent_llm_input TEXT NOT NULL DEFAULT '';
+                     ALTER TABLE router_events ADD COLUMN intent_llm_output TEXT NOT NULL DEFAULT '';
+                     ALTER TABLE router_events ADD COLUMN intent_status TEXT NOT NULL DEFAULT '';
+                     ALTER TABLE router_events ADD COLUMN intent_error_msg TEXT;
+                     ALTER TABLE router_events ADD COLUMN bm25_candidates_json TEXT NOT NULL DEFAULT '[]';",
+                )?;
+            }
+            self.conn.execute_batch(
+                "DELETE FROM schema_version;
+                 INSERT INTO schema_version VALUES (25);",
+            )?;
+        }
+
         Ok(())
     }
 }

@@ -144,7 +144,14 @@ pub(super) fn call_claude_cli(
     cfg: &RecommendConfig,
     user_msg: &str,
 ) -> Result<(String, RouterCallStats)> {
-    let system_prompt = system_prompt_template();
+    call_claude_cli_with_system(cfg, system_prompt_template(), user_msg)
+}
+
+pub(super) fn call_claude_cli_with_system(
+    cfg: &RecommendConfig,
+    system_prompt: &str,
+    user_msg: &str,
+) -> Result<(String, RouterCallStats)> {
     let combined = format!("{system_prompt}\n\n{user_msg}");
     let v = claude_cli_json(cfg, &combined, None)?;
     let content = v["result"].as_str().unwrap_or_default();
@@ -310,6 +317,16 @@ pub(super) fn call_openai_compat(
     user_msg: &str,
     history: &[RouterTurn],
 ) -> Result<(String, RouterCallStats)> {
+    call_openai_compat_with_system(cfg, api_key, system_prompt_template(), user_msg, history)
+}
+
+pub(super) fn call_openai_compat_with_system(
+    cfg: &RecommendConfig,
+    api_key: &str,
+    system_prompt: &str,
+    user_msg: &str,
+    history: &[RouterTurn],
+) -> Result<(String, RouterCallStats)> {
     let url = format!("{}/chat/completions", cfg.base_url.trim_end_matches('/'));
     // Disable thinking on reasoning models so the router answers instantly.
     // DeepSeek V4 honors `thinking.type=disabled` (drops reasoning_tokens to
@@ -319,7 +336,7 @@ pub(super) fn call_openai_compat(
     let mut messages = Vec::with_capacity(1 + history.len() * 2 + 1);
     messages.push(serde_json::json!({
         "role": "system",
-        "content": system_prompt_template(),
+        "content": system_prompt,
     }));
     for turn in history {
         messages.push(serde_json::json!({"role": "user", "content": turn.user}));
@@ -380,6 +397,16 @@ pub(super) fn call_anthropic(
     user_msg: &str,
     history: &[RouterTurn],
 ) -> Result<(String, RouterCallStats)> {
+    call_anthropic_with_system(cfg, api_key, system_prompt_template(), user_msg, history)
+}
+
+pub(super) fn call_anthropic_with_system(
+    cfg: &RecommendConfig,
+    api_key: &str,
+    system_prompt: &str,
+    user_msg: &str,
+    history: &[RouterTurn],
+) -> Result<(String, RouterCallStats)> {
     let url = format!("{}/v1/messages", cfg.base_url.trim_end_matches('/'));
     let mut messages = Vec::with_capacity(history.len() * 2 + 1);
     for turn in history {
@@ -390,7 +417,7 @@ pub(super) fn call_anthropic(
     let body = serde_json::json!({
         "model": cfg.model,
         "max_tokens": 256,
-        "system": system_prompt_template(),
+        "system": system_prompt,
         "messages": messages,
     });
     let resp = reqwest::blocking::Client::builder()

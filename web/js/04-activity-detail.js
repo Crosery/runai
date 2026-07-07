@@ -145,6 +145,12 @@
     const authBadge = e.authenticated
       ? `<span class="chip">认证用户</span>`
       : `<span class="chip-empty">匿名无 Bearer</span>`;
+    const bm25CandidateChips = Array.isArray(e.bm25_candidates) && e.bm25_candidates.length
+      ? e.bm25_candidates.map((s) => `<span class="skill-chip">${escapeHTML(s)}</span>`).join('')
+      : '<span class="chip-empty">(legacy row / empty)</span>';
+    const intentStatus = e.intent_status
+      ? `<span class="chip">${escapeHTML(e.intent_status)}</span>${e.intent_error_msg ? ` <span class="muted">— ${escapeHTML(e.intent_error_msg)}</span>` : ''}`
+      : '<span class="chip-empty">legacy row</span>';
     body.innerHTML = `
       <dl class="detail-grid">
         <dt>时间</dt><dd class="mono">${fmtTsFull(e.ts)}</dd>
@@ -163,9 +169,17 @@
       <div>${chosenInline}</div>
       <div class="section-label">user prompt (hook 收到的原文)</div>
       <div class="prompt-block">${escapeHTML(e.user_prompt) || '<span class="dim">(legacy row)</span>'}</div>
-      <div class="section-label">router LLM 实际收到的完整输入</div>
+      <div class="section-label">第一波：意图识别状态</div>
+      <div>${intentStatus}</div>
+      <div class="section-label">第一波：意图识别 LLM 输入</div>
+      <div class="prompt-block">${e.intent_llm_input ? escapeHTML(e.intent_llm_input) : '<span class="dim">(legacy row · schema v25 之后的事件才有)</span>'}</div>
+      <div class="section-label">第一波：压缩后的 BM25 检索意图</div>
+      <div class="prompt-block">${e.intent_llm_output ? escapeHTML(e.intent_llm_output) : '<span class="dim">(legacy row)</span>'}</div>
+      <div class="section-label">第一波：BM25 候选</div>
+      <div class="skill-chips">${bm25CandidateChips}</div>
+      <div class="section-label">第二波：router LLM 实际收到的完整输入</div>
       <div class="prompt-block">${e.llm_input ? escapeHTML(e.llm_input) : '<span class="dim">(legacy row · schema v13 之后的事件才有)</span>'}</div>
-      <div class="section-label">router LLM 原始返回</div>
+      <div class="section-label">第二波：router LLM 原始返回</div>
       <div class="prompt-block">${e.llm_raw_response ? escapeHTML(e.llm_raw_response) : '<span class="dim">(legacy row)</span>'}</div>
       <div class="section-label">hook 注入给 Claude Code 的内容</div>
       <div class="prompt-block">${e.hook_output ? escapeHTML(e.hook_output) : '<span class="dim">(本次没有注入)</span>'}</div>

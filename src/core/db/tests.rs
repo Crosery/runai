@@ -14,7 +14,7 @@ fn migration_creates_schema_version() {
         .conn
         .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 24);
+    assert_eq!(version, 25);
 }
 
 #[test]
@@ -128,7 +128,7 @@ fn migration_v21_moves_ai_summary_to_owner_scoped_key() {
     }
 
     let db = Database::open(&db_path).unwrap();
-    assert_eq!(db.schema_version(), 24);
+    assert_eq!(db.schema_version(), 25);
     let loaded = db.skill_ai_index("legacy").unwrap().unwrap();
     assert_eq!(loaded.summary, "task: legacy public summary");
     assert_eq!(loaded.updated_at, 42);
@@ -381,7 +381,7 @@ fn schema_at_v15_after_open() {
     // this test is kept for git-blame continuity; the v15 tables it
     // spot-checks below are still there post-v17, just behind a higher
     // version number.
-    assert_eq!(version, 24);
+    assert_eq!(version, 25);
 
     // Tables must exist
     for tbl in &["users", "user_skill_library"] {
@@ -1240,6 +1240,11 @@ fn base_event() -> RouterEvent {
         llm_raw_response: "COMPATIBLE\nfoo".into(),
         hook_output: "# runai recommend\n...".into(),
         llm_input: "candidate listing + user prompt".into(),
+        intent_llm_input: "stage1 prompt".into(),
+        intent_llm_output: "intent: compact task".into(),
+        intent_status: "ok".into(),
+        intent_error_msg: None,
+        bm25_candidates_json: r#"["foo","bar"]"#.into(),
         user_id: None,
     }
 }
@@ -1284,6 +1289,11 @@ fn insert_router_event_roundtrip_preserves_all_fields_including_user_id() {
     assert_eq!(got.llm_raw_response, ev.llm_raw_response);
     assert_eq!(got.hook_output, ev.hook_output);
     assert_eq!(got.llm_input, ev.llm_input);
+    assert_eq!(got.intent_llm_input, ev.intent_llm_input);
+    assert_eq!(got.intent_llm_output, ev.intent_llm_output);
+    assert_eq!(got.intent_status, ev.intent_status);
+    assert_eq!(got.intent_error_msg, ev.intent_error_msg);
+    assert_eq!(got.bm25_candidates_json, ev.bm25_candidates_json);
     assert_eq!(
         got.user_id.as_deref(),
         Some("usr_alice"),
@@ -1302,6 +1312,9 @@ fn insert_router_event_caps_oversized_prompt_and_input_fields() {
         llm_raw_response: "b".repeat(5_000),
         hook_output: "c".repeat(10_000),
         llm_input: "d".repeat(100_000),
+        intent_llm_input: "e".repeat(100_000),
+        intent_llm_output: "f".repeat(10_000),
+        bm25_candidates_json: serde_json::to_string(&vec!["skill"; 2000]).unwrap(),
         ..base_event()
     };
     db.insert_router_event(&ev).unwrap();
@@ -1326,6 +1339,20 @@ fn insert_router_event_caps_oversized_prompt_and_input_fields() {
         got.llm_input.chars().count(),
         65536,
         "llm_input capped at 64KB chars"
+    );
+    assert_eq!(
+        got.intent_llm_input.chars().count(),
+        16384,
+        "intent_llm_input capped at 16KB chars"
+    );
+    assert_eq!(
+        got.intent_llm_output.chars().count(),
+        2000,
+        "intent_llm_output capped at 2KB chars"
+    );
+    assert!(
+        got.bm25_candidates_json.chars().count() <= 12000,
+        "bm25_candidates_json capped for dashboard detail"
     );
 }
 

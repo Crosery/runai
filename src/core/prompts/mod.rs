@@ -27,6 +27,11 @@ pub const PROMPT_RECOMMEND_SYSTEM: &str = include_str!("recommend_system.md");
 /// configure, not this skeleton.
 pub const PROMPT_RECOMMEND_USER: &str = include_str!("recommend_user.md");
 
+/// recommend_intent.md — first-wave intent condensation prompt. It uses the
+/// same configured recommend model before BM25 retrieval and returns the
+/// compact query artifact stored in router_intent_memory.
+pub const PROMPT_RECOMMEND_INTENT: &str = include_str!("recommend_intent.md");
+
 /// recommend_history_prefix.md — recent transcript history block (`{HISTORY}`
 /// placeholder). Optional: gated by
 /// `prompt_injection_flags["recommend_history_prefix"]` (default true).
@@ -60,6 +65,7 @@ pub const PROMPT_HOOK_OUTPUT: &str = include_str!("hook_output.md");
 pub const PROMPT_NAMES: &[&str] = &[
     "recommend_system",
     "recommend_user",
+    "recommend_intent",
     "recommend_history_prefix",
     "recommend_already_routed",
     "recommend_cwd_prefix",
@@ -108,6 +114,7 @@ mod tests {
     fn prompt_constants_are_non_empty() {
         assert!(!PROMPT_RECOMMEND_SYSTEM.trim().is_empty());
         assert!(!PROMPT_RECOMMEND_USER.trim().is_empty());
+        assert!(!PROMPT_RECOMMEND_INTENT.trim().is_empty());
         assert!(!PROMPT_RECOMMEND_HISTORY_PREFIX.trim().is_empty());
         assert!(!PROMPT_RECOMMEND_ALREADY_ROUTED.trim().is_empty());
         assert!(!PROMPT_RECOMMEND_CWD_PREFIX.trim().is_empty());
@@ -141,6 +148,8 @@ mod tests {
         assert!(PROMPT_RECOMMEND_USER.contains("{USER_PROMPT}"));
         assert!(PROMPT_RECOMMEND_USER.contains("{INTENT_SUMMARY}"));
         assert!(PROMPT_RECOMMEND_USER.contains("{BM25_CANDIDATE_LIMIT}"));
+        assert!(PROMPT_RECOMMEND_INTENT.contains("{DETERMINISTIC_FALLBACK}"));
+        assert!(PROMPT_RECOMMEND_INTENT.contains("{SESSION_MEMORY}"));
         assert!(PROMPT_HOOK_OUTPUT.contains("{CANDIDATES_BLOCK}"));
     }
 

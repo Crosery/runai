@@ -140,6 +140,11 @@ fn seed_router_event(s: &ServerGuard, user_id: Option<&str>) -> i64 {
         llm_raw_response: "EXCLUSIVE\nreasoning: seed\nalpha\n".into(),
         hook_output: "seed hook".into(),
         llm_input: "seed llm input".into(),
+        intent_llm_input: "seed intent input".into(),
+        intent_llm_output: "intent: seed".into(),
+        intent_status: "ok".into(),
+        intent_error_msg: None,
+        bm25_candidates_json: r#"["alpha"]"#.into(),
         user_id: user_id.map(str::to_string),
     };
     mgr.db().insert_router_event(&ev).unwrap();

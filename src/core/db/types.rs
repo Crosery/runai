@@ -43,9 +43,23 @@ pub struct RouterEvent {
     pub hook_output: String,
     /// Full user-message string sent to the router LLM (history block +
     /// already_routed list + candidate listing + current user prompt).
-    /// Capped at ~16 KB. Empty for pre-schema-v13 rows. Useful for
-    /// diagnosing mis-routes — answers "what did the model see?".
+    /// Capped at ~64 KB. Empty for pre-schema-v13 rows. Useful for
+    /// diagnosing mis-routes — answers "what did the second-wave model see?".
     pub llm_input: String,
+    /// Full first-wave intent-recognition prompt sent to the same recommend
+    /// model. Capped at ~16 KB. Empty for pre-schema-v25 rows.
+    pub intent_llm_input: String,
+    /// Compact first-wave intent output used as the BM25 query source and the
+    /// current-session intent-memory row. Capped at ~2 KB.
+    pub intent_llm_output: String,
+    /// First-wave status: `ok` when the model returned a usable intent,
+    /// `fallback` when deterministic compression was used, empty for legacy.
+    pub intent_status: String,
+    /// First-wave error message when `intent_status == "fallback"`.
+    pub intent_error_msg: Option<String>,
+    /// Ordered candidate names after deterministic gates + BM25 prefilter,
+    /// before the second-wave router LLM picks the final set.
+    pub bm25_candidates_json: String,
     /// Authenticated user_id this event belongs to. None for pre-schema-v15
     /// rows and for unauthenticated requests during the compat window
     /// (prefs.require_auth=false). Per-user dashboard views filter on this.

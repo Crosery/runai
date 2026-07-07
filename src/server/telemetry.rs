@@ -146,6 +146,16 @@ pub(super) struct EventJson {
     /// Full user message sent to the router LLM (history + already_routed +
     /// candidate listing + user prompt). Empty for pre-schema-v13 rows.
     llm_input: String,
+    /// First-wave intent-recognition prompt sent to the same recommend model.
+    intent_llm_input: String,
+    /// First-wave compact intent output used for BM25 and session memory.
+    intent_llm_output: String,
+    /// First-wave status: ok / fallback / legacy empty.
+    intent_status: String,
+    /// First-wave error when fallback was used.
+    intent_error_msg: Option<String>,
+    /// Candidate names after stage-1 gates + BM25, before stage-2 selection.
+    bm25_candidates: Vec<String>,
     /// Whether the hook actually delivered a non-empty injection. Equivalent
     /// to `chosen` non-empty + status ok, exposed as a flat boolean for the UI.
     injected: bool,
@@ -155,6 +165,8 @@ impl From<RouterEvent> for EventJson {
     fn from(e: RouterEvent) -> Self {
         let chosen: Vec<String> = serde_json::from_str(&e.chosen_skills_json).unwrap_or_default();
         let injected = e.status == "ok" && !chosen.is_empty();
+        let bm25_candidates: Vec<String> =
+            serde_json::from_str(&e.bm25_candidates_json).unwrap_or_default();
         EventJson {
             id: e.id,
             ts: e.ts,
@@ -177,6 +189,11 @@ impl From<RouterEvent> for EventJson {
             llm_raw_response: e.llm_raw_response,
             hook_output: e.hook_output,
             llm_input: e.llm_input,
+            intent_llm_input: e.intent_llm_input,
+            intent_llm_output: e.intent_llm_output,
+            intent_status: e.intent_status,
+            intent_error_msg: e.intent_error_msg,
+            bm25_candidates,
             injected,
         }
     }

@@ -521,6 +521,11 @@ fn unauthenticated_request_uses_defaults_and_does_not_read_user_prefs() {
         llm_raw_response: "EXCLUSIVE\nreasoning: seed\nalpha\n".into(),
         hook_output: "".into(),
         llm_input: "(seed)".into(),
+        intent_llm_input: "".into(),
+        intent_llm_output: "".into(),
+        intent_status: "".into(),
+        intent_error_msg: None,
+        bm25_candidates_json: "[]".into(),
         user_id: None,
     };
     mgr.db().insert_router_event(&event).unwrap();
@@ -779,6 +784,11 @@ fn switching_logged_in_account_picks_up_new_prefs_immediately() {
         llm_raw_response: "EXCLUSIVE\nreasoning: seed\nalpha\n".into(),
         hook_output: "".into(),
         llm_input: "(seed)".into(),
+        intent_llm_input: "".into(),
+        intent_llm_output: "".into(),
+        intent_status: "".into(),
+        intent_error_msg: None,
+        bm25_candidates_json: "[]".into(),
         user_id: None,
     };
     mgr.db().insert_router_event(&event).unwrap();
