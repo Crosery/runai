@@ -115,3 +115,43 @@ pub struct RouterStatsSummary {
     pub avg_latency_ms: Option<f64>,
     pub per_model: Vec<RouterModelStat>,
 }
+
+/// One `skill_feedback` row — an explicit ±1 verdict on a skill.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillFeedbackRow {
+    pub id: i64,
+    pub ts: i64,
+    pub skill_name: String,
+    /// Owner-pool scope of the skill this feedback is about. `None` = public
+    /// pool, `Some(uid)` = that user's private skill — same convention as
+    /// `resources.owner_user_id`.
+    pub owner_user_id: Option<String>,
+    /// The feedback author, when known. `None` for unauthenticated requests.
+    pub user_id: Option<String>,
+    pub session_id: Option<String>,
+    /// Loosely references the `router_events` row that produced the judged
+    /// recommendation. No FK constraint — the row may reference an id that
+    /// has since been pruned.
+    pub event_id: Option<i64>,
+    /// Always exactly `1` or `-1`; enforced at write time by
+    /// `Database::record_skill_feedback`.
+    pub verdict: i64,
+    pub note: Option<String>,
+}
+
+/// Per-skill router funnel counts computed from `router_events` +
+/// `router_session_adoptions` since a given timestamp. See
+/// `Database::skill_router_stats`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RouterSkillStats {
+    /// Events where this skill appeared in the BM25 candidate set.
+    pub candidate_events: i64,
+    /// Events where the router LLM actually chose this skill.
+    pub chosen_events: i64,
+    /// Distinct sessions in which this skill was chosen at least once.
+    pub chosen_sessions: i64,
+    /// Of `chosen_sessions`, how many also recorded a
+    /// `router_session_adoptions` row for this skill (i.e. the main agent
+    /// actually adopted it, not just saw it recommended).
+    pub adopted_sessions: i64,
+}

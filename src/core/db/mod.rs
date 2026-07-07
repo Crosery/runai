@@ -15,6 +15,7 @@
 mod ai_summary;
 mod community;
 mod core;
+mod feedback;
 mod groups;
 mod library;
 mod resources;
@@ -30,7 +31,8 @@ pub use ai_summary::SkillAiIndex;
 pub use community::{CommunitySkill, CommunitySort};
 pub use core::Database;
 pub use types::{
-    RouterEvent, RouterIntentMemoryItem, RouterModelStat, RouterStatsSummary, TimelineBucket, User,
+    RouterEvent, RouterIntentMemoryItem, RouterModelStat, RouterSkillStats, RouterStatsSummary,
+    SkillFeedbackRow, TimelineBucket, User,
 };
 pub use usage_events::UsageOutcome;
 

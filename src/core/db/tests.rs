@@ -1,6 +1,6 @@
 use super::Database;
 use crate::core::cli_target::CliTarget;
-use crate::core::db::{RouterEvent, RouterIntentMemoryItem};
+use crate::core::db::{RouterEvent, RouterIntentMemoryItem, RouterSkillStats, SkillFeedbackRow};
 use crate::core::resource::{Resource, ResourceKind, Source, TrashEntry};
 use rusqlite::params;
 use std::collections::HashMap;
@@ -14,7 +14,7 @@ fn migration_creates_schema_version() {
         .conn
         .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 25);
+    assert_eq!(version, 26);
 }
 
 #[test]
@@ -128,7 +128,7 @@ fn migration_v21_moves_ai_summary_to_owner_scoped_key() {
     }
 
     let db = Database::open(&db_path).unwrap();
-    assert_eq!(db.schema_version(), 25);
+    assert_eq!(db.schema_version(), 26);
     let loaded = db.skill_ai_index("legacy").unwrap().unwrap();
     assert_eq!(loaded.summary, "task: legacy public summary");
     assert_eq!(loaded.updated_at, 42);
@@ -381,7 +381,7 @@ fn schema_at_v15_after_open() {
     // this test is kept for git-blame continuity; the v15 tables it
     // spot-checks below are still there post-v17, just behind a higher
     // version number.
-    assert_eq!(version, 25);
+    assert_eq!(version, 26);
 
     // Tables must exist
     for tbl in &["users", "user_skill_library"] {
@@ -2090,4 +2090,204 @@ fn router_timeline_filtered_scopes_by_user_id() {
         .router_timeline_filtered(bucket_secs, buckets, None)
         .unwrap();
     assert_eq!(all_timeline[0].total, 2);
+}
+
+// =========================================================================
+//  skill_feedback + skill_router_stats (v26 — skill feedback radar).
+// =========================================================================
+
+#[test]
+fn skill_feedback_record_and_recent_roundtrip() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(&tmp.path().join("feedback.db")).unwrap();
+
+    let id1 = db
+        .record_skill_feedback(
+            1_000,
+            "pdf-extract",
+            None,
+            Some("alice"),
+            Some("rnai_sess_a"),
+            Some(42),
+            1,
+            Some("worked great"),
+        )
+        .unwrap();
+    let id2 = db
+        .record_skill_feedback(
+            2_000,
+            "pdf-extract",
+            None,
+            Some("bob"),
+            None,
+            None,
+            -1,
+            None,
+        )
+        .unwrap();
+    assert_ne!(id1, id2, "each feedback event gets its own row id");
+
+    let recent: Vec<SkillFeedbackRow> = db.recent_skill_feedback("pdf-extract", 10).unwrap();
+    assert_eq!(recent.len(), 2);
+    // Newest first.
+    assert_eq!(recent[0].id, id2);
+    assert_eq!(recent[0].ts, 2_000);
+    assert_eq!(recent[0].verdict, -1);
+    assert_eq!(recent[0].user_id.as_deref(), Some("bob"));
+    assert_eq!(recent[0].session_id, None);
+    assert_eq!(recent[0].event_id, None);
+    assert_eq!(recent[0].note, None);
+
+    assert_eq!(recent[1].id, id1);
+    assert_eq!(recent[1].skill_name, "pdf-extract");
+    assert_eq!(recent[1].owner_user_id, None);
+    assert_eq!(recent[1].user_id.as_deref(), Some("alice"));
+    assert_eq!(recent[1].session_id.as_deref(), Some("rnai_sess_a"));
+    assert_eq!(recent[1].event_id, Some(42));
+    assert_eq!(recent[1].verdict, 1);
+    assert_eq!(recent[1].note.as_deref(), Some("worked great"));
+}
+
+#[test]
+fn skill_feedback_rejects_non_unit_verdict() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(&tmp.path().join("feedback.db")).unwrap();
+
+    for bad in [0_i64, 2, -2, 100] {
+        let err = db
+            .record_skill_feedback(1_000, "foo", None, None, None, None, bad, None)
+            .expect_err("non +-1 verdict must be rejected");
+        assert!(err.to_string().contains("+1 or -1"));
+    }
+    assert!(
+        db.recent_skill_feedback("foo", 10).unwrap().is_empty(),
+        "rejected verdicts must not leave a row behind"
+    );
+}
+
+#[test]
+fn skill_feedback_counts_are_owner_null_safe() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(&tmp.path().join("feedback.db")).unwrap();
+
+    // A public-pool "dup" skill and a same-named private skill owned by u1
+    // must never share feedback counts.
+    db.record_skill_feedback(1_000, "dup", None, Some("alice"), None, None, 1, None)
+        .unwrap();
+    db.record_skill_feedback(1_001, "dup", None, Some("carol"), None, None, 1, None)
+        .unwrap();
+    db.record_skill_feedback(1_002, "dup", Some("u1"), Some("bob"), None, None, -1, None)
+        .unwrap();
+
+    let public_counts = db.skill_feedback_counts("dup", None).unwrap();
+    assert_eq!(public_counts, (2, 0), "public pool sees only its own votes");
+
+    let private_counts = db.skill_feedback_counts("dup", Some("u1")).unwrap();
+    assert_eq!(
+        private_counts,
+        (0, 1),
+        "u1's private dup sees only its own vote, not the public pool's"
+    );
+
+    let other_owner_counts = db.skill_feedback_counts("dup", Some("u2")).unwrap();
+    assert_eq!(
+        other_owner_counts,
+        (0, 0),
+        "an owner with no feedback rows gets zero counts, not a cross-owner leak"
+    );
+}
+
+#[test]
+fn skill_feedback_counts_all_aggregates_across_owners() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(&tmp.path().join("feedback.db")).unwrap();
+
+    db.record_skill_feedback(1_000, "dup", None, None, None, None, 1, None)
+        .unwrap();
+    db.record_skill_feedback(1_001, "dup", Some("u1"), None, None, None, -1, None)
+        .unwrap();
+    db.record_skill_feedback(1_002, "dup", Some("u2"), None, None, None, 1, None)
+        .unwrap();
+    db.record_skill_feedback(1_003, "solo", None, None, None, None, 1, None)
+        .unwrap();
+
+    let all = db.skill_feedback_counts_all().unwrap();
+    assert_eq!(
+        all.get("dup").copied(),
+        Some((2, 1)),
+        "counts_all merges every owner-pool instance of the same skill name"
+    );
+    assert_eq!(all.get("solo").copied(), Some((1, 0)));
+    assert!(all.get("missing").is_none());
+}
+
+/// Covers the four funnel states the router cares about: a candidate that
+/// was never chosen, a chosen skill whose session never adopted it, a chosen
+/// skill that WAS adopted, and a stale event before `since_ts` that must be
+/// excluded entirely.
+#[test]
+fn skill_router_stats_counts_funnel_and_respects_since_ts() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(&tmp.path().join("router.db")).unwrap();
+
+    db.insert_router_event(&RouterEvent {
+        ts: 2_000,
+        session_id: "s1".into(),
+        bm25_candidates_json: serde_json::to_string(&[
+            "cand_only",
+            "chosen_no_adopt",
+            "chosen_and_adopted",
+        ])
+        .unwrap(),
+        chosen_skills_json: serde_json::to_string(&["chosen_no_adopt", "chosen_and_adopted"])
+            .unwrap(),
+        ..base_event()
+    })
+    .unwrap();
+    db.record_session_adoption("s1", "chosen_and_adopted")
+        .unwrap();
+
+    // Predates the since_ts cutoff below — must be excluded entirely.
+    db.insert_router_event(&RouterEvent {
+        ts: 100,
+        session_id: "s_old".into(),
+        bm25_candidates_json: serde_json::to_string(&["before_cutoff"]).unwrap(),
+        chosen_skills_json: serde_json::to_string(&["before_cutoff"]).unwrap(),
+        ..base_event()
+    })
+    .unwrap();
+
+    let stats: HashMap<String, RouterSkillStats> = db.skill_router_stats(1_000).unwrap();
+
+    let cand_only = stats.get("cand_only").copied().unwrap();
+    assert_eq!(cand_only.candidate_events, 1);
+    assert_eq!(
+        cand_only.chosen_events, 0,
+        "candidate that was never chosen"
+    );
+    assert_eq!(cand_only.chosen_sessions, 0);
+    assert_eq!(cand_only.adopted_sessions, 0);
+
+    let chosen_no_adopt = stats.get("chosen_no_adopt").copied().unwrap();
+    assert_eq!(chosen_no_adopt.candidate_events, 1);
+    assert_eq!(chosen_no_adopt.chosen_events, 1);
+    assert_eq!(chosen_no_adopt.chosen_sessions, 1);
+    assert_eq!(
+        chosen_no_adopt.adopted_sessions, 0,
+        "chosen but the session never recorded an adoption"
+    );
+
+    let chosen_and_adopted = stats.get("chosen_and_adopted").copied().unwrap();
+    assert_eq!(chosen_and_adopted.candidate_events, 1);
+    assert_eq!(chosen_and_adopted.chosen_events, 1);
+    assert_eq!(chosen_and_adopted.chosen_sessions, 1);
+    assert_eq!(
+        chosen_and_adopted.adopted_sessions, 1,
+        "chosen AND the session recorded an adoption"
+    );
+
+    assert!(
+        stats.get("before_cutoff").is_none(),
+        "since_ts must exclude events entirely, not just zero their counts"
+    );
 }

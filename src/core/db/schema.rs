@@ -533,6 +533,36 @@ impl Database {
             )?;
         }
 
+        if version < 26 {
+            // Skill feedback radar: event-sourced ±1 verdicts on individual
+            // skills. Rows are append-only (never updated in place) so the
+            // full history survives for `recent_skill_feedback` and
+            // aggregate counts are always a fresh COUNT over the log.
+            // `owner_user_id` follows the same owner-pool convention as
+            // `resources.owner_user_id` (NULL = public pool, uid = that
+            // user's private skill); `user_id` / `session_id` / `event_id`
+            // are all optional so unauthenticated or session-less feedback
+            // still records. `event_id` loosely references the
+            // `router_events` row that produced the judged recommendation,
+            // when known — no FK constraint, mirroring `trash_entries`.
+            self.conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS skill_feedback (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts INTEGER NOT NULL,
+                    skill_name TEXT NOT NULL,
+                    owner_user_id TEXT,
+                    user_id TEXT,
+                    session_id TEXT,
+                    event_id INTEGER,
+                    verdict INTEGER NOT NULL,
+                    note TEXT
+                 );
+                 CREATE INDEX IF NOT EXISTS idx_skill_feedback_name ON skill_feedback(skill_name);
+                 DELETE FROM schema_version;
+                 INSERT INTO schema_version VALUES (26);",
+            )?;
+        }
+
         Ok(())
     }
 }
