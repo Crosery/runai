@@ -21,7 +21,10 @@ use crate::core::resource::ResourceKind;
 use super::config::{Provider, RecommendConfig, SessionMode};
 use super::enrich::rewrite_query_for_bm25;
 use super::hook_output::format_for_hook_full;
-use super::intent::{build_intent_memory_from_prompt, build_intent_summary};
+use super::intent::{
+    RecognizedIntent, ScenarioConstraint, build_intent_memory_from_prompt, build_intent_summary,
+    recognize_intent,
+};
 use super::llm_call::{RouterCallStats, call_anthropic, call_claude_cli, call_openai_compat};
 use super::project_context::read_project_context;
 use super::server_helpers::default_local_server_url;
@@ -106,6 +109,101 @@ pub struct RouterDecision {
     pub mode: RouterMode,
     pub reasoning: String,
     pub skills: Vec<RecommendedSkill>,
+}
+
+pub(super) struct CandidateRelevanceInput<'a> {
+    pub(super) name: &'a str,
+    pub(super) search_doc: &'a str,
+    pub(super) router_card: &'a str,
+    pub(super) description: &'a str,
+    pub(super) groups: &'a [&'a str],
+}
+
+fn lower_compact(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+fn has_any(text: &str, needles: &[&str]) -> bool {
+    let text = lower_compact(text);
+    needles.iter().any(|needle| text.contains(needle))
+}
+
+fn positive_retrieval_text(text: &str) -> String {
+    let lower = text.to_lowercase();
+    if let Some(idx) = lower.find("not-for") {
+        return text[..idx].trim().to_string();
+    }
+    if let Some(idx) = lower.find("not for") {
+        return text[..idx].trim().to_string();
+    }
+    text.to_string()
+}
+
+pub(super) fn candidate_allowed_by_intent(
+    intent: &RecognizedIntent,
+    candidate: &CandidateRelevanceInput<'_>,
+) -> bool {
+    let groups = candidate.groups.join(" ");
+    let positive_without_groups = format!(
+        "{} {} {} {}",
+        candidate.name,
+        positive_retrieval_text(candidate.search_doc),
+        positive_retrieval_text(candidate.router_card),
+        candidate.description,
+    );
+    let positive = format!("{} {}", positive_without_groups, groups);
+
+    if intent.has(ScenarioConstraint::AndroidEmulatorDebug) {
+        const VEHICLE_STRONG: &[&str] = &[
+            "ktv",
+            "ktvlite",
+            "webview",
+            "h5",
+            "真车",
+            "car-device",
+            "car-debug",
+            "调试面板",
+            "车机 webview",
+            "车机 h5",
+            "车机/模拟器完整调试",
+        ];
+        const ANDROID_BASE: &[&str] = &[
+            "android",
+            "安卓",
+            "adb",
+            "logcat",
+            "emulator",
+            "avd",
+            "模拟器",
+        ];
+        if has_any(&positive_without_groups, VEHICLE_STRONG) {
+            return false;
+        }
+        return has_any(&positive, ANDROID_BASE);
+    }
+
+    if intent.has(ScenarioConstraint::PromptRouterAudit) {
+        const ROUTER_TERMS: &[&str] = &[
+            "router",
+            "recommend",
+            "推荐模型",
+            "bm25",
+            "not-for",
+            "prompt",
+            "提示词",
+            "候选",
+            "误召回",
+        ];
+        const ARCH_ONLY: &[&str] = &["仓库结构", "架构审计", "agents.md", "目录结构", "模块边界"];
+        if has_any(&positive, ARCH_ONLY) && !has_any(&positive, ROUTER_TERMS) {
+            return false;
+        }
+    }
+
+    true
 }
 
 pub(super) struct RouterUserMessageParts<'a> {
@@ -234,6 +332,16 @@ pub fn recommend_for_user_with_client(
             skills: Vec::new(),
         });
     }
+
+    // PLANNING §1.3: per-user injection flags strip optional blocks before
+    // prompt construction. The intent layer shares the same cwd switch so a
+    // disabled cwd block cannot leak through `{INTENT_SUMMARY}`.
+    let inject_history = user_prefs.prompt_injection_enabled("recommend_history_prefix");
+    let inject_already_routed = user_prefs.prompt_injection_enabled("recommend_already_routed");
+    let inject_cwd = user_prefs.prompt_injection_enabled("recommend_cwd_prefix");
+    let inject_project_context = user_prefs.prompt_injection_enabled("recommend_project_context");
+    let cwd_for_intent = if inject_cwd { cwd } else { None };
+
     // ClaudeCli reuses the user's Claude Code session — no API key needed.
     let api_key = if cfg.provider == Provider::ClaudeCli {
         String::new()
@@ -252,18 +360,11 @@ pub fn recommend_for_user_with_client(
         0
     };
     let mut intent_memory = Vec::new();
+    let mut current_intent_memory: Option<String> = None;
     if let Some(sid) = session_id
         && !sid.is_empty()
         && intent_memory_limit > 0
     {
-        let memory = build_intent_memory_from_prompt(user_prompt);
-        let _ = mgr.db().append_router_intent_memory(
-            sid,
-            user_id,
-            client_kind,
-            &memory,
-            intent_memory_limit,
-        );
         intent_memory = mgr
             .db()
             .router_intent_memory(sid, user_id, client_kind, intent_memory_limit)
@@ -271,8 +372,28 @@ pub fn recommend_for_user_with_client(
             .into_iter()
             .map(|i| i.memory)
             .collect();
+        current_intent_memory = Some(build_intent_memory_from_prompt(user_prompt));
     }
-    let intent_summary = build_intent_summary(user_prompt, cwd, client_kind, &intent_memory);
+    let recognized_intent = recognize_intent(
+        user_prompt,
+        &intent_memory,
+        cwd_for_intent,
+        Some(client_kind),
+    );
+    let intent_summary =
+        build_intent_summary(user_prompt, cwd_for_intent, client_kind, &intent_memory);
+    if let (Some(sid), Some(memory)) = (session_id, current_intent_memory.as_deref())
+        && !sid.is_empty()
+        && intent_memory_limit > 0
+    {
+        let _ = mgr.db().append_router_intent_memory(
+            sid,
+            user_id,
+            client_kind,
+            memory,
+            intent_memory_limit,
+        );
+    }
 
     // `already_routed` is the dedup signal handed to the router LLM. It is
     // the **full** recommendation history this session (every skill the
@@ -409,6 +530,38 @@ pub fn recommend_for_user_with_client(
             .unwrap_or_default()
     };
 
+    all_candidates.retain(|r| {
+        let index_key = Database::skill_ai_index_key_for_resource(r);
+        let search_doc = indices
+            .get(&index_key)
+            .map(|row| row.search_doc.as_str())
+            .unwrap_or("");
+        let router_card = indices
+            .get(&index_key)
+            .map(|row| row.router_card.as_str())
+            .unwrap_or("");
+        let groups_vec = groups_of(&r.id);
+        let group_refs: Vec<&str> = groups_vec.iter().map(String::as_str).collect();
+        candidate_allowed_by_intent(
+            &recognized_intent,
+            &CandidateRelevanceInput {
+                name: &r.name,
+                search_doc,
+                router_card,
+                description: &r.description,
+                groups: &group_refs,
+            },
+        )
+    });
+
+    if all_candidates.is_empty() {
+        return Ok(RouterDecision {
+            mode: RouterMode::Exclusive,
+            reasoning: String::new(),
+            skills: Vec::new(),
+        });
+    }
+
     // skill name → normalised BM25 score (0..1) for the [bm25:0.XX] tag.
     let mut bm25_scores: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
 
@@ -428,12 +581,12 @@ pub fn recommend_for_user_with_client(
                 let index_key = Database::skill_ai_index_key_for_resource(r);
                 let body = if let Some(index) = indices.get(&index_key) {
                     if index.search_doc.is_empty() {
-                        r.description.as_str()
+                        r.description.clone()
                     } else {
-                        index.search_doc.as_str()
+                        positive_retrieval_text(&index.search_doc)
                     }
                 } else {
-                    r.description.as_str()
+                    r.description.clone()
                 };
                 let groups = groups_of(&r.id).join(" ");
                 if groups.is_empty() {
@@ -560,18 +713,6 @@ pub fn recommend_for_user_with_client(
         })
         .collect::<Vec<_>>()
         .join("\n");
-
-    // PLANNING §1.3: per-user injection flags strip optional blocks BEFORE
-    // they're substituted into USER_MSG_TEMPLATE. Each block is dropped to
-    // the empty string when its toggle is off; the USER_MSG_TEMPLATE then
-    // renders without that section just as if there had been no signal
-    // (history empty / no cwd / no already_routed). Defaults to true when
-    // the key is missing, so legacy / unauthenticated callers behave as
-    // they did before §1.3 landed.
-    let inject_history = user_prefs.prompt_injection_enabled("recommend_history_prefix");
-    let inject_already_routed = user_prefs.prompt_injection_enabled("recommend_already_routed");
-    let inject_cwd = user_prefs.prompt_injection_enabled("recommend_cwd_prefix");
-    let inject_project_context = user_prefs.prompt_injection_enabled("recommend_project_context");
 
     let history = if inject_history {
         transcript_path

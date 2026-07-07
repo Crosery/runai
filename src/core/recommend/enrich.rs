@@ -85,11 +85,13 @@ fn parse_summary_field(summary: &str, label: &str) -> String {
     String::new()
 }
 
-fn build_search_doc(name: &str, description: &str, summary: &str, skill_md: &str) -> String {
+fn build_search_doc(name: &str, description: &str, summary: &str, _skill_md: &str) -> String {
     let triggers = parse_summary_field(summary, "triggers");
-    let not_for = parse_summary_field(summary, "not-for");
+    let task = parse_summary_field(summary, "task");
+    let inputs = parse_summary_field(summary, "inputs");
+    let outputs = parse_summary_field(summary, "outputs");
     compact_text(
-        &format!("{name} {description} {summary} {triggers} {not_for} {skill_md}",),
+        &format!("{name} {description} {task} {triggers} {inputs} {outputs}"),
         3000,
     )
 }

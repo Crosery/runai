@@ -183,6 +183,20 @@ impl TestEnv {
         rows.filter_map(|r| r.ok()).collect()
     }
 
+    fn router_chosen_skills_jsons(&self) -> Vec<String> {
+        if !self.db_path().exists() {
+            return Vec::new();
+        }
+        let conn = rusqlite::Connection::open(self.db_path()).expect("open test db");
+        let mut stmt = conn
+            .prepare("SELECT chosen_skills_json FROM router_events ORDER BY id ASC")
+            .expect("prepare");
+        let rows = stmt
+            .query_map(rusqlite::params![], |r| r.get::<_, String>(0))
+            .expect("query_map");
+        rows.filter_map(|r| r.ok()).collect()
+    }
+
     fn router_intent_memories(&self) -> Vec<String> {
         if !self.db_path().exists() {
             return Vec::new();
@@ -200,6 +214,30 @@ impl TestEnv {
     fn write_recommend_config(&self, body: &str) {
         // The binary expects `config.toml` to live under `<data_dir>/config.toml`.
         std::fs::write(self.config_path(), body).expect("write config.toml");
+    }
+
+    fn force_ai_index(&self, name: &str, search_doc: &str, router_card: &str, llm_score: i64) {
+        let conn = rusqlite::Connection::open(self.db_path()).expect("open test db");
+        conn.execute(
+            "INSERT INTO resource_ai_summary
+             (owner_user_id, name, summary, updated_at, llm_score, search_doc, router_card, source_hash, prompt_hash, format_key)
+             VALUES ('', ?1, ?2, ?3, ?4, ?5, ?6, 'test', 'test', 'test')
+             ON CONFLICT(owner_user_id, name) DO UPDATE SET
+                summary = excluded.summary,
+                updated_at = excluded.updated_at,
+                llm_score = excluded.llm_score,
+                search_doc = excluded.search_doc,
+                router_card = excluded.router_card",
+            rusqlite::params![
+                name,
+                router_card,
+                chrono::Utc::now().timestamp(),
+                llm_score,
+                search_doc,
+                router_card,
+            ],
+        )
+        .expect("force ai index");
     }
 }
 
@@ -304,6 +342,8 @@ fn disabled_recommend_writes_bootstrap_seen_then_stays_silent() {
 enum MockBehavior {
     /// 200 OK + canned OpenAI-compat response that picks one skill name.
     OkPickSkill(&'static str, &'static str), // (skill_name, reasoning)
+    /// 200 OK + canned OpenAI-compat response with exact router text.
+    OkRaw(&'static str),
     /// HTTP 500 with an error body.
     InternalError,
 }
@@ -356,29 +396,9 @@ impl MockLlm {
                                 // reasoning, then skill names one per line.
                                 let content =
                                     format!("EXCLUSIVE\nreasoning: {reasoning}\n{skill}\n");
-                                let body = serde_json::json!({
-                                    "id": "mock",
-                                    "object": "chat.completion",
-                                    "created": 0,
-                                    "model": "mock-model",
-                                    "choices": [{
-                                        "index": 0,
-                                        "message": {"role": "assistant", "content": content},
-                                        "finish_reason": "stop"
-                                    }],
-                                    "usage": {
-                                        "prompt_tokens": 10,
-                                        "completion_tokens": 5,
-                                        "total_tokens": 15
-                                    }
-                                });
-                                let body_str = body.to_string();
-                                format!(
-                                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                                    body_str.len(),
-                                    body_str
-                                )
+                                openai_response(&content)
                             }
+                            MockBehavior::OkRaw(content) => openai_response(content),
                             MockBehavior::InternalError => {
                                 let body_str = "{\"error\":\"mock-500\"}";
                                 format!(
@@ -419,6 +439,64 @@ impl Drop for MockLlm {
             let _ = h.join();
         }
     }
+}
+
+fn openai_response(content: &str) -> String {
+    let body = serde_json::json!({
+        "id": "mock",
+        "object": "chat.completion",
+        "created": 0,
+        "model": "mock-model",
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": content},
+            "finish_reason": "stop"
+        }],
+        "usage": {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15
+        }
+    });
+    let body_str = body.to_string();
+    format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body_str.len(),
+        body_str
+    )
+}
+
+fn plant_android_debug_fixture(env: &TestEnv) {
+    env.plant_skill(
+        "android-cli",
+        "Android ADB logcat emulator 模拟器 安卓调试 环境诊断",
+    );
+    env.force_ai_index(
+        "android-cli",
+        "android-cli Android ADB logcat emulator 模拟器 安卓调试 环境诊断 sdk avd",
+        "android-cli: task: 管理 Android 开发命令行工具，包括 adb/logcat/模拟器调试 triggers: android, adb, logcat, emulator, 模拟器 inputs: 设备或模拟器 outputs: 环境诊断 not-for: ",
+        8,
+    );
+    env.plant_skill(
+        "emulator-launch",
+        "启动 Android Emulator AVD 模拟器 cold boot GPU",
+    );
+    env.force_ai_index(
+        "emulator-launch",
+        "emulator-launch 启动 Android Emulator AVD 模拟器 cold boot GPU",
+        "emulator-launch: task: 启动指定 Android 模拟器或 AVD triggers: emulator, AVD, 模拟器启动 inputs: AVD 名称 outputs: 模拟器启动报告 not-for: 安装 app",
+        8,
+    );
+    env.plant_skill(
+        "ktv-car-debug-suite",
+        "KTVLite 车机 WebView H5 android emulator adb 白屏 调试套件",
+    );
+    env.force_ai_index(
+        "ktv-car-debug-suite",
+        "ktv-car-debug-suite KTVLite 车机 WebView H5 android emulator adb 白屏 调试套件 真车 理想 SS4",
+        "ktv-car-debug-suite: task: KTV 车机 WebView/H5 调试套件 triggers: KTV, 车机, WebView, H5, emulator, adb inputs: KTV 车机场景 outputs: 车机 H5 调试链路 not-for: 普通 Android 模拟器调试, 通用 adb/logcat",
+        10,
+    );
 }
 
 fn enable_recommend_config(env: &TestEnv, base_url: &str) {
@@ -590,7 +668,92 @@ fn stdin_json_client_kind_cwd_and_session_memory_feed_router_input() {
     assert!(second.contains("first runai intent memory alpha"));
     assert!(second.contains("second turn keeps alpha context"));
     assert!(second.contains("默认 30 个 skill 候选"));
+    let session_memory_section = second
+        .split("session_memory:")
+        .nth(1)
+        .and_then(|s| s.split("候选 skill:").next())
+        .unwrap_or("");
+    assert!(session_memory_section.contains("first runai intent memory alpha"));
+    assert!(
+        !session_memory_section.contains("second turn keeps alpha context"),
+        "current prompt must not be duplicated into this turn's session_memory: {session_memory_section}"
+    );
     assert!(!second.contains("CLAUDE_SESSION_ID"));
+}
+
+#[test]
+fn mock_llm_android_emulator_does_not_emit_ktv_candidate() {
+    let env = TestEnv::new();
+    plant_android_debug_fixture(&env);
+    std::fs::write(env.bootstrap_seen_path(), "1").unwrap();
+
+    let mock = MockLlm::start(MockBehavior::OkRaw(
+        "COMPATIBLE\nreasoning: mock deliberately returns every candidate\nandroid-cli\nemulator-launch\nktv-car-debug-suite\n",
+    ));
+    enable_recommend_config(&env, mock.base_url());
+
+    let out = env.run(&["recommend", "帮我调试下安卓模拟器"]);
+    assert!(
+        out.status.success(),
+        "android emulator recommend must succeed (stderr={})",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("android-cli"), "stdout={stdout}");
+    assert!(stdout.contains("emulator-launch"), "stdout={stdout}");
+    assert!(
+        !stdout.contains("ktv-car-debug-suite"),
+        "plain Android emulator debug must not emit KTV skill: {stdout}"
+    );
+
+    let inputs = env.router_llm_inputs();
+    assert_eq!(inputs.len(), 1);
+    assert!(inputs[0].contains("- android-cli"));
+    assert!(inputs[0].contains("- emulator-launch"));
+    assert!(
+        !inputs[0].contains("- ktv-car-debug-suite"),
+        "KTV candidate must be filtered before LLM input: {}",
+        inputs[0]
+    );
+    let chosen = env.router_chosen_skills_jsons();
+    assert_eq!(chosen.len(), 1);
+    assert!(chosen[0].contains("android-cli"));
+    assert!(chosen[0].contains("emulator-launch"));
+    assert!(!chosen[0].contains("ktv-car-debug-suite"));
+}
+
+#[test]
+fn mock_llm_ktv_webview_emulator_can_emit_ktv_candidate() {
+    let env = TestEnv::new();
+    plant_android_debug_fixture(&env);
+    std::fs::write(env.bootstrap_seen_path(), "1").unwrap();
+
+    let mock = MockLlm::start(MockBehavior::OkRaw(
+        "COMPATIBLE\nreasoning: KTV vehicle WebView emulator workflow\nktv-car-debug-suite\nandroid-cli\nemulator-launch\n",
+    ));
+    enable_recommend_config(&env, mock.base_url());
+
+    let out = env.run(&[
+        "recommend",
+        "帮我调试 KTV 车机 WebView H5 在安卓模拟器里的白屏",
+    ]);
+    assert!(
+        out.status.success(),
+        "KTV emulator recommend must succeed (stderr={})",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("ktv-car-debug-suite"), "stdout={stdout}");
+    assert!(stdout.contains("android-cli"), "stdout={stdout}");
+    assert!(stdout.contains("emulator-launch"), "stdout={stdout}");
+
+    let inputs = env.router_llm_inputs();
+    assert_eq!(inputs.len(), 1);
+    assert!(
+        inputs[0].contains("- ktv-car-debug-suite"),
+        "KTV candidate must remain visible for KTV/WebView prompts: {}",
+        inputs[0]
+    );
 }
 
 // ─── 7. Telemetry persisted even on LLM error ──────────────────────────────

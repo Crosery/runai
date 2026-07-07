@@ -854,12 +854,12 @@ fn default_library_scope_includes_private_skill_and_uses_private_index() {
 }
 
 #[test]
-fn router_llm_input_strips_template_frontmatter_and_honors_top_k() {
+fn router_llm_input_strips_template_frontmatter_and_honors_bm25_candidate_limit() {
     let (_home, mgr) = setup();
     let paths = mgr.paths();
 
     let mut cfg = RecommendConfig::load(paths).unwrap();
-    cfg.top_k = 4;
+    cfg.top_k = 8;
     cfg.save(paths).unwrap();
 
     for idx in 0..9 {
@@ -870,6 +870,7 @@ fn router_llm_input_strips_template_frontmatter_and_honors_top_k() {
 
     let prefs = UserPrefs {
         allow_public_recommend: true,
+        bm25_candidate_limit: 5,
         ..Default::default()
     };
     let uid = make_user(&mgr, "alice", &prefs);
@@ -885,13 +886,13 @@ fn router_llm_input_strips_template_frontmatter_and_honors_top_k() {
 
     let event = latest_router_event(&mgr, Some(&uid));
     assert_eq!(
-        event.bm25_kept, 4,
+        event.bm25_kept, 5,
         "router must keep the configured number of LLM-facing candidates"
     );
     assert_eq!(
         llm_candidate_line_count(&event.llm_input),
-        4,
-        "llm_input candidate listing must match top_k: {}",
+        5,
+        "llm_input candidate listing must match bm25_candidate_limit: {}",
         event.llm_input
     );
     assert!(

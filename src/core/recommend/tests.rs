@@ -2,11 +2,14 @@ use std::fs;
 
 use crate::core::paths::AppPaths;
 
-use super::intent::{build_intent_memory_from_prompt, build_intent_summary};
+use super::intent::{
+    ScenarioConstraint, build_intent_memory_from_prompt, build_intent_summary, recognize_intent,
+};
 use super::lang_validation::prose_fields;
 use super::project_context::{extract_at_references, read_project_context};
 use super::router::{
-    RouterUserMessageParts, build_router_user_message, parse_lines, split_mode_and_names,
+    CandidateRelevanceInput, RouterUserMessageParts, build_router_user_message,
+    candidate_allowed_by_intent, parse_lines, split_mode_and_names,
 };
 use super::{
     HookInstallStatus, Provider, RecommendConfig, RecommendedSkill, RouterDecision, RouterMode,
@@ -249,6 +252,94 @@ fn intent_memory_from_prompt_is_short_and_normalized() {
 }
 
 #[test]
+fn recognize_android_emulator_debug_excludes_vehicle_terms() {
+    let intent = recognize_intent(
+        "帮我调试下安卓模拟器",
+        &[],
+        Some("/repo/runai"),
+        Some("claude"),
+    );
+    assert!(
+        intent
+            .scenario_constraints
+            .contains(&ScenarioConstraint::AndroidEmulatorDebug)
+    );
+    assert!(intent.domain_tags.iter().any(|t| t == "android"));
+    assert!(intent.domain_tags.iter().any(|t| t == "emulator"));
+    assert!(intent.include_terms.iter().any(|t| t == "adb"));
+    assert!(intent.exclude_terms.iter().any(|t| t == "ktv"));
+    assert!(intent.exclude_terms.iter().any(|t| t == "车机"));
+    assert!(intent.exclude_terms.iter().any(|t| t == "webview"));
+    assert!(intent.intent_summary.contains("调试 Android 模拟器"));
+}
+
+#[test]
+fn recognize_ktv_webview_emulator_allows_vehicle_domain() {
+    let intent = recognize_intent(
+        "帮我调试 KTV 车机 WebView H5 在安卓模拟器里的白屏",
+        &[],
+        Some("/repo/runai"),
+        Some("claude"),
+    );
+    assert!(
+        intent
+            .scenario_constraints
+            .contains(&ScenarioConstraint::KtvVehicleWebview)
+    );
+    assert!(intent.domain_tags.iter().any(|t| t == "ktv"));
+    assert!(intent.domain_tags.iter().any(|t| t == "webview"));
+    assert!(!intent.exclude_terms.iter().any(|t| t == "ktv"));
+    assert!(!intent.exclude_terms.iter().any(|t| t == "车机"));
+}
+
+#[test]
+fn android_emulator_prompt_filters_ktv_vehicle_candidate_without_ktv_terms() {
+    let intent = recognize_intent("帮我调试下安卓模拟器", &[], None, Some("claude"));
+    let android = CandidateRelevanceInput {
+        name: "android-cli",
+        search_doc: "Android ADB logcat emulator 模拟器 安卓调试 环境诊断",
+        router_card: "task: 管理 Android 开发命令行工具，包括 adb/logcat/模拟器调试",
+        description: "Android CLI 调试",
+        groups: &["mobile-dev"],
+    };
+    let emulator = CandidateRelevanceInput {
+        name: "emulator-launch",
+        search_doc: "启动 Android Emulator AVD 模拟器 cold boot GPU",
+        router_card: "task: 启动指定 Android 模拟器或 AVD",
+        description: "Android 模拟器启动",
+        groups: &["mobile-dev", "ktv-car-project"],
+    };
+    let ktv = CandidateRelevanceInput {
+        name: "ktv-car-debug-suite",
+        search_doc: "KTVLite 车机 WebView H5 android emulator adb 白屏 调试套件",
+        router_card: "task: KTV 车机 WebView/H5 调试套件 | not-for: 普通 Android 模拟器调试",
+        description: "KTV 车机场景调试",
+        groups: &["ktv-car-project"],
+    };
+    assert!(candidate_allowed_by_intent(&intent, &android));
+    assert!(candidate_allowed_by_intent(&intent, &emulator));
+    assert!(!candidate_allowed_by_intent(&intent, &ktv));
+}
+
+#[test]
+fn ktv_webview_emulator_prompt_keeps_vehicle_candidate() {
+    let intent = recognize_intent(
+        "帮我调试 KTV 车机 WebView H5 在安卓模拟器里的白屏",
+        &[],
+        None,
+        Some("claude"),
+    );
+    let ktv = CandidateRelevanceInput {
+        name: "ktv-car-debug-suite",
+        search_doc: "KTVLite 车机 WebView H5 android emulator adb 白屏 调试套件",
+        router_card: "task: KTV 车机 WebView/H5 调试套件",
+        description: "KTV 车机场景调试",
+        groups: &["ktv-car-project"],
+    };
+    assert!(candidate_allowed_by_intent(&intent, &ktv));
+}
+
+#[test]
 fn intent_summary_includes_current_prompt_memory_cwd_and_client_kind() {
     let memory = vec![
         "用户要求当前 session 记忆默认 10 条".to_string(),
@@ -285,6 +376,34 @@ fn router_user_message_uses_intent_summary_and_client_context() {
     assert!(msg.contains("cwd: `/repo/runai`"));
     assert!(msg.contains("- test-driven-development: TDD"));
     assert!(msg.contains("默认 30 个 skill 候选"));
+}
+
+#[test]
+fn router_user_message_uses_minimal_sufficient_candidate_contract() {
+    let msg = build_router_user_message(RouterUserMessageParts {
+        user_prompt: "帮我调试下安卓模拟器",
+        cwd_block: "",
+        project_context_block: "",
+        history_block: "",
+        already_routed_block: "",
+        intent_summary: "intent: 调试 Android 模拟器",
+        candidate_listing: "- android-cli: Android 调试",
+        top_k: 8,
+        bm25_candidate_limit: 30,
+    });
+    assert!(msg.contains("最小充分集合"));
+    assert!(msg.contains("硬上限 8 是上限，不是目标"));
+    assert!(msg.contains("弱相关、只同组、只 BM25 高、只历史高频"));
+}
+
+#[test]
+fn system_prompt_precision_contract() {
+    let system = super::prompts::system_prompt_template();
+    assert!(system.contains("精准优先"));
+    assert!(system.contains("同组不是共载理由"));
+    assert!(system.contains("not-for"));
+    assert!(!system.contains("宁多勿少"));
+    assert!(!system.contains("只要候选 skill 描述里有相关迹象就推"));
 }
 
 #[test]
