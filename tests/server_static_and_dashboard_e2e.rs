@@ -301,6 +301,65 @@ fn app_css_contains_skill_radar_classes() {
     }
 }
 
+// ─── GET /app.js — skill-detail poll no longer full-repaints ──────────
+//
+// User-reported jank: sitting on a skill detail page felt "very laggy"
+// because the 5s poll timer called the FULL paint (loadSkillDetail),
+// which blanks every field, rebuilds the file tree, re-fetches the
+// selected file's content, and rebuilds the event table — every tick,
+// even when nothing changed. Fixed by splitting the poll path onto a
+// light-weight refresh (refreshSkillDetailLive / updateSkillRadarLive)
+// that only touches the radar + feedback panel and no-ops when the data
+// is identical to the last tick. These string assertions are the
+// automatable floor for that regression (no Playwright harness — issue
+// #20): they pin the poll branch to the light function and confirm both
+// halves of the split actually landed in the bundle.
+#[test]
+fn app_js_skill_detail_poll_uses_light_refresh_not_full_repaint() {
+    let s = spawn_team_server();
+    let body = http()
+        .get(format!("{}/app.js", s.base_url()))
+        .send()
+        .unwrap()
+        .text()
+        .unwrap();
+    assert!(
+        body.contains("function refreshSkillDetailLive"),
+        "app.js missing refreshSkillDetailLive — 06-library-detail.js light poll path not wired in"
+    );
+    assert!(
+        body.contains("function updateSkillRadarLive"),
+        "app.js missing updateSkillRadarLive — 20-skill-radar.js light radar path not wired in"
+    );
+    // The poll-timer's detail branch must call the light refresh, and must
+    // NOT call the full-paint loadSkillDetail — that was the actual bug.
+    assert!(
+        body.contains("refreshSkillDetailLive(detailState.name)"),
+        "app.js poll branch does not call refreshSkillDetailLive — detail view still full-repaints every tick"
+    );
+    let poll_branch_start = body
+        .find("if (view === 'detail'")
+        .expect("app.js missing the detail poll branch");
+    let poll_branch_line_end = body[poll_branch_start..]
+        .find('\n')
+        .map(|i| poll_branch_start + i)
+        .unwrap_or(body.len());
+    let poll_branch_line = &body[poll_branch_start..poll_branch_line_end];
+    assert!(
+        !poll_branch_line.contains("loadSkillDetail("),
+        "detail poll branch still calls the full-repaint loadSkillDetail: {poll_branch_line}"
+    );
+    // renderSkillRadar (the full-paint entrance path, called from
+    // loadSkillDetail on navigation / skill switch) must clear any
+    // previous animation state before repainting — otherwise switching to
+    // a different skill interpolates FROM the last-viewed skill's values
+    // instead of animating in from the center (the pre-fix bug).
+    assert!(
+        body.contains("radarAnimState.delete(containerId)"),
+        "renderSkillRadar no longer resets animation state on entry — skill switches would carry over stale radar values"
+    );
+}
+
 // ─── GET /api/summary ─────────────────────────────────────────────────
 
 #[test]

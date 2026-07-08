@@ -134,10 +134,14 @@
       // Skill detail: re-pull /api/skill/{name} so the feedback radar +
       // recent-votes list pick up feedback recorded from elsewhere (another
       // tab, another user, an event-dialog 准/不准 click) without the user
-      // having to navigate away and back. renderSkillRadar interpolates
-      // from the previously-displayed values, so this refresh reads as a
-      // gentle animation, not a jump-cut.
-      if (view === 'detail' && detailState.name) { loadSkillDetail(detailState.name, detailState.owner); return; }
+      // having to navigate away and back. This calls the LIGHT refresh
+      // (06-library-detail.js::refreshSkillDetailLive), not loadSkillDetail
+      // — the full paint blanks and rebuilds the whole page (file tree,
+      // event table, file content re-fetch included) on every tick, which
+      // is what made this view feel janky. The light path only moves the
+      // radar polygon + feedback numbers, and no-ops entirely when nothing
+      // changed since the last tick.
+      if (view === 'detail' && detailState.name) { refreshSkillDetailLive(detailState.name); return; }
     }, POLL_INTERVAL_MS);
   }
   function stopPolling() {

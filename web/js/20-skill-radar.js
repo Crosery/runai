@@ -6,6 +6,22 @@
   //  first paint) into the new target via requestAnimationFrame. Pure
   //  DOM/SVG — no chart library, matching the rest of web/ (no CDN, no
   //  build step).
+  //
+  //  Two entry points, deliberately different in cost:
+  //  - renderSkillRadar(containerId, radar, radarAvg): full (re)paint —
+  //    rebuilds the SVG chrome (grid/axes/labels/legend) from scratch and
+  //    always animates in from the center (RADAR_ZERO). This is the
+  //    "entrance" moment: navigating into a skill detail view or switching
+  //    to a different skill. Called from loadSkillDetail.
+  //  - updateSkillRadarLive(containerId, radar, radarAvg): lightweight
+  //    refresh for the 5s detail-view poll. Reuses the already-painted SVG
+  //    chrome, only moves the two polygons + value labels, and is a
+  //    complete no-op (no DOM touch, no rAF) when the incoming values are
+  //    byte-identical to what's already settled on screen — the common
+  //    case, since feedback data rarely changes between two 5s ticks.
+  //    Without this split, every poll tick was rebuilding the whole SVG
+  //    and restarting a 420ms animation even when nothing changed, which
+  //    read as a slow ripple through the page every 5 seconds.
   // ------------------------------------------------------------------
   const RADAR_AXES = [
     { key: 'adoption', label: '采纳' },
@@ -16,9 +32,10 @@
   ];
   const RADAR_MAX = 10;
   const RADAR_ZERO = RADAR_AXES.reduce((a, ax) => ((a[ax.key] = 0), a), {});
+  const RADAR_CX = 150, RADAR_CY = 142, RADAR_MAXR = 100;
   // containerId -> { raf, skill: {...}, avg: {...} } — lets a data refresh
   // interpolate FROM the currently-displayed values instead of snapping,
-  // and lets a first paint animate outward from the center.
+  // and lets updateSkillRadarLive tell "unchanged" from "moved".
   const radarAnimState = new Map();
 
   function radarAngle(i) {
@@ -39,7 +56,68 @@
   function radarEaseOutCubic(t) {
     return 1 - Math.pow(1 - t, 3);
   }
+  function radarValuesEqual(a, b) {
+    if (!a || !b) return false;
+    return RADAR_AXES.every((ax) => (a[ax.key] ?? 0) === (b[ax.key] ?? 0));
+  }
 
+  // Moves the two polygons + value labels to `curSkill`/`curAvg`. Returns
+  // false (and does nothing) if the SVG chrome isn't there — e.g. the user
+  // navigated away between fetch and this call landing.
+  function applyRadarPolygon(containerId, curSkill, curAvg) {
+    const host = document.getElementById(containerId);
+    if (!host) return false;
+    const polySkill = host.querySelector('.radar-poly-skill');
+    const polyAvg = host.querySelector('.radar-poly-avg');
+    const valuesGroup = host.querySelector('.radar-values');
+    if (!polySkill || !polyAvg || !valuesGroup) return false;
+    polySkill.setAttribute('points', radarPtsAttr(radarPolygonPoints(RADAR_CX, RADAR_CY, RADAR_MAXR, curSkill)));
+    polyAvg.setAttribute('points', radarPtsAttr(radarPolygonPoints(RADAR_CX, RADAR_CY, RADAR_MAXR, curAvg)));
+    valuesGroup.innerHTML = RADAR_AXES.map((ax, i) => {
+      const v = curSkill[ax.key] ?? 0;
+      const r = Math.max((v / RADAR_MAX) * RADAR_MAXR, 14);
+      const [vx, vy] = radarPoint(RADAR_CX, RADAR_CY, r, radarAngle(i));
+      return `<text class="radar-value-label" x="${vx.toFixed(1)}" y="${vy.toFixed(1)}">${v.toFixed(1)}</text>`;
+    }).join('');
+    return true;
+  }
+
+  // Shared rAF interpolation loop used by both the full entrance paint and
+  // the lightweight live update — the only difference between callers is
+  // the `from*` values and whether the SVG chrome was just rebuilt.
+  function runRadarAnimation(containerId, fromSkill, fromAvg, target, targetAvg) {
+    const prev = radarAnimState.get(containerId);
+    if (prev && prev.raf) cancelAnimationFrame(prev.raf);
+    const DURATION = 420;
+    const t0 = performance.now();
+    function frame(now) {
+      const t = Math.min(1, (now - t0) / DURATION);
+      const eased = radarEaseOutCubic(t);
+      const curSkill = {};
+      const curAvg = {};
+      RADAR_AXES.forEach((ax) => {
+        const fv = fromSkill[ax.key] ?? 0;
+        const tv = target[ax.key] ?? 0;
+        curSkill[ax.key] = fv + (tv - fv) * eased;
+        const fav = fromAvg[ax.key] ?? 0;
+        const tav = targetAvg[ax.key] ?? 0;
+        curAvg[ax.key] = fav + (tav - fav) * eased;
+      });
+      if (!applyRadarPolygon(containerId, curSkill, curAvg)) return;
+      if (t < 1) {
+        const raf = requestAnimationFrame(frame);
+        radarAnimState.set(containerId, { raf, skill: curSkill, avg: curAvg });
+      } else {
+        radarAnimState.set(containerId, { raf: null, skill: target, avg: targetAvg });
+      }
+    }
+    const raf = requestAnimationFrame(frame);
+    radarAnimState.set(containerId, { raf, skill: fromSkill, avg: fromAvg });
+  }
+
+  // Full paint: rebuilds the SVG chrome and always animates in from the
+  // center. Call this on navigation into a skill / switching skills —
+  // never from the poll timer (see updateSkillRadarLive for that).
   function renderSkillRadar(containerId, radar, radarAvg) {
     const host = document.getElementById(containerId);
     if (!host) return;
@@ -48,25 +126,24 @@
 
     const prev = radarAnimState.get(containerId);
     if (prev && prev.raf) cancelAnimationFrame(prev.raf);
-    const fromSkill = prev ? prev.skill : RADAR_ZERO;
-    const fromAvg = prev ? prev.avg : RADAR_ZERO;
+    radarAnimState.delete(containerId);
 
-    const W = 320, H = 300, cx = 150, cy = 142, maxR = 100, rings = 4;
+    const W = 320, H = 300, rings = 4;
 
     let gridSvg = '';
     for (let ring = 1; ring <= rings; ring++) {
-      const r = (ring / rings) * maxR;
-      const pts = RADAR_AXES.map((_, i) => radarPoint(cx, cy, r, radarAngle(i)));
+      const r = (ring / rings) * RADAR_MAXR;
+      const pts = RADAR_AXES.map((_, i) => radarPoint(RADAR_CX, RADAR_CY, r, radarAngle(i)));
       gridSvg += `<polygon class="radar-grid-ring" points="${radarPtsAttr(pts)}"></polygon>`;
     }
     let axisSvg = '';
     let labelSvg = '';
     RADAR_AXES.forEach((ax, i) => {
       const angle = radarAngle(i);
-      const [ex, ey] = radarPoint(cx, cy, maxR, angle);
-      axisSvg += `<line class="radar-axis-line" x1="${cx}" y1="${cy}" x2="${ex.toFixed(1)}" y2="${ey.toFixed(1)}"></line>`;
-      const [lx, ly] = radarPoint(cx, cy, maxR + 24, angle);
-      const anchor = Math.abs(ex - cx) < 4 ? 'middle' : ex > cx ? 'start' : 'end';
+      const [ex, ey] = radarPoint(RADAR_CX, RADAR_CY, RADAR_MAXR, angle);
+      axisSvg += `<line class="radar-axis-line" x1="${RADAR_CX}" y1="${RADAR_CY}" x2="${ex.toFixed(1)}" y2="${ey.toFixed(1)}"></line>`;
+      const [lx, ly] = radarPoint(RADAR_CX, RADAR_CY, RADAR_MAXR + 24, angle);
+      const anchor = Math.abs(ex - RADAR_CX) < 4 ? 'middle' : ex > RADAR_CX ? 'start' : 'end';
       labelSvg += `<text class="radar-axis-label" x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" text-anchor="${anchor}">${escapeHTML(ax.label)}</text>`;
     });
 
@@ -84,45 +161,30 @@
         <span class="radar-legend-item"><i class="radar-swatch radar-swatch-avg"></i>全库均值</span>
       </div>`;
 
-    const polySkill = host.querySelector('.radar-poly-skill');
-    const polyAvg = host.querySelector('.radar-poly-avg');
-    const valuesGroup = host.querySelector('.radar-values');
-    if (!polySkill || !polyAvg || !valuesGroup) return;
+    runRadarAnimation(containerId, RADAR_ZERO, RADAR_ZERO, target, targetAvg);
+  }
 
-    const DURATION = 420;
-    const t0 = performance.now();
-
-    function frame(now) {
-      const t = Math.min(1, (now - t0) / DURATION);
-      const eased = radarEaseOutCubic(t);
-      const curSkill = {};
-      const curAvg = {};
-      RADAR_AXES.forEach((ax) => {
-        const fv = fromSkill[ax.key] ?? 0;
-        const tv = target[ax.key] ?? 0;
-        curSkill[ax.key] = fv + (tv - fv) * eased;
-        const fav = fromAvg[ax.key] ?? 0;
-        const tav = targetAvg[ax.key] ?? 0;
-        curAvg[ax.key] = fav + (tav - fav) * eased;
-      });
-      polySkill.setAttribute('points', radarPtsAttr(radarPolygonPoints(cx, cy, maxR, curSkill)));
-      polyAvg.setAttribute('points', radarPtsAttr(radarPolygonPoints(cx, cy, maxR, curAvg)));
-      valuesGroup.innerHTML = RADAR_AXES.map((ax, i) => {
-        const v = curSkill[ax.key] ?? 0;
-        const r = Math.max((v / RADAR_MAX) * maxR, 14);
-        const [vx, vy] = radarPoint(cx, cy, r, radarAngle(i));
-        return `<text class="radar-value-label" x="${vx.toFixed(1)}" y="${vy.toFixed(1)}">${v.toFixed(1)}</text>`;
-      }).join('');
-
-      if (t < 1) {
-        const raf = requestAnimationFrame(frame);
-        radarAnimState.set(containerId, { raf, skill: curSkill, avg: curAvg });
-      } else {
-        radarAnimState.set(containerId, { raf: null, skill: target, avg: targetAvg });
-      }
+  // Lightweight refresh for the 5s detail-view poll: no chrome rebuild, no
+  // animation restart when nothing moved. Falls back to a full paint if
+  // the chrome isn't there yet (shouldn't normally happen — the poll only
+  // fires once loadSkillDetail has already painted once).
+  function updateSkillRadarLive(containerId, radar, radarAvg) {
+    const host = document.getElementById(containerId);
+    if (!host || !host.querySelector('.radar-poly-skill')) {
+      renderSkillRadar(containerId, radar, radarAvg);
+      return;
     }
-    const raf = requestAnimationFrame(frame);
-    radarAnimState.set(containerId, { raf, skill: fromSkill, avg: fromAvg });
+    const target = radar || {};
+    const targetAvg = radarAvg || {};
+    const prev = radarAnimState.get(containerId);
+    const fromSkill = prev ? prev.skill : RADAR_ZERO;
+    const fromAvg = prev ? prev.avg : RADAR_ZERO;
+    // Settled (no in-flight animation) AND values identical to what's
+    // already on screen → skip entirely, not even a rAF gets scheduled.
+    if (prev && prev.raf == null && radarValuesEqual(fromSkill, target) && radarValuesEqual(fromAvg, targetAvg)) {
+      return;
+    }
+    runRadarAnimation(containerId, fromSkill, fromAvg, target, targetAvg);
   }
 
   // ------------------------------------------------------------------

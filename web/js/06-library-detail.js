@@ -73,6 +73,9 @@
     // 所以这个 section 不像 AI 摘要那样需要按空值隐藏。
     renderSkillRadar('detail-radar', d.radar, d.radar_avg);
     renderFeedbackPanel(d);
+    // Baseline for the live-poll short-circuit below: the next 5s tick
+    // only touches the DOM if the feedback-relevant fields actually moved.
+    lastLiveDetailSnapshot = liveDetailSnapshotKey(d);
 
     // Event history (grid-based rows, scrollable with edge blur)
     const tbody = $('#detail-events-body');
@@ -168,5 +171,65 @@
     } else {
       $('#detail-file-body').textContent = `(二进制文件 — ${fmtBytes(f.size)} — 不显示内容)`;
     }
+  }
+
+  // ------------------------------------------------------------------
+  //  Library: skill detail — lightweight 5s poll refresh.
+  //
+  //  loadSkillDetail() above is the FULL paint: it blanks every field back
+  //  to placeholders, re-fetches, rebuilds the event table, and re-fetches
+  //  the file tree + the currently-selected file's content. That's correct
+  //  for navigating into a skill (or switching skills) but was also what
+  //  the 5s poll timer called on every tick — so a user just sitting on a
+  //  skill detail page had the whole page (file viewer included) blank out
+  //  and repaint every 5 seconds, refetching file content nothing had
+  //  changed. That's the "网页很卡" root cause on this view, not server
+  //  latency (/api/skill/{name} is ~1ms warm).
+  //
+  //  refreshSkillDetailLive() is what the poll timer calls instead: it
+  //  only re-fetches /api/skill/{name} and, if the feedback-relevant
+  //  fields actually changed since the last snapshot, updates the radar
+  //  (via updateSkillRadarLive's in-place polygon move, see
+  //  20-skill-radar.js) and the feedback stats/recent-list/enrich badge.
+  //  It never touches the file tree, the event table, or the top strip —
+  //  those don't change from feedback votes elsewhere and rebuilding them
+  //  cost a scroll-position reset + extra fetches for no reason.
+  // ------------------------------------------------------------------
+  let lastLiveDetailSnapshot = null;
+
+  function liveDetailSnapshotKey(d) {
+    return JSON.stringify({
+      radar: d.radar || null,
+      radar_avg: d.radar_avg || null,
+      feedback_stats: d.feedback_stats || null,
+      feedback_recent: d.feedback_recent || null,
+      enrich_status: d.enrich_status || null,
+    });
+  }
+
+  async function refreshSkillDetailLive(name) {
+    if (!name || detailState.name !== name) return;
+    const owner = detailState.owner;
+    const ownerQ = owner ? `?owner=${encodeURIComponent(owner)}` : '';
+    let d;
+    try {
+      const res = await fetch(`/api/skill/${encodeURIComponent(name)}${ownerQ}`);
+      if (!res.ok) return;
+      d = await res.json();
+    } catch (_e) {
+      return;
+    }
+    // The route may have moved on (or switched skill) while this fetch was
+    // in flight — discard a stale response rather than paint it over
+    // whatever the user has navigated to since.
+    if (detailState.name !== name) return;
+
+    const snapshotKey = liveDetailSnapshotKey(d);
+    if (snapshotKey === lastLiveDetailSnapshot) return;
+    lastLiveDetailSnapshot = snapshotKey;
+
+    detailState.current = d;
+    updateSkillRadarLive('detail-radar', d.radar, d.radar_avg);
+    renderFeedbackPanel(d);
   }
 
