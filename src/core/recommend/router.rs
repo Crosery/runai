@@ -80,18 +80,38 @@ const CWD_PREFIX_TEMPLATE: &str = crate::core::prompts::PROMPT_RECOMMEND_CWD_PRE
 /// Upper bound (in chars) on the current user prompt copied verbatim into the
 /// LLM-facing messages (Stage-1 intent condensation and Stage-2 router). The
 /// intent summary already condenses long prompts, so a very long pasted prompt
-/// only needs a bounded head here — telemetry (`RouterEvent.user_prompt`) still
-/// stores the full text. Over the cap we keep the head and append a marker.
+/// only needs a bounded window here — telemetry (`RouterEvent.user_prompt`)
+/// still stores the full text. Over the cap we keep a head AND a tail (see
+/// `truncate_prompt_for_llm`).
 const LLM_PROMPT_CHAR_CAP: usize = 2000;
+/// Chars kept from the START of an over-cap prompt. The real request almost
+/// always lives at the END (users paste long context, then ask), so the tail
+/// gets the larger share (~2/3) and the head a smaller ~1/3 — enough to keep
+/// the leading framing without swallowing the actual ask. Head-only truncation
+/// (the old behavior) cut the real intent out entirely, which made Stage-1
+/// guess from the pasted context instead of the actual request.
+const LLM_PROMPT_HEAD_CHARS: usize = LLM_PROMPT_CHAR_CAP / 3;
+/// Inserted between the kept head and tail so the model (and a human reading
+/// telemetry) can see the middle was elided rather than reading a false splice.
+const LLM_PROMPT_TRUNCATION_MARKER: &str = "\n…[中段已截断]…\n";
 
-/// Truncate `prompt` to `LLM_PROMPT_CHAR_CAP` chars for LLM input, appending a
-/// visible marker when clipped. Char-boundary safe.
-fn truncate_prompt_for_llm(prompt: &str) -> String {
-    if prompt.chars().count() <= LLM_PROMPT_CHAR_CAP {
+/// Truncate an over-cap `prompt` for LLM input by keeping a head window AND a
+/// tail window with a visible middle-elision marker between them, so the real
+/// request (which users almost always put LAST, after pasted context) survives.
+/// The kept text totals about `LLM_PROMPT_CHAR_CAP` chars — `LLM_PROMPT_HEAD_CHARS`
+/// from the front, the rest from the back — plus the short marker. Char-boundary
+/// safe (iterates over `chars`, never byte indices). Used by BOTH the Stage-1
+/// intent user message and the Stage-2 router user message.
+pub(super) fn truncate_prompt_for_llm(prompt: &str) -> String {
+    let total = prompt.chars().count();
+    if total <= LLM_PROMPT_CHAR_CAP {
         return prompt.to_string();
     }
-    let head: String = prompt.chars().take(LLM_PROMPT_CHAR_CAP).collect();
-    format!("{head}\n…[prompt 已截断]")
+    let head_len = LLM_PROMPT_HEAD_CHARS.min(LLM_PROMPT_CHAR_CAP);
+    let tail_len = LLM_PROMPT_CHAR_CAP - head_len;
+    let head: String = prompt.chars().take(head_len).collect();
+    let tail: String = prompt.chars().skip(total - tail_len).collect();
+    format!("{head}{LLM_PROMPT_TRUNCATION_MARKER}{tail}")
 }
 
 /// Max transcript turns threaded into the Stage-2 history block. Kept small on

@@ -483,6 +483,55 @@ fn user_messages_and_hook_output_stay_under_token_budget() {
 }
 
 #[test]
+fn long_prompt_truncation_keeps_head_and_tail_in_stage1_input() {
+    // A 5000+ char paste with the real request at the END. Head-only truncation
+    // used to drop the tail (the actual ask) — now the Stage-1 user message
+    // carries the head window, the tail request, and a middle-elision marker.
+    let env = TestEnv::new();
+    env.plant_skill("alpha-skill", "处理 alpha 任务 alpha 工具");
+    let mock = RecordingMock::start();
+    env.write_config(mock.base_url());
+
+    let filler = "旧对话粘贴内容 pasted old context ".repeat(300);
+    let prompt = format!("HEADMARK 开头框架{filler}MIDDLEMARK{filler}TAILMARK 处理 alpha 任务");
+    assert!(
+        prompt.chars().count() > 5000,
+        "fixture must be a long paste"
+    );
+    let _ = recommend_stdin(&env, &prompt, "trunc-session");
+
+    let bodies = mock.bodies();
+    let intent_user = bodies
+        .iter()
+        .filter_map(|b| {
+            if system_of(b).map(|s| s.contains("第一波")).unwrap_or(false) {
+                user_of(b)
+            } else {
+                None
+            }
+        })
+        .next()
+        .expect("Stage-1 user msg");
+
+    assert!(
+        intent_user.contains("HEADMARK"),
+        "leading framing kept in Stage-1 input:\n{intent_user}"
+    );
+    assert!(
+        intent_user.contains("TAILMARK"),
+        "trailing real request kept in Stage-1 input:\n{intent_user}"
+    );
+    assert!(
+        intent_user.contains("中段已截断"),
+        "middle-elision marker present in Stage-1 input:\n{intent_user}"
+    );
+    assert!(
+        !intent_user.contains("MIDDLEMARK"),
+        "the elided middle must be gone from Stage-1 input:\n{intent_user}"
+    );
+}
+
+#[test]
 fn output_and_quantity_rules_live_in_system_not_user_message() {
     // The 输出格式 + 候选数量 rule blocks are static — they belong in the fixed
     // Stage-2 system prompt (prefix-cache friendly), not re-sent per request in

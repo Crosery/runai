@@ -10,7 +10,7 @@ use super::project_context::{extract_at_references, read_project_context};
 use super::router::{
     CandidateRelevanceInput, RouterUserMessageParts, build_router_user_message,
     candidate_allowed_by_intent, feedback_markers, hybrid_score, is_harness_message, parse_lines,
-    split_mode_and_names,
+    split_mode_and_names, truncate_prompt_for_llm,
 };
 use super::{
     HookInstallStatus, Provider, RecommendConfig, RecommendedSkill, RouterDecision, RouterMode,
@@ -440,6 +440,49 @@ fn router_user_message_uses_intent_summary_and_client_context() {
     assert!(msg.contains("cwd: `/repo/runai`"));
     assert!(msg.contains("- test-driven-development: TDD"));
     assert!(msg.contains("默认 30 个 skill 候选"));
+}
+
+#[test]
+fn truncate_keeps_head_and_tail_with_middle_marker() {
+    // Real incident: user pastes long context, then puts the actual request at
+    // the very END. Head-only truncation cut the real intent out. Now we keep a
+    // head window + the tail (where the request lives) + a middle marker.
+    let filler = "旧对话粘贴内容 old pasted context ".repeat(300); // well over the cap
+    let prompt =
+        format!("HEADMARK 开头框架{filler}MIDDLEMARK{filler}TAILMARK 末尾真实请求：帮我处理 alpha");
+    assert!(prompt.chars().count() > 2000, "fixture must exceed the cap");
+
+    let out = truncate_prompt_for_llm(&prompt);
+
+    // Within budget: head + tail totals the cap, plus the short marker.
+    assert!(
+        out.chars().count() <= 2000 + 12,
+        "truncated output must stay within budget, got {}",
+        out.chars().count()
+    );
+    assert!(out.contains("HEADMARK"), "leading framing kept:\n{out}");
+    assert!(
+        out.contains("TAILMARK"),
+        "trailing real request kept:\n{out}"
+    );
+    assert!(
+        out.contains("帮我处理 alpha"),
+        "the actual ask must survive:\n{out}"
+    );
+    assert!(
+        out.contains("中段已截断"),
+        "middle-elision marker present:\n{out}"
+    );
+    assert!(
+        !out.contains("MIDDLEMARK"),
+        "the elided middle must be gone:\n{out}"
+    );
+}
+
+#[test]
+fn truncate_short_prompt_is_unchanged() {
+    let short = "帮我处理 alpha 任务";
+    assert_eq!(truncate_prompt_for_llm(short), short);
 }
 
 #[test]
