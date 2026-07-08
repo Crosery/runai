@@ -119,7 +119,7 @@ fn render_hook_output(
         .collect::<Vec<_>>()
         .join(", ");
     let feedback_protocol_block = format!(
-        "\n反馈（仅用户明确正/负评价时，回复末尾跑一次）：`runai-client feedback <skill-name> --note \"<原话>\"`。当前推的 skill: {names}\n"
+        "\n反馈（仅用户明确正/负评价时，回复末尾跑一次）：`runai-client feedback <skill-name> --verdict good|bad --note \"<原话>\"`。当前推的 skill: {names}\n"
     );
 
     crate::core::prompts::template_body(HOOK_OUTPUT_TEMPLATE)
