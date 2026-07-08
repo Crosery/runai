@@ -314,7 +314,6 @@ fn write_client_identity(home: &Path, username: &str, uid: &str, api_key: &str) 
 /// `recommend_history_prefix.md` changes, this test needs the new substring
 /// — that's intentional; the prompt registry is the contract.
 const HISTORY_MARKER: &str = "最近对话历史";
-const ALREADY_ROUTED_MARKER: &str = "本会话已推过的 skill";
 const CWD_MARKER: &str = "用作领域消歧线索";
 const PROJECT_CONTEXT_MARKER: &str = "当前项目背景";
 
@@ -480,9 +479,6 @@ fn unauthenticated_request_uses_defaults_and_does_not_read_user_prefs() {
         .insert("recommend_history_prefix".into(), false);
     paranoid
         .prompt_injection_flags
-        .insert("recommend_already_routed".into(), false);
-    paranoid
-        .prompt_injection_flags
         .insert("recommend_cwd_prefix".into(), false);
     paranoid
         .prompt_injection_flags
@@ -491,44 +487,6 @@ fn unauthenticated_request_uses_defaults_and_does_not_read_user_prefs() {
 
     let transcript = paths.data_dir().join("session.jsonl");
     write_transcript(&transcript, &["earlier turn"]);
-
-    // Pre-seed an already-routed entry for this normalized session so the
-    // already_routed block has content to render — proves the block was
-    // actually injected, not just absent for lack of input data.
-    let anon_session = recommend::runai_session_id_from_native(None, "session-anon")
-        .expect("derive anonymous runai session id");
-    let event = runai::core::db::RouterEvent {
-        id: None,
-        ts: chrono::Utc::now().timestamp(),
-        provider: "claude-cli".into(),
-        model: "claude-haiku-test".into(),
-        prompt_tokens: 0,
-        completion_tokens: 0,
-        reasoning_tokens: 0,
-        total_tokens: 0,
-        cache_hit_tokens: 0,
-        cache_miss_tokens: 0,
-        latency_ms: 0,
-        chosen_skills_json: r#"["alpha"]"#.into(),
-        candidate_count: 1,
-        status: "ok".into(),
-        error_msg: None,
-        session_id: anon_session,
-        mode: "exclusive".into(),
-        user_prompt: "earlier".into(),
-        cwd: "".into(),
-        bm25_kept: 1,
-        llm_raw_response: "EXCLUSIVE\nreasoning: seed\nalpha\n".into(),
-        hook_output: "".into(),
-        llm_input: "(seed)".into(),
-        intent_llm_input: "".into(),
-        intent_llm_output: "".into(),
-        intent_status: "".into(),
-        intent_error_msg: None,
-        bm25_candidates_json: "[]".into(),
-        user_id: None,
-    };
-    mgr.db().insert_router_event(&event).unwrap();
 
     let _ = recommend::recommend_for_user(
         &mgr,
@@ -541,13 +499,10 @@ fn unauthenticated_request_uses_defaults_and_does_not_read_user_prefs() {
 
     let anon_input = latest_llm_input(&mgr, None);
     // Defaults are ON for every toggleable block — each marker present.
+    // (recommend_already_routed was removed with session no-repeat.)
     assert!(
         anon_input.contains(HISTORY_MARKER),
         "unauth: history block must be present (default ON): {anon_input}"
-    );
-    assert!(
-        anon_input.contains(ALREADY_ROUTED_MARKER),
-        "unauth: already_routed block must be present (default ON): {anon_input}"
     );
     assert!(
         anon_input.contains(CWD_MARKER),
@@ -738,17 +693,21 @@ fn switching_logged_in_account_picks_up_new_prefs_immediately() {
     write_public_skill(&paths.skills_dir(), "alpha");
     mgr.register_local_skill("alpha").unwrap();
 
-    // A: already_routed off. B: already_routed on (default). Both need
+    // A: recommend_cwd_prefix off. B: cwd_prefix on (default). Both need
     // allow_public_recommend so the public "alpha" skill enters the
     // candidate set (otherwise the recommend short-circuits with an empty
     // candidate list and never persists a router_events row).
+    //
+    // (This used the recommend_already_routed toggle before session no-repeat
+    // was removed; retargeted onto the still-live cwd toggle. The mechanism
+    // under test — per-request prefs, no cross-request caching — is unchanged.)
     let mut a_prefs = UserPrefs {
         allow_public_recommend: true,
         ..Default::default()
     };
     a_prefs
         .prompt_injection_flags
-        .insert("recommend_already_routed".into(), false);
+        .insert("recommend_cwd_prefix".into(), false);
     let b_prefs = UserPrefs {
         allow_public_recommend: true,
         ..Default::default()
@@ -756,50 +715,13 @@ fn switching_logged_in_account_picks_up_new_prefs_immediately() {
     let a_uid = make_user(&mgr, "alice", &a_prefs);
     let b_uid = make_user(&mgr, "bob", &b_prefs);
 
-    // Pre-seed an already-routed skill in B's normalized session id so the
-    // block has content when B's toggle is on.
-    let b_session = recommend::runai_session_id_from_native(Some(&b_uid), "shared-session")
-        .expect("derive user-scoped runai session id");
-    let event = runai::core::db::RouterEvent {
-        id: None,
-        ts: chrono::Utc::now().timestamp(),
-        provider: "claude-cli".into(),
-        model: "claude-haiku-test".into(),
-        prompt_tokens: 0,
-        completion_tokens: 0,
-        reasoning_tokens: 0,
-        total_tokens: 0,
-        cache_hit_tokens: 0,
-        cache_miss_tokens: 0,
-        latency_ms: 0,
-        chosen_skills_json: r#"["alpha"]"#.into(),
-        candidate_count: 1,
-        status: "ok".into(),
-        error_msg: None,
-        session_id: b_session,
-        mode: "exclusive".into(),
-        user_prompt: "earlier".into(),
-        cwd: "".into(),
-        bm25_kept: 1,
-        llm_raw_response: "EXCLUSIVE\nreasoning: seed\nalpha\n".into(),
-        hook_output: "".into(),
-        llm_input: "(seed)".into(),
-        intent_llm_input: "".into(),
-        intent_llm_output: "".into(),
-        intent_status: "".into(),
-        intent_error_msg: None,
-        bm25_candidates_json: "[]".into(),
-        user_id: None,
-    };
-    mgr.db().insert_router_event(&event).unwrap();
-
-    // First as A.
+    // First as A — cwd passed but toggle OFF, so the cwd block must be absent.
     let _ = recommend::recommend_for_user(
         &mgr,
         "switching test",
         None,
         Some("shared-session"),
-        None,
+        Some("/tmp/switch-proj"),
         Some(&a_uid),
     );
     // Immediately switch to B — same process, same SkillManager, no DB
@@ -810,7 +732,7 @@ fn switching_logged_in_account_picks_up_new_prefs_immediately() {
         "switching test",
         None,
         Some("shared-session"),
-        None,
+        Some("/tmp/switch-proj"),
         Some(&b_uid),
     );
 
@@ -818,12 +740,12 @@ fn switching_logged_in_account_picks_up_new_prefs_immediately() {
     let b_input = latest_llm_input(&mgr, Some(&b_uid));
 
     assert!(
-        !a_input.contains(ALREADY_ROUTED_MARKER),
-        "A: already_routed OFF — block absent: {a_input}"
+        !a_input.contains(CWD_MARKER),
+        "A: cwd_prefix OFF — block absent: {a_input}"
     );
     assert!(
-        b_input.contains(ALREADY_ROUTED_MARKER),
-        "B (same process, just switched): already_routed default ON — block present: {b_input}"
+        b_input.contains(CWD_MARKER),
+        "B (same process, just switched): cwd_prefix default ON — block present: {b_input}"
     );
 }
 

@@ -430,7 +430,6 @@ fn router_user_message_uses_intent_summary_and_client_context() {
         cwd_block: "cwd: `/repo/runai`\n",
         project_context_block: "",
         history_block: "",
-        already_routed_block: "",
         intent_summary: "intent: 设计 runai 推荐模型记忆队列\nagent_cli: codex",
         candidate_listing: "- test-driven-development: TDD",
         top_k: 8,
@@ -451,7 +450,6 @@ fn router_user_message_uses_minimal_sufficient_candidate_contract() {
         cwd_block: "",
         project_context_block: "",
         history_block: "",
-        already_routed_block: "",
         intent_summary: "intent: 调试 Android 模拟器",
         candidate_listing: "- android-cli: Android 调试",
         top_k: 8,
@@ -630,7 +628,11 @@ fn format_full_without_session_omits_session_flag() {
 }
 
 #[test]
-fn session_history_activation_uses_same_literal_runai_session_id() {
+fn session_history_is_ignored_no_recall_block_rendered() {
+    // Session no-repeat suppression was removed: passing prior-session names
+    // must NOT render a "已推参考池" recall block, and the (ignored) history
+    // must not leak into the output. The single activation line still carries
+    // the literal runai session id.
     let s = RecommendedSkill {
         name: "current".into(),
         description: "current skill".into(),
@@ -644,9 +646,12 @@ fn session_history_activation_uses_same_literal_runai_session_id() {
         "",
         "",
     );
-    assert!(out.contains(
-        "runai-client activate <name> --session-id \"rnai_sess_abcdefabcdefabcdefabcdefabcdefab\""
-    ));
+    assert!(out.contains("--session-id \"rnai_sess_abcdefabcdefabcdefabcdefabcdefab\""));
+    assert!(!out.contains("参考池"));
+    assert!(
+        !out.contains("previous"),
+        "prior-session name must not leak"
+    );
     assert!(!out.contains("CLAUDE_SESSION_ID"));
 }
 

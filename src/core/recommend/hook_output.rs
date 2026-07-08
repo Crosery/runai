@@ -62,10 +62,13 @@ pub fn format_for_hook_full(
 fn render_hook_output(
     decision: &RouterDecision,
     session_id: &str,
-    session_history: &[String],
+    // Session no-repeat suppression was removed: the hook output no longer
+    // renders a "已推参考池" recall block or a skip-reminder block, so both of
+    // these are accepted for caller/signature compatibility but ignored.
+    _session_history: &[String],
     _server_url: &str,
     _user_header: &str,
-    skip_reminder: &str,
+    _skip_reminder: &str,
 ) -> String {
     let skills = &decision.skills;
     if skills.is_empty() {
@@ -107,40 +110,17 @@ fn render_hook_output(
         format!("router 判断：{}\n\n", decision.reasoning.trim())
     };
 
-    // Session-recall list: names the router has shown earlier in this
-    // session, minus the ones currently on screen. Uses the same
-    // `runai-client activate` shape as the primary block so the agent
-    // never has to learn two protocols.
-    let current: std::collections::HashSet<&str> = skills.iter().map(|s| s.name.as_str()).collect();
-    let history_filtered: Vec<&str> = session_history
-        .iter()
-        .map(|s| s.as_str())
-        .filter(|n| !current.contains(n))
-        .take(10)
-        .collect();
-    let session_history_block = if history_filtered.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "\n本 session runai 已经看过的 skill（**参考池，用户随时可挑这里的任何一个，没被排除**）：{}\n如果用户当前 prompt 跟这里某个对口（包括 \"换一个 / 有其他的吗 / 找补充\" 这种 follow-up），直接跑 `runai-client activate <name>{session_id_arg}` 激活。\n",
-            history_filtered.join(", ")
-        )
-    };
-
+    // One-line feedback protocol (slimmed from the old multi-line block). The
+    // command, verb, and the current skill names stay — only invoked when the
+    // user explicitly reacts.
     let names = skills
         .iter()
         .map(|s| s.name.as_str())
         .collect::<Vec<_>>()
         .join(", ");
     let feedback_protocol_block = format!(
-        "\n反馈协议（被动）：用户明确正向（\"完美 / 好用 / 就这个\"）或负向（\"不对 / 换一个 / 不好用\"）评价时，在回复末尾跑：\n  runai-client feedback <skill-name> --note \"<场景或原话>\"\n用户没评价就不调用。\n当前推的 skill: {names}\n"
+        "\n反馈（仅用户明确正/负评价时，回复末尾跑一次）：`runai-client feedback <skill-name> --note \"<原话>\"`。当前推的 skill: {names}\n"
     );
-
-    let skip_reminder_block = if skip_reminder.trim().is_empty() {
-        String::new()
-    } else {
-        format!("\n{}\n", skip_reminder.trim())
-    };
 
     crate::core::prompts::template_body(HOOK_OUTPUT_TEMPLATE)
         .replace("{MODE}", decision.mode.as_str())
@@ -148,8 +128,6 @@ fn render_hook_output(
         .replace("{CANDIDATES_BLOCK}", &candidates_block)
         .replace("{SESSION_ID_ARG}", &session_id_arg)
         .replace("{ACTIVATION_DIRECTIVE}", &activation_directive)
-        .replace("{SKIP_REMINDER_BLOCK}", &skip_reminder_block)
-        .replace("{SESSION_HISTORY_BLOCK}", &session_history_block)
         .replace("{FEEDBACK_PROTOCOL_BLOCK}", &feedback_protocol_block)
 }
 

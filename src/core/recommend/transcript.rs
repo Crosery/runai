@@ -18,11 +18,18 @@ pub fn recent_transcript_messages(transcript_path: &Path, n: usize) -> String {
         .join("\n")
 }
 
+/// Per-message char cap for transcript history fed to the router LLM. Kept
+/// tight (was 400) because the history block only needs enough of each turn
+/// to tell whether the current prompt is replying to a prior recommendation —
+/// a full multi-hundred-char assistant message is pure context bloat.
+const TRANSCRIPT_MSG_CHAR_CAP: usize = 250;
+
 /// Return the most recent `n` user+assistant turns as (role, text) pairs,
 /// oldest-first. Tool calls / results filtered out. Each text capped at
-/// 400 chars. Used by `recent_transcript_messages` (renders to a single
-/// string for the LLM) and `recent_user_prompts_for_bm25` (returns only
-/// the user-side strings for keyword recall).
+/// `TRANSCRIPT_MSG_CHAR_CAP` chars (truncated tail marked with `…`). Used by
+/// `recent_transcript_messages` (renders to a single string for the LLM) and
+/// `recent_user_prompts_for_bm25` (returns only the user-side strings for
+/// keyword recall).
 pub fn recent_transcript_pairs(transcript_path: &Path, n: usize) -> Vec<(String, String)> {
     let raw = match std::fs::read_to_string(transcript_path) {
         Ok(s) => s,
@@ -66,7 +73,12 @@ pub fn recent_transcript_pairs(transcript_path: &Path, n: usize) -> Vec<(String,
         if trimmed.is_empty() {
             continue;
         }
-        let truncated: String = trimmed.chars().take(400).collect();
+        let truncated: String = if trimmed.chars().count() > TRANSCRIPT_MSG_CHAR_CAP {
+            let head: String = trimmed.chars().take(TRANSCRIPT_MSG_CHAR_CAP).collect();
+            format!("{head}…")
+        } else {
+            trimmed.to_string()
+        };
         msgs.push((role, truncated));
     }
     let take_from = msgs.len().saturating_sub(n);

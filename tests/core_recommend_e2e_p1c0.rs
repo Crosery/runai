@@ -906,7 +906,12 @@ fn image_regeneration_reference_prompt_uses_compressed_intent_and_single_direct_
     let stage_fields = env.router_stage_fields();
     assert_eq!(stage_fields.len(), 1);
     let (intent_input, intent_output, intent_status, bm25_candidates_json) = &stage_fields[0];
-    assert!(intent_input.contains("第一波"), "{intent_input}");
+    // Static instructions (e.g. "第一波") now live in the FIXED Stage-1 system
+    // prompt, not the stored user message. The stored intent_llm_input is the
+    // minimal dynamic user message: it carries the "当前用户输入：" marker and
+    // the raw prompt, but none of the static template body.
+    assert!(intent_input.contains("当前用户输入"), "{intent_input}");
+    assert!(!intent_input.contains("第一波"), "{intent_input}");
     assert!(intent_input.contains("没有用搭子形象"), "{intent_input}");
     assert_eq!(intent_status, "ok");
     assert!(intent_output.contains("重新生成图片"), "{intent_output}");
