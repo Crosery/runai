@@ -26,8 +26,9 @@ use super::intent::{
     recognize_intent,
 };
 use super::llm_call::{
-    RouterCallStats, call_anthropic, call_anthropic_with_system, call_claude_cli,
-    call_claude_cli_with_system, call_openai_compat, call_openai_compat_with_system,
+    INTENT_MAX_TOKENS, ROUTER_MAX_TOKENS, RouterCallStats, call_anthropic,
+    call_anthropic_with_system, call_claude_cli, call_claude_cli_with_system, call_openai_compat,
+    call_openai_compat_with_system,
 };
 use super::project_context::read_project_context;
 use super::prompts::intent_prompt_template;
@@ -63,8 +64,29 @@ const BM25_MIN_POSITIVE_HITS: usize = 5;
 // (`crate::core::prompts`). Edit the .md files to retune wording.
 const USER_MSG_TEMPLATE: &str = crate::core::prompts::PROMPT_RECOMMEND_USER;
 const HISTORY_PREFIX_TEMPLATE: &str = crate::core::prompts::PROMPT_RECOMMEND_HISTORY_PREFIX;
-const ALREADY_ROUTED_TEMPLATE: &str = crate::core::prompts::PROMPT_RECOMMEND_ALREADY_ROUTED;
 const CWD_PREFIX_TEMPLATE: &str = crate::core::prompts::PROMPT_RECOMMEND_CWD_PREFIX;
+
+/// Upper bound (in chars) on the current user prompt copied verbatim into the
+/// LLM-facing messages (Stage-1 intent condensation and Stage-2 router). The
+/// intent summary already condenses long prompts, so a very long pasted prompt
+/// only needs a bounded head here — telemetry (`RouterEvent.user_prompt`) still
+/// stores the full text. Over the cap we keep the head and append a marker.
+const LLM_PROMPT_CHAR_CAP: usize = 2000;
+
+/// Truncate `prompt` to `LLM_PROMPT_CHAR_CAP` chars for LLM input, appending a
+/// visible marker when clipped. Char-boundary safe.
+fn truncate_prompt_for_llm(prompt: &str) -> String {
+    if prompt.chars().count() <= LLM_PROMPT_CHAR_CAP {
+        return prompt.to_string();
+    }
+    let head: String = prompt.chars().take(LLM_PROMPT_CHAR_CAP).collect();
+    format!("{head}\n…[prompt 已截断]")
+}
+
+/// Max transcript turns threaded into the Stage-2 history block. Kept small on
+/// purpose — the block only needs to reveal whether the current prompt is a
+/// reply to the previous recommendation, not replay the whole conversation.
+const HISTORY_TURN_LIMIT: usize = 4;
 
 /// Mode tag returned by the router on the first line of its output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -307,7 +329,6 @@ pub(super) struct RouterUserMessageParts<'a> {
     pub(super) cwd_block: &'a str,
     pub(super) project_context_block: &'a str,
     pub(super) history_block: &'a str,
-    pub(super) already_routed_block: &'a str,
     pub(super) intent_summary: &'a str,
     pub(super) candidate_listing: &'a str,
     pub(super) top_k: usize,
@@ -315,14 +336,16 @@ pub(super) struct RouterUserMessageParts<'a> {
 }
 
 pub(super) fn build_router_user_message(parts: RouterUserMessageParts<'_>) -> String {
+    // The current prompt appears exactly once in the user message (session
+    // no-repeat suppression + the tail re-echo were removed). It is truncated
+    // for the LLM; the intent summary carries the condensed long-form intent.
     crate::core::prompts::template_body(USER_MSG_TEMPLATE)
         .replace("{HISTORY_BLOCK}", parts.history_block)
-        .replace("{ALREADY_ROUTED_BLOCK}", parts.already_routed_block)
         .replace("{CWD_BLOCK}", parts.cwd_block)
         .replace("{PROJECT_CONTEXT_BLOCK}", parts.project_context_block)
         .replace("{INTENT_SUMMARY}", parts.intent_summary)
         .replace("{CANDIDATE_LISTING}", parts.candidate_listing)
-        .replace("{USER_PROMPT}", parts.user_prompt)
+        .replace("{USER_PROMPT}", &truncate_prompt_for_llm(parts.user_prompt))
         .replace("{TOP_K}", &parts.top_k.to_string())
         .replace(
             "{BM25_CANDIDATE_LIMIT}",
@@ -330,30 +353,39 @@ pub(super) fn build_router_user_message(parts: RouterUserMessageParts<'_>) -> St
         )
 }
 
+/// Stage-1 intent user message. Carries ONLY dynamic content, each field
+/// exactly once: cwd (one line), agent_cli (one line), session_memory (one
+/// block), then the current prompt (truncated). All static instructions live
+/// in the fixed `recommend_intent.md` system prompt — nothing here duplicates
+/// them, so the previous double injection (whole template as system AND as a
+/// filled user message, plus the deterministic fallback re-embedding
+/// memory/cwd/prompt a second time) is gone. The deterministic fallback is NOT
+/// sent to the model; it stays a code-side safety net used only when the
+/// Stage-1 call fails.
 fn build_intent_user_message(
     user_prompt: &str,
-    deterministic_fallback: &str,
     cwd: Option<&str>,
     client_kind: &str,
     memory: &[String],
 ) -> String {
-    let session_memory = if memory.is_empty() {
-        "(empty)".to_string()
-    } else {
-        memory
-            .iter()
-            .filter(|m| !m.trim().is_empty())
-            .enumerate()
-            .map(|(idx, m)| format!("{}. {}", idx + 1, m.trim()))
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-    intent_prompt_template()
-        .replace("{USER_PROMPT}", user_prompt)
-        .replace("{DETERMINISTIC_FALLBACK}", deterministic_fallback)
-        .replace("{CWD}", cwd.unwrap_or(""))
-        .replace("{CLIENT_KIND}", client_kind)
-        .replace("{SESSION_MEMORY}", &session_memory)
+    let mut out = String::new();
+    if let Some(c) = cwd.map(str::trim).filter(|s| !s.is_empty()) {
+        out.push_str(&format!("cwd: {c}\n"));
+    }
+    let client = client_kind.trim();
+    if !client.is_empty() {
+        out.push_str(&format!("agent_cli: {client}\n"));
+    }
+    let memory_items: Vec<&String> = memory.iter().filter(|m| !m.trim().is_empty()).collect();
+    if !memory_items.is_empty() {
+        out.push_str("session_memory:\n");
+        for (idx, m) in memory_items.iter().enumerate() {
+            out.push_str(&format!("{}. {}\n", idx + 1, m.trim()));
+        }
+    }
+    out.push_str("\n当前用户输入：\n");
+    out.push_str(&truncate_prompt_for_llm(user_prompt));
+    out
 }
 
 fn clean_intent_model_output(raw: &str, fallback: &str) -> String {
@@ -408,11 +440,14 @@ fn call_intent_recognition(
 ) -> Result<(String, RouterCallStats)> {
     let history: &[RouterTurn] = &[];
     let system = intent_prompt_template();
+    let max_tokens = Some(INTENT_MAX_TOKENS);
     match cfg.provider {
         Provider::OpenaiCompat => {
-            call_openai_compat_with_system(cfg, api_key, system, user_msg, history)
+            call_openai_compat_with_system(cfg, api_key, system, user_msg, history, max_tokens)
         }
-        Provider::Anthropic => call_anthropic_with_system(cfg, api_key, system, user_msg, history),
+        Provider::Anthropic => {
+            call_anthropic_with_system(cfg, api_key, system, user_msg, history, max_tokens)
+        }
         Provider::ClaudeCli => call_claude_cli_with_system(cfg, system, user_msg),
     }
 }
@@ -534,7 +569,6 @@ pub fn recommend_for_user_with_client(
     // prompt construction. The intent layer shares the same cwd switch so a
     // disabled cwd block cannot leak through `{INTENT_SUMMARY}`.
     let inject_history = user_prefs.prompt_injection_enabled("recommend_history_prefix");
-    let inject_already_routed = user_prefs.prompt_injection_enabled("recommend_already_routed");
     let inject_cwd = user_prefs.prompt_injection_enabled("recommend_cwd_prefix");
     let inject_project_context = user_prefs.prompt_injection_enabled("recommend_project_context");
     let cwd_for_intent = if inject_cwd { cwd } else { None };
@@ -570,15 +604,13 @@ pub fn recommend_for_user_with_client(
             .collect();
     }
 
+    // The deterministic intent is the CODE-SIDE fallback (used only if the
+    // Stage-1 LLM call fails) — it is NOT sent to the model, so its
+    // re-embedding of memory/cwd/prompt no longer bloats the intent input.
     let deterministic_intent =
         build_intent_summary(user_prompt, cwd_for_intent, client_kind, &intent_memory);
-    let intent_llm_input = build_intent_user_message(
-        user_prompt,
-        &deterministic_intent,
-        cwd_for_intent,
-        client_kind,
-        &intent_memory,
-    );
+    let intent_llm_input =
+        build_intent_user_message(user_prompt, cwd_for_intent, client_kind, &intent_memory);
     let intent_call = call_intent_recognition(&cfg, &api_key, &intent_llm_input);
     let (intent_summary, _intent_raw_response, intent_status, intent_error_msg, intent_stats) =
         match intent_call {
@@ -614,23 +646,11 @@ pub fn recommend_for_user_with_client(
         );
     }
 
-    // `already_routed` is the dedup signal handed to the router LLM. It is
-    // the **full** recommendation history this session (every skill the
-    // router has proposed), not just adoptions. Rationale: even if the
-    // main agent declined to Read a skill, it has already seen the name in
-    // a previous hook output, and re-recommending unrelated-but-same-name
-    // skills (e.g. ppt-anything → guizang-ppt-skill → pptx three turns in
-    // a row) is the most obvious "the router doesn't remember" failure
-    // mode users notice. The recommend_system prompt tells the LLM to skip
-    // these unless the user explicitly asks to revisit one ("再用一次 X").
-    let already_routed = match session_id {
-        Some(sid) if !sid.is_empty() => mgr
-            .db()
-            .router_session_recommended_skills(sid)
-            .unwrap_or_default(),
-        _ => Vec::new(),
-    };
-
+    // Session no-repeat suppression was removed (每轮独立全质量推荐): the
+    // router no longer fetches this session's prior recommendations to inject
+    // an ALREADY_ROUTED block or a hook "已推参考池" reminder. Same skill can
+    // be re-recommended on consecutive turns. `router_session_recommended_skills`
+    // stays available as pure telemetry but never enters a prompt.
     let db = mgr.db();
     let mut all_candidates: Vec<_> = match user_id {
         Some(uid) => {
@@ -999,7 +1019,7 @@ pub fn recommend_for_user_with_client(
 
     let history = if inject_history {
         transcript_path
-            .map(|p| recent_transcript_messages(p, 6))
+            .map(|p| recent_transcript_messages(p, HISTORY_TURN_LIMIT))
             .unwrap_or_default()
     } else {
         String::new()
@@ -1008,13 +1028,6 @@ pub fn recommend_for_user_with_client(
         String::new()
     } else {
         crate::core::prompts::template_body(HISTORY_PREFIX_TEMPLATE).replace("{HISTORY}", &history)
-    };
-
-    let already_routed_block = if !inject_already_routed || already_routed.is_empty() {
-        String::new()
-    } else {
-        crate::core::prompts::template_body(ALREADY_ROUTED_TEMPLATE)
-            .replace("{ALREADY_ROUTED}", &already_routed.join(", "))
     };
 
     let cwd_block = match cwd {
@@ -1035,7 +1048,6 @@ pub fn recommend_for_user_with_client(
         cwd_block: &cwd_block,
         project_context_block: &project_context_block,
         history_block: &history_block,
-        already_routed_block: &already_routed_block,
         intent_summary: &intent_summary,
         candidate_listing: &candidate_listing,
         top_k: output_top_k,
@@ -1135,34 +1147,23 @@ pub fn recommend_for_user_with_client(
         skills: out,
     };
     let hook_output = if status == "ok" {
-        // Pull this session's previous recommendations so the hook output
-        // can remind the main agent which skills it already saw — cuts
-        // down on repeat recommendations of skills already in context.
-        let history = match session_id {
-            Some(sid) if !sid.is_empty() => mgr
-                .db()
-                .router_session_recommended_skills(sid)
-                .unwrap_or_default(),
-            _ => Vec::new(),
-        };
+        // No session-recall block any more (session no-repeat removed): the
+        // hook output never lists "已推参考池" skills, so this path no longer
+        // reads `router_session_recommended_skills` — one fewer DB round-trip
+        // on every recommend. `session_history` is passed empty; `skip_reminder`
+        // is passed empty (the renderer ignores both now).
+        //
         // CLI / library callers default to the local machine's LAN
-        // IPv4-style URL (so any process / agent on the LAN can curl it,
-        // not just loopback). The server endpoint path
-        // (server::handle_recommend) overrides via its own call with the
-        // request-derived server_url + user_header.
+        // IPv4-style URL. The server endpoint path (server::handle_recommend)
+        // overrides via its own call with the request-derived server_url.
         let local_server_url = default_local_server_url();
-        let skip_reminder = if cfg.skip_reminder_enabled {
-            cfg.skip_reminder_template.as_str()
-        } else {
-            ""
-        };
         format_for_hook_full(
             &decision,
             session_id.unwrap_or(""),
-            &history,
+            &[],
             &local_server_url,
             "",
-            skip_reminder,
+            "",
         )
     } else {
         String::new()
@@ -1249,9 +1250,10 @@ fn call_router(
     user_msg: &str,
     history: &[RouterTurn],
 ) -> Result<(RouterMode, String, Vec<String>, RouterCallStats, String)> {
+    let max_tokens = Some(ROUTER_MAX_TOKENS);
     let (raw, stats) = match cfg.provider {
-        Provider::OpenaiCompat => call_openai_compat(cfg, api_key, user_msg, history)?,
-        Provider::Anthropic => call_anthropic(cfg, api_key, user_msg, history)?,
+        Provider::OpenaiCompat => call_openai_compat(cfg, api_key, user_msg, history, max_tokens)?,
+        Provider::Anthropic => call_anthropic(cfg, api_key, user_msg, history, max_tokens)?,
         // ClaudeCli always boots a fresh Claude Code session per call,
         // so conversation replay would have to ship the entire history
         // through stdin every time — defeats the cost story. Stay oneshot.

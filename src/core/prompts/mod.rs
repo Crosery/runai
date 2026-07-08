@@ -22,9 +22,10 @@ pub const PROMPT_RECOMMEND_SYSTEM: &str = include_str!("recommend_system.md");
 
 /// recommend_user.md — user-turn scaffold built per request, with placeholders
 /// `{USER_PROMPT}` / `{INTENT_SUMMARY}` / `{CWD_BLOCK}` / `{PROJECT_CONTEXT_BLOCK}` /
-/// `{HISTORY_BLOCK}` / `{ALREADY_ROUTED_BLOCK}` / `{CANDIDATE_LISTING}` /
-/// `{TOP_K}` / `{BM25_CANDIDATE_LIMIT}`. Always rendered — toggling the surrounding blocks is what users
-/// configure, not this skeleton.
+/// `{HISTORY_BLOCK}` / `{CANDIDATE_LISTING}` / `{TOP_K}` / `{BM25_CANDIDATE_LIMIT}`.
+/// Always rendered — toggling the surrounding blocks is what users configure,
+/// not this skeleton. The current prompt appears exactly once (session no-repeat
+/// suppression was removed, so there is no `{ALREADY_ROUTED_BLOCK}`).
 pub const PROMPT_RECOMMEND_USER: &str = include_str!("recommend_user.md");
 
 /// recommend_intent.md — first-wave intent condensation prompt. It uses the
@@ -36,11 +37,6 @@ pub const PROMPT_RECOMMEND_INTENT: &str = include_str!("recommend_intent.md");
 /// placeholder). Optional: gated by
 /// `prompt_injection_flags["recommend_history_prefix"]` (default true).
 pub const PROMPT_RECOMMEND_HISTORY_PREFIX: &str = include_str!("recommend_history_prefix.md");
-
-/// recommend_already_routed.md — names already routed in this session
-/// (`{ALREADY_ROUTED}` placeholder). Optional: gated by
-/// `prompt_injection_flags["recommend_already_routed"]` (default true).
-pub const PROMPT_RECOMMEND_ALREADY_ROUTED: &str = include_str!("recommend_already_routed.md");
 
 /// recommend_cwd_prefix.md — current working directory hint (`{CWD}`
 /// placeholder). Optional: gated by
@@ -67,7 +63,6 @@ pub const PROMPT_NAMES: &[&str] = &[
     "recommend_user",
     "recommend_intent",
     "recommend_history_prefix",
-    "recommend_already_routed",
     "recommend_cwd_prefix",
     "recommend_project_context",
     "hook_output",
@@ -79,7 +74,6 @@ pub const PROMPT_NAMES: &[&str] = &[
 /// whole feature (`recommend_enabled = false`).
 pub const TOGGLEABLE_PROMPT_NAMES: &[&str] = &[
     "recommend_history_prefix",
-    "recommend_already_routed",
     "recommend_cwd_prefix",
     "recommend_project_context",
 ];
@@ -116,7 +110,6 @@ mod tests {
         assert!(!PROMPT_RECOMMEND_USER.trim().is_empty());
         assert!(!PROMPT_RECOMMEND_INTENT.trim().is_empty());
         assert!(!PROMPT_RECOMMEND_HISTORY_PREFIX.trim().is_empty());
-        assert!(!PROMPT_RECOMMEND_ALREADY_ROUTED.trim().is_empty());
         assert!(!PROMPT_RECOMMEND_CWD_PREFIX.trim().is_empty());
         assert!(!PROMPT_RECOMMEND_PROJECT_CONTEXT.trim().is_empty());
         assert!(!PROMPT_HOOK_OUTPUT.trim().is_empty());
@@ -142,14 +135,16 @@ mod tests {
         // don't have to grep — locking the contract here means renaming a
         // placeholder fails the build, not silently.
         assert!(PROMPT_RECOMMEND_HISTORY_PREFIX.contains("{HISTORY}"));
-        assert!(PROMPT_RECOMMEND_ALREADY_ROUTED.contains("{ALREADY_ROUTED}"));
         assert!(PROMPT_RECOMMEND_CWD_PREFIX.contains("{CWD}"));
         assert!(PROMPT_RECOMMEND_PROJECT_CONTEXT.contains("{PROJECT_DOCS}"));
         assert!(PROMPT_RECOMMEND_USER.contains("{USER_PROMPT}"));
         assert!(PROMPT_RECOMMEND_USER.contains("{INTENT_SUMMARY}"));
         assert!(PROMPT_RECOMMEND_USER.contains("{BM25_CANDIDATE_LIMIT}"));
-        assert!(PROMPT_RECOMMEND_INTENT.contains("{DETERMINISTIC_FALLBACK}"));
-        assert!(PROMPT_RECOMMEND_INTENT.contains("{SESSION_MEMORY}"));
+        // recommend_intent.md is now a FIXED system prompt with no dynamic
+        // placeholders — the Stage-1 user message is built in code, each
+        // dynamic field exactly once.
+        assert!(!PROMPT_RECOMMEND_INTENT.contains("{USER_PROMPT}"));
+        assert!(!PROMPT_RECOMMEND_INTENT.contains("{SESSION_MEMORY}"));
         assert!(PROMPT_HOOK_OUTPUT.contains("{CANDIDATES_BLOCK}"));
     }
 

@@ -16,6 +16,19 @@ use super::router::RouterTurn;
 const PROVIDER_TEST_PROMPT: &str = "Reply with exactly OK.";
 const PROVIDER_TEST_TIMEOUT: Duration = Duration::from_secs(8);
 
+/// Output-token ceiling for the Stage-1 intent condensation call. Its output
+/// is a short BM25 artifact (`intent:` + a few include/exclude lines, capped at
+/// 800 chars in the prompt), so a tight cap prevents a weak model from running
+/// away and cuts tail latency.
+pub(super) const INTENT_MAX_TOKENS: u32 = 512;
+/// Output-token ceiling for the Stage-2 router call. Output is a mode tag + one
+/// `reasoning:` line + a short skill-name list — never long prose.
+pub(super) const ROUTER_MAX_TOKENS: u32 = 400;
+/// Fallback `max_tokens` for Anthropic when the caller passes `None` (the
+/// enrich/summary path, which needs room for the 6-line summary contract).
+/// OpenAI-compatible omits `max_tokens` entirely on `None` (full budget).
+const ANTHROPIC_DEFAULT_MAX_TOKENS: u32 = 1024;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderTestResult {
     pub reply: String,
@@ -67,9 +80,12 @@ pub(super) fn call_summary_llm(
     // Enrich passes are always oneshot — they index a single SKILL.md
     // without conversational state, so no history is ever threaded.
     let no_history: &[RouterTurn] = &[];
+    // Enrich/summary needs the full output budget for the 6-line summary
+    // contract, so pass `None` (OpenAI omits max_tokens; Anthropic falls back
+    // to ANTHROPIC_DEFAULT_MAX_TOKENS).
     let (raw, _stats) = match cfg.provider {
-        Provider::OpenaiCompat => call_openai_compat(cfg, api_key, user_msg, no_history)?,
-        Provider::Anthropic => call_anthropic(cfg, api_key, user_msg, no_history)?,
+        Provider::OpenaiCompat => call_openai_compat(cfg, api_key, user_msg, no_history, None)?,
+        Provider::Anthropic => call_anthropic(cfg, api_key, user_msg, no_history, None)?,
         Provider::ClaudeCli => call_claude_cli(cfg, user_msg)?,
     };
     Ok(raw)
@@ -316,8 +332,16 @@ pub(super) fn call_openai_compat(
     api_key: &str,
     user_msg: &str,
     history: &[RouterTurn],
+    max_tokens: Option<u32>,
 ) -> Result<(String, RouterCallStats)> {
-    call_openai_compat_with_system(cfg, api_key, system_prompt_template(), user_msg, history)
+    call_openai_compat_with_system(
+        cfg,
+        api_key,
+        system_prompt_template(),
+        user_msg,
+        history,
+        max_tokens,
+    )
 }
 
 pub(super) fn call_openai_compat_with_system(
@@ -326,13 +350,13 @@ pub(super) fn call_openai_compat_with_system(
     system_prompt: &str,
     user_msg: &str,
     history: &[RouterTurn],
+    max_tokens: Option<u32>,
 ) -> Result<(String, RouterCallStats)> {
     let url = format!("{}/chat/completions", cfg.base_url.trim_end_matches('/'));
     // Disable thinking on reasoning models so the router answers instantly.
     // DeepSeek V4 honors `thinking.type=disabled` (drops reasoning_tokens to
     // None). For non-reasoning models or other OpenAI-compat backends this
     // field is silently ignored, so it's safe to always send.
-    // max_tokens is intentionally omitted — let the model use its full budget.
     let mut messages = Vec::with_capacity(1 + history.len() * 2 + 1);
     messages.push(serde_json::json!({
         "role": "system",
@@ -343,12 +367,19 @@ pub(super) fn call_openai_compat_with_system(
         messages.push(serde_json::json!({"role": "assistant", "content": turn.assistant}));
     }
     messages.push(serde_json::json!({"role": "user", "content": user_msg}));
-    let body = serde_json::json!({
+    // temperature=0 makes the router/intent output deterministic (better prefix
+    // cache reuse, no run-to-run drift). max_tokens is only sent when the caller
+    // bounds it (Stage-1/Stage-2); enrich passes None to keep the full budget.
+    let mut body = serde_json::json!({
         "model": cfg.model,
         "messages": messages,
         "thinking": {"type": "disabled"},
         "stream": false,
+        "temperature": 0,
     });
+    if let Some(mt) = max_tokens {
+        body["max_tokens"] = serde_json::json!(mt);
+    }
     let resp = reqwest::blocking::Client::builder()
         // 60s timeout accommodates OpenRouter free tier which routes to
         // third-party providers and can take 5-10s. DeepSeek direct stays at
@@ -396,8 +427,16 @@ pub(super) fn call_anthropic(
     api_key: &str,
     user_msg: &str,
     history: &[RouterTurn],
+    max_tokens: Option<u32>,
 ) -> Result<(String, RouterCallStats)> {
-    call_anthropic_with_system(cfg, api_key, system_prompt_template(), user_msg, history)
+    call_anthropic_with_system(
+        cfg,
+        api_key,
+        system_prompt_template(),
+        user_msg,
+        history,
+        max_tokens,
+    )
 }
 
 pub(super) fn call_anthropic_with_system(
@@ -406,6 +445,7 @@ pub(super) fn call_anthropic_with_system(
     system_prompt: &str,
     user_msg: &str,
     history: &[RouterTurn],
+    max_tokens: Option<u32>,
 ) -> Result<(String, RouterCallStats)> {
     let url = format!("{}/v1/messages", cfg.base_url.trim_end_matches('/'));
     let mut messages = Vec::with_capacity(history.len() * 2 + 1);
@@ -414,9 +454,12 @@ pub(super) fn call_anthropic_with_system(
         messages.push(serde_json::json!({"role": "assistant", "content": turn.assistant}));
     }
     messages.push(serde_json::json!({"role": "user", "content": user_msg}));
+    // Anthropic requires max_tokens; None (enrich) falls back to the summary
+    // budget. temperature=0 for deterministic routing.
     let body = serde_json::json!({
         "model": cfg.model,
-        "max_tokens": 256,
+        "max_tokens": max_tokens.unwrap_or(ANTHROPIC_DEFAULT_MAX_TOKENS),
+        "temperature": 0,
         "system": system_prompt,
         "messages": messages,
     });
