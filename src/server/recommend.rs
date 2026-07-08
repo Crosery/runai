@@ -251,8 +251,8 @@ pub(super) fn request_origin(headers: &HeaderMap) -> String {
 }
 
 /// `verdict` accepts either a bare `+1`/`-1` or the strings `"good"`/`"bad"`
-/// (case-insensitive) — the dashboard's thumbs-up/down buttons send the
-/// string form, `runai-client` sends the numeric form. Anything else
+/// (case-insensitive). The dashboard's thumbs-up/down buttons send the
+/// numeric form; the string form exists for script callers. Anything else
 /// (`0`, `"meh"`, floats, booleans, ...) is not a valid verdict.
 #[derive(Deserialize)]
 #[serde(untagged)]
