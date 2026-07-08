@@ -1,4 +1,20 @@
 //! Router telemetry endpoints: summary / events / timeline / event-by-id.
+//!
+//! **All four handlers run inside `tokio::task::spawn_blocking`** (2026-07
+//! blocking-runtime audit). Each one scans `router_events` — potentially the
+//! largest table in the DB — via plain synchronous rusqlite calls, and
+//! `api_summary` / `api_events` / `api_timeline` are polled every 5s by
+//! every open Overview tab (`07-polling-models.js::refresh()`); the
+//! model-usage panel on top of that pages `/api/events` in a loop up to
+//! 10,000 rows, i.e. up to ~20 sequential calls into `api_events` per poll
+//! tick. Running that directly on a tokio worker thread — as these four
+//! handlers did before this audit, unlike every other DB-touching handler
+//! in this server — risks exhausting the whole worker pool under a few
+//! concurrent viewers, which then makes unrelated requests (including
+//! static routes with no DB dependency at all) stop being served until the
+//! process is restarted. That symptom is exactly what a July 2026 incident
+//! looked like; this file was the top suspect once every other handler
+//! turned out to already be wrapped.
 
 use axum::{
     Json,
@@ -76,40 +92,49 @@ pub(super) async fn api_summary(
     headers: HeaderMap,
     Query(q): Query<EventsQuery>,
 ) -> Result<Json<SummaryResponse>, ApiError> {
-    let since = q.since();
-    let db = state.db()?;
-    let view = resolve_view_user(&headers, &db, q.user.as_deref())?;
-    let stats = db.router_stats_summary_filtered(since, view.as_deref())?;
-    // Compute hit count separately — router_stats_summary doesn't have it.
-    let total_with_hit = db.router_events_count_filtered(since, None, true, view.as_deref())?;
-    let avg_prompt = if stats.total_calls > 0 {
-        stats.total_prompt_tokens as f64 / stats.total_calls as f64
-    } else {
-        0.0
-    };
-    let hit_rate = if stats.total_calls > 0 {
-        total_with_hit as f64 / stats.total_calls as f64
-    } else {
-        0.0
-    };
-    Ok(Json(SummaryResponse {
-        total: stats.total_calls,
-        hits: total_with_hit,
-        errors: stats.errors,
-        hit_rate,
-        avg_latency_ms: stats.avg_latency_ms,
-        avg_prompt_tokens: avg_prompt,
-        total_tokens: stats.total_tokens,
-        per_model: stats
-            .per_model
-            .into_iter()
-            .map(|m| PerModel {
-                model: m.model,
-                calls: m.calls,
-                total_tokens: m.total_tokens,
-            })
-            .collect(),
-    }))
+    // Every handler in this file scans `router_events` (potentially the
+    // largest table in the DB) directly, and this endpoint alone is polled
+    // every 5s by every open Overview tab — see the module-level audit note
+    // above `api_events` for why this must not run on a tokio worker thread.
+    let resp = tokio::task::spawn_blocking(move || -> Result<SummaryResponse, ApiError> {
+        let since = q.since();
+        let db = state.db()?;
+        let view = resolve_view_user(&headers, &db, q.user.as_deref())?;
+        let stats = db.router_stats_summary_filtered(since, view.as_deref())?;
+        // Compute hit count separately — router_stats_summary doesn't have it.
+        let total_with_hit = db.router_events_count_filtered(since, None, true, view.as_deref())?;
+        let avg_prompt = if stats.total_calls > 0 {
+            stats.total_prompt_tokens as f64 / stats.total_calls as f64
+        } else {
+            0.0
+        };
+        let hit_rate = if stats.total_calls > 0 {
+            total_with_hit as f64 / stats.total_calls as f64
+        } else {
+            0.0
+        };
+        Ok(SummaryResponse {
+            total: stats.total_calls,
+            hits: total_with_hit,
+            errors: stats.errors,
+            hit_rate,
+            avg_latency_ms: stats.avg_latency_ms,
+            avg_prompt_tokens: avg_prompt,
+            total_tokens: stats.total_tokens,
+            per_model: stats
+                .per_model
+                .into_iter()
+                .map(|m| PerModel {
+                    model: m.model,
+                    calls: m.calls,
+                    total_tokens: m.total_tokens,
+                })
+                .collect(),
+        })
+    })
+    .await
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))??;
+    Ok(Json(resp))
 }
 
 #[derive(Serialize)]
@@ -204,26 +229,31 @@ pub(super) async fn api_events(
     headers: HeaderMap,
     Query(q): Query<EventsQuery>,
 ) -> Result<Json<EventsResponse>, ApiError> {
-    let since = q.since();
-    let limit = q.limit.unwrap_or(50).min(500);
-    let offset = q.offset.unwrap_or(0);
-    let model_ref = q.model.as_deref();
-    let hit_only = q.hit_only.unwrap_or(false);
-    let db = state.db()?;
-    let view = resolve_view_user(&headers, &db, q.user.as_deref())?;
-    let events = db.router_events_paged_filtered(
-        since,
-        limit,
-        offset,
-        model_ref,
-        hit_only,
-        view.as_deref(),
-    )?;
-    let total = db.router_events_count_filtered(since, model_ref, hit_only, view.as_deref())?;
-    Ok(Json(EventsResponse {
-        total,
-        events: events.into_iter().map(EventJson::from).collect(),
-    }))
+    let resp = tokio::task::spawn_blocking(move || -> Result<EventsResponse, ApiError> {
+        let since = q.since();
+        let limit = q.limit.unwrap_or(50).min(500);
+        let offset = q.offset.unwrap_or(0);
+        let model_ref = q.model.as_deref();
+        let hit_only = q.hit_only.unwrap_or(false);
+        let db = state.db()?;
+        let view = resolve_view_user(&headers, &db, q.user.as_deref())?;
+        let events = db.router_events_paged_filtered(
+            since,
+            limit,
+            offset,
+            model_ref,
+            hit_only,
+            view.as_deref(),
+        )?;
+        let total = db.router_events_count_filtered(since, model_ref, hit_only, view.as_deref())?;
+        Ok(EventsResponse {
+            total,
+            events: events.into_iter().map(EventJson::from).collect(),
+        })
+    })
+    .await
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))??;
+    Ok(Json(resp))
 }
 
 #[derive(Deserialize)]
@@ -257,27 +287,32 @@ pub(super) async fn api_timeline(
     headers: HeaderMap,
     Query(q): Query<TimelineQuery>,
 ) -> Result<Json<TimelineResponse>, ApiError> {
-    let hours = q.hours.unwrap_or(24).clamp(1, 720);
-    let target_buckets = 48i64;
-    let default_bucket = ((hours * 3600) / target_buckets).max(60);
-    let bucket_secs = q.bucket_secs.unwrap_or(default_bucket).max(60);
-    let buckets = ((hours * 3600) / bucket_secs).max(1);
-    let db = state.db()?;
-    let view = resolve_view_user(&headers, &db, q.user.as_deref())?;
-    let raw = db.router_timeline_filtered(bucket_secs, buckets, view.as_deref())?;
-    Ok(Json(TimelineResponse {
-        bucket_secs,
-        points: raw
-            .into_iter()
-            .map(|b| TimelinePoint {
-                ts_start: b.ts_start,
-                total: b.total,
-                hits: b.hits,
-                errors: b.errors,
-                avg_latency_ms: b.avg_latency_ms,
-            })
-            .collect(),
-    }))
+    let resp = tokio::task::spawn_blocking(move || -> Result<TimelineResponse, ApiError> {
+        let hours = q.hours.unwrap_or(24).clamp(1, 720);
+        let target_buckets = 48i64;
+        let default_bucket = ((hours * 3600) / target_buckets).max(60);
+        let bucket_secs = q.bucket_secs.unwrap_or(default_bucket).max(60);
+        let buckets = ((hours * 3600) / bucket_secs).max(1);
+        let db = state.db()?;
+        let view = resolve_view_user(&headers, &db, q.user.as_deref())?;
+        let raw = db.router_timeline_filtered(bucket_secs, buckets, view.as_deref())?;
+        Ok(TimelineResponse {
+            bucket_secs,
+            points: raw
+                .into_iter()
+                .map(|b| TimelinePoint {
+                    ts_start: b.ts_start,
+                    total: b.total,
+                    hits: b.hits,
+                    errors: b.errors,
+                    avg_latency_ms: b.avg_latency_ms,
+                })
+                .collect(),
+        })
+    })
+    .await
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))??;
+    Ok(Json(resp))
 }
 
 pub(super) async fn api_event_by_id(
@@ -285,23 +320,28 @@ pub(super) async fn api_event_by_id(
     headers: HeaderMap,
     Path(id): Path<i64>,
 ) -> Result<Json<EventJson>, ApiError> {
-    let db = state.db()?;
-    // Same tenant rule as the list endpoint: non-admin only sees their own
-    // events; admin sees anything; compat mode (no users yet) is open.
-    let view = resolve_view_user(&headers, &db, None)?;
-    match db.router_event_by_id(id)? {
-        Some(ev) => {
-            if let Some(scope) = view.as_deref()
-                && ev.user_id.as_deref() != Some(scope)
-            {
-                // Hide cross-tenant access — return 404 (not 403) so
-                // attackers can't enumerate event ids by status code.
-                return Err(ApiError::NotFound);
+    let resp = tokio::task::spawn_blocking(move || -> Result<EventJson, ApiError> {
+        let db = state.db()?;
+        // Same tenant rule as the list endpoint: non-admin only sees their own
+        // events; admin sees anything; compat mode (no users yet) is open.
+        let view = resolve_view_user(&headers, &db, None)?;
+        match db.router_event_by_id(id)? {
+            Some(ev) => {
+                if let Some(scope) = view.as_deref()
+                    && ev.user_id.as_deref() != Some(scope)
+                {
+                    // Hide cross-tenant access — return 404 (not 403) so
+                    // attackers can't enumerate event ids by status code.
+                    return Err(ApiError::NotFound);
+                }
+                Ok(ev.into())
             }
-            Ok(Json(ev.into()))
+            None => Err(ApiError::NotFound),
         }
-        None => Err(ApiError::NotFound),
-    }
+    })
+    .await
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))??;
+    Ok(Json(resp))
 }
 
 fn hours_to_since_ts(hours: i64) -> i64 {

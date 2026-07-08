@@ -813,3 +813,55 @@ fn api_skill_detail_feedback_recent_hides_user_id_from_non_admin() {
     assert_eq!(recent_admin.len(), 1);
     assert_eq!(recent_admin[0]["user_id"], bob.user_id);
 }
+
+/// `GET /api/skill/{name}` caches `Database::skill_router_stats` /
+/// `skill_feedback_counts_all` process-wide with a TTL (`server::stats_cache`,
+/// 2026-07 blocking-runtime audit) — a full-table scan plus an N+1
+/// `router_session_adoptions` query per chosen session, which is expensive
+/// enough on a busy install that recomputing it on every 5s poll of this
+/// endpoint was a real contributor to a full-server hang. Prove the cache is
+/// actually live at the HTTP boundary (not just in the unit tests colocated
+/// with the cache module itself): a router_events row inserted directly into
+/// the DB (bypassing the server, so the cache can't see it any other way)
+/// must NOT move `feedback_stats.candidate_events` on an immediate follow-up
+/// request within the TTL window — the accepted "stats can lag up to the TTL"
+/// tradeoff, from the caller's point of view.
+#[test]
+fn api_skill_detail_router_stats_are_cached_within_ttl() {
+    let s = spawn_team_server();
+    let alice = register(&s, "alice", "pw alice correct horse");
+    plant_and_scan(s.home.path(), "alpha", "alpha skill description");
+
+    let db = s.db();
+    let now = chrono::Utc::now().timestamp();
+    insert_router_event(&db, now, "cache-s1", &["alpha"], &["alpha"]);
+
+    let r1 = http()
+        .get(format!("{}/api/skill/alpha", s.base_url()))
+        .bearer_auth(&alice.api_key)
+        .send()
+        .unwrap();
+    assert_eq!(r1.status().as_u16(), 200);
+    let body1: Value = r1.json().unwrap();
+    assert_eq!(
+        body1["feedback_stats"]["candidate_events"], 1,
+        "priming request must see the one router_event fixture: {body1:?}"
+    );
+
+    // Bypass the server entirely — insert straight into the DB it reads.
+    // Within the cache TTL, the next request must still report the STALE
+    // count, proving the response came from the cache and not a fresh scan.
+    insert_router_event(&db, now, "cache-s2", &["alpha"], &["alpha"]);
+
+    let r2 = http()
+        .get(format!("{}/api/skill/alpha", s.base_url()))
+        .bearer_auth(&alice.api_key)
+        .send()
+        .unwrap();
+    assert_eq!(r2.status().as_u16(), 200);
+    let body2: Value = r2.json().unwrap();
+    assert_eq!(
+        body2["feedback_stats"]["candidate_events"], 1,
+        "a request within the TTL must return the cached snapshot, not re-scan router_events: {body2:?}"
+    );
+}

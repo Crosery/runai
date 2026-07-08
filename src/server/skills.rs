@@ -20,6 +20,7 @@ use crate::core::skill_metrics;
 use super::error::ApiError;
 use super::recommend::request_origin;
 use super::state::{AppState, current_user, resolve_skill_dir, resolve_skill_dir_scoped};
+use super::stats_cache;
 use super::telemetry::EventJson;
 
 #[derive(Serialize)]
@@ -53,77 +54,85 @@ pub(super) async fn api_skills(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<SkillsResponse>, ApiError> {
-    use crate::core::resource::ResourceKind;
+    // See api_skill_detail's comment: DB reads must not run directly on a
+    // tokio worker thread. This endpoint is polled every 5s by every open
+    // Library tab, same class of risk.
+    let resp = tokio::task::spawn_blocking(move || -> Result<SkillsResponse, ApiError> {
+        use crate::core::resource::ResourceKind;
 
-    let db = state.db()?;
-    // Phase D: scope the skill list per request owner so a remote user
-    // sees public-pool skills plus their own private ones, not other
-    // users' privates. Admin (`is_admin`) sees everything via "*".
-    //
-    // PLANNING §2.3 item 5 — once any user exists (or any router_event
-    // exists, via `private_data_locked`), anonymous reads are 401; the
-    // first-run compat carve-out only applies to truly cold servers.
-    let me = if super::state::private_data_locked(&db) {
-        Some(super::state::require_user(&headers, &db)?)
-    } else {
-        current_user(&headers, &db).ok().flatten()
-    };
-    let owner_scope: Option<String> = match &me {
-        Some(u) if u.is_admin => Some("*".into()),
-        Some(u) => Some(u.user_id.clone()),
-        None => None,
-    };
-    let resources = db
-        .list_resources_for_user(None, owner_scope.as_deref())
-        .map_err(ApiError::Internal)?;
-    let indices = db.skill_ai_index_all_by_resource_key().unwrap_or_default();
+        let db = state.db()?;
+        // Phase D: scope the skill list per request owner so a remote user
+        // sees public-pool skills plus their own private ones, not other
+        // users' privates. Admin (`is_admin`) sees everything via "*".
+        //
+        // PLANNING §2.3 item 5 — once any user exists (or any router_event
+        // exists, via `private_data_locked`), anonymous reads are 401; the
+        // first-run compat carve-out only applies to truly cold servers.
+        let me = if super::state::private_data_locked(&db) {
+            Some(super::state::require_user(&headers, &db)?)
+        } else {
+            current_user(&headers, &db).ok().flatten()
+        };
+        let owner_scope: Option<String> = match &me {
+            Some(u) if u.is_admin => Some("*".into()),
+            Some(u) => Some(u.user_id.clone()),
+            None => None,
+        };
+        let resources = db
+            .list_resources_for_user(None, owner_scope.as_deref())
+            .map_err(ApiError::Internal)?;
+        let indices = db.skill_ai_index_all_by_resource_key().unwrap_or_default();
 
-    let mut skills = Vec::new();
-    let mut enriched = 0usize;
-    let mut enriching = 0usize;
-    for r in resources {
-        if r.kind != ResourceKind::Skill {
-            continue;
+        let mut skills = Vec::new();
+        let mut enriched = 0usize;
+        let mut enriching = 0usize;
+        for r in resources {
+            if r.kind != ResourceKind::Skill {
+                continue;
+            }
+            let index_key = crate::core::db::Database::skill_ai_index_key_for_resource(&r);
+            let index = indices.get(&index_key);
+            let summary = index.map(|row| row.summary.clone()).unwrap_or_default();
+            // 3-state: in-flight registry + summary timestamp decide 已富集 /
+            // 富集中 / 未富集 (a re-enriched skill with a stale summary shows 富集中).
+            let enrich_status = super::enrich_state::status_for(
+                &r.name,
+                !summary.is_empty(),
+                index.map(|row| row.updated_at),
+            );
+            match enrich_status {
+                "enriched" => enriched += 1,
+                "enriching" => enriching += 1,
+                _ => {}
+            }
+            let llm_score = index.map(|row| row.llm_score);
+            skills.push(SkillRow {
+                name: r.name.clone(),
+                description: r.description.clone(),
+                usage_count: r.usage_count as i64,
+                summary,
+                llm_score,
+                owner_user_id: r.owner_user_id.clone(),
+                enrich_status,
+            });
         }
-        let index_key = crate::core::db::Database::skill_ai_index_key_for_resource(&r);
-        let index = indices.get(&index_key);
-        let summary = index.map(|row| row.summary.clone()).unwrap_or_default();
-        // 3-state: in-flight registry + summary timestamp decide 已富集 /
-        // 富集中 / 未富集 (a re-enriched skill with a stale summary shows 富集中).
-        let enrich_status = super::enrich_state::status_for(
-            &r.name,
-            !summary.is_empty(),
-            index.map(|row| row.updated_at),
-        );
-        match enrich_status {
-            "enriched" => enriched += 1,
-            "enriching" => enriching += 1,
-            _ => {}
-        }
-        let llm_score = index.map(|row| row.llm_score);
-        skills.push(SkillRow {
-            name: r.name.clone(),
-            description: r.description.clone(),
-            usage_count: r.usage_count as i64,
-            summary,
-            llm_score,
-            owner_user_id: r.owner_user_id.clone(),
-            enrich_status,
+        let total = skills.len();
+        skills.sort_by(|a, b| {
+            b.llm_score
+                .unwrap_or(-1)
+                .cmp(&a.llm_score.unwrap_or(-1))
+                .then(a.name.cmp(&b.name))
         });
-    }
-    let total = skills.len();
-    skills.sort_by(|a, b| {
-        b.llm_score
-            .unwrap_or(-1)
-            .cmp(&a.llm_score.unwrap_or(-1))
-            .then(a.name.cmp(&b.name))
-    });
-    Ok(Json(SkillsResponse {
-        total,
-        enriched,
-        enriching,
-        skills,
-    }))
+        Ok(SkillsResponse {
+            total,
+            enriched,
+            enriching,
+            skills,
+        })
+    })
+    .await
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))??;
+    Ok(Json(resp))
 }
 
 /// Wire shape for `core::skill_metrics::RadarScores` — five 0-10 axes.
@@ -218,201 +227,219 @@ pub(super) async fn api_skill_detail(
     Path(name): Path<String>,
     Query(q): Query<SkillScopeQuery>,
 ) -> Result<Json<SkillDetailResponse>, ApiError> {
-    use crate::core::resource::ResourceKind;
+    // The radar/feedback aggregation below runs a 90-day full-table scan
+    // plus a `skill_router_stats` N+1 query storm (see stats_cache.rs) —
+    // real synchronous SQLite work that must not run directly on a tokio
+    // worker thread (that starved every worker in a 2026-07 incident and
+    // took the whole server, static routes included, unresponsive until
+    // restart). Every other DB-touching handler in this server already
+    // goes through spawn_blocking; this one and its siblings below did not.
+    let resp = tokio::task::spawn_blocking(move || -> Result<SkillDetailResponse, ApiError> {
+        use crate::core::resource::ResourceKind;
 
-    let db = state.db()?;
-    // Phase D: owner-aware lookup. Private rows win over public ones of
-    // the same name for the current user; admin sees first private match.
-    //
-    // PLANNING §2.3 item 5 — same compat carve-out as api_skills:
-    // cold server allows anonymous, otherwise require_user.
-    let me = if super::state::private_data_locked(&db) {
-        Some(super::state::require_user(&headers, &db)?)
-    } else {
-        current_user(&headers, &db).ok().flatten()
-    };
-    let owner_scope: Option<String> = match &me {
-        // admin: a non-empty `?owner=<uid>` pins resolution to that user's
-        // pool (the dashboard "用户库" drill-in), so a same-named private
-        // skill resolves to the user actually clicked instead of the freshest
-        // `"*"` match. No `?owner=` → global admin scope.
-        Some(u) if u.is_admin => match q.owner.as_deref() {
-            Some(uid) if !uid.is_empty() => Some(uid.to_string()),
-            _ => Some("*".into()),
-        },
-        Some(u) => Some(u.user_id.clone()),
-        None => None,
-    };
-    let resource = db
-        .find_resource_by_name_for_user(ResourceKind::Skill, &name, owner_scope.as_deref())
-        .map_err(ApiError::Internal)?
-        .ok_or(ApiError::NotFound)?;
-    let index_row = db
-        .skill_ai_index_for_resource(&resource)
-        .unwrap_or_default();
-    let summary = index_row
-        .as_ref()
-        .map(|row| row.summary.clone())
-        .unwrap_or_default();
-    let llm_score = if summary.is_empty() {
-        None
-    } else {
-        Some(db.skill_llm_score_for_resource(&resource).unwrap_or(5))
-    };
-    // Same 3-state computation as `api_skills::SkillRow.enrich_status` —
-    // resolved from THIS resource's own owner-scoped index row, so a
-    // same-named private skill never borrows the public summary's status.
-    let enrich_status = super::enrich_state::status_for(
-        &resource.name,
-        !summary.is_empty(),
-        index_row.as_ref().map(|row| row.updated_at),
-    );
-    let skill_md_path = resource.directory.join("SKILL.md");
-    const MAX_BYTES: usize = 60_000;
-    let (skill_md_content, truncated, total_size) = match std::fs::read_to_string(&skill_md_path) {
-        Ok(body) => {
-            let total = body.len();
-            if total > MAX_BYTES {
-                let trunc: String = body.chars().take(MAX_BYTES).collect();
-                (trunc, true, total)
-            } else {
-                (body, false, total)
-            }
-        }
-        Err(_) => (String::new(), false, 0),
-    };
-    let event_rows = db.router_events_for_skill(&name, 50).unwrap_or_default();
-    let events_total = event_rows.len();
-    let events: Vec<EventJson> = event_rows.into_iter().map(EventJson::from).collect();
-
-    // ── skill-feedback-radar (core::skill_metrics) ──
-    let is_admin = me.as_ref().map(|u| u.is_admin).unwrap_or(false);
-    const RADAR_WINDOW_SECS: i64 = 90 * 86_400;
-    let since_ts = chrono::Utc::now().timestamp() - RADAR_WINDOW_SECS;
-    let router_stats_all = db.skill_router_stats(since_ts).unwrap_or_default();
-    let (feedback_pos, feedback_neg) = db
-        .skill_feedback_counts(&resource.name, resource.owner_user_id.as_deref())
-        .unwrap_or((0, 0));
-
-    // Comparison corpus for both the heat axis' max_usage_count and the
-    // radar_avg mean: every skill visible in the SAME owner scope this
-    // request already resolved (public ∪ own private; admin sees "*").
-    // Reusing `owner_scope` keeps a non-admin's average from ever touching
-    // another user's private router/feedback counts.
-    let compare_resources = db
-        .list_resources_for_user(Some(ResourceKind::Skill), owner_scope.as_deref())
-        .unwrap_or_default();
-    let max_usage = compare_resources
-        .iter()
-        .map(|r| r.usage_count as i64)
-        .max()
-        .unwrap_or(0);
-
-    let this_stats = router_stats_all
-        .get(&resource.name)
-        .copied()
-        .unwrap_or_default();
-    let radar: RadarJson = skill_metrics::compute_radar(
-        this_stats.adopted_sessions,
-        this_stats.chosen_sessions,
-        this_stats.chosen_events,
-        this_stats.candidate_events,
-        feedback_pos,
-        feedback_neg,
-        llm_score,
-        resource.usage_count as i64,
-        max_usage,
-    )
-    .into();
-
-    let ai_indices = db.skill_ai_index_all_by_resource_key().unwrap_or_default();
-    let feedback_all = db.skill_feedback_counts_all().unwrap_or_default();
-    let mut sum = [0.0f64; 5];
-    let mut enriched_n = 0usize;
-    for r in &compare_resources {
-        let key = crate::core::db::Database::skill_ai_index_key_for_resource(r);
-        let idx = match ai_indices.get(&key) {
-            Some(row) if !row.summary.is_empty() => row,
-            _ => continue,
+        let db = state.db()?;
+        // Phase D: owner-aware lookup. Private rows win over public ones of
+        // the same name for the current user; admin sees first private match.
+        //
+        // PLANNING §2.3 item 5 — same compat carve-out as api_skills:
+        // cold server allows anonymous, otherwise require_user.
+        let me = if super::state::private_data_locked(&db) {
+            Some(super::state::require_user(&headers, &db)?)
+        } else {
+            current_user(&headers, &db).ok().flatten()
         };
-        let stats = router_stats_all.get(&r.name).copied().unwrap_or_default();
-        let (fp, fneg) = feedback_all.get(&r.name).copied().unwrap_or((0, 0));
-        let rr = skill_metrics::compute_radar(
-            stats.adopted_sessions,
-            stats.chosen_sessions,
-            stats.chosen_events,
-            stats.candidate_events,
-            fp,
-            fneg,
-            Some(idx.llm_score),
-            r.usage_count as i64,
-            max_usage,
+        let owner_scope: Option<String> = match &me {
+            // admin: a non-empty `?owner=<uid>` pins resolution to that user's
+            // pool (the dashboard "用户库" drill-in), so a same-named private
+            // skill resolves to the user actually clicked instead of the freshest
+            // `"*"` match. No `?owner=` → global admin scope.
+            Some(u) if u.is_admin => match q.owner.as_deref() {
+                Some(uid) if !uid.is_empty() => Some(uid.to_string()),
+                _ => Some("*".into()),
+            },
+            Some(u) => Some(u.user_id.clone()),
+            None => None,
+        };
+        let resource = db
+            .find_resource_by_name_for_user(ResourceKind::Skill, &name, owner_scope.as_deref())
+            .map_err(ApiError::Internal)?
+            .ok_or(ApiError::NotFound)?;
+        let index_row = db
+            .skill_ai_index_for_resource(&resource)
+            .unwrap_or_default();
+        let summary = index_row
+            .as_ref()
+            .map(|row| row.summary.clone())
+            .unwrap_or_default();
+        let llm_score = if summary.is_empty() {
+            None
+        } else {
+            Some(db.skill_llm_score_for_resource(&resource).unwrap_or(5))
+        };
+        // Same 3-state computation as `api_skills::SkillRow.enrich_status` —
+        // resolved from THIS resource's own owner-scoped index row, so a
+        // same-named private skill never borrows the public summary's status.
+        let enrich_status = super::enrich_state::status_for(
+            &resource.name,
+            !summary.is_empty(),
+            index_row.as_ref().map(|row| row.updated_at),
         );
-        sum[0] += rr.adoption;
-        sum[1] += rr.precision;
-        sum[2] += rr.rating;
-        sum[3] += rr.quality;
-        sum[4] += rr.heat;
-        enriched_n += 1;
-    }
-    let radar_avg = if enriched_n > 0 {
-        let n = enriched_n as f64;
-        RadarJson {
-            adoption: sum[0] / n,
-            precision: sum[1] / n,
-            rating: sum[2] / n,
-            quality: sum[3] / n,
-            heat: sum[4] / n,
+        let skill_md_path = resource.directory.join("SKILL.md");
+        const MAX_BYTES: usize = 60_000;
+        let (skill_md_content, truncated, total_size) =
+            match std::fs::read_to_string(&skill_md_path) {
+                Ok(body) => {
+                    let total = body.len();
+                    if total > MAX_BYTES {
+                        let trunc: String = body.chars().take(MAX_BYTES).collect();
+                        (trunc, true, total)
+                    } else {
+                        (body, false, total)
+                    }
+                }
+                Err(_) => (String::new(), false, 0),
+            };
+        let event_rows = db.router_events_for_skill(&name, 50).unwrap_or_default();
+        let events_total = event_rows.len();
+        let events: Vec<EventJson> = event_rows.into_iter().map(EventJson::from).collect();
+
+        // ── skill-feedback-radar (core::skill_metrics) ──
+        let is_admin = me.as_ref().map(|u| u.is_admin).unwrap_or(false);
+        const RADAR_WINDOW_SECS: i64 = 90 * 86_400;
+        let since_ts = chrono::Utc::now().timestamp() - RADAR_WINDOW_SECS;
+        // Cached (TTL 45s, keyed by db_path) — see stats_cache.rs for why this
+        // pair specifically: both are full-table, non-owner-scoped aggregates,
+        // and `skill_router_stats` in particular is the expensive one (N+1
+        // adoption-count queries per chosen session).
+        let (router_stats_all, feedback_all) =
+            stats_cache::router_and_feedback_stats(&db, &state.db_path, since_ts)
+                .unwrap_or_default();
+        let (feedback_pos, feedback_neg) = db
+            .skill_feedback_counts(&resource.name, resource.owner_user_id.as_deref())
+            .unwrap_or((0, 0));
+
+        // Comparison corpus for both the heat axis' max_usage_count and the
+        // radar_avg mean: every skill visible in the SAME owner scope this
+        // request already resolved (public ∪ own private; admin sees "*").
+        // Reusing `owner_scope` keeps a non-admin's average from ever touching
+        // another user's private router/feedback counts.
+        let compare_resources = db
+            .list_resources_for_user(Some(ResourceKind::Skill), owner_scope.as_deref())
+            .unwrap_or_default();
+        let max_usage = compare_resources
+            .iter()
+            .map(|r| r.usage_count as i64)
+            .max()
+            .unwrap_or(0);
+
+        let this_stats = router_stats_all
+            .get(&resource.name)
+            .copied()
+            .unwrap_or_default();
+        let radar: RadarJson = skill_metrics::compute_radar(
+            this_stats.adopted_sessions,
+            this_stats.chosen_sessions,
+            this_stats.chosen_events,
+            this_stats.candidate_events,
+            feedback_pos,
+            feedback_neg,
+            llm_score,
+            resource.usage_count as i64,
+            max_usage,
+        )
+        .into();
+
+        let ai_indices = db.skill_ai_index_all_by_resource_key().unwrap_or_default();
+        let mut sum = [0.0f64; 5];
+        let mut enriched_n = 0usize;
+        for r in &compare_resources {
+            let key = crate::core::db::Database::skill_ai_index_key_for_resource(r);
+            let idx = match ai_indices.get(&key) {
+                Some(row) if !row.summary.is_empty() => row,
+                _ => continue,
+            };
+            let stats = router_stats_all.get(&r.name).copied().unwrap_or_default();
+            let (fp, fneg) = feedback_all.get(&r.name).copied().unwrap_or((0, 0));
+            let rr = skill_metrics::compute_radar(
+                stats.adopted_sessions,
+                stats.chosen_sessions,
+                stats.chosen_events,
+                stats.candidate_events,
+                fp,
+                fneg,
+                Some(idx.llm_score),
+                r.usage_count as i64,
+                max_usage,
+            );
+            sum[0] += rr.adoption;
+            sum[1] += rr.precision;
+            sum[2] += rr.rating;
+            sum[3] += rr.quality;
+            sum[4] += rr.heat;
+            enriched_n += 1;
         }
-    } else {
-        neutral_radar_json()
-    };
+        let radar_avg = if enriched_n > 0 {
+            let n = enriched_n as f64;
+            RadarJson {
+                adoption: sum[0] / n,
+                precision: sum[1] / n,
+                rating: sum[2] / n,
+                quality: sum[3] / n,
+                heat: sum[4] / n,
+            }
+        } else {
+            neutral_radar_json()
+        };
 
-    let feedback_stats = FeedbackStatsJson {
-        pos: feedback_pos,
-        neg: feedback_neg,
-        chosen_sessions: this_stats.chosen_sessions,
-        adopted_sessions: this_stats.adopted_sessions,
-        candidate_events: this_stats.candidate_events,
-        chosen_events: this_stats.chosen_events,
-    };
-    // `recent_skill_feedback` is not owner-scoped at the DB layer (it
-    // aggregates by skill_name only) — filter here so a private skill's
-    // feedback never bleeds into a same-named public skill's detail view
-    // or vice versa, matching the owner-pool isolation `skill_feedback_counts`
-    // already enforces for the aggregate counts above.
-    let feedback_recent: Vec<FeedbackRecentJson> = db
-        .recent_skill_feedback(&resource.name, 50)
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|f| f.owner_user_id == resource.owner_user_id)
-        .take(10)
-        .map(|f| FeedbackRecentJson {
-            ts: f.ts,
-            verdict: f.verdict,
-            note: f.note,
-            user_id: if is_admin { f.user_id } else { None },
+        let feedback_stats = FeedbackStatsJson {
+            pos: feedback_pos,
+            neg: feedback_neg,
+            chosen_sessions: this_stats.chosen_sessions,
+            adopted_sessions: this_stats.adopted_sessions,
+            candidate_events: this_stats.candidate_events,
+            chosen_events: this_stats.chosen_events,
+        };
+        // `recent_skill_feedback` is not owner-scoped at the DB layer (it
+        // aggregates by skill_name only) — filter here so a private skill's
+        // feedback never bleeds into a same-named public skill's detail view
+        // or vice versa, matching the owner-pool isolation `skill_feedback_counts`
+        // already enforces for the aggregate counts above.
+        let feedback_recent: Vec<FeedbackRecentJson> = db
+            .recent_skill_feedback(&resource.name, 50)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|f| f.owner_user_id == resource.owner_user_id)
+            .take(10)
+            .map(|f| FeedbackRecentJson {
+                ts: f.ts,
+                verdict: f.verdict,
+                note: f.note,
+                user_id: if is_admin { f.user_id } else { None },
+            })
+            .collect();
+
+        Ok(SkillDetailResponse {
+            name: resource.name.clone(),
+            description: resource.description.clone(),
+            usage_count: resource.usage_count as i64,
+            summary,
+            llm_score,
+            skill_md_path: skill_md_path.display().to_string(),
+            skill_md_content,
+            skill_md_size: total_size,
+            skill_md_truncated: truncated,
+            enrich_status,
+            events,
+            events_total,
+            radar,
+            radar_avg,
+            feedback_stats,
+            feedback_recent,
         })
-        .collect();
-
-    Ok(Json(SkillDetailResponse {
-        name: resource.name.clone(),
-        description: resource.description.clone(),
-        usage_count: resource.usage_count as i64,
-        summary,
-        llm_score,
-        skill_md_path: skill_md_path.display().to_string(),
-        skill_md_content,
-        skill_md_size: total_size,
-        skill_md_truncated: truncated,
-        enrich_status,
-        events,
-        events_total,
-        radar,
-        radar_avg,
-        feedback_stats,
-        feedback_recent,
-    }))
+    })
+    .await
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))??;
+    Ok(Json(resp))
 }
 
 #[derive(Serialize)]
@@ -467,24 +494,32 @@ pub(super) async fn api_skill_files(
     Path(name): Path<String>,
     Query(q): Query<SkillScopeQuery>,
 ) -> Result<Json<SkillFilesResponse>, ApiError> {
-    use crate::core::manager::SkillManager;
-    let mgr = SkillManager::with_base(state.db_path.parent().unwrap().to_path_buf())
-        .map_err(ApiError::Internal)?;
-    let db = state.db()?;
-    let (skill_dir, _owner) =
-        resolve_skill_dir_scoped(&headers, &db, mgr.paths(), &name, q.owner.as_deref())
-            .map_err(|_| ApiError::NotFound)?;
-    if !skill_dir.is_dir() {
-        return Err(ApiError::NotFound);
-    }
-    let mut entries: Vec<SkillFileEntry> = Vec::new();
-    walk_skill_dir(&skill_dir, &skill_dir, &mut entries)?;
-    entries.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok(Json(SkillFilesResponse {
-        name,
-        skill_dir: skill_dir.display().to_string(),
-        entries,
-    }))
+    // Same reasoning as api_skills / api_skill_detail: DB lookup + a
+    // recursive filesystem walk must not run directly on a tokio worker
+    // thread.
+    let resp = tokio::task::spawn_blocking(move || -> Result<SkillFilesResponse, ApiError> {
+        use crate::core::manager::SkillManager;
+        let mgr = SkillManager::with_base(state.db_path.parent().unwrap().to_path_buf())
+            .map_err(ApiError::Internal)?;
+        let db = state.db()?;
+        let (skill_dir, _owner) =
+            resolve_skill_dir_scoped(&headers, &db, mgr.paths(), &name, q.owner.as_deref())
+                .map_err(|_| ApiError::NotFound)?;
+        if !skill_dir.is_dir() {
+            return Err(ApiError::NotFound);
+        }
+        let mut entries: Vec<SkillFileEntry> = Vec::new();
+        walk_skill_dir(&skill_dir, &skill_dir, &mut entries)?;
+        entries.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(SkillFilesResponse {
+            name,
+            skill_dir: skill_dir.display().to_string(),
+            entries,
+        })
+    })
+    .await
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))??;
+    Ok(Json(resp))
 }
 
 fn walk_skill_dir(
@@ -590,63 +625,71 @@ pub(super) async fn api_skill_file(
     Path(name): Path<String>,
     Query(q): Query<SkillFileQuery>,
 ) -> Result<Json<SkillFileResponse>, ApiError> {
-    use crate::core::manager::SkillManager;
-    let mgr = SkillManager::with_base(state.db_path.parent().unwrap().to_path_buf())
-        .map_err(ApiError::Internal)?;
-    let db = state.db()?;
-    let (skill_dir, _owner) =
-        resolve_skill_dir_scoped(&headers, &db, mgr.paths(), &name, q.owner.as_deref())
-            .map_err(|_| ApiError::NotFound)?;
-    let target = skill_dir.join(&q.path);
-    // SECURITY: canonicalise both, verify target still under skill_dir.
-    // Prevents `?path=../../etc/passwd` style traversal.
-    let root_real = skill_dir
-        .canonicalize()
-        .map_err(|e| ApiError::Internal(e.into()))?;
-    let target_real = match target.canonicalize() {
-        Ok(p) => p,
-        Err(_) => return Err(ApiError::NotFound),
-    };
-    if !target_real.starts_with(&root_real) {
-        return Err(ApiError::NotFound);
-    }
-    let md = target_real.metadata().map_err(|_| ApiError::NotFound)?;
-    if md.is_dir() {
-        return Err(ApiError::NotFound);
-    }
-    let size = md.len();
-    let is_text = is_text_path(&target_real);
-    const MAX_BYTES: usize = 80_000;
-    let (content, truncated) = if is_text {
-        match std::fs::read_to_string(&target_real) {
-            Ok(s) => {
-                if s.len() > MAX_BYTES {
-                    (s.chars().take(MAX_BYTES).collect::<String>(), true)
-                } else {
-                    (s, false)
+    // Same reasoning as the other skills.rs handlers: DB lookup + file I/O
+    // (including a `canonicalize()` syscall pair) must not run directly on
+    // a tokio worker thread.
+    let resp = tokio::task::spawn_blocking(move || -> Result<SkillFileResponse, ApiError> {
+        use crate::core::manager::SkillManager;
+        let mgr = SkillManager::with_base(state.db_path.parent().unwrap().to_path_buf())
+            .map_err(ApiError::Internal)?;
+        let db = state.db()?;
+        let (skill_dir, _owner) =
+            resolve_skill_dir_scoped(&headers, &db, mgr.paths(), &name, q.owner.as_deref())
+                .map_err(|_| ApiError::NotFound)?;
+        let target = skill_dir.join(&q.path);
+        // SECURITY: canonicalise both, verify target still under skill_dir.
+        // Prevents `?path=../../etc/passwd` style traversal.
+        let root_real = skill_dir
+            .canonicalize()
+            .map_err(|e| ApiError::Internal(e.into()))?;
+        let target_real = match target.canonicalize() {
+            Ok(p) => p,
+            Err(_) => return Err(ApiError::NotFound),
+        };
+        if !target_real.starts_with(&root_real) {
+            return Err(ApiError::NotFound);
+        }
+        let md = target_real.metadata().map_err(|_| ApiError::NotFound)?;
+        if md.is_dir() {
+            return Err(ApiError::NotFound);
+        }
+        let size = md.len();
+        let is_text = is_text_path(&target_real);
+        const MAX_BYTES: usize = 80_000;
+        let (content, truncated) = if is_text {
+            match std::fs::read_to_string(&target_real) {
+                Ok(s) => {
+                    if s.len() > MAX_BYTES {
+                        (s.chars().take(MAX_BYTES).collect::<String>(), true)
+                    } else {
+                        (s, false)
+                    }
+                }
+                // text by extension but not valid UTF-8 → treat as binary
+                Err(_) => {
+                    return Ok(SkillFileResponse {
+                        path: q.path,
+                        size,
+                        content: String::new(),
+                        truncated: false,
+                        is_text: false,
+                    });
                 }
             }
-            // text by extension but not valid UTF-8 → treat as binary
-            Err(_) => {
-                return Ok(Json(SkillFileResponse {
-                    path: q.path,
-                    size,
-                    content: String::new(),
-                    truncated: false,
-                    is_text: false,
-                }));
-            }
-        }
-    } else {
-        (String::new(), false)
-    };
-    Ok(Json(SkillFileResponse {
-        path: q.path,
-        size,
-        content,
-        truncated,
-        is_text,
-    }))
+        } else {
+            (String::new(), false)
+        };
+        Ok(SkillFileResponse {
+            path: q.path,
+            size,
+            content,
+            truncated,
+            is_text,
+        })
+    })
+    .await
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))??;
+    Ok(Json(resp))
 }
 
 /// Canonicalize a JSON request body for stable idempotency hashing.

@@ -29,6 +29,7 @@ mod private_upload;
 mod recommend;
 mod skills;
 mod state;
+mod stats_cache;
 mod telemetry;
 mod tls;
 
