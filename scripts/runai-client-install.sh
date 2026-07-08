@@ -37,13 +37,20 @@
 #   2) Write ~/.runai-hook.sh — bash wrapper that curls /recommend with
 #      Authorization: Bearer <key from ~/.runai-identity>.
 #   3) Patch ~/.claude/settings.json so UserPromptSubmit calls the hook.
-#      Original settings.json is backed up to .runai-bak first.
+#      Original settings.json is backed up to .runai-bak first. Mutually
+#      exclusive with the local direct-connect hook (bare `runai
+#      recommend`, installed by `runai recommend install-hook` / the TUI
+#      hook panel): if that entry is present it is removed first, since
+#      both hooks would otherwise POST every prompt through the recommend
+#      pipeline and double events/latency/token spend per prompt.
 #
 # What this does NOT do:
 #   - Install any binary.
 #   - Modify anything outside ~/.runai-identity, ~/.runai-hook.sh,
 #     and ~/.claude/settings.json.
-#   - Touch your existing hooks — runai's entry is appended, others kept.
+#   - Touch your existing hooks — runai's entry is appended, others kept
+#     (except the local direct-connect `runai recommend` entry, evicted
+#     per the mutual-exclusion note above).
 #
 # Uninstall: curl -fsSL http://<SERVER>:<PORT>/uninstall | bash
 
@@ -583,6 +590,23 @@ with open(settings_path) as f:
 hooks = data.setdefault('hooks', {})
 ups = hooks.setdefault('UserPromptSubmit', [])
 
+# Mutual exclusion: the local direct-connect hook (bare command
+# `runai recommend`, installed by `runai recommend install-hook` /
+# the TUI hook panel) and this remote client hook both POST every
+# prompt through the recommend pipeline. Having both wired doubles
+# events/latency/token spend per prompt. The remote hook we are about
+# to install takes over — evict any local-hook group first.
+removed_local = False
+kept = []
+for group in ups:
+    group_hooks = group.get('hooks', [])
+    if group_hooks and all(h.get('command') == 'runai recommend' for h in group_hooks):
+        removed_local = True
+        continue
+    kept.append(group)
+ups = kept
+hooks['UserPromptSubmit'] = ups
+
 already = False
 for group in ups:
     for h in group.get('hooks', []):
@@ -599,7 +623,10 @@ with open(settings_path, 'w') as f:
     json.dump(data, f, indent=2, ensure_ascii=False)
     f.write('\n')
 
-print('__RUNAI_PATCHED__' if not already else '__RUNAI_NOOP__')
+status = '__RUNAI_NOOP__' if already else '__RUNAI_PATCHED__'
+if removed_local:
+    status += '__RUNAI_REMOVED_LOCAL__'
+print(status)
 PY
   )
   if echo "$PATCH_RESULT" | grep -q '__RUNAI_PATCHED__'; then
@@ -608,6 +635,9 @@ PY
     ok "hook 已经在了 — 跳过"
   else
     echo "$PATCH_RESULT"
+  fi
+  if echo "$PATCH_RESULT" | grep -q '__RUNAI_REMOVED_LOCAL__'; then
+    ok "已移除本地直连 hook（runai recommend）— 由远程客户端 hook 接管，避免同一条 prompt 打两次推荐链路"
   fi
   printf "\n"
 fi

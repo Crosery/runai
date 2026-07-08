@@ -734,6 +734,114 @@ fn uninstall_hook_when_missing_is_noop() {
     );
 }
 
+/// PLANNING mutual-exclusion fix: local direct-connect hook (`runai
+/// recommend`) and the remote client hook (`~/.runai-hook.sh`) must never
+/// coexist in `UserPromptSubmit` — both fire the same recommend pipeline
+/// per prompt, doubling events/latency/tokens. Installing the local hook
+/// must evict a pre-existing remote-hook entry.
+#[test]
+fn install_local_hook_removes_remote_hook_entry() {
+    let tmp = tempfile::tempdir().unwrap();
+    let claude_dir = tmp.path().join(".claude");
+    fs::create_dir_all(&claude_dir).unwrap();
+    let remote_cmd = format!("{}/.runai-hook.sh", tmp.path().display());
+    let pre = serde_json::json!({
+        "hooks": {
+            "UserPromptSubmit": [
+                {"hooks": [{"type": "command", "command": "user-existing-hook"}]},
+                {"hooks": [{"type": "command", "command": remote_cmd}]}
+            ]
+        }
+    });
+    fs::write(
+        claude_dir.join("settings.json"),
+        serde_json::to_string_pretty(&pre).unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        install_claude_hook(tmp.path()).unwrap(),
+        HookInstallStatus::Installed
+    );
+    let after: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(claude_dir.join("settings.json")).unwrap())
+            .unwrap();
+    let ups = after["hooks"]["UserPromptSubmit"].as_array().unwrap();
+    let commands: Vec<&str> = ups
+        .iter()
+        .map(|g| g["hooks"][0]["command"].as_str().unwrap())
+        .collect();
+    assert!(
+        commands.contains(&"user-existing-hook"),
+        "unrelated hook must survive: {commands:?}"
+    );
+    assert!(
+        commands.contains(&"runai recommend"),
+        "local hook must be installed: {commands:?}"
+    );
+    assert!(
+        !commands.iter().any(|c| c.contains(".runai-hook.sh")),
+        "remote hook entry must be evicted by local install: {commands:?}"
+    );
+    assert_eq!(
+        commands.iter().filter(|c| **c == "runai recommend").count(),
+        1,
+        "exactly one local hook entry: {commands:?}"
+    );
+}
+
+/// Windows remote hook shape: `.ps1` wrapped in a `chcp`/`powershell`
+/// command line rather than a bare path. Must also be evicted.
+#[test]
+fn install_local_hook_removes_remote_ps1_hook_entry() {
+    let tmp = tempfile::tempdir().unwrap();
+    let claude_dir = tmp.path().join(".claude");
+    fs::create_dir_all(&claude_dir).unwrap();
+    let remote_cmd = format!(
+        "chcp 65001 >NUL & powershell -NoProfile -ExecutionPolicy Bypass -File \"{}\\.runai-hook.ps1\"",
+        tmp.path().display()
+    );
+    let pre = serde_json::json!({
+        "hooks": {
+            "UserPromptSubmit": [
+                {"hooks": [{"type": "command", "command": remote_cmd}]}
+            ]
+        }
+    });
+    fs::write(
+        claude_dir.join("settings.json"),
+        serde_json::to_string_pretty(&pre).unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        install_claude_hook(tmp.path()).unwrap(),
+        HookInstallStatus::Installed
+    );
+    let after: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(claude_dir.join("settings.json")).unwrap())
+            .unwrap();
+    let ups = after["hooks"]["UserPromptSubmit"].as_array().unwrap();
+    assert_eq!(ups.len(), 1);
+    assert_eq!(ups[0]["hooks"][0]["command"], "runai recommend");
+}
+
+/// Reinstalling the local hook when only the local hook is already present
+/// (no remote entry) stays a true no-op — mutex cleanup must not force an
+/// `Installed` status every time.
+#[test]
+fn install_local_hook_stays_already_present_without_remote_entry() {
+    let tmp = tempfile::tempdir().unwrap();
+    assert_eq!(
+        install_claude_hook(tmp.path()).unwrap(),
+        HookInstallStatus::Installed
+    );
+    assert_eq!(
+        install_claude_hook(tmp.path()).unwrap(),
+        HookInstallStatus::AlreadyPresent
+    );
+}
+
 #[test]
 fn load_missing_returns_default() {
     let tmp = tempfile::tempdir().unwrap();
