@@ -563,6 +563,45 @@ impl Database {
             )?;
         }
 
+        if version < 27 {
+            // Covering indexes for the /api/summary aggregations (17s cold-read
+            // fix). `router_events` rows are very wide (llm_input caps at 64 KB,
+            // hook_output/llm_raw_response several KB each), so a full-table
+            // SCAN for COUNT/SUM(total_tokens)/AVG(latency_ms)/GROUP BY model
+            // faults in the entire ~260 MB table via random reads — ~17s cold
+            // on a real install, 0s once the OS page cache is warm.
+            //
+            // Two narrow covering indexes let those aggregations run as
+            // index-only scans (each ~400 KB vs the 260 MB table):
+            //  - idx_router_events_summary_cover: the main COUNT/SUM aggregation
+            //    and the ok-only AVG(latency_ms) become COVERING INDEX scans.
+            //  - idx_router_events_permodel_cover: the GROUP BY model query
+            //    (which also computes hits from chosen_skills_json + AVG
+            //    latency) becomes a COVERING INDEX scan; `model` leads so the
+            //    GROUP BY needs no separate sort of the table, and the narrow
+            //    chosen_skills_json (a short JSON array of skill names) is
+            //    included so the hits CASE never touches the wide rows.
+            // CREATE INDEX IF NOT EXISTS is idempotent.
+            let has_router_events: i64 = self.conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='router_events'",
+                [],
+                |r| r.get(0),
+            )?;
+            if has_router_events > 0 {
+                self.conn.execute_batch(
+                    "CREATE INDEX IF NOT EXISTS idx_router_events_summary_cover
+                        ON router_events(ts, user_id, status, model, latency_ms,
+                                         total_tokens, prompt_tokens, completion_tokens, reasoning_tokens);
+                     CREATE INDEX IF NOT EXISTS idx_router_events_permodel_cover
+                        ON router_events(model, ts, user_id, total_tokens, latency_ms, chosen_skills_json);",
+                )?;
+            }
+            self.conn.execute_batch(
+                "DELETE FROM schema_version;
+                 INSERT INTO schema_version VALUES (27);",
+            )?;
+        }
+
         Ok(())
     }
 }

@@ -73,6 +73,10 @@ pub(super) struct PerModel {
     model: String,
     calls: i64,
     total_tokens: i64,
+    /// Mean router latency for this model (ms). `None` when no rows in scope.
+    avg_latency_ms: Option<f64>,
+    /// Rows where the router injected at least one skill (chosen non-empty).
+    hits: i64,
 }
 
 #[derive(Serialize)]
@@ -128,6 +132,8 @@ pub(super) async fn api_summary(
                     model: m.model,
                     calls: m.calls,
                     total_tokens: m.total_tokens,
+                    avg_latency_ms: m.avg_latency_ms,
+                    hits: m.hits,
                 })
                 .collect(),
         })

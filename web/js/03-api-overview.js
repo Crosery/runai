@@ -66,6 +66,11 @@
     $('#side-hit').textContent = hitPct == null ? '—' : `${hitPct}%`;
     $('#side-lat').textContent = data.avg_latency_ms == null ? '—' : `${fmtMs(data.avg_latency_ms)}ms`;
     $('#side-err').textContent = fmtInt(data.errors);
+
+    // Model-usage panel rides the SAME /api/summary payload — per_model now
+    // carries calls/total_tokens/avg_latency_ms/hits, so there is no separate
+    // /api/events paging (loadModelUsage lives in 07-polling-models.js).
+    if (typeof loadModelUsage === 'function') loadModelUsage(data.per_model);
   }
 
   // ------------------------------------------------------------------
