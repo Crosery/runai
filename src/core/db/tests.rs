@@ -2291,3 +2291,134 @@ fn skill_router_stats_counts_funnel_and_respects_since_ts() {
         "since_ts must exclude events entirely, not just zero their counts"
     );
 }
+
+/// Multi-session / multi-skill / overlapping-adoption correctness check for
+/// the bulk-adoption rewrite of `skill_router_stats` (was: one
+/// `router_session_adoptions` COUNT query per (skill, chosen_session) pair;
+/// now: one unfiltered bulk read into a `HashSet` checked in memory). Every
+/// expected count below was hand-calculated from the fixture, not diffed
+/// against the old implementation.
+#[test]
+fn skill_router_stats_bulk_adoption_matches_hand_calculated_counts() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(&tmp.path().join("router_bulk.db")).unwrap();
+
+    // "popular" is chosen in s1, s2, s3; adopted in s1 and s2 only.
+    for (session, ts) in [("s1", 1_100), ("s2", 1_200), ("s3", 1_300)] {
+        db.insert_router_event(&RouterEvent {
+            ts,
+            session_id: session.into(),
+            bm25_candidates_json: serde_json::to_string(&["popular", "rare"]).unwrap(),
+            chosen_skills_json: serde_json::to_string(&["popular"]).unwrap(),
+            ..base_event()
+        })
+        .unwrap();
+    }
+    db.record_session_adoption("s1", "popular").unwrap();
+    db.record_session_adoption("s2", "popular").unwrap();
+
+    // "rare" is only chosen in s1 (bundled into the same event as "popular"
+    // above would double-count candidate_events, so give it its own event).
+    db.insert_router_event(&RouterEvent {
+        ts: 1_150,
+        session_id: "s1".into(),
+        bm25_candidates_json: serde_json::to_string(&["rare"]).unwrap(),
+        chosen_skills_json: serde_json::to_string(&["rare"]).unwrap(),
+        ..base_event()
+    })
+    .unwrap();
+    db.record_session_adoption("s1", "rare").unwrap();
+
+    // "never-adopted" is chosen in s4 and s5, no adoption row for either.
+    for (session, ts) in [("s4", 1_400), ("s5", 1_500)] {
+        db.insert_router_event(&RouterEvent {
+            ts,
+            session_id: session.into(),
+            bm25_candidates_json: serde_json::to_string(&["never-adopted"]).unwrap(),
+            chosen_skills_json: serde_json::to_string(&["never-adopted"]).unwrap(),
+            ..base_event()
+        })
+        .unwrap();
+    }
+
+    // Cross-skill adoption noise: s4 adopts "popular" even though s4 never
+    // chose "popular" — must not leak into popular's adopted_sessions (s4
+    // isn't in popular's chosen-sessions set) or never-adopted's (wrong
+    // skill name).
+    db.record_session_adoption("s4", "popular").unwrap();
+
+    let stats = db.skill_router_stats(1_000).unwrap();
+
+    let popular = stats.get("popular").copied().unwrap();
+    assert_eq!(popular.chosen_events, 3);
+    assert_eq!(popular.chosen_sessions, 3, "s1, s2, s3");
+    assert_eq!(
+        popular.adopted_sessions, 2,
+        "s1 and s2 adopted; s3 did not; s4's adoption doesn't count (never chosen there)"
+    );
+
+    let rare = stats.get("rare").copied().unwrap();
+    assert_eq!(rare.chosen_events, 1);
+    assert_eq!(rare.chosen_sessions, 1);
+    assert_eq!(rare.adopted_sessions, 1);
+
+    let never_adopted = stats.get("never-adopted").copied().unwrap();
+    assert_eq!(never_adopted.chosen_events, 2);
+    assert_eq!(never_adopted.chosen_sessions, 2, "s4, s5");
+    assert_eq!(
+        never_adopted.adopted_sessions, 0,
+        "no router_session_adoptions row names this skill"
+    );
+}
+
+/// Perf regression guard + reporting benchmark for the N+1 rewrite: 5000
+/// router_events rows x 30 BM25 candidates each, ~half the sessions
+/// adopting. Before the bulk-adoption rewrite this took ~200ms in a debug
+/// build (thousands of synchronous per-(skill,session) COUNT queries); the
+/// rewrite does exactly two queries total regardless of fixture size. The
+/// assertion is a generous regression tripwire (not a tight perf budget) so
+/// it doesn't flake on a loaded CI runner; the printed number is the actual
+/// signal, visible with `cargo test -- --nocapture`.
+#[test]
+fn skill_router_stats_bench_5000_events_x_30_candidates() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(&tmp.path().join("router_bench.db")).unwrap();
+    let n_sessions: u32 = 5_000;
+    let n_candidates: u32 = 30;
+    for i in 0..n_sessions {
+        let session_id = format!("bench-sess-{i}");
+        let candidates: Vec<String> = (0..n_candidates).map(|c| format!("skill-{c}")).collect();
+        let chosen: Vec<String> = candidates.iter().take(3).cloned().collect();
+        db.insert_router_event(&RouterEvent {
+            ts: 2_000 + i as i64,
+            session_id: session_id.clone(),
+            bm25_candidates_json: serde_json::to_string(&candidates).unwrap(),
+            chosen_skills_json: serde_json::to_string(&chosen).unwrap(),
+            ..base_event()
+        })
+        .unwrap();
+        if i % 2 == 0 {
+            db.record_session_adoption(&session_id, &chosen[0]).unwrap();
+        }
+    }
+
+    let start = std::time::Instant::now();
+    let stats = db.skill_router_stats(0).unwrap();
+    let elapsed = start.elapsed();
+    eprintln!(
+        "AFTER (bulk-adoption) skill_router_stats({n_sessions} sessions x {n_candidates} candidates): {elapsed:?}"
+    );
+
+    // skill-0 is always index 0 of `chosen` (candidates.take(3)), so it is
+    // chosen in every session and adopted in exactly half of them.
+    let s0 = stats.get("skill-0").copied().unwrap();
+    assert_eq!(s0.chosen_sessions, n_sessions as i64);
+    assert_eq!(s0.adopted_sessions, n_sessions.div_ceil(2) as i64);
+
+    assert!(
+        elapsed.as_millis() < 2_000,
+        "bulk-adoption rewrite should stay well under a second even in a debug \
+         build and on a loaded CI runner; {elapsed:?} suggests a regression back \
+         toward per-row queries"
+    );
+}
