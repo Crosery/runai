@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use crate::core::db::UsageOutcome;
 use crate::core::manager::SkillManager;
+use crate::core::skill_metrics;
 
 use super::error::ApiError;
 use super::recommend::request_origin;
@@ -125,6 +126,61 @@ pub(super) async fn api_skills(
     }))
 }
 
+/// Wire shape for `core::skill_metrics::RadarScores` — five 0-10 axes.
+#[derive(Serialize)]
+pub(super) struct RadarJson {
+    adoption: f64,
+    precision: f64,
+    rating: f64,
+    quality: f64,
+    heat: f64,
+}
+
+impl From<skill_metrics::RadarScores> for RadarJson {
+    fn from(r: skill_metrics::RadarScores) -> Self {
+        RadarJson {
+            adoption: r.adoption,
+            precision: r.precision,
+            rating: r.rating,
+            quality: r.quality,
+            heat: r.heat,
+        }
+    }
+}
+
+/// Neutral radar for "nothing to average" (no enriched skills in scope) —
+/// matches each axis function's own zero-data-is-neutral convention.
+fn neutral_radar_json() -> RadarJson {
+    RadarJson {
+        adoption: 5.0,
+        precision: 5.0,
+        rating: 5.0,
+        quality: 5.0,
+        heat: 0.0,
+    }
+}
+
+#[derive(Serialize)]
+pub(super) struct FeedbackStatsJson {
+    pos: i64,
+    neg: i64,
+    chosen_sessions: i64,
+    adopted_sessions: i64,
+    candidate_events: i64,
+    chosen_events: i64,
+}
+
+#[derive(Serialize)]
+pub(super) struct FeedbackRecentJson {
+    ts: i64,
+    verdict: i64,
+    note: Option<String>,
+    /// Feedback author. Only populated for an admin viewer — a non-admin
+    /// sees `null` even for their own feedback, so the wire shape can't be
+    /// used to fingerprint OTHER users' activity by comparing responses.
+    user_id: Option<String>,
+}
+
 #[derive(Serialize)]
 pub(super) struct SkillDetailResponse {
     name: String,
@@ -139,6 +195,15 @@ pub(super) struct SkillDetailResponse {
     /// router_events where this skill was chosen, newest first, up to 50.
     events: Vec<EventJson>,
     events_total: usize,
+    /// Five-axis skill-feedback-radar for this skill (90-day router
+    /// telemetry window). See `core::skill_metrics`.
+    radar: RadarJson,
+    /// Mean radar across every enriched skill in the viewer's owner scope —
+    /// the frontend overlays this as the "corpus average" reference shape.
+    radar_avg: RadarJson,
+    feedback_stats: FeedbackStatsJson,
+    /// Most recent explicit +-1 votes, newest first, up to 10.
+    feedback_recent: Vec<FeedbackRecentJson>,
 }
 
 pub(super) async fn api_skill_detail(
@@ -203,6 +268,117 @@ pub(super) async fn api_skill_detail(
     let event_rows = db.router_events_for_skill(&name, 50).unwrap_or_default();
     let events_total = event_rows.len();
     let events: Vec<EventJson> = event_rows.into_iter().map(EventJson::from).collect();
+
+    // ── skill-feedback-radar (core::skill_metrics) ──
+    let is_admin = me.as_ref().map(|u| u.is_admin).unwrap_or(false);
+    const RADAR_WINDOW_SECS: i64 = 90 * 86_400;
+    let since_ts = chrono::Utc::now().timestamp() - RADAR_WINDOW_SECS;
+    let router_stats_all = db.skill_router_stats(since_ts).unwrap_or_default();
+    let (feedback_pos, feedback_neg) = db
+        .skill_feedback_counts(&resource.name, resource.owner_user_id.as_deref())
+        .unwrap_or((0, 0));
+
+    // Comparison corpus for both the heat axis' max_usage_count and the
+    // radar_avg mean: every skill visible in the SAME owner scope this
+    // request already resolved (public ∪ own private; admin sees "*").
+    // Reusing `owner_scope` keeps a non-admin's average from ever touching
+    // another user's private router/feedback counts.
+    let compare_resources = db
+        .list_resources_for_user(Some(ResourceKind::Skill), owner_scope.as_deref())
+        .unwrap_or_default();
+    let max_usage = compare_resources
+        .iter()
+        .map(|r| r.usage_count as i64)
+        .max()
+        .unwrap_or(0);
+
+    let this_stats = router_stats_all
+        .get(&resource.name)
+        .copied()
+        .unwrap_or_default();
+    let radar: RadarJson = skill_metrics::compute_radar(
+        this_stats.adopted_sessions,
+        this_stats.chosen_sessions,
+        this_stats.chosen_events,
+        this_stats.candidate_events,
+        feedback_pos,
+        feedback_neg,
+        llm_score,
+        resource.usage_count as i64,
+        max_usage,
+    )
+    .into();
+
+    let ai_indices = db.skill_ai_index_all_by_resource_key().unwrap_or_default();
+    let feedback_all = db.skill_feedback_counts_all().unwrap_or_default();
+    let mut sum = [0.0f64; 5];
+    let mut enriched_n = 0usize;
+    for r in &compare_resources {
+        let key = crate::core::db::Database::skill_ai_index_key_for_resource(r);
+        let idx = match ai_indices.get(&key) {
+            Some(row) if !row.summary.is_empty() => row,
+            _ => continue,
+        };
+        let stats = router_stats_all.get(&r.name).copied().unwrap_or_default();
+        let (fp, fneg) = feedback_all.get(&r.name).copied().unwrap_or((0, 0));
+        let rr = skill_metrics::compute_radar(
+            stats.adopted_sessions,
+            stats.chosen_sessions,
+            stats.chosen_events,
+            stats.candidate_events,
+            fp,
+            fneg,
+            Some(idx.llm_score),
+            r.usage_count as i64,
+            max_usage,
+        );
+        sum[0] += rr.adoption;
+        sum[1] += rr.precision;
+        sum[2] += rr.rating;
+        sum[3] += rr.quality;
+        sum[4] += rr.heat;
+        enriched_n += 1;
+    }
+    let radar_avg = if enriched_n > 0 {
+        let n = enriched_n as f64;
+        RadarJson {
+            adoption: sum[0] / n,
+            precision: sum[1] / n,
+            rating: sum[2] / n,
+            quality: sum[3] / n,
+            heat: sum[4] / n,
+        }
+    } else {
+        neutral_radar_json()
+    };
+
+    let feedback_stats = FeedbackStatsJson {
+        pos: feedback_pos,
+        neg: feedback_neg,
+        chosen_sessions: this_stats.chosen_sessions,
+        adopted_sessions: this_stats.adopted_sessions,
+        candidate_events: this_stats.candidate_events,
+        chosen_events: this_stats.chosen_events,
+    };
+    // `recent_skill_feedback` is not owner-scoped at the DB layer (it
+    // aggregates by skill_name only) — filter here so a private skill's
+    // feedback never bleeds into a same-named public skill's detail view
+    // or vice versa, matching the owner-pool isolation `skill_feedback_counts`
+    // already enforces for the aggregate counts above.
+    let feedback_recent: Vec<FeedbackRecentJson> = db
+        .recent_skill_feedback(&resource.name, 50)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|f| f.owner_user_id == resource.owner_user_id)
+        .take(10)
+        .map(|f| FeedbackRecentJson {
+            ts: f.ts,
+            verdict: f.verdict,
+            note: f.note,
+            user_id: if is_admin { f.user_id } else { None },
+        })
+        .collect();
+
     Ok(Json(SkillDetailResponse {
         name: resource.name.clone(),
         description: resource.description.clone(),
@@ -215,6 +391,10 @@ pub(super) async fn api_skill_detail(
         skill_md_truncated: truncated,
         events,
         events_total,
+        radar,
+        radar_avg,
+        feedback_stats,
+        feedback_recent,
     }))
 }
 

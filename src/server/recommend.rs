@@ -8,7 +8,7 @@ use axum::{
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use crate::core::auth as authmod;
@@ -250,14 +250,66 @@ pub(super) fn request_origin(headers: &HeaderMap) -> String {
     format!("{scheme}://{host}")
 }
 
+/// `verdict` accepts either a bare `+1`/`-1` or the strings `"good"`/`"bad"`
+/// (case-insensitive) — the dashboard's thumbs-up/down buttons send the
+/// string form, `runai-client` sends the numeric form. Anything else
+/// (`0`, `"meh"`, floats, booleans, ...) is not a valid verdict.
+#[derive(Deserialize)]
+#[serde(untagged)]
+pub(super) enum VerdictInput {
+    Num(i64),
+    Str(String),
+}
+
+impl VerdictInput {
+    fn normalize(&self) -> Option<i64> {
+        match self {
+            VerdictInput::Num(1) => Some(1),
+            VerdictInput::Num(-1) => Some(-1),
+            VerdictInput::Str(s) if s.eq_ignore_ascii_case("good") => Some(1),
+            VerdictInput::Str(s) if s.eq_ignore_ascii_case("bad") => Some(-1),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Deserialize)]
 pub(super) struct FeedbackBody {
     skill: String,
+    /// `#[serde(default)]` so a verdict-only body (no `note` key at all)
+    /// still deserializes — the pre-verdict wire contract always required
+    /// this field, so every legacy caller already sends it and is
+    /// unaffected.
+    #[serde(default)]
     note: String,
+    /// Structured skill-feedback-radar verdict (new). `None` = legacy
+    /// note-only request, which runs the exact pre-existing code path.
+    #[serde(default)]
+    verdict: Option<VerdictInput>,
+    /// Which `router_events.id` this verdict is about, if any.
+    #[serde(default)]
+    event_id: Option<i64>,
+    /// Session this verdict was given in, if any (opaque `rnai_sess_*`,
+    /// not validated here — `skill_feedback` is an append-only log, not a
+    /// trust boundary).
+    #[serde(default)]
+    session_id: Option<String>,
+}
+
+#[derive(Serialize)]
+struct FeedbackVerdictAck {
+    ok: bool,
+    skill: String,
+    verdict: i64,
+    /// Always `false` — the fast path never runs `reevaluate_skill`. Kept
+    /// explicit in the wire shape so a client doesn't have to infer it.
+    reevaluated: bool,
 }
 
 /// POST /feedback — replaces `runai recommend feedback`.
-/// Body: `{"skill":"...","note":"..."}`.
+/// Body: `{"skill":"...","note":"..."}` (legacy) or `{"skill":"...",
+/// "verdict":1|-1|"good"|"bad","note":"...","event_id":123,"session_id":"..."}`
+/// (skill-feedback-radar).
 ///
 /// Requires auth (Bearer or session cookie) — issue #26: this endpoint
 /// triggers a real LLM call (`reevaluate_skill`) and rewrites a skill's AI
@@ -320,7 +372,28 @@ pub(super) async fn handle_feedback(
         }
     };
 
-    // Optional idempotency: only when X-Runai-Event-Id is present.
+    // Structured verdict validation happens before we ever hop to the
+    // blocking task — it's a pure check on the already-parsed body.
+    // `None` = no `verdict` key at all = the exact pre-existing code path.
+    let verdict_num: Option<i64> = match req.verdict.as_ref() {
+        None => None,
+        Some(v) => match v.normalize() {
+            Some(n) => Some(n),
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+                    "feedback error: verdict must be 1, -1, \"good\", or \"bad\"\n",
+                )
+                    .into_response();
+            }
+        },
+    };
+
+    // Optional idempotency: only when X-Runai-Event-Id is present. This
+    // guards the (expensive, LLM-calling) reevaluate path only — a bare
+    // verdict vote is a cheap append-only insert and is not deduped by
+    // this header (skill_feedback is event-sourced by design).
     let event_id_opt = headers
         .get("X-Runai-Event-Id")
         .and_then(|v| v.to_str().ok())
@@ -328,13 +401,63 @@ pub(super) async fn handle_feedback(
         .filter(|s| !s.is_empty());
     let payload_hash = super::skills::canonical_payload_hash_pub(&body);
     let event_id_for_task = event_id_opt.clone();
-    let user_id_for_task = user.user_id.clone();
-    let headers_for_task = headers.clone();
     let state_for_task = state.clone();
+    let user_for_task = user;
 
-    let join = tokio::task::spawn_blocking(move || -> Result<String> {
+    let join = tokio::task::spawn_blocking(move || -> Result<Response> {
+        use crate::core::resource::ResourceKind;
         let mgr = SkillManager::with_base(state_for_task.db_path.parent().unwrap().to_path_buf())?;
         let db = mgr.db();
+
+        // Structured verdict path (skill-feedback-radar): record an
+        // event-sourced skill_feedback row. Requires the skill to resolve
+        // in the caller's own owner scope (public pool ∪ their own
+        // privates; admin sees everything) so a vote can't be recorded
+        // against a name that doesn't exist for this caller.
+        if let Some(verdict) = verdict_num {
+            let owner_scope: Option<String> = if user_for_task.is_admin {
+                Some("*".to_string())
+            } else {
+                Some(user_for_task.user_id.clone())
+            };
+            let resource = match db.find_resource_by_name_for_user(
+                ResourceKind::Skill,
+                &req.skill,
+                owner_scope.as_deref(),
+            )? {
+                Some(r) => r,
+                None => return Ok((StatusCode::NOT_FOUND, "").into_response()),
+            };
+            let note_opt = if req.note.trim().is_empty() {
+                None
+            } else {
+                Some(req.note.as_str())
+            };
+            db.record_skill_feedback(
+                chrono::Utc::now().timestamp(),
+                &req.skill,
+                resource.owner_user_id.as_deref(),
+                Some(user_for_task.user_id.as_str()),
+                req.session_id.as_deref(),
+                req.event_id,
+                verdict,
+                note_opt,
+            )?;
+
+            if note_opt.is_none() {
+                // Fast path: no note means no LLM re-enrich. Ack quickly —
+                // this is what keeps a thumbs-up/down button snappy.
+                return Ok(Json(FeedbackVerdictAck {
+                    ok: true,
+                    skill: req.skill.clone(),
+                    verdict,
+                    reevaluated: false,
+                })
+                .into_response());
+            }
+            // Note is non-empty: fall through to the reevaluate flow below,
+            // same as the legacy (no-verdict) path.
+        }
 
         if let Some(event_id) = event_id_for_task.as_deref() {
             let outcome = db.record_usage_event(
@@ -343,32 +466,43 @@ pub(super) async fn handle_feedback(
                 &req.skill,
                 &payload_hash,
                 "",
-                Some(user_id_for_task.as_str()),
+                Some(user_for_task.user_id.as_str()),
             )?;
             match outcome {
                 UsageOutcome::Conflict => {
                     anyhow::bail!("__conflict__");
                 }
                 UsageOutcome::Duplicate => {
-                    return Ok(format!(
-                        "feedback already applied by {}: {} (idempotent replay)\n",
-                        user.username, req.skill
-                    ));
+                    return Ok((
+                        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+                        format!(
+                            "feedback already applied by {}: {} (idempotent replay)\n",
+                            user_for_task.username, req.skill
+                        ),
+                    )
+                        .into_response());
                 }
                 UsageOutcome::First => { /* proceed to reevaluate */ }
             }
         }
-        let _ = headers_for_task; // reserved for future transport hinting
         let report = recommend::reevaluate_skill(&mgr, &req.skill, &req.note)?;
-        Ok(format!(
-            "feedback applied by {}: {} llm_score {} → {} (summary {} chars)\n",
-            user.username, req.skill, report.old_score, report.new_score, report.new_summary_len
-        ))
+        Ok((
+            [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+            format!(
+                "feedback applied by {}: {} llm_score {} → {} (summary {} chars)\n",
+                user_for_task.username,
+                req.skill,
+                report.old_score,
+                report.new_score,
+                report.new_summary_len
+            ),
+        )
+            .into_response())
     })
     .await;
 
     match join {
-        Ok(Ok(s)) => ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], s).into_response(),
+        Ok(Ok(resp)) => resp,
         Ok(Err(e)) => {
             let msg = format!("{e:#}");
             if msg.contains("__conflict__") {
