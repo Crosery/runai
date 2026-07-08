@@ -77,13 +77,17 @@ const USER_MSG_TEMPLATE: &str = crate::core::prompts::PROMPT_RECOMMEND_USER;
 const HISTORY_PREFIX_TEMPLATE: &str = crate::core::prompts::PROMPT_RECOMMEND_HISTORY_PREFIX;
 const CWD_PREFIX_TEMPLATE: &str = crate::core::prompts::PROMPT_RECOMMEND_CWD_PREFIX;
 
-/// Upper bound (in chars) on the current user prompt copied verbatim into the
-/// LLM-facing messages (Stage-1 intent condensation and Stage-2 router). The
-/// intent summary already condenses long prompts, so a very long pasted prompt
-/// only needs a bounded window here — telemetry (`RouterEvent.user_prompt`)
-/// still stores the full text. Over the cap we keep a head AND a tail (see
-/// `truncate_prompt_for_llm`).
-const LLM_PROMPT_CHAR_CAP: usize = 2000;
+/// Upper bound (in chars) on the raw user prompt copied verbatim into the
+/// Stage-1 intent user message. Stage-1 is now the ONLY stage that reads the
+/// raw prompt — Stage-2 works purely off the condensed intent summary — so this
+/// cap is deliberately generous. Stage-1 is the sole comprehension bottleneck:
+/// whatever it drops here cannot be recovered downstream (Stage-2 never sees the
+/// original text to correct a compressed-away detail), so it is worth spending
+/// more input budget on the one stage that reads the source. Still bounded to
+/// protect against tens-of-thousands-char pastes; telemetry
+/// (`RouterEvent.user_prompt`) always stores the full text. Over the cap we keep
+/// a head AND a tail (see `truncate_prompt_for_llm`).
+const LLM_PROMPT_CHAR_CAP: usize = 4000;
 /// Chars kept from the START of an over-cap prompt. The real request almost
 /// always lives at the END (users paste long context, then ask), so the tail
 /// gets the larger share (~2/3) and the head a smaller ~1/3 — enough to keep
@@ -100,8 +104,9 @@ const LLM_PROMPT_TRUNCATION_MARKER: &str = "\n…[中段已截断]…\n";
 /// request (which users almost always put LAST, after pasted context) survives.
 /// The kept text totals about `LLM_PROMPT_CHAR_CAP` chars — `LLM_PROMPT_HEAD_CHARS`
 /// from the front, the rest from the back — plus the short marker. Char-boundary
-/// safe (iterates over `chars`, never byte indices). Used by BOTH the Stage-1
-/// intent user message and the Stage-2 router user message.
+/// safe (iterates over `chars`, never byte indices). Used ONLY by the Stage-1
+/// intent user message — Stage-2 no longer embeds the raw prompt (it routes off
+/// the condensed intent summary), so this is the single consumer of the cap.
 pub(super) fn truncate_prompt_for_llm(prompt: &str) -> String {
     let total = prompt.chars().count();
     if total <= LLM_PROMPT_CHAR_CAP {
@@ -361,7 +366,6 @@ pub(super) fn candidate_allowed_by_intent(
 }
 
 pub(super) struct RouterUserMessageParts<'a> {
-    pub(super) user_prompt: &'a str,
     pub(super) cwd_block: &'a str,
     pub(super) project_context_block: &'a str,
     pub(super) history_block: &'a str,
@@ -371,16 +375,19 @@ pub(super) struct RouterUserMessageParts<'a> {
 }
 
 pub(super) fn build_router_user_message(parts: RouterUserMessageParts<'_>) -> String {
-    // The current prompt appears exactly once in the user message (session
-    // no-repeat suppression + the tail re-echo were removed). It is truncated
-    // for the LLM; the intent summary carries the condensed long-form intent.
+    // Stage-2 no longer embeds the raw user prompt: Stage-1 already read the
+    // original text and produced the intent summary, which is the authoritative
+    // statement of the current task here. The router精排 (re-ranks) candidates
+    // off `{INTENT_SUMMARY}` + the candidate listing (plus the optional
+    // cwd/project/history blocks). Dropping the raw prompt removes a per-turn
+    // changing, re-truncated segment — smaller message, and a more stable
+    // prefix within a session (the trailing prompt no longer busts the cache).
     crate::core::prompts::template_body(USER_MSG_TEMPLATE)
         .replace("{HISTORY_BLOCK}", parts.history_block)
         .replace("{CWD_BLOCK}", parts.cwd_block)
         .replace("{PROJECT_CONTEXT_BLOCK}", parts.project_context_block)
         .replace("{INTENT_SUMMARY}", parts.intent_summary)
         .replace("{CANDIDATE_LISTING}", parts.candidate_listing)
-        .replace("{USER_PROMPT}", &truncate_prompt_for_llm(parts.user_prompt))
         .replace(
             "{BM25_CANDIDATE_LIMIT}",
             &parts.bm25_candidate_limit.to_string(),
@@ -1152,7 +1159,6 @@ pub fn recommend_for_user_with_client(
     };
 
     let user_msg = build_router_user_message(RouterUserMessageParts {
-        user_prompt,
         cwd_block: &cwd_block,
         project_context_block: &project_context_block,
         history_block: &history_block,
