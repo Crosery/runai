@@ -61,8 +61,16 @@ impl Database {
             .ok()
             .flatten();
         let mut per_model = Vec::new();
+        // `avg_latency_ms` + `hits` are folded into this ONE GROUP BY so the
+        // dashboard model-usage panel can render from a single /api/summary
+        // call instead of paging /api/events client-side (up to 20 requests ×
+        // 500 wide rows). The `hits` CASE reads `chosen_skills_json` (narrow
+        // JSON array), which is why this query rides `idx_router_events_permodel_cover`
+        // (schema v27) — that index includes chosen_skills_json so the scan
+        // stays index-only rather than falling back to the wide table rows.
         let mut stmt = self.conn.prepare(
-            "SELECT model, COUNT(*), COALESCE(SUM(total_tokens), 0)
+            "SELECT model, COUNT(*), COALESCE(SUM(total_tokens), 0), AVG(latency_ms),
+                    SUM(CASE WHEN chosen_skills_json IS NOT NULL AND chosen_skills_json != '[]' THEN 1 ELSE 0 END)
              FROM router_events
              WHERE (?1 IS NULL OR ts >= ?1)
                AND (?2 IS NULL OR user_id = ?2)
@@ -74,6 +82,8 @@ impl Database {
                 model: r.get(0)?,
                 calls: r.get(1)?,
                 total_tokens: r.get(2)?,
+                avg_latency_ms: r.get(3)?,
+                hits: r.get(4)?,
             })
         })?;
         for row in rows {

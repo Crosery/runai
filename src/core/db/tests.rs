@@ -14,7 +14,7 @@ fn migration_creates_schema_version() {
         .conn
         .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 26);
+    assert_eq!(version, 27);
 }
 
 #[test]
@@ -26,11 +26,11 @@ fn reopening_same_db_file_stays_fully_migrated_and_usable() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("test.db");
     let first = Database::open(&path).unwrap();
-    assert_eq!(first.schema_version(), 26);
+    assert_eq!(first.schema_version(), 27);
     drop(first);
 
     let second = Database::open(&path).unwrap();
-    assert_eq!(second.schema_version(), 26);
+    assert_eq!(second.schema_version(), 27);
     // A v26 table must be queryable through the migration-skipped connection.
     let n: i64 = second
         .conn
@@ -155,7 +155,7 @@ fn migration_v21_moves_ai_summary_to_owner_scoped_key() {
     }
 
     let db = Database::open(&db_path).unwrap();
-    assert_eq!(db.schema_version(), 26);
+    assert_eq!(db.schema_version(), 27);
     let loaded = db.skill_ai_index("legacy").unwrap().unwrap();
     assert_eq!(loaded.summary, "task: legacy public summary");
     assert_eq!(loaded.updated_at, 42);
@@ -408,7 +408,7 @@ fn schema_at_v15_after_open() {
     // this test is kept for git-blame continuity; the v15 tables it
     // spot-checks below are still there post-v17, just behind a higher
     // version number.
-    assert_eq!(version, 26);
+    assert_eq!(version, 27);
 
     // Tables must exist
     for tbl in &["users", "user_skill_library"] {
@@ -1940,6 +1940,7 @@ fn router_stats_summary_filtered_aggregates_tokens_errors_latency_and_per_model(
         reasoning_tokens: 1,
         total_tokens: 16,
         latency_ms: 200,
+        chosen_skills_json: r#"["foo"]"#.into(), // a hit for model-a
         ..base_event()
     })
     .unwrap();
@@ -1952,6 +1953,7 @@ fn router_stats_summary_filtered_aggregates_tokens_errors_latency_and_per_model(
         reasoning_tokens: 2,
         total_tokens: 32,
         latency_ms: 400,
+        chosen_skills_json: "[]".into(), // not a hit
         ..base_event()
     })
     .unwrap();
@@ -1964,6 +1966,7 @@ fn router_stats_summary_filtered_aggregates_tokens_errors_latency_and_per_model(
         reasoning_tokens: 0,
         total_tokens: 5,
         latency_ms: 999_999, // error rows must not pollute avg_latency_ms
+        chosen_skills_json: "[]".into(),
         ..base_event()
     })
     .unwrap();
@@ -1985,13 +1988,88 @@ fn router_stats_summary_filtered_aggregates_tokens_errors_latency_and_per_model(
     assert_eq!(summary.per_model[0].model, "model-a");
     assert_eq!(summary.per_model[0].calls, 2);
     assert_eq!(summary.per_model[0].total_tokens, 48);
+    // per_model AVG(latency_ms) covers ALL rows of the model (not ok-only):
+    // (200 + 400) / 2 = 300.
+    assert_eq!(summary.per_model[0].avg_latency_ms, Some(300.0));
+    // hits = rows whose chosen_skills_json is non-empty and != '[]'.
+    assert_eq!(summary.per_model[0].hits, 1);
     assert_eq!(summary.per_model[1].model, "model-b");
     assert_eq!(summary.per_model[1].total_tokens, 5);
+    assert_eq!(summary.per_model[1].avg_latency_ms, Some(999_999.0));
+    assert_eq!(summary.per_model[1].hits, 0);
 
     // since_ts cuts off the ts=100 row.
     let since = db.router_stats_summary(Some(200)).unwrap();
     assert_eq!(since.total_calls, 2);
     assert_eq!(since.total_prompt_tokens, 25);
+}
+
+#[test]
+fn router_stats_summary_queries_are_index_only_covering_scans() {
+    // Regression gate for the /api/summary 17s cold-read incident: the summary
+    // aggregations must run as index-only (COVERING) scans over the narrow v27
+    // indexes, never a full SCAN of the wide router_events rows.
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(&tmp.path().join("cover.db")).unwrap();
+
+    // Both v27 covering indexes exist.
+    for idx in [
+        "idx_router_events_summary_cover",
+        "idx_router_events_permodel_cover",
+    ] {
+        let n: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?1",
+                params![idx],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "v27 covering index missing: {idx}");
+    }
+
+    // Helper: collect the EXPLAIN QUERY PLAN `detail` rows for a parameterized
+    // query, binding the same NULL filters the summary path uses at runtime.
+    let plan_details = |sql: &str| -> Vec<String> {
+        let mut stmt = db
+            .conn
+            .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+            .unwrap();
+        let rows = stmt
+            .query_map(params![Option::<i64>::None, Option::<&str>::None], |r| {
+                r.get::<_, String>(3)
+            })
+            .unwrap();
+        rows.map(|r| r.unwrap()).collect()
+    };
+
+    // Main summary aggregation (COUNT/SUM over narrow token + status columns).
+    let main = plan_details(
+        "SELECT COUNT(*), COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0), \
+         COALESCE(SUM(reasoning_tokens), 0), COALESCE(SUM(total_tokens), 0), \
+         COALESCE(SUM(CASE WHEN status != 'ok' THEN 1 ELSE 0 END), 0) \
+         FROM router_events WHERE (?1 IS NULL OR ts >= ?1) AND (?2 IS NULL OR user_id = ?2)",
+    );
+    assert!(
+        main.iter()
+            .any(|d| d.contains("COVERING INDEX idx_router_events_summary_cover")),
+        "main summary is not an index-only covering scan: {main:?}"
+    );
+
+    // Per-model GROUP BY (needs chosen_skills_json for the hits count — that is
+    // why it rides its own covering index that includes the narrow chosen JSON).
+    let per_model = plan_details(
+        "SELECT model, COUNT(*), COALESCE(SUM(total_tokens), 0), AVG(latency_ms), \
+         SUM(CASE WHEN chosen_skills_json IS NOT NULL AND chosen_skills_json != '[]' THEN 1 ELSE 0 END) \
+         FROM router_events WHERE (?1 IS NULL OR ts >= ?1) AND (?2 IS NULL OR user_id = ?2) \
+         GROUP BY model ORDER BY 3 DESC",
+    );
+    assert!(
+        per_model
+            .iter()
+            .any(|d| d.contains("COVERING INDEX idx_router_events_permodel_cover")),
+        "per_model is not an index-only covering scan: {per_model:?}"
+    );
 }
 
 #[test]

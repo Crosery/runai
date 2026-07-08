@@ -360,6 +360,53 @@ fn app_js_skill_detail_poll_uses_light_refresh_not_full_repaint() {
     );
 }
 
+// ─── GET /app.js — model-usage panel no longer pages /api/events ──────
+//
+// Perf regression gate (no Playwright harness — issue #20): the dashboard
+// "模型用量" panel used to page /api/events up to 20× (500 rows/page) and
+// aggregate ~7000 wide rows in the browser on every 5s poll tick — under
+// load / cold start that Promise.all timed out and blanked the panel with
+// "断开". It now consumes /api/summary's per_model (calls / total_tokens /
+// avg_latency_ms / hits) directly, 0 extra requests. This asserts the
+// loadModelUsage function body contains no /api/events fetch and no paging
+// loop anymore.
+#[test]
+fn app_js_model_usage_consumes_summary_not_events_paging() {
+    let s = spawn_team_server();
+    let body = http()
+        .get(format!("{}/app.js", s.base_url()))
+        .send()
+        .unwrap()
+        .text()
+        .unwrap();
+    // The renderer takes per_model as an argument now.
+    assert!(
+        body.contains("function loadModelUsage(perModel)"),
+        "app.js missing loadModelUsage(perModel) — 07-polling-models.js summary-consuming path not wired in"
+    );
+    // Isolate the loadModelUsage function body (from its `function` keyword to
+    // the next top-level function in the shared IIFE) and assert it neither
+    // fetches /api/events nor loop-pages events.
+    let def = body
+        .find("function loadModelUsage(perModel)")
+        .expect("loadModelUsage definition missing");
+    let rest = &body[def..];
+    let end = rest.find("async function ").unwrap_or(rest.len());
+    let func = &rest[..end];
+    assert!(
+        !func.contains("/api/events"),
+        "loadModelUsage still fetches /api/events — it must consume /api/summary per_model instead"
+    );
+    assert!(
+        !func.contains("while (offset"),
+        "loadModelUsage still loop-pages events — the paging loop must be gone"
+    );
+    assert!(
+        func.contains("per_model"),
+        "loadModelUsage does not read per_model from the summary payload"
+    );
+}
+
 // ─── GET /api/summary ─────────────────────────────────────────────────
 
 #[test]

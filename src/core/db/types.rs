@@ -93,6 +93,14 @@ pub struct RouterModelStat {
     pub model: String,
     pub calls: i64,
     pub total_tokens: i64,
+    /// Mean `latency_ms` across ALL of this model's rows (not ok-only —
+    /// per-model latency is a spend/perf signal, error rows included). `None`
+    /// when the model has no rows in scope.
+    pub avg_latency_ms: Option<f64>,
+    /// Rows where `chosen_skills_json` is non-empty and not `'[]'` — i.e. the
+    /// router actually injected at least one skill. Powers the dashboard
+    /// model-usage panel's hit-rate column without a second table scan.
+    pub hits: i64,
 }
 
 #[derive(Debug, Clone)]
