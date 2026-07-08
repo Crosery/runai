@@ -22,7 +22,7 @@ pub const PROMPT_RECOMMEND_SYSTEM: &str = include_str!("recommend_system.md");
 
 /// recommend_user.md — user-turn scaffold built per request, with placeholders
 /// `{USER_PROMPT}` / `{INTENT_SUMMARY}` / `{CWD_BLOCK}` / `{PROJECT_CONTEXT_BLOCK}` /
-/// `{HISTORY_BLOCK}` / `{CANDIDATE_LISTING}` / `{TOP_K}` / `{BM25_CANDIDATE_LIMIT}`.
+/// `{HISTORY_BLOCK}` / `{CANDIDATE_LISTING}` / `{BM25_CANDIDATE_LIMIT}`.
 /// Always rendered — toggling the surrounding blocks is what users configure,
 /// not this skeleton. The current prompt appears exactly once (session no-repeat
 /// suppression was removed, so there is no `{ALREADY_ROUTED_BLOCK}`).

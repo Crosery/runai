@@ -481,3 +481,62 @@ fn user_messages_and_hook_output_stay_under_token_budget() {
     assert!(hook.contains("runai-client feedback"));
     assert!(hook.contains("runai-client file"));
 }
+
+#[test]
+fn output_and_quantity_rules_live_in_system_not_user_message() {
+    // The 输出格式 + 候选数量 rule blocks are static — they belong in the fixed
+    // Stage-2 system prompt (prefix-cache friendly), not re-sent per request in
+    // the user message. The numeric hard cap is gone entirely.
+    let env = TestEnv::new();
+    env.plant_skill("alpha-skill", "处理 alpha 任务 alpha 工具");
+    let mock = RecordingMock::start();
+    env.write_config(mock.base_url());
+
+    let _ = recommend_stdin(&env, "帮我处理 alpha 任务", "rules-session");
+
+    let bodies = mock.bodies();
+    let router_user = bodies
+        .iter()
+        .filter_map(|b| {
+            if system_of(b)
+                .map(|s| s.contains("skill router"))
+                .unwrap_or(false)
+            {
+                user_of(b)
+            } else {
+                None
+            }
+        })
+        .next()
+        .expect("Stage-2 user msg");
+    let router_system = bodies
+        .iter()
+        .filter_map(|b| system_of(b))
+        .find(|s| s.contains("skill router"))
+        .expect("Stage-2 system msg");
+
+    assert!(
+        !router_user.contains("输出格式"),
+        "输出格式 must not be in the user message:\n{router_user}"
+    );
+    assert!(
+        !router_user.contains("硬上限"),
+        "numeric hard cap must not be in the user message:\n{router_user}"
+    );
+    assert!(
+        !router_user.contains("最小充分集合"),
+        "quantity rules must not be in the user message:\n{router_user}"
+    );
+    assert!(
+        router_system.contains("输出格式"),
+        "输出格式 must live in the system prompt"
+    );
+    assert!(
+        router_system.contains("最小充分集合"),
+        "quantity rules must live in the system prompt"
+    );
+    assert!(
+        !router_system.contains("硬上限"),
+        "numeric hard cap must be removed everywhere"
+    );
+}

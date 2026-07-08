@@ -432,7 +432,6 @@ fn router_user_message_uses_intent_summary_and_client_context() {
         history_block: "",
         intent_summary: "intent: 设计 runai 推荐模型记忆队列\nagent_cli: codex",
         candidate_listing: "- test-driven-development: TDD",
-        top_k: 8,
         bm25_candidate_limit: 30,
     });
     assert!(msg.contains("## 意图摘要（BM25 查询来源）"));
@@ -444,7 +443,9 @@ fn router_user_message_uses_intent_summary_and_client_context() {
 }
 
 #[test]
-fn router_user_message_uses_minimal_sufficient_candidate_contract() {
+fn router_user_message_omits_output_format_and_quantity_rules() {
+    // 输出格式 + 候选数量规则移入固定 system prompt（吃前缀缓存）；user message
+    // 只留动态内容，不再每请求重发这些静态块，也不含任何数字硬上限。
     let msg = build_router_user_message(RouterUserMessageParts {
         user_prompt: "帮我调试下安卓模拟器",
         cwd_block: "",
@@ -452,12 +453,20 @@ fn router_user_message_uses_minimal_sufficient_candidate_contract() {
         history_block: "",
         intent_summary: "intent: 调试 Android 模拟器",
         candidate_listing: "- android-cli: Android 调试",
-        top_k: 8,
         bm25_candidate_limit: 30,
     });
-    assert!(msg.contains("最小充分集合"));
-    assert!(msg.contains("硬上限 8 是上限，不是目标"));
-    assert!(msg.contains("弱相关、只同组、只 BM25 高、只历史高频"));
+    assert!(
+        !msg.contains("输出格式"),
+        "输出格式 moved to system:\n{msg}"
+    );
+    assert!(!msg.contains("硬上限"), "numeric cap removed:\n{msg}");
+    assert!(
+        !msg.contains("最小充分集合"),
+        "quantity rules moved to system:\n{msg}"
+    );
+    // Dynamic content still present.
+    assert!(msg.contains("intent: 调试 Android 模拟器"));
+    assert!(msg.contains("- android-cli: Android 调试"));
 }
 
 #[test]
@@ -470,6 +479,13 @@ fn system_prompt_precision_contract() {
     assert!(system.contains("固定组合"));
     assert!(system.contains("COMPATIBLE 默认组合执行"));
     assert!(system.contains("最小必要问题"));
+    // 输出格式 + 候选数量规则现在住在 system prompt，且不含数字硬上限。
+    assert!(system.contains("输出格式"));
+    assert!(system.contains("最小充分集合"));
+    assert!(
+        !system.contains("硬上限"),
+        "numeric hard cap removed from system too"
+    );
     assert!(!system.contains("宁多勿少"));
     assert!(!system.contains("只要候选 skill 描述里有相关迹象就推"));
 }

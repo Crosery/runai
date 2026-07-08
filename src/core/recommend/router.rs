@@ -342,7 +342,6 @@ pub(super) struct RouterUserMessageParts<'a> {
     pub(super) history_block: &'a str,
     pub(super) intent_summary: &'a str,
     pub(super) candidate_listing: &'a str,
-    pub(super) top_k: usize,
     pub(super) bm25_candidate_limit: usize,
 }
 
@@ -357,7 +356,6 @@ pub(super) fn build_router_user_message(parts: RouterUserMessageParts<'_>) -> St
         .replace("{INTENT_SUMMARY}", parts.intent_summary)
         .replace("{CANDIDATE_LISTING}", parts.candidate_listing)
         .replace("{USER_PROMPT}", &truncate_prompt_for_llm(parts.user_prompt))
-        .replace("{TOP_K}", &parts.top_k.to_string())
         .replace(
             "{BM25_CANDIDATE_LIMIT}",
             &parts.bm25_candidate_limit.to_string(),
@@ -722,9 +720,10 @@ pub fn recommend_for_user_with_client(
     // noise-flooded — empirically this is what tanks chosen-rate to ~46%
     // even when a relevant skill exists. After prefilter the LLM sees a
     // focused candidate set with strong term-overlap with the current
-    // intent summary. `output_top_k` controls final recommendations;
-    // `bm25_candidate_limit` controls how many candidates the router LLM sees.
-    let output_top_k: usize = cfg.top_k.clamp(1, BM25_TOP_K_MAX);
+    // intent summary. `bm25_candidate_limit` controls how many candidates the
+    // router LLM sees; the final recommendation quantity is decided by the
+    // router LLM under the system prompt's 最小充分集合 rule (no numeric cap in
+    // the prompt — `cfg.top_k` stays a config-side ceiling only).
     let bm25_candidate_limit: usize = std::env::var("RUNAI_BM25_TOP_K")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -1134,7 +1133,6 @@ pub fn recommend_for_user_with_client(
         history_block: &history_block,
         intent_summary: &intent_summary,
         candidate_listing: &candidate_listing,
-        top_k: output_top_k,
         bm25_candidate_limit,
     });
 
