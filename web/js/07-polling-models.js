@@ -131,6 +131,13 @@
       const view = parseRoute().view;
       if (view === 'overview') { refresh(); return; }
       if (view === 'library') { maybeRefreshLibrary(); return; }
+      // Skill detail: re-pull /api/skill/{name} so the feedback radar +
+      // recent-votes list pick up feedback recorded from elsewhere (another
+      // tab, another user, an event-dialog 准/不准 click) without the user
+      // having to navigate away and back. renderSkillRadar interpolates
+      // from the previously-displayed values, so this refresh reads as a
+      // gentle animation, not a jump-cut.
+      if (view === 'detail' && detailState.name) { loadSkillDetail(detailState.name, detailState.owner); return; }
     }, POLL_INTERVAL_MS);
   }
   function stopPolling() {

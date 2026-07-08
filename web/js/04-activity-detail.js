@@ -128,6 +128,51 @@
   // ------------------------------------------------------------------
   //  Event detail dialog
   // ------------------------------------------------------------------
+  // per-chosen-skill 准/不准反馈按钮 — POST /feedback {skill, verdict, event_id}。
+  // 401（未登录）走轻量提示，不崩；成功后按钮态变化做视觉确认，不重新拉取事件。
+  function chosenSkillRow(name, eventId) {
+    const safe = escapeHTML(name);
+    return `
+      <span class="chosen-skill-row" data-skill="${safe}">
+        <a class="chip" href="#/skill/${encodeURIComponent(name)}">${safe}</a>
+        <button type="button" class="fb-mini-btn" data-skill="${safe}" data-verdict="1" data-event-id="${eventId ?? ''}" title="这次推荐准">准</button>
+        <button type="button" class="fb-mini-btn" data-skill="${safe}" data-verdict="-1" data-event-id="${eventId ?? ''}" title="这次推荐不准">不准</button>
+      </span>`;
+  }
+
+  async function submitMiniFeedback(btn) {
+    const row = btn.closest('.chosen-skill-row');
+    const skill = btn.dataset.skill;
+    const verdict = Number(btn.dataset.verdict);
+    const eventId = btn.dataset.eventId ? Number(btn.dataset.eventId) : undefined;
+    const siblings = row ? row.querySelectorAll('.fb-mini-btn') : [btn];
+    siblings.forEach((b) => (b.disabled = true));
+    try {
+      await api('POST', '/feedback', { skill, verdict, event_id: eventId });
+      if (row) {
+        row.classList.add(verdict > 0 ? 'fb-voted-good' : 'fb-voted-bad');
+        row.querySelectorAll('.fb-mini-btn').forEach((b) => {
+          b.textContent = Number(b.dataset.verdict) === verdict ? '已反馈' : b.dataset.verdict === '1' ? '准' : '不准';
+        });
+      }
+    } catch (err) {
+      if (err && err.status === 401) {
+        alert('需要登录才能反馈');
+      }
+      siblings.forEach((b) => (b.disabled = false));
+    }
+  }
+
+  function wireFeedbackMiniButtons(container) {
+    container.querySelectorAll('.fb-mini-btn').forEach((btn) => {
+      btn.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        submitMiniFeedback(btn);
+      });
+    });
+  }
+
   async function openDetail(id) {
     if (id == null) return;
     const res = await fetch(`/api/event/${id}`);
@@ -136,7 +181,7 @@
     $('#detail-id').textContent = `#${e.id}`;
     const body = $('#detail-body');
     const chosenInline = e.chosen && e.chosen.length
-      ? e.chosen.map((s) => `<a class="chip" href="#/skill/${encodeURIComponent(s)}">${escapeHTML(s)}</a>`).join('')
+      ? e.chosen.map((s) => chosenSkillRow(s, e.id)).join('')
       : '<span class="chip-empty">空集</span>';
     const statusKlass = e.status === 'ok' ? '' : 'status-error';
     const injectedBadge = e.injected
@@ -145,8 +190,11 @@
     const authBadge = e.authenticated
       ? `<span class="chip">认证用户</span>`
       : `<span class="chip-empty">匿名无 Bearer</span>`;
+    // BM25 候选：跟 chosen skills 一样渲染成可点击 chip 列表（复用 .chip，
+    // 不再用只在 .activity-list 下才有样式的 .skill-chip —— 之前在 event
+    // dialog 里裸渲染成无边框无间距的一坨字符串，用户反馈看不懂）。
     const bm25CandidateChips = Array.isArray(e.bm25_candidates) && e.bm25_candidates.length
-      ? e.bm25_candidates.map((s) => `<span class="skill-chip">${escapeHTML(s)}</span>`).join('')
+      ? e.bm25_candidates.map((s) => `<a class="chip" href="#/skill/${encodeURIComponent(s)}">${escapeHTML(s)}</a>`).join('')
       : '<span class="chip-empty">(legacy row / empty)</span>';
     const intentStatus = e.intent_status
       ? `<span class="chip">${escapeHTML(e.intent_status)}</span>${e.intent_error_msg ? ` <span class="muted">— ${escapeHTML(e.intent_error_msg)}</span>` : ''}`
@@ -176,7 +224,7 @@
       <div class="section-label">第一波：压缩后的 BM25 检索意图</div>
       <div class="prompt-block">${e.intent_llm_output ? escapeHTML(e.intent_llm_output) : '<span class="dim">(legacy row)</span>'}</div>
       <div class="section-label">第一波：BM25 候选</div>
-      <div class="skill-chips">${bm25CandidateChips}</div>
+      <div>${bm25CandidateChips}</div>
       <div class="section-label">第二波：router LLM 实际收到的完整输入</div>
       <div class="prompt-block">${e.llm_input ? escapeHTML(e.llm_input) : '<span class="dim">(legacy row · schema v13 之后的事件才有)</span>'}</div>
       <div class="section-label">第二波：router LLM 原始返回</div>
@@ -184,6 +232,7 @@
       <div class="section-label">hook 注入给 Claude Code 的内容</div>
       <div class="prompt-block">${e.hook_output ? escapeHTML(e.hook_output) : '<span class="dim">(本次没有注入)</span>'}</div>
     `;
+    wireFeedbackMiniButtons(body);
     $('#detail-dialog').showModal();
     document.body.classList.add('dialog-open');
   }

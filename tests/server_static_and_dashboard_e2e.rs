@@ -219,6 +219,88 @@ fn app_js_serves_javascript() {
     assert!(!r.text().unwrap().is_empty());
 }
 
+// ─── GET /app.js / /app.css — skill-feedback-radar dashboard wiring ───
+//
+// Phase 4 (dashboard front-end) can't be verified with a real browser here
+// (issue #20: no Playwright harness in this repo). These two tests are the
+// automatable floor: the bundled JS actually contains the radar renderer,
+// it is concatenated BEFORE `16-boot.js` closes the shared top-level IIFE
+// (`web/js/20-skill-radar.js` must land ahead of the `})();` in
+// `src/server/mod.rs`'s `concat!` list — see web/README.md's concat-order
+// invariant), and the bundled CSS actually contains the new radar/feedback
+// classes. Visual correctness (does the SVG actually look like a radar,
+// does the animation ease correctly) is NOT covered here — that's a static
+// source review, documented in the PR description, not a runtime assertion.
+
+#[test]
+fn app_js_contains_skill_radar_renderer_before_iife_close() {
+    let s = spawn_team_server();
+    let body = http()
+        .get(format!("{}/app.js", s.base_url()))
+        .send()
+        .unwrap()
+        .text()
+        .unwrap();
+    assert!(
+        body.contains("function renderSkillRadar"),
+        "app.js missing renderSkillRadar — 20-skill-radar.js not wired into APP_JS concat"
+    );
+    assert!(
+        body.contains("function renderFeedbackPanel"),
+        "app.js missing renderFeedbackPanel"
+    );
+    assert!(
+        body.contains("function bindFeedbackRadarUI"),
+        "app.js missing bindFeedbackRadarUI"
+    );
+
+    // 16-boot.js closes the shared IIFE with `})();` on its own line and is
+    // always concatenated LAST (web/README.md's js/ table). Every symbol
+    // this test cares about must be defined ahead of that closing marker —
+    // if 20-skill-radar.js were accidentally appended AFTER 16-boot.js in
+    // mod.rs, the function declarations would land outside the IIFE
+    // (syntax error / silently a second top-level scope), so this ordering
+    // check is a real regression guard, not a cosmetic one.
+    let boot_close = body.rfind("})();").expect("app.js missing IIFE close");
+    let radar_def = body
+        .find("function renderSkillRadar")
+        .expect("renderSkillRadar not found");
+    assert!(
+        radar_def < boot_close,
+        "renderSkillRadar must be defined before the trailing IIFE close (16-boot.js concatenated last)"
+    );
+
+    // bindFeedbackRadarUI() must actually be CALLED from the boot sequence,
+    // not just defined — otherwise the 好评/差评 buttons are dead.
+    assert!(
+        body.contains("bindFeedbackRadarUI();"),
+        "app.js defines bindFeedbackRadarUI but never calls it from boot"
+    );
+}
+
+#[test]
+fn app_css_contains_skill_radar_classes() {
+    let s = spawn_team_server();
+    let body = http()
+        .get(format!("{}/app.css", s.base_url()))
+        .send()
+        .unwrap()
+        .text()
+        .unwrap();
+    for needle in [
+        ".radar-panel",
+        ".radar-svg",
+        ".radar-poly-skill",
+        ".radar-poly-avg",
+        ".fb-mini-btn",
+    ] {
+        assert!(
+            body.contains(needle),
+            "app.css missing {needle} — 16-skill-radar.css not wired into APP_CSS concat"
+        );
+    }
+}
+
 // ─── GET /api/summary ─────────────────────────────────────────────────
 
 #[test]
