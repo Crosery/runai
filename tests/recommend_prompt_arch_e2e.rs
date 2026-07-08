@@ -532,6 +532,76 @@ fn long_prompt_truncation_keeps_head_and_tail_in_stage1_input() {
 }
 
 #[test]
+fn stage2_user_message_excludes_raw_prompt_but_carries_intent() {
+    // Responsibility split: Stage-1 reads the raw prompt and emits the intent
+    // summary; Stage-2 routes off that summary and NEVER sees the raw prompt.
+    // A sentinel unique to the raw prompt ("SENTINELZZZ") must reach Stage-1 but
+    // be absent from Stage-2; a token unique to the intent summary
+    // ("include_terms", from the mock's Stage-1 reply, never in the raw prompt)
+    // must be present in Stage-2 — proving the summary is what Stage-2 routes on.
+    let env = TestEnv::new();
+    env.plant_skill("alpha-skill", "处理 alpha 任务 alpha 工具");
+    let mock = RecordingMock::start();
+    env.write_config(mock.base_url());
+
+    // "SENTINELZZZ" appears only here; "处理"/"include_terms" come from the
+    // mock's Stage-1 reply, not from this raw text.
+    let _ = recommend_stdin(
+        &env,
+        "SENTINELZZZ 麻烦你搞一下那个 alpha 的事情",
+        "split-session",
+    );
+
+    let bodies = mock.bodies();
+    let stage1_user = bodies
+        .iter()
+        .filter_map(|b| {
+            if system_of(b).map(|s| s.contains("第一波")).unwrap_or(false) {
+                user_of(b)
+            } else {
+                None
+            }
+        })
+        .next()
+        .expect("Stage-1 user msg");
+    let stage2_user = bodies
+        .iter()
+        .filter_map(|b| {
+            if system_of(b)
+                .map(|s| s.contains("skill router"))
+                .unwrap_or(false)
+            {
+                user_of(b)
+            } else {
+                None
+            }
+        })
+        .next()
+        .expect("Stage-2 user msg");
+
+    assert!(
+        stage1_user.contains("SENTINELZZZ"),
+        "raw prompt must reach Stage-1:\n{stage1_user}"
+    );
+    assert!(
+        !stage2_user.contains("SENTINELZZZ"),
+        "raw prompt must NOT reach Stage-2 (routes off intent summary only):\n{stage2_user}"
+    );
+    assert!(
+        stage2_user.contains("include_terms"),
+        "the Stage-1 intent summary must be present in the Stage-2 user msg:\n{stage2_user}"
+    );
+    assert!(
+        stage2_user.contains("意图摘要"),
+        "Stage-2 user msg frames the intent summary as its routing basis:\n{stage2_user}"
+    );
+    assert!(
+        !stage2_user.contains("用户当前 prompt"),
+        "the old raw-prompt header must be gone from Stage-2:\n{stage2_user}"
+    );
+}
+
+#[test]
 fn output_and_quantity_rules_live_in_system_not_user_message() {
     // The 输出格式 + 候选数量 rule blocks are static — they belong in the fixed
     // Stage-2 system prompt (prefix-cache friendly), not re-sent per request in

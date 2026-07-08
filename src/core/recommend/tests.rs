@@ -425,8 +425,11 @@ fn intent_summary_includes_current_prompt_memory_cwd_and_client_kind() {
 
 #[test]
 fn router_user_message_uses_intent_summary_and_client_context() {
+    // Stage-2 no longer carries the raw user prompt — `RouterUserMessageParts`
+    // dropped the `user_prompt` field entirely. The router精排 off the intent
+    // summary + candidate listing. A distinctive raw-prompt-only token
+    // ("RAWONLYMARK") is not passed at all, so it structurally cannot appear.
     let msg = build_router_user_message(RouterUserMessageParts {
-        user_prompt: "原始 prompt 很长，里面可能有旧对话",
         cwd_block: "cwd: `/repo/runai`\n",
         project_context_block: "",
         history_block: "",
@@ -434,12 +437,23 @@ fn router_user_message_uses_intent_summary_and_client_context() {
         candidate_listing: "- test-driven-development: TDD",
         bm25_candidate_limit: 30,
     });
-    assert!(msg.contains("## 意图摘要（BM25 查询来源）"));
+    assert!(msg.contains("## 意图摘要（第一波已提炼，精排依据）"));
     assert!(msg.contains("intent: 设计 runai 推荐模型记忆队列"));
     assert!(msg.contains("agent_cli: codex"));
     assert!(msg.contains("cwd: `/repo/runai`"));
     assert!(msg.contains("- test-driven-development: TDD"));
     assert!(msg.contains("默认 30 个 skill 候选"));
+    // No leftover placeholder and no "用户当前 prompt" header from the old
+    // Stage-2 template that embedded the raw prompt.
+    assert!(
+        !msg.contains("{USER_PROMPT}"),
+        "no leftover placeholder:\n{msg}"
+    );
+    assert!(
+        !msg.contains("用户当前 prompt"),
+        "raw-prompt header must be gone from Stage-2:\n{msg}"
+    );
+    assert!(!msg.contains("RAWONLYMARK"));
 }
 
 #[test]
@@ -450,13 +464,14 @@ fn truncate_keeps_head_and_tail_with_middle_marker() {
     let filler = "旧对话粘贴内容 old pasted context ".repeat(300); // well over the cap
     let prompt =
         format!("HEADMARK 开头框架{filler}MIDDLEMARK{filler}TAILMARK 末尾真实请求：帮我处理 alpha");
-    assert!(prompt.chars().count() > 2000, "fixture must exceed the cap");
+    assert!(prompt.chars().count() > 4000, "fixture must exceed the cap");
 
     let out = truncate_prompt_for_llm(&prompt);
 
-    // Within budget: head + tail totals the cap, plus the short marker.
+    // Within budget: head + tail totals the Stage-1 cap (4000), plus the short
+    // marker.
     assert!(
-        out.chars().count() <= 2000 + 12,
+        out.chars().count() <= 4000 + 12,
         "truncated output must stay within budget, got {}",
         out.chars().count()
     );
@@ -486,11 +501,30 @@ fn truncate_short_prompt_is_unchanged() {
 }
 
 #[test]
+fn truncate_between_old_and_new_cap_is_unchanged() {
+    // The Stage-1 budget was raised from 2000 to 4000 chars (Stage-2 no longer
+    // embeds the raw prompt, so the cap is Stage-1's alone and can be more
+    // generous). A prompt that was over the OLD cap but is under the NEW cap
+    // must now reach Stage-1 whole — no head/tail split, no middle marker.
+    let mid = "处理 alpha 任务 handle alpha ".repeat(120);
+    let len = mid.chars().count();
+    assert!(
+        (2000..=4000).contains(&len),
+        "fixture must sit between old (2000) and new (4000) cap, got {len}"
+    );
+    let out = truncate_prompt_for_llm(&mid);
+    assert_eq!(out, mid, "under the 4000 cap the prompt is passed verbatim");
+    assert!(
+        !out.contains("中段已截断"),
+        "no middle-elision marker below the new cap:\n{out}"
+    );
+}
+
+#[test]
 fn router_user_message_omits_output_format_and_quantity_rules() {
     // 输出格式 + 候选数量规则移入固定 system prompt（吃前缀缓存）；user message
     // 只留动态内容，不再每请求重发这些静态块，也不含任何数字硬上限。
     let msg = build_router_user_message(RouterUserMessageParts {
-        user_prompt: "帮我调试下安卓模拟器",
         cwd_block: "",
         project_context_block: "",
         history_block: "",
@@ -518,7 +552,15 @@ fn system_prompt_precision_contract() {
     assert!(system.contains("精准优先"));
     assert!(system.contains("同组不是共载理由"));
     assert!(system.contains("not-for"));
-    assert!(system.contains("先概括简述当前任务"));
+    // Stage-2 now routes off the Stage-1 intent summary, not the raw prompt —
+    // the old "先概括简述当前任务" instruction (which assumed Stage-2 read the
+    // raw prompt) was replaced by the intent-summary framing.
+    assert!(system.contains("你依据的是意图摘要"));
+    assert!(system.contains("在候选里精排"));
+    assert!(
+        !system.contains("先概括简述当前任务"),
+        "raw-prompt summarisation instruction must be gone"
+    );
     assert!(system.contains("固定组合"));
     assert!(system.contains("COMPATIBLE 默认组合执行"));
     assert!(system.contains("最小必要问题"));

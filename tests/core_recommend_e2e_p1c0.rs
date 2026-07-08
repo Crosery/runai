@@ -824,7 +824,7 @@ fn stdin_json_client_kind_cwd_and_session_memory_feed_router_input() {
         "stage-1 memory must contain compact intent, not raw previous prompt"
     );
     let second = &inputs[1];
-    assert!(second.contains("## 意图摘要（BM25 查询来源）"));
+    assert!(second.contains("## 意图摘要（第一波已提炼，精排依据）"));
     assert!(second.contains("second compact alpha intent"));
     assert!(second.contains("默认 30 个 skill 候选"));
     assert!(
