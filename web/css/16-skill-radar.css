@@ -1,0 +1,130 @@
+/* ============ SKILL FEEDBACK RADAR (skill-feedback-radar) ============ */
+/* Skill detail "反馈画像" section: five-axis SVG radar + stats + recent
+   votes + 好评/差评 buttons. Also styles the per-chip 准/不准 mini-buttons
+   used in the event detail dialog's "chosen skills" row. Reuses the
+   existing token set (--accent / --accent-2 / --err / --ink* / --line*)
+   so it reads as part of the same design system in every theme. */
+
+.radar-panel{
+  display:flex;flex-wrap:wrap;gap:32px;align-items:flex-start;
+}
+.radar-chart-host{
+  flex:0 0 320px;max-width:100%;
+}
+.radar-svg{
+  width:100%;height:auto;display:block;
+}
+.radar-grid-ring{
+  fill:none;stroke:var(--line-soft);stroke-width:1;
+}
+.radar-axis-line{
+  stroke:var(--line);stroke-width:1;
+}
+.radar-axis-label{
+  font-family:var(--mono);font-size:11px;letter-spacing:0.04em;
+  fill:var(--ink-2);
+}
+.radar-value-label{
+  font-family:var(--mono);font-size:9px;
+  fill:var(--ink-3);text-anchor:middle;dominant-baseline:middle;
+}
+.radar-poly{
+  transition:opacity 0.15s;
+}
+.radar-poly-skill{
+  fill:color-mix(in srgb, var(--accent) 18%, transparent);
+  stroke:var(--accent);stroke-width:2;
+  stroke-linejoin:round;
+}
+.radar-poly-avg{
+  fill:none;
+  stroke:var(--accent-2);stroke-width:1.5;
+  stroke-dasharray:4 3;stroke-linejoin:round;
+}
+
+.radar-legend{
+  display:flex;gap:18px;margin-top:6px;
+  font-family:var(--mono);font-size:11px;color:var(--ink-2);
+  letter-spacing:0.02em;
+}
+.radar-legend-item{display:inline-flex;align-items:center;gap:6px}
+.radar-swatch{
+  display:inline-block;width:10px;height:10px;border-radius:2px;
+}
+.radar-swatch-skill{
+  background:var(--accent);
+}
+.radar-swatch-avg{
+  background:transparent;border:1.5px dashed var(--accent-2);
+}
+
+.radar-stats{
+  flex:1 1 260px;min-width:220px;
+}
+.radar-stat-row{
+  display:flex;flex-wrap:wrap;gap:18px 28px;
+  margin-bottom:16px;
+}
+.radar-stat{
+  display:flex;flex-direction:column;gap:2px;
+}
+.radar-stat b{
+  font-family:var(--mono);font-size:20px;font-weight:600;
+  color:var(--ink);letter-spacing:-0.01em;
+  font-variant-numeric:tabular-nums;
+}
+.radar-stat em{
+  font-style:normal;font-family:var(--sans);font-size:11px;color:var(--ink-3);
+}
+
+.radar-vote-row{
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  margin-bottom:14px;
+}
+.radar-vote-btn{cursor:pointer}
+.radar-vote-btn:disabled{opacity:0.5;cursor:not-allowed}
+.radar-vote-msg{
+  font-family:var(--mono);font-size:11px;color:var(--ink-2);
+}
+
+.radar-recent{
+  display:flex;flex-direction:column;gap:2px;
+  max-height:220px;overflow-y:auto;
+}
+.radar-recent-row{
+  display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;
+  font-family:var(--mono);font-size:11px;
+  padding:6px 0;border-bottom:1px solid var(--line-soft);
+}
+.radar-recent-row:last-child{border-bottom:none}
+.radar-recent-verdict{font-weight:600;letter-spacing:0.02em}
+.radar-recent-good .radar-recent-verdict{color:var(--accent-2)}
+.radar-recent-bad .radar-recent-verdict{color:var(--err)}
+.radar-recent-ago{color:var(--ink-3)}
+.radar-recent-user{color:var(--ink-2)}
+.radar-recent-note{
+  flex:1 1 100%;font-family:var(--sans);color:var(--ink-2);
+  font-size:12px;line-height:1.4;
+}
+.radar-recent-empty{
+  font-family:var(--mono);font-size:11px;padding:4px 0;
+}
+
+/* Event detail dialog: 准/不准 mini vote buttons riding along each chosen
+   skill chip (04-activity-detail.js::chosenSkillRow). Deliberately smaller
+   than .btn-small — this sits inline with a .chip, not in a settings row. */
+.chosen-skill-row{
+  display:inline-flex;align-items:center;gap:4px;
+  margin:0 6px 6px 0;
+}
+.chosen-skill-row .chip{margin:0}
+.fb-mini-btn{
+  font-family:var(--mono);font-size:10px;letter-spacing:0.02em;
+  color:var(--ink-3);background:transparent;
+  border:1px solid var(--line);padding:2px 6px;
+  cursor:pointer;transition:color 0.12s,border-color 0.12s;
+}
+.fb-mini-btn:hover:not(:disabled){color:var(--ink);border-color:var(--ink-3)}
+.fb-mini-btn:disabled{opacity:0.55;cursor:not-allowed}
+.chosen-skill-row.fb-voted-good .fb-mini-btn{color:var(--accent-2);border-color:var(--accent-2)}
+.chosen-skill-row.fb-voted-bad .fb-mini-btn{color:var(--err);border-color:var(--err)}

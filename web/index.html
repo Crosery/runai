@@ -444,6 +444,27 @@
             <pre class="skill-md" id="detail-summary"></pre>
           </div>
 
+          <div class="settings-section" id="detail-feedback-section">
+            <div class="label">反馈画像 <span class="helper">skill-feedback-radar · 90 天窗口</span></div>
+            <div class="radar-panel">
+              <div class="radar-chart-host" id="detail-radar"></div>
+              <div class="radar-stats">
+                <div class="radar-stat-row">
+                  <span class="radar-stat"><b id="detail-fb-pos">0</b><em>好评</em></span>
+                  <span class="radar-stat"><b id="detail-fb-neg">0</b><em>差评</em></span>
+                  <span class="radar-stat"><b id="detail-fb-chosen">0</b><em>被推荐 session</em></span>
+                  <span class="radar-stat"><b id="detail-fb-adopted">0</b><em>采纳 session</em></span>
+                </div>
+                <div class="radar-vote-row">
+                  <button type="button" class="btn-small radar-vote-btn" id="detail-fb-good" data-verdict="1">好评</button>
+                  <button type="button" class="btn-small radar-vote-btn" id="detail-fb-bad" data-verdict="-1">差评</button>
+                  <span class="muted radar-vote-msg" id="detail-fb-msg"></span>
+                </div>
+                <div class="radar-recent" id="detail-fb-recent"></div>
+              </div>
+            </div>
+          </div>
+
           <div class="settings-section">
             <div class="label">文件 <span class="helper" id="detail-files-helper">—</span></div>
             <div class="file-browser">

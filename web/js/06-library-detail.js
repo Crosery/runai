@@ -68,6 +68,12 @@
       summarySection.hidden = false;
     }
 
+    // 反馈画像：五轴雷达（本 skill vs 全库均值）+ 反馈统计 + 最近反馈列表。
+    // radar/radar_avg 服务端总是返回一个值（零数据时是各轴自己的"中性"约定），
+    // 所以这个 section 不像 AI 摘要那样需要按空值隐藏。
+    renderSkillRadar('detail-radar', d.radar, d.radar_avg);
+    renderFeedbackPanel(d);
+
     // Event history (grid-based rows, scrollable with edge blur)
     const tbody = $('#detail-events-body');
     tbody.innerHTML = '';

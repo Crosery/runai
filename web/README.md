@@ -38,8 +38,19 @@ order inside `concat!(include_str!(...), ...)`.
 | 09 | `09-settings-tab.css` | Settings tab |
 | 10 | `10-v15-account-auth-library.css` | v15 account / auth / per-user library |
 | 11 | `11-v15-market-github.css` | v15 market + GitHub install UI |
+| 12 | `12-community-market.css` | Community market (PLANNING §1.4) |
+| 13 | `13-owner-mode.css` | Owner-mode chrome hiding (PLANNING §1.1) |
+| 14 | `14-userlib-admin.css` | Per-user library admin drill-in |
+| 15 | `15-setup-tab.css` | Setup tab command cheat-sheet |
+| 16 | `16-skill-radar.css` | Skill feedback radar (skill-feedback-radar) + event-dialog 准/不准 mini buttons |
 
 ### `js/` (in order)
+
+`16-boot.js` is always LAST in the concat regardless of its filename number
+— it opens with the shared boot sequence and closes the top-level IIFE, so
+every later-numbered part (17+) must still land ahead of it in
+`src/server/mod.rs`'s `concat!` list. New parts keep incrementing past 16;
+they are not reordered ahead of it.
 
 | # | File | Concern |
 |---|---|---|
@@ -58,7 +69,11 @@ order inside `concat!(include_str!(...), ...)`.
 | 13 | `13-auth-bulk-prefs.js` | Auth modals + bulk actions + prefs |
 | 14 | `14-market-list.js` | Market list + pager |
 | 15 | `15-market-detail-github.js` | Market detail + GitHub install |
-| 16 | `16-boot.js` | Boot / IIFE close |
+| 17 | `17-community-market.js` | Community market (PLANNING §1.4) |
+| 18 | `18-setup-tab.js` | Setup tab command cheat-sheet |
+| 19 | `19-admin-publish-review.js` | Admin publish-request review |
+| 20 | `20-skill-radar.js` | Skill feedback radar chart + skill-detail feedback panel |
+| 16 | `16-boot.js` | Boot / IIFE close — always concatenated last |
 
 ## Invariant: the served bundle stays byte-identical
 

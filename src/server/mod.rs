@@ -64,6 +64,7 @@ const APP_JS: &str = concat!(
     include_str!("../../web/js/17-community-market.js"),
     include_str!("../../web/js/18-setup-tab.js"),
     include_str!("../../web/js/19-admin-publish-review.js"),
+    include_str!("../../web/js/20-skill-radar.js"),
     include_str!("../../web/js/16-boot.js"),
 );
 const APP_CSS: &str = concat!(
@@ -82,6 +83,7 @@ const APP_CSS: &str = concat!(
     include_str!("../../web/css/13-owner-mode.css"),
     include_str!("../../web/css/14-userlib-admin.css"),
     include_str!("../../web/css/15-setup-tab.css"),
+    include_str!("../../web/css/16-skill-radar.css"),
 );
 /// Client-side install / uninstall scripts. The server serves these from
 /// GET /install and GET /uninstall after replacing the `{SERVER_URL}`
