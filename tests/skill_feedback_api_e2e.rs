@@ -88,8 +88,15 @@ impl Drop for ServerGuard {
     }
 }
 
-fn spawn_team_server() -> ServerGuard {
-    let home = tempfile::tempdir().unwrap();
+/// Spawn `runai server --mode team` against a caller-supplied HOME
+/// (`spawn_team_server` below delegates here with a fresh tempdir). Use
+/// this directly when a test needs to plant+scan skills BEFORE the server
+/// starts, so `core::skill_watcher::SkillWatcher` (started at server boot,
+/// watches `<data>/skills` recursively) never observes those files as a
+/// fresh write and never fires `market::spawn_enrich` for them — the only
+/// deterministic way to test the "unenriched" / untouched enrich_state on
+/// a live server (see `api_skill_detail_enrich_status_unenriched_for_fresh_skill`).
+fn spawn_team_server_with_home(home: TempDir) -> ServerGuard {
     std::fs::create_dir_all(home.path().join(".runai/skills")).unwrap();
     let port = free_port();
     let child = runai_cmd()
@@ -117,11 +124,33 @@ fn spawn_team_server() -> ServerGuard {
     g
 }
 
+fn spawn_team_server() -> ServerGuard {
+    spawn_team_server_with_home(tempfile::tempdir().unwrap())
+}
+
 fn http() -> reqwest::blocking::Client {
     reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
         .unwrap()
+}
+
+/// Poll `pred` every 50ms up to `timeout`, returning `true` on first
+/// success. Re-enrich after `/feedback` runs on a detached background
+/// thread (see `recommend.rs::spawn_reevaluate`), so tests that need to
+/// observe its result (a written AI summary, an `enrich_status` flip) must
+/// poll instead of asserting immediately after the HTTP response returns.
+fn wait_for<F: FnMut() -> bool>(mut pred: F, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if pred() {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
 }
 
 struct Account {
@@ -322,15 +351,29 @@ fn feedback_verdict_requires_auth_401_empty() {
 }
 
 /// A verdict-only request (no `note`) must record the `skill_feedback` row
-/// and return fast WITHOUT ever calling the LLM — proven here by never
-/// starting a mock LLM / writing a recommend config at all: if the server
-/// mistakenly fell through to `reevaluate_skill`, that call would bail
-/// ("runai recommend not configured") and the response would be 400, not 200.
+/// and return fast — the HTTP response comes back before any LLM call
+/// starts, because re-enrich is queued on a detached background thread
+/// (`recommend.rs::spawn_reevaluate`). This env deliberately has no
+/// recommend config / mock LLM at all, so the background re-enrich fails
+/// immediately ("runai recommend not configured") and never writes a
+/// summary — proven by asserting `skill_ai_index` stays empty even after
+/// waiting past the point the background thread must have already run and
+/// failed. The response body still reports `reenrich: "queued"` because
+/// the claim + spawn happen unconditionally before the client ever sees
+/// the response; the ASYNC failure is invisible to the caller (only
+/// `tracing::warn!`ed).
+///
+/// Plants + scans BEFORE the server starts (see
+/// `api_skill_detail_enrich_status_unenriched_for_fresh_skill`'s doc
+/// comment) so the file watcher's own `spawn_enrich` never races this
+/// test's own claim of the `enrich_state` in-flight slot for "alpha".
 #[test]
 fn feedback_verdict_positive_records_row_without_reevaluate() {
-    let s = spawn_team_server();
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(home.path().join(".runai/skills")).unwrap();
+    plant_and_scan(home.path(), "alpha", "alpha skill description");
+    let s = spawn_team_server_with_home(home);
     let alice = register(&s, "alice", "pw alice correct horse");
-    plant_and_scan(s.home.path(), "alpha", "alpha skill description");
 
     let r = http()
         .post(format!("{}/feedback", s.base_url()))
@@ -339,6 +382,11 @@ fn feedback_verdict_positive_records_row_without_reevaluate() {
         .send()
         .unwrap();
     assert_eq!(r.status().as_u16(), 200, "{}", r.text().unwrap_or_default());
+    let body: Value = r.json().unwrap();
+    assert_eq!(
+        body["reenrich"], "queued",
+        "first vote on a skill must win the re-enrich claim: {body:?}"
+    );
 
     let db = s.db();
     let recent = db.recent_skill_feedback("alpha", 10).unwrap();
@@ -348,9 +396,43 @@ fn feedback_verdict_positive_records_row_without_reevaluate() {
     assert_eq!(recent[0].user_id.as_deref(), Some(alice.user_id.as_str()));
     assert_eq!(recent[0].owner_user_id, None, "alpha is a public skill");
 
+    // Give the detached background thread time to run its (doomed, no
+    // config) reevaluate_skill call and fail, then assert it never wrote a
+    // summary — the failure is silent to the client by design.
+    thread::sleep(Duration::from_millis(300));
     assert!(
         db.skill_ai_index("alpha").unwrap().is_none(),
-        "verdict-only feedback must not create/modify an AI summary row"
+        "unconfigured recommend must fail the background re-enrich without writing a summary"
+    );
+
+    // GET /api/skill/alpha shows enrich_status == "enriching": the mark was
+    // set (in the request handler, before responding) and is never cleared
+    // on a background failure — it just sits until the 300s TTL.
+    let detail: Value = http()
+        .get(format!("{}/api/skill/alpha", s.base_url()))
+        .bearer_auth(&alice.api_key)
+        .send()
+        .unwrap()
+        .json()
+        .unwrap();
+    assert_eq!(
+        detail["enrich_status"], "enriching",
+        "in-flight mark must show 'enriching' even after the async reevaluate failed: {detail:?}"
+    );
+
+    // A second vote on the same (still in-flight) skill must NOT win a
+    // fresh claim — the response says "already-running", not "queued".
+    let r2 = http()
+        .post(format!("{}/feedback", s.base_url()))
+        .bearer_auth(&alice.api_key)
+        .json(&json!({"skill": "alpha", "verdict": -1}))
+        .send()
+        .unwrap();
+    assert_eq!(r2.status().as_u16(), 200);
+    let body2: Value = r2.json().unwrap();
+    assert_eq!(
+        body2["reenrich"], "already-running",
+        "a second vote while the first re-enrich claim is still fresh must not queue a duplicate: {body2:?}"
     );
 }
 
@@ -411,17 +493,29 @@ fn feedback_verdict_nonexistent_skill_404() {
 }
 
 /// verdict + a non-empty note must do BOTH: record the structured feedback
-/// row AND run the existing LLM reevaluate flow (old response text format
-/// preserved).
+/// row AND queue the existing LLM reevaluate flow. Re-enrich now runs on a
+/// detached background thread (`recommend.rs::spawn_reevaluate`) rather
+/// than inline before the response — the HTTP response comes back with
+/// `reenrich: "queued"` immediately, and the resulting summary/score show
+/// up asynchronously, so this test polls for it instead of asserting
+/// right after the response (was: synchronous, asserted the score
+/// immediately post-response).
+///
+/// Config + skill are written BEFORE the server starts (see
+/// `api_skill_detail_enrich_status_unenriched_for_fresh_skill`'s doc
+/// comment) so the file watcher never races this test's own claim of the
+/// `enrich_state` in-flight slot for "alpha".
 #[test]
 fn feedback_verdict_and_note_together_records_feedback_and_reevaluates() {
-    let s = spawn_team_server();
-    let alice = register(&s, "alice", "pw alice correct horse");
     let mock = MockLlm::start(
         "task: refined task\ntriggers: alpha\ninputs: x\noutputs: y\nnot-for: z\nscore: 4\n",
     );
-    write_recommend_config(s.home.path(), mock.base_url());
-    plant_and_scan(s.home.path(), "alpha", "alpha skill description");
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(home.path().join(".runai/skills")).unwrap();
+    write_recommend_config(home.path(), mock.base_url());
+    plant_and_scan(home.path(), "alpha", "alpha skill description");
+    let s = spawn_team_server_with_home(home);
+    let alice = register(&s, "alice", "pw alice correct horse");
 
     let r = http()
         .post(format!("{}/feedback", s.base_url()))
@@ -433,6 +527,10 @@ fn feedback_verdict_and_note_together_records_feedback_and_reevaluates() {
     let body = r.text().unwrap();
     assert_eq!(status, 200, "{body}");
     assert!(body.contains("feedback applied by alice"));
+    assert!(
+        body.contains("\"reenrich\":\"queued\""),
+        "response must report the re-enrich as queued: {body}"
+    );
 
     let db = s.db();
     let recent = db.recent_skill_feedback("alpha", 10).unwrap();
@@ -440,27 +538,44 @@ fn feedback_verdict_and_note_together_records_feedback_and_reevaluates() {
     assert_eq!(recent[0].verdict, -1);
     assert_eq!(recent[0].note.as_deref(), Some("too narrow"));
 
-    let idx = db
-        .skill_ai_index("alpha")
-        .unwrap()
-        .expect("summary written");
-    assert_eq!(
-        idx.llm_score, 4,
-        "reevaluate must still run when note is present alongside verdict"
+    // The skill_feedback row above is written synchronously before the
+    // response returns; the AI summary write happens asynchronously on
+    // the background thread, so poll for it.
+    assert!(
+        wait_for(
+            || db
+                .skill_ai_index("alpha")
+                .unwrap()
+                .is_some_and(|idx| idx.llm_score == 4),
+            Duration::from_secs(5)
+        ),
+        "background re-enrich must eventually write llm_score=4 (verdict+note case): {:?}",
+        db.skill_ai_index("alpha").unwrap()
     );
 }
 
 /// The pre-existing `{skill, note}` body with NO `verdict` key at all must
-/// keep working exactly as before, and must NOT write a `skill_feedback` row
-/// (that table is new; a caller who never sends `verdict` never triggers it).
+/// still record no `skill_feedback` row (that table is new; a caller who
+/// never sends `verdict` never triggers it) and must still attribute the
+/// response to the authenticated user — but re-enrich now runs
+/// asynchronously (was: synchronous, response text embedded the resulting
+/// `llm_score`), so the score assertion polls instead of reading it
+/// straight off the HTTP response.
+///
+/// Config + skill are written BEFORE the server starts (see
+/// `api_skill_detail_enrich_status_unenriched_for_fresh_skill`'s doc
+/// comment) so the file watcher never races this test's own claim of the
+/// `enrich_state` in-flight slot for "alpha".
 #[test]
 fn feedback_legacy_body_without_verdict_field_unaffected() {
-    let s = spawn_team_server();
-    let alice = register(&s, "alice", "pw alice correct horse");
     let mock =
         MockLlm::start("task: t\ntriggers: alpha\ninputs: x\noutputs: y\nnot-for: z\nscore: 5\n");
-    write_recommend_config(s.home.path(), mock.base_url());
-    plant_and_scan(s.home.path(), "alpha", "alpha skill description");
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(home.path().join(".runai/skills")).unwrap();
+    write_recommend_config(home.path(), mock.base_url());
+    plant_and_scan(home.path(), "alpha", "alpha skill description");
+    let s = spawn_team_server_with_home(home);
+    let alice = register(&s, "alice", "pw alice correct horse");
 
     let r = http()
         .post(format!("{}/feedback", s.base_url()))
@@ -469,16 +584,60 @@ fn feedback_legacy_body_without_verdict_field_unaffected() {
         .send()
         .unwrap();
     assert_eq!(r.status().as_u16(), 200);
-    assert!(r.text().unwrap().contains("feedback applied by alice"));
+    let body = r.text().unwrap();
+    assert!(body.contains("feedback applied by alice"));
+    assert!(
+        body.contains("\"reenrich\":\"queued\""),
+        "response must report the re-enrich as queued: {body}"
+    );
 
     let db = s.db();
     assert!(
         db.recent_skill_feedback("alpha", 10).unwrap().is_empty(),
         "a request with no verdict field must never write a skill_feedback row"
     );
+    assert!(
+        wait_for(
+            || db
+                .skill_ai_index("alpha")
+                .unwrap()
+                .is_some_and(|idx| idx.llm_score == 5),
+            Duration::from_secs(5)
+        ),
+        "background re-enrich must eventually write llm_score=5 (legacy note-only path): {:?}",
+        db.skill_ai_index("alpha").unwrap()
+    );
 }
 
 // ─── GET /api/skill/{name} radar + feedback_stats extension ───────────────
+
+/// A skill with no AI summary and no in-flight enrich mark must report
+/// `enrich_status: "unenriched"` on the detail endpoint — the third leg of
+/// the 3-state contract (`"enriched"` is covered by
+/// `api_skill_detail_includes_radar_and_feedback_stats_matching_fixture`,
+/// `"enriching"` by `feedback_verdict_positive_records_row_without_reevaluate`).
+///
+/// Plants + scans BEFORE the server starts (via `spawn_team_server_with_home`)
+/// — planting on an ALREADY-RUNNING server races the file watcher, which
+/// fires `spawn_enrich` on the SKILL.md write and marks the skill 富集中
+/// before this test's own GET ever runs, making "unenriched" unobservable.
+#[test]
+fn api_skill_detail_enrich_status_unenriched_for_fresh_skill() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(home.path().join(".runai/skills")).unwrap();
+    plant_and_scan(home.path(), "gamma", "gamma skill description");
+    let s = spawn_team_server_with_home(home);
+    let alice = register(&s, "alice", "pw alice correct horse");
+
+    let body: Value = http()
+        .get(format!("{}/api/skill/gamma", s.base_url()))
+        .bearer_auth(&alice.api_key)
+        .send()
+        .unwrap()
+        .json()
+        .unwrap();
+    assert_eq!(body["enrich_status"], "unenriched", "{body:?}");
+}
 
 #[test]
 fn api_skill_detail_includes_radar_and_feedback_stats_matching_fixture() {
@@ -563,6 +722,10 @@ fn api_skill_detail_includes_radar_and_feedback_stats_matching_fixture() {
     assert_eq!(fb["chosen_events"], 2);
     assert_eq!(fb["chosen_sessions"], 2);
     assert_eq!(fb["adopted_sessions"], 1);
+
+    // alpha has a non-empty summary and no in-flight enrich_state mark (no
+    // /feedback vote happened in this test) → "enriched".
+    assert_eq!(body["enrich_status"], "enriched", "{body:?}");
 
     // radar: recompute via the SAME pure formulas the server uses (already
     // unit-pinned in skill_metrics.rs) — this test's job is to pin the

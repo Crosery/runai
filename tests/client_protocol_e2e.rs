@@ -123,6 +123,17 @@ impl Server {
         )
         .unwrap_or(0)
     }
+
+    /// Most recent `skill_feedback.verdict` for a skill, if any row exists.
+    fn last_feedback_verdict(&self, name: &str) -> Option<i64> {
+        let conn = rusqlite::Connection::open(self.home().join(".runai/runai.db")).unwrap();
+        conn.query_row(
+            "SELECT verdict FROM skill_feedback WHERE skill_name=?1 ORDER BY id DESC LIMIT 1",
+            rusqlite::params![name],
+            |r| r.get::<_, i64>(0),
+        )
+        .ok()
+    }
 }
 
 impl Drop for Server {
@@ -705,16 +716,116 @@ fn activate_traversal_include_is_rejected() {
 
 // ─── feedback ────────────────────────────────────────────────────────────
 
+/// Neither --verdict nor --note: `cmd_feedback` has nothing to send and
+/// must refuse before ever touching the network (was: `feedback_missing_note_exits_2`,
+/// back when --note was the only way to give feedback; --verdict is now an
+/// equally valid alternative, so the bare "no --note" case alone is no
+/// longer an error).
 #[test]
-fn feedback_missing_note_exits_2() {
+fn feedback_missing_verdict_and_note_exits_2() {
     let server = Server::spawn();
     server.plant("foo", "foo", &[]);
     let (home, key) = install_client(&server, &format!("fbn-{}", std::process::id()));
     let (ok, _stdout, stderr) = run_client(home.path(), &server, &key, &["feedback", "foo"]);
-    assert!(!ok, "feedback without --note must fail");
+    assert!(!ok, "feedback without --verdict or --note must fail");
     assert!(
-        stderr.contains("--note required"),
-        "stderr must mention --note: {stderr}"
+        stderr.contains("--verdict") && stderr.contains("--note"),
+        "stderr must mention both --verdict and --note: {stderr}"
+    );
+}
+
+/// `--verdict good` with NO `--note` must succeed on its own — the server
+/// records the vote and queues an async re-enrich; the client-side wire
+/// contract only needs the POST to succeed (HTTP 200/409).
+#[test]
+fn feedback_verdict_only_succeeds_without_note() {
+    let server = Server::spawn();
+    server.plant("foo", "foo", &[]);
+    let (home, key) = install_client(&server, &format!("fbv-{}", std::process::id()));
+    let (ok, _stdout, stderr) = run_client(
+        home.path(),
+        &server,
+        &key,
+        &["feedback", "foo", "--verdict", "good"],
+    );
+    assert!(
+        ok,
+        "verdict-only feedback should succeed: stderr=\n{stderr}"
+    );
+    assert_eq!(
+        server.last_feedback_verdict("foo"),
+        Some(1),
+        "server must record a +1 skill_feedback row for --verdict good"
+    );
+}
+
+/// `--verdict bad` maps to verdict `-1` on the wire, matching the server's
+/// `VerdictInput::normalize` (`"bad"` → `-1`).
+#[test]
+fn feedback_verdict_bad_maps_to_negative_one() {
+    let server = Server::spawn();
+    server.plant("foo", "foo", &[]);
+    let (home, key) = install_client(&server, &format!("fbb-{}", std::process::id()));
+    let (ok, _stdout, stderr) = run_client(
+        home.path(),
+        &server,
+        &key,
+        &["feedback", "foo", "--verdict", "bad"],
+    );
+    assert!(
+        ok,
+        "verdict-only feedback should succeed: stderr=\n{stderr}"
+    );
+    assert_eq!(server.last_feedback_verdict("foo"), Some(-1));
+}
+
+/// `--verdict` combined with `--note` must send both in the same request —
+/// the server records the verdict row with the note attached AND queues a
+/// re-enrich (business logic covered server-side by
+/// `tests/skill_feedback_api_e2e.rs`; this test only pins the client's wire
+/// shape: a single POST carrying both fields).
+#[test]
+fn feedback_verdict_and_note_together_sends_both_fields() {
+    let server = Server::spawn();
+    server.plant("foo", "foo", &[]);
+    let (home, key) = install_client(&server, &format!("fbvn-{}", std::process::id()));
+    let (ok, _stdout, stderr) = run_client(
+        home.path(),
+        &server,
+        &key,
+        &[
+            "feedback",
+            "foo",
+            "--verdict",
+            "good",
+            "--note",
+            "works great",
+        ],
+    );
+    assert!(
+        ok,
+        "verdict+note feedback should succeed: stderr=\n{stderr}"
+    );
+    assert_eq!(server.last_feedback_verdict("foo"), Some(1));
+}
+
+/// An invalid `--verdict` value must be rejected client-side (before any
+/// network call), matching the server's own `1|-1|"good"|"bad"` contract.
+#[test]
+fn feedback_invalid_verdict_value_exits_2() {
+    let server = Server::spawn();
+    server.plant("foo", "foo", &[]);
+    let (home, key) = install_client(&server, &format!("fbi-{}", std::process::id()));
+    let (ok, _stdout, stderr) = run_client(
+        home.path(),
+        &server,
+        &key,
+        &["feedback", "foo", "--verdict", "meh"],
+    );
+    assert!(!ok, "an invalid --verdict value must fail");
+    assert!(
+        stderr.contains("--verdict"),
+        "stderr must mention --verdict: {stderr}"
     );
 }
 

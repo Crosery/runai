@@ -192,6 +192,12 @@ pub(super) struct SkillDetailResponse {
     skill_md_content: String,
     skill_md_size: usize,
     skill_md_truncated: bool,
+    /// 3-state enrichment tag, same semantics/source as `SkillRow.enrich_status`
+    /// on `/api/skills`: `"enriched"` / `"enriching"` (in the server
+    /// in-flight registry) / `"unenriched"`. Lets a caller poll this
+    /// endpoint after a `/feedback` vote to see the re-enrich it queued
+    /// flip from 富集中 back to 已富集 without needing the list endpoint.
+    enrich_status: &'static str,
     /// router_events where this skill was chosen, newest first, up to 50.
     events: Vec<EventJson>,
     events_total: usize,
@@ -241,16 +247,26 @@ pub(super) async fn api_skill_detail(
         .find_resource_by_name_for_user(ResourceKind::Skill, &name, owner_scope.as_deref())
         .map_err(ApiError::Internal)?
         .ok_or(ApiError::NotFound)?;
-    let summary = db
+    let index_row = db
         .skill_ai_index_for_resource(&resource)
-        .unwrap_or_default()
-        .map(|row| row.summary)
+        .unwrap_or_default();
+    let summary = index_row
+        .as_ref()
+        .map(|row| row.summary.clone())
         .unwrap_or_default();
     let llm_score = if summary.is_empty() {
         None
     } else {
         Some(db.skill_llm_score_for_resource(&resource).unwrap_or(5))
     };
+    // Same 3-state computation as `api_skills::SkillRow.enrich_status` —
+    // resolved from THIS resource's own owner-scoped index row, so a
+    // same-named private skill never borrows the public summary's status.
+    let enrich_status = super::enrich_state::status_for(
+        &resource.name,
+        !summary.is_empty(),
+        index_row.as_ref().map(|row| row.updated_at),
+    );
     let skill_md_path = resource.directory.join("SKILL.md");
     const MAX_BYTES: usize = 60_000;
     let (skill_md_content, truncated, total_size) = match std::fs::read_to_string(&skill_md_path) {
@@ -389,6 +405,7 @@ pub(super) async fn api_skill_detail(
         skill_md_content,
         skill_md_size: total_size,
         skill_md_truncated: truncated,
+        enrich_status,
         events,
         events_total,
         radar,

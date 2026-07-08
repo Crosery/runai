@@ -296,14 +296,58 @@ pub(super) struct FeedbackBody {
     session_id: Option<String>,
 }
 
+/// Wire ack for every successful `/feedback` call (verdict-only, note-only
+/// legacy body, or verdict+note). `message` always contains
+/// `"feedback applied by {username}: {skill}"` so pre-existing callers that
+/// substring-match that phrase (dashboard + `runai-client`) keep working
+/// unchanged even though the shape is now JSON, not the old bare
+/// `text/plain` sentence.
 #[derive(Serialize)]
-struct FeedbackVerdictAck {
+struct FeedbackAck {
     ok: bool,
     skill: String,
-    verdict: i64,
-    /// Always `false` — the fast path never runs `reevaluate_skill`. Kept
-    /// explicit in the wire shape so a client doesn't have to infer it.
-    reevaluated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    verdict: Option<i64>,
+    /// `"queued"` — this call just claimed the re-enrich slot and spawned
+    /// it. `"already-running"` — another vote on the same skill already has
+    /// a re-enrich in flight (see `enrich_state::try_claim`); this vote was
+    /// still recorded, just without spawning a duplicate LLM call.
+    reenrich: &'static str,
+    message: String,
+}
+
+/// Fire-and-forget re-enrich after ANY successfully-recorded feedback
+/// (verdict-only, verdict+note, or the legacy note-only body) — closes the
+/// loop for agent-driven feedback (`runai-client feedback`) the same way a
+/// dashboard vote does. Runs `reevaluate_skill` on a detached OS thread, NOT
+/// awaited and NOT tied to the request's response, so a slow or failing LLM
+/// call never holds the HTTP connection open.
+///
+/// Callers MUST have already won `enrich_state::try_claim(skill)` before
+/// calling this — the claim is what makes the "already-running" vs
+/// "queued" response accurate and stops two concurrent votes on the same
+/// skill from double-spending LLM calls.
+///
+/// On failure this only logs via `tracing::warn!` (spawn_enrich's "永不吞
+/// 日志" rule) — the in-flight mark is left in place to expire via
+/// `enrich_state`'s TTL rather than being cleared, so a transient failure
+/// doesn't silently downgrade the dashboard tag back to 已富集/未富集 while
+/// a human still believes a re-enrich was queued.
+fn spawn_reevaluate(base_dir: std::path::PathBuf, skill: String, note: String) {
+    std::thread::spawn(move || {
+        let mgr = match SkillManager::with_base(base_dir) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!(
+                    "feedback reevaluate: SkillManager::with_base failed for {skill}: {e:#}"
+                );
+                return;
+            }
+        };
+        if let Err(e) = recommend::reevaluate_skill(&mgr, &skill, &note) {
+            tracing::warn!("feedback reevaluate failed for {skill}: {e:#}");
+        }
+    });
 }
 
 /// POST /feedback — replaces `runai recommend feedback`.
@@ -312,13 +356,13 @@ struct FeedbackVerdictAck {
 /// (skill-feedback-radar).
 ///
 /// Requires auth (Bearer or session cookie) — issue #26: this endpoint
-/// triggers a real LLM call (`reevaluate_skill`) and rewrites a skill's AI
-/// summary/score, so it must be gated the same way as every other write
-/// endpoint (`require_user`). An anonymous caller gets `401` with a
-/// completely EMPTY body (not `ApiError::Unauthorized`'s JSON shape) to
-/// match the anti-enumeration style used by `empty_404` / the `/recommend`
-/// fail-closed-Bearer lane — no distinguishing "auth required" text for a
-/// probe to key off of.
+/// eventually triggers a real LLM call (`reevaluate_skill`) and rewrites a
+/// skill's AI summary/score, so it must be gated the same way as every
+/// other write endpoint (`require_user`). An anonymous caller gets `401`
+/// with a completely EMPTY body (not `ApiError::Unauthorized`'s JSON
+/// shape) to match the anti-enumeration style used by `empty_404` / the
+/// `/recommend` fail-closed-Bearer lane — no distinguishing "auth
+/// required" text for a probe to key off of.
 ///
 /// The "applied by" attribution is now always the AUTHENTICATED username.
 /// The legacy `X-Runai-User` header is no longer read here at all — it was
@@ -326,15 +370,29 @@ struct FeedbackVerdictAck {
 /// audit-trail field would let any anonymous caller impersonate anyone in
 /// the response text.
 ///
+/// **Re-enrich is always asynchronous.** Every request that records
+/// feedback (verdict-only, note-only, or both) claims the skill's
+/// `enrich_state` in-flight slot (`enrich_state::try_claim`) and spawns
+/// `reevaluate_skill` on a detached thread via `spawn_reevaluate` — the
+/// HTTP response returns immediately, before the LLM call starts. The
+/// response's `reenrich` field is `"queued"` (this call won the claim) or
+/// `"already-running"` (another vote's re-enrich is still in flight for
+/// this skill, so this vote was recorded but did not spawn a duplicate LLM
+/// call). A synchronous existence check still runs first so a missing
+/// skill fails fast (404 empty body for the verdict path, 400 text/plain
+/// for the legacy note-only path — see the invariant in this folder's
+/// `AGENTS.md`) instead of silently queuing a re-enrich that can never
+/// resolve.
+///
 /// Idempotency (PLANNING §1.3, optional): when the request carries an
-/// `X-Runai-Event-Id` header, the side effect is gated on the
-/// `usage_events` table (kind=`feedback`). First → reevaluate runs;
-/// Duplicate (same id + same payload hash) → 200 no-op; Conflict (same
-/// id, different hash) → 409. When the header is absent, the legacy
-/// non-idempotent path runs unchanged so pre-protocol callers (and the
-/// existing feedback_auth_e2e suite) keep working. The `runai-client`
-/// companion always sends the header, so the protocol lane is the live
-/// one for new deploys.
+/// `X-Runai-Event-Id` header, the re-enrich TRIGGER is gated on the
+/// `usage_events` table (kind=`feedback`). First → re-enrich is queued;
+/// Duplicate (same id + same payload hash) → 200 no-op (no second
+/// re-enrich); Conflict (same id, different hash) → 409. When the header
+/// is absent, the legacy non-idempotent path runs unchanged so
+/// pre-protocol callers (and the existing feedback_auth_e2e suite) keep
+/// working. The `runai-client` companion always sends the header, so the
+/// protocol lane is the live one for new deploys.
 pub(super) async fn handle_feedback(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -406,14 +464,17 @@ pub(super) async fn handle_feedback(
 
     let join = tokio::task::spawn_blocking(move || -> Result<Response> {
         use crate::core::resource::ResourceKind;
-        let mgr = SkillManager::with_base(state_for_task.db_path.parent().unwrap().to_path_buf())?;
+        let base_dir = state_for_task.db_path.parent().unwrap().to_path_buf();
+        let mgr = SkillManager::with_base(base_dir.clone())?;
         let db = mgr.db();
+        let has_note = !req.note.trim().is_empty();
 
         // Structured verdict path (skill-feedback-radar): record an
         // event-sourced skill_feedback row. Requires the skill to resolve
         // in the caller's own owner scope (public pool ∪ their own
         // privates; admin sees everything) so a vote can't be recorded
-        // against a name that doesn't exist for this caller.
+        // against a name that doesn't exist for this caller. A miss is 404
+        // empty body (anti-enumeration style), unlike the legacy path below.
         if let Some(verdict) = verdict_num {
             let owner_scope: Option<String> = if user_for_task.is_admin {
                 Some("*".to_string())
@@ -428,10 +489,10 @@ pub(super) async fn handle_feedback(
                 Some(r) => r,
                 None => return Ok((StatusCode::NOT_FOUND, "").into_response()),
             };
-            let note_opt = if req.note.trim().is_empty() {
-                None
-            } else {
+            let note_opt = if has_note {
                 Some(req.note.as_str())
+            } else {
+                None
             };
             db.record_skill_feedback(
                 chrono::Utc::now().timestamp(),
@@ -443,22 +504,17 @@ pub(super) async fn handle_feedback(
                 verdict,
                 note_opt,
             )?;
-
-            if note_opt.is_none() {
-                // Fast path: no note means no LLM re-enrich. Ack quickly —
-                // this is what keeps a thumbs-up/down button snappy.
-                return Ok(Json(FeedbackVerdictAck {
-                    ok: true,
-                    skill: req.skill.clone(),
-                    verdict,
-                    reevaluated: false,
-                })
-                .into_response());
-            }
-            // Note is non-empty: fall through to the reevaluate flow below,
-            // same as the legacy (no-verdict) path.
+        } else if !has_note {
+            // Neither a verdict nor a note: nothing to record, nothing to
+            // feed a re-enrich. Preserves `reevaluate_skill`'s historical
+            // "--note is empty" wire contract (400 + text/plain) for the
+            // legacy `{skill, note}` body with an empty/missing note.
+            anyhow::bail!("--note is empty; pass concrete feedback text");
         }
 
+        // Idempotency header only guards the (expensive) re-enrich TRIGGER,
+        // same scope as before — a bare verdict vote's DB insert above is
+        // never deduped by this header (skill_feedback is event-sourced).
         if let Some(event_id) = event_id_for_task.as_deref() {
             let outcome = db.record_usage_event(
                 event_id,
@@ -482,22 +538,66 @@ pub(super) async fn handle_feedback(
                     )
                         .into_response());
                 }
-                UsageOutcome::First => { /* proceed to reevaluate */ }
+                UsageOutcome::First => { /* proceed to reenrich */ }
             }
         }
-        let report = recommend::reevaluate_skill(&mgr, &req.skill, &req.note)?;
-        Ok((
-            [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-            format!(
-                "feedback applied by {}: {} llm_score {} → {} (summary {} chars)\n",
-                user_for_task.username,
-                req.skill,
-                report.old_score,
-                report.new_score,
-                report.new_summary_len
-            ),
-        )
-            .into_response())
+
+        // Legacy note-only path (no `verdict` key at all): existence is
+        // checked here, synchronously, so a missing skill still surfaces
+        // the historical 400 + "feedback error: skill not found: ..."
+        // wire contract (pinned by
+        // tests/router_skill_lifecycle_p1c0.rs::feedback_returns_400_for_unconfigured_router_or_missing_skill)
+        // instead of silently queuing a re-enrich for a name that will
+        // never resolve. Scope mirrors `reevaluate_skill`'s own internal
+        // resolution (admin-wide "*", via `enrich_candidates`).
+        if verdict_num.is_none() {
+            db.find_resource_by_name_for_user(ResourceKind::Skill, &req.skill, Some("*"))?
+                .ok_or_else(|| anyhow::anyhow!("skill not found: {}", req.skill))?;
+        }
+
+        // Every successful feedback (verdict-only, note-only, or both)
+        // queues an async re-enrich now — closing the loop for
+        // agent-driven feedback via `runai-client feedback`, not just the
+        // dashboard's note box. Verdict-only feedback with no note
+        // synthesizes a short signal so `reevaluate_skill` still has
+        // something concrete to fold into the prompt.
+        let reenrich_note = if has_note {
+            req.note.clone()
+        } else {
+            // Reached only when verdict_num is Some — the bail above rules
+            // out (verdict_num == None && !has_note), so !has_note here
+            // implies a verdict was given.
+            match verdict_num {
+                Some(v) if v > 0 => "User gave a positive rating with no additional comment.",
+                _ => "User gave a negative rating with no additional comment.",
+            }
+            .to_string()
+        };
+        let reenrich = if super::enrich_state::try_claim(&req.skill) {
+            spawn_reevaluate(base_dir, req.skill.clone(), reenrich_note);
+            "queued"
+        } else {
+            "already-running"
+        };
+
+        let message = format!(
+            "feedback applied by {}: {} ({})\n",
+            user_for_task.username,
+            req.skill,
+            if reenrich == "queued" {
+                "queued for re-enrich"
+            } else {
+                "re-enrich already running"
+            }
+        );
+        Ok(Json(FeedbackAck {
+            ok: true,
+            skill: req.skill.clone(),
+            verdict: verdict_num,
+            reenrich,
+            message,
+        })
+        .into_response())
     })
     .await;
 

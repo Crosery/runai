@@ -715,8 +715,11 @@ Subcommands:
                  event in a durable local outbox; `flush` replays it.
   file           Print a cached bundle support file fetched by activate/sync.
                    runai-client file <skill> <relpath>
-  feedback       Send a passive feedback note for a skill.
+  feedback       Send feedback (rating and/or a note) for a skill.
+                   runai-client feedback <skill> --verdict good|bad [--note "<text>"]
                    runai-client feedback <skill> --note "<text>"
+                 A --verdict vote queues an async re-enrich of the skill on
+                 the server (dynamically updates its AI summary/score).
                  Idempotent + outbox-backed (same protocol as activate).
   sync           Prewarm the whole-skill cache for one or more skills without
                  printing. --all is accepted for compatibility.
@@ -735,7 +738,8 @@ Examples:
   runai-client install u_abc123 my-skill
   runai-client activate my-skill --session-id "rnai_sess_..."
   runai-client file my-skill references/guide.md
-  runai-client feedback my-skill --note "works great for X"
+  runai-client feedback my-skill --verdict good
+  runai-client feedback my-skill --verdict bad --note "works great for X"
   runai-client sync my-skill other-skill
   runai-client flush
 
@@ -1419,15 +1423,22 @@ HELP
 
 usage_feedback() {
   cat <<'HELP'
-runai-client feedback — send a passive feedback note for a skill.
+runai-client feedback — send feedback for a skill (rating and/or a note).
 
 Usage:
+  runai-client feedback <skill> --verdict good|bad [--note "<text>"] [options]
   runai-client feedback <skill> --note "<text>" [options]
 
 Options:
-  --note <text>       The feedback note (required).
-  --event-id <id>     Override the auto-generated event id (for replay).
-  --help, -h          Print this help and exit.
+  --verdict <good|bad>  Structured rating. The server records it and queues
+                        an async re-enrich of the skill (dynamically
+                        updates its AI summary/score) regardless of
+                        whether --note is also given.
+  --note <text>         Free-text feedback note.
+  --event-id <id>       Override the auto-generated event id (for replay).
+  --help, -h            Print this help and exit.
+
+At least one of --verdict / --note is required.
 
 Network failures queue the event in the local outbox (replayed by
 `runai-client flush`). 401/403 do NOT queue — auth failures are never
@@ -1599,10 +1610,11 @@ cmd_file() {
 }
 
 cmd_feedback() {
-  local SKILL="" NOTE="" EVENT_ID=""
+  local SKILL="" NOTE="" EVENT_ID="" VERDICT=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --note) NOTE="$2"; shift 2 ;;
+      --verdict) VERDICT="$2"; shift 2 ;;
       --event-id) EVENT_ID="$2"; shift 2 ;;
       --help|-h) usage_feedback; return 0 ;;
       *)
@@ -1617,16 +1629,27 @@ cmd_feedback() {
     usage_feedback >&2
     return 2
   fi
-  if [[ -z "$NOTE" ]]; then
-    echo "runai-client feedback: --note required" >&2
+  if [[ -n "$VERDICT" && "$VERDICT" != "good" && "$VERDICT" != "bad" ]]; then
+    echo "runai-client feedback: --verdict must be good or bad" >&2
+    return 2
+  fi
+  if [[ -z "$NOTE" && -z "$VERDICT" ]]; then
+    echo "runai-client feedback: --verdict 或 --note 至少给一个" >&2
     return 2
   fi
   ensure_creds
   [[ -z "$EVENT_ID" ]] && EVENT_ID="$(gen_uuid)"
 
   local BODY; BODY=$(python3 -c \
-    "import json,sys; print(json.dumps({'skill': sys.argv[1], 'note': sys.argv[2]}))" \
-    "$SKILL" "$NOTE")
+    "import json,sys
+skill, note, verdict = sys.argv[1], sys.argv[2], sys.argv[3]
+d = {'skill': skill}
+if note:
+    d['note'] = note
+if verdict:
+    d['verdict'] = verdict
+print(json.dumps(d))" \
+    "$SKILL" "$NOTE" "$VERDICT")
 
   local AUTH=()
   [[ -n "$API_KEY" ]] && AUTH=(-H "Authorization: Bearer $API_KEY")

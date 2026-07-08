@@ -142,6 +142,13 @@
     setTextIfPresent('#detail-fb-chosen', fmtInt(stats.chosen_sessions ?? 0));
     setTextIfPresent('#detail-fb-adopted', fmtInt(stats.adopted_sessions ?? 0));
 
+    // 富集状态标记（复用 05-library-skills.js 的 enrichTagHtml，跟列表页同一套
+    // 已富集/富集中/未富集 视觉语言）。投票成功后 submitDetailVote 立即重拉一次
+    // /api/skill/{name}，此时服务端已经在响应前标记好 enrich_state，所以这里
+    // 天然反映"刚投票就显示重新富集中"，不需要额外的乐观 UI 状态。
+    const enrichBadge = $('#detail-fb-enrich-badge');
+    if (enrichBadge) enrichBadge.innerHTML = enrichTagHtml(d.enrich_status);
+
     const recentHost = $('#detail-fb-recent');
     if (recentHost) {
       const rows = d.feedback_recent || [];

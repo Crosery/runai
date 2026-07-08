@@ -573,13 +573,19 @@ function Invoke-File {
 }
 
 function Invoke-Feedback {
-    param([string]$Skill, [string]$Note, [string]$EventId)
+    param([string]$Skill, [string]$Note, [string]$Verdict, [string]$EventId)
     if (-not $Skill) { Write-Host "runai-client feedback: skill name required"; exit 2 }
-    if (-not $Note) { Write-Host "runai-client feedback: --note required"; exit 2 }
+    if ($Verdict -and $Verdict -ne 'good' -and $Verdict -ne 'bad') {
+        Write-Host "runai-client feedback: --verdict must be good or bad"; exit 2
+    }
+    if (-not $Note -and -not $Verdict) { Write-Host "runai-client feedback: --verdict or --note required"; exit 2 }
     $server = Get-RunaiServer
     if (-not $server) { Write-RunaiDie "no server URL" }
     if (-not $EventId) { $EventId = New-RunaiEventId }
-    $body = @{ skill=$Skill; note=$Note } | ConvertTo-Json -Compress
+    $payload = @{ skill = $Skill }
+    if ($Note) { $payload['note'] = $Note }
+    if ($Verdict) { $payload['verdict'] = $Verdict }
+    $body = $payload | ConvertTo-Json -Compress
     $headers = Get-AuthHeaders
     $headers['X-Runai-Event-Id'] = $EventId
     $code = 0
@@ -649,15 +655,16 @@ switch ($sub) {
         Invoke-File -Skill $skill -Rel $rel
     }
     'feedback' {
-        $skill=''; $note=''; $eventId=''
+        $skill=''; $note=''; $verdict=''; $eventId=''
         for ($i=1; $i -lt $args.Count; $i++) {
             switch ($args[$i]) {
                 '--note' { $note=$args[++$i] }
+                '--verdict' { $verdict=$args[++$i] }
                 '--event-id' { $eventId=$args[++$i] }
                 default { if (-not $skill) { $skill=$args[$i] } }
             }
         }
-        Invoke-Feedback -Skill $skill -Note $note -EventId $eventId
+        Invoke-Feedback -Skill $skill -Note $note -Verdict $verdict -EventId $eventId
     }
     'sync' {
         $all=$false; $skills=@()
