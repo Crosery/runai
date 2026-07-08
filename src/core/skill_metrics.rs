@@ -64,13 +64,15 @@ pub fn axis_quality(llm_score: Option<i64>) -> f64 {
 }
 
 /// Heat axis: log-compressed usage popularity relative to the corpus max.
+/// Clamped so a caller passing a stale `max_usage_count` below the actual
+/// usage still gets a value inside the documented [0, 10] bound.
 pub fn axis_heat(usage_count: i64, max_usage_count: i64) -> f64 {
     if max_usage_count <= 0 {
         return 0.0;
     }
     let usage = usage_count.max(0) as f64;
     let max_usage = max_usage_count as f64;
-    (1.0 + usage).ln() / (1.0 + max_usage).ln() * 10.0
+    ((1.0 + usage).ln() / (1.0 + max_usage).ln() * 10.0).min(10.0)
 }
 
 /// Single 0..1 scalar blending adoption + rating, for callers that want one
@@ -194,6 +196,11 @@ mod tests {
             (top - 10.0).abs() < EPS,
             "the corpus max always scores 10.0"
         );
+    }
+
+    #[test]
+    fn heat_stays_capped_when_usage_exceeds_a_stale_corpus_max() {
+        assert!((axis_heat(500, 100) - 10.0).abs() < EPS);
     }
 
     #[test]
