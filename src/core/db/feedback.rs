@@ -149,6 +149,24 @@ impl Database {
     /// `recommend::router`'s writers) — parsed here in Rust rather than via
     /// SQL `json_each` so one malformed row degrades to "no candidates /
     /// no chosen" for that row instead of aborting the whole aggregation.
+    ///
+    /// N+1 note: this used to run one `router_session_adoptions` COUNT query
+    /// PER `(skill, chosen_session)` pair discovered above — on an install
+    /// with thousands of `router_events` rows that was thousands of
+    /// synchronous SQLite round trips inside one call (the root cause behind
+    /// `stats_cache.rs`'s existence). It now does exactly two queries total:
+    /// the `router_events` scan above, plus one unfiltered
+    /// `router_session_adoptions` read into an in-memory `HashSet<(session,
+    /// skill)>` that the adoption check below tests against instead of
+    /// hitting SQLite again. `router_session_adoptions` is not windowed by
+    /// `since_ts` — it only ever holds one row per `(session_id,
+    /// skill_name)` that was actually adopted (`record_session_adoption` is
+    /// an upsert), so it stays orders of magnitude smaller than
+    /// `router_events` and a full scan of it is cheaper than the join logic
+    /// needed to time-bound it correctly (an adoption can legitimately be
+    /// recorded slightly after the `router_events` row that produced the
+    /// recommendation, so filtering it by the same `since_ts` cutoff would
+    /// risk dropping adoptions for sessions right at the window edge).
     pub fn skill_router_stats(&self, since_ts: i64) -> Result<HashMap<String, RouterSkillStats>> {
         let mut stmt = self.conn.prepare(
             "SELECT session_id, chosen_skills_json, bm25_candidates_json
@@ -186,22 +204,21 @@ impl Database {
             }
         }
 
+        // Single bulk read replacing the old per-(skill,session) COUNT query.
+        let mut adopt_stmt = self
+            .conn
+            .prepare("SELECT session_id, skill_name FROM router_session_adoptions")?;
+        let adopted: HashSet<(String, String)> = adopt_stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<HashSet<_>>>()?;
+
         for (name, sessions) in &chosen_sessions {
             let entry = stats.entry(name.clone()).or_default();
             entry.chosen_sessions = sessions.len() as i64;
-            let mut adopted = 0i64;
-            for session_id in sessions {
-                let exists: i64 = self.conn.query_row(
-                    "SELECT COUNT(*) FROM router_session_adoptions
-                     WHERE session_id = ?1 AND skill_name = ?2",
-                    params![session_id, name],
-                    |r| r.get(0),
-                )?;
-                if exists > 0 {
-                    adopted += 1;
-                }
-            }
-            entry.adopted_sessions = adopted;
+            entry.adopted_sessions = sessions
+                .iter()
+                .filter(|session_id| adopted.contains(&((*session_id).clone(), name.clone())))
+                .count() as i64;
         }
 
         Ok(stats)

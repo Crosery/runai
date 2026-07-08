@@ -36,6 +36,37 @@
 //! same skill. Documented, accepted tradeoff (PLANNING §2.2 doesn't cover
 //! this — it's a fresh 2026-07 decision, not a re-litigation of an existing
 //! invariant).
+//!
+//! ## Stale-while-revalidate (2026-07)
+//!
+//! A plain TTL cache still makes ONE unlucky caller pay the full recompute
+//! cost synchronously: the request that lands right after the snapshot ages
+//! out blocks on a fresh `skill_router_stats` + `skill_feedback_counts_all`
+//! pass before it gets an answer. On a large install that is still a
+//! multi-second stall for whoever's tab happens to poll at the wrong
+//! instant, even with the N+1 fix in `skill_router_stats` — SQLite's
+//! synchronous scan cost doesn't disappear, it just stops being multiplied
+//! by "number of chosen sessions".
+//!
+//! So a cache miss on an EXPIRED (not absent) snapshot returns the stale
+//! snapshot immediately and kicks off a background refresh on a detached
+//! `std::thread` that opens its own `Database` connection (the caller's `db`
+//! is a request-scoped, non-`Send`-across-await connection — the refresh
+//! thread must not borrow it). Concurrent callers hitting the same expired
+//! entry share one in-flight refresh via the `refreshing` claim registry
+//! (same one-owner-wins pattern as `enrich_state::try_claim`) — the second,
+//! third, … caller just returns the same stale snapshot without spawning
+//! its own refresh.
+//!
+//! Only the very FIRST request for a `db_path` (no snapshot at all yet) pays
+//! the synchronous cost — there is nothing stale to fall back to. Every
+//! request after that gets an answer in the time it takes to clone two
+//! `HashMap`s out of a mutex, never a live SQLite scan.
+//!
+//! **Staleness bound**: data can now lag by up to `CACHE_TTL_SECS` PLUS the
+//! duration of one background refresh (previously: just `CACHE_TTL_SECS`,
+//! but every Nth caller paid full latency instead of getting a fast
+//! answer). This is the deliberate trade this section makes.
 
 use crate::core::db::{Database, RouterSkillStats};
 use std::collections::HashMap;
@@ -63,25 +94,62 @@ fn registry() -> &'static Mutex<HashMap<PathBuf, Cached>> {
     REG.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Returns `(router_stats_all, feedback_counts_all)`, recomputing from `db`
-/// only when there is no cached snapshot for `db_path` yet or the cached one
-/// is older than `CACHE_TTL_SECS`. `since_ts` is the radar window cutoff
-/// (`api_skill_detail`'s rolling 90 days) — passed straight through to
-/// `Database::skill_router_stats` on a cache miss.
-pub(super) fn router_and_feedback_stats(
+/// Process-global "a background refresh is already in flight for this
+/// db_path" claim set — same one-owner-wins shape as
+/// `enrich_state::try_claim`, but boolean rather than TTL'd: the refresh
+/// thread always removes its own entry on exit (success, error, or panic
+/// during unwind), so there's no separate staleness window to reason about
+/// here.
+fn refreshing() -> &'static Mutex<std::collections::HashSet<PathBuf>> {
+    static REG: OnceLock<Mutex<std::collections::HashSet<PathBuf>>> = OnceLock::new();
+    REG.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+}
+
+/// RAII guard that releases this db_path's refresh claim on drop — including
+/// on an unwinding panic inside the refresh thread's closure, so a panicking
+/// refresh can never permanently wedge future refreshes for that path.
+struct RefreshClaim(PathBuf);
+
+impl Drop for RefreshClaim {
+    fn drop(&mut self) {
+        refreshing()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.0);
+    }
+}
+
+/// Try to claim the background-refresh slot for `db_path`. Returns `Some`
+/// guard (spawn the refresh, drop the guard when done) if this caller is the
+/// one that gets to refresh; `None` if another refresh is already in
+/// flight for this path.
+fn try_claim_refresh(db_path: &Path) -> Option<RefreshClaim> {
+    let mut reg = refreshing().lock().unwrap_or_else(|e| e.into_inner());
+    if reg.insert(db_path.to_path_buf()) {
+        Some(RefreshClaim(db_path.to_path_buf()))
+    } else {
+        None
+    }
+}
+
+/// Recompute both aggregates from `db` and store them as the fresh snapshot
+/// for `db_path`. Used both for the synchronous first-ever-request path and
+/// for the background refresh thread (which opens its own `Database`).
+fn compute_and_store(
     db: &Database,
     db_path: &Path,
     since_ts: i64,
 ) -> anyhow::Result<RouterAndFeedbackStats> {
-    let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(c) = reg.get(db_path)
-        && c.computed_at.elapsed().as_secs() < CACHE_TTL_SECS
-    {
-        return Ok((c.router_stats.clone(), c.feedback_all.clone()));
-    }
+    #[cfg(test)]
+    std::thread::sleep(test_hooks::slowdown());
+
     let router_stats = db.skill_router_stats(since_ts)?;
     let feedback_all = db.skill_feedback_counts_all()?;
-    reg.insert(
+
+    #[cfg(test)]
+    test_hooks::record_compute_call();
+
+    registry().lock().unwrap_or_else(|e| e.into_inner()).insert(
         db_path.to_path_buf(),
         Cached {
             computed_at: Instant::now(),
@@ -90,6 +158,129 @@ pub(super) fn router_and_feedback_stats(
         },
     );
     Ok((router_stats, feedback_all))
+}
+
+/// Spawn (at most one, process-wide, per db_path) a detached background
+/// refresh. No-op if a refresh for this path is already in flight.
+fn spawn_background_refresh(db_path: PathBuf, since_ts: i64) {
+    let Some(claim) = try_claim_refresh(&db_path) else {
+        return;
+    };
+    std::thread::spawn(move || {
+        let _claim = claim; // released on drop, incl. on panic unwind
+        match Database::open(&db_path) {
+            Ok(db) => {
+                if let Err(e) = compute_and_store(&db, &db_path, since_ts) {
+                    eprintln!(
+                        "stats_cache background refresh failed for {}: {e}",
+                        db_path.display()
+                    );
+                }
+            }
+            Err(e) => eprintln!(
+                "stats_cache background refresh: could not open {}: {e}",
+                db_path.display()
+            ),
+        }
+    });
+}
+
+/// Returns `(router_stats_all, feedback_counts_all)`.
+///
+/// - No snapshot yet for `db_path`: computes synchronously (nothing to fall
+///   back to) and blocks the caller — this only happens once per `db_path`
+///   per process lifetime.
+/// - Fresh snapshot (younger than `CACHE_TTL_SECS`): returned immediately,
+///   no DB work.
+/// - Stale snapshot (older than `CACHE_TTL_SECS`): returned immediately AS
+///   IS, and a background refresh is kicked off (deduped across concurrent
+///   callers) to replace it for the NEXT caller. `since_ts` is the radar
+///   window cutoff (`api_skill_detail`'s rolling 90 days) — passed straight
+///   through to `Database::skill_router_stats` on both the synchronous and
+///   background recompute paths.
+pub(super) fn router_and_feedback_stats(
+    db: &Database,
+    db_path: &Path,
+    since_ts: i64,
+) -> anyhow::Result<RouterAndFeedbackStats> {
+    {
+        let reg = registry().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(c) = reg.get(db_path) {
+            let snapshot = (c.router_stats.clone(), c.feedback_all.clone());
+            if c.computed_at.elapsed().as_secs() < CACHE_TTL_SECS {
+                return Ok(snapshot);
+            }
+            drop(reg);
+            spawn_background_refresh(db_path.to_path_buf(), since_ts);
+            return Ok(snapshot);
+        }
+    }
+    // First-ever request for this db_path: nothing stale to serve, pay the
+    // synchronous cost once.
+    compute_and_store(db, db_path, since_ts)
+}
+
+/// Test-only: back-date the cached entry for `db_path` so the next call
+/// sees it as expired, without an actual `CACHE_TTL_SECS`-long sleep.
+/// No-op if there is no entry yet.
+#[cfg(test)]
+fn force_stale(db_path: &Path) {
+    if let Some(c) = registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_mut(db_path)
+    {
+        c.computed_at = Instant::now()
+            .checked_sub(std::time::Duration::from_secs(CACHE_TTL_SECS + 1))
+            .expect("process has been up longer than the TTL");
+    }
+}
+
+#[cfg(test)]
+mod test_hooks {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Mutex, OnceLock};
+    use std::time::Duration;
+
+    static SLOWDOWN_MS: OnceLock<Mutex<u64>> = OnceLock::new();
+    static COMPUTE_CALLS: OnceLock<AtomicU64> = OnceLock::new();
+
+    /// Make every `compute_and_store` call (sync AND background-thread)
+    /// sleep this long before touching the DB, so tests can prove a caller
+    /// returned WITHOUT waiting for a slow recompute.
+    pub(super) fn set_slowdown_ms(ms: u64) {
+        *SLOWDOWN_MS
+            .get_or_init(|| Mutex::new(0))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = ms;
+    }
+
+    pub(super) fn slowdown() -> Duration {
+        let ms = *SLOWDOWN_MS
+            .get_or_init(|| Mutex::new(0))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        Duration::from_millis(ms)
+    }
+
+    pub(super) fn record_compute_call() {
+        COMPUTE_CALLS
+            .get_or_init(|| AtomicU64::new(0))
+            .fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub(super) fn compute_calls() -> u64 {
+        COMPUTE_CALLS
+            .get_or_init(|| AtomicU64::new(0))
+            .load(Ordering::SeqCst)
+    }
+
+    pub(super) fn reset() {
+        set_slowdown_ms(0);
+        COMPUTE_CALLS
+            .get_or_init(|| AtomicU64::new(0))
+            .store(0, Ordering::SeqCst);
+    }
 }
 
 #[cfg(test)]
@@ -165,5 +356,113 @@ mod tests {
             !fb_b.contains_key("only-in-a"),
             "db B's cache entry must not see db A's feedback row"
         );
+    }
+
+    /// Poll until `pred` is true or `timeout` elapses. Used to observe the
+    /// background refresh thread's effect without a fixed sleep (which
+    /// would either flake under load or waste time).
+    fn wait_until(timeout: std::time::Duration, mut pred: impl FnMut() -> bool) -> bool {
+        let start = Instant::now();
+        loop {
+            if pred() {
+                return true;
+            }
+            if start.elapsed() > timeout {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn expired_snapshot_returns_immediately_and_refreshes_in_background() {
+        test_hooks::reset();
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("swr_test.db");
+        let db = Database::open(&db_path).unwrap();
+        db.record_skill_feedback(1, "swr-skill", None, None, None, None, 1, None)
+            .unwrap();
+
+        // Prime the cache (first-ever call, synchronous, no slowdown yet).
+        let (_, fb1) = router_and_feedback_stats(&db, &db_path, 0).unwrap();
+        assert_eq!(fb1.get("swr-skill"), Some(&(1, 0)));
+
+        // Mutate the underlying table and force the snapshot to look expired.
+        db.record_skill_feedback(2, "swr-skill", None, None, None, None, 1, None)
+            .unwrap();
+        force_stale(&db_path);
+
+        // Make the recompute artificially slow so a synchronous call would
+        // provably block for at least this long.
+        test_hooks::set_slowdown_ms(300);
+
+        let start = Instant::now();
+        let (_, fb2) = router_and_feedback_stats(&db, &db_path, 0).unwrap();
+        let elapsed = start.elapsed();
+        assert_eq!(
+            fb2.get("swr-skill"),
+            Some(&(1, 0)),
+            "an expired-but-present snapshot must be served AS IS, not blocked on"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_millis(150),
+            "expired-snapshot call must return near-instantly, not wait out the \
+             300ms simulated slow recompute; took {elapsed:?}"
+        );
+
+        // The background refresh should eventually land the fresh count.
+        let refreshed = wait_until(std::time::Duration::from_secs(3), || {
+            let reg = registry().lock().unwrap();
+            reg.get(&db_path)
+                .map(|c| c.feedback_all.get("swr-skill") == Some(&(2, 0)))
+                .unwrap_or(false)
+        });
+        assert!(
+            refreshed,
+            "background refresh must eventually update the cache to the fresh count"
+        );
+        test_hooks::reset();
+    }
+
+    #[test]
+    fn concurrent_expired_calls_dedupe_to_one_background_refresh() {
+        test_hooks::reset();
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("swr_dedupe_test.db");
+        let db = Database::open(&db_path).unwrap();
+        db.record_skill_feedback(1, "dedupe-skill", None, None, None, None, 1, None)
+            .unwrap();
+
+        let _ = router_and_feedback_stats(&db, &db_path, 0).unwrap();
+        // One compute call so far (the priming call above).
+        assert_eq!(test_hooks::compute_calls(), 1);
+
+        force_stale(&db_path);
+        test_hooks::set_slowdown_ms(200);
+
+        // Two calls in quick succession while the entry is expired: both
+        // must return the stale snapshot immediately, and only ONE of them
+        // may win the background-refresh claim.
+        let (_, fb_first) = router_and_feedback_stats(&db, &db_path, 0).unwrap();
+        let (_, fb_second) = router_and_feedback_stats(&db, &db_path, 0).unwrap();
+        assert_eq!(fb_first.get("dedupe-skill"), Some(&(1, 0)));
+        assert_eq!(fb_second.get("dedupe-skill"), Some(&(1, 0)));
+
+        // Give the (single) background refresh time to finish, then assert
+        // the total compute-call count is exactly 2 (prime + one refresh),
+        // never 3 — a second background thread would double-count.
+        wait_until(std::time::Duration::from_secs(3), || {
+            test_hooks::compute_calls() >= 2
+        });
+        // Settle briefly past the slowdown window so a wrongly-spawned
+        // second refresh (if any) has had time to also complete and bump
+        // the counter, so we're not just catching the race mid-flight.
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        assert_eq!(
+            test_hooks::compute_calls(),
+            2,
+            "two callers racing an expired snapshot must share ONE background refresh"
+        );
+        test_hooks::reset();
     }
 }
