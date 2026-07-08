@@ -116,6 +116,13 @@ Write-Host ""
 # The server strips this whole block before serving the script if it is
 # ever run in owner mode (currently unreachable: owner mode returns 404
 # at the route level — see PLANNING.md §1.2).
+#
+# The settings.json patch (phase 3) is mutually exclusive with the local
+# direct-connect hook (bare command `runai recommend`, installed by
+# `runai recommend install-hook` / the TUI hook panel): both hooks POST
+# every prompt through the recommend pipeline, so having both wired
+# doubles events/latency/token spend per prompt. If that local entry is
+# present it is removed first — the remote client hook takes over.
 
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
@@ -737,6 +744,29 @@ if ($DoSettings) {
     # original bytes. `chcp 65001` is the well-known Windows-UTF-8 idiom.
     $hookCmd = "chcp 65001 >NUL & powershell -NoProfile -ExecutionPolicy Bypass -File `"$HookPath`""
 
+    # Mutual exclusion: the local direct-connect hook (bare command
+    # `runai recommend`, installed by `runai recommend install-hook` /
+    # the TUI hook panel) and this remote client hook both POST every
+    # prompt through the recommend pipeline. Having both wired doubles
+    # events/latency/token spend per prompt. The remote hook we are
+    # about to install takes over — evict any local-hook group first.
+    $removedLocal = $false
+    $keptUps = @()
+    foreach ($g in $data.hooks.UserPromptSubmit) {
+        $groupHooks = @()
+        if ($null -ne $g -and $g.ContainsKey('hooks')) { $groupHooks = @($g.hooks) }
+        $allLocal = $groupHooks.Count -gt 0
+        foreach ($h in $groupHooks) {
+            if ($null -eq $h -or $h.command -ne 'runai recommend') { $allLocal = $false }
+        }
+        if ($allLocal) {
+            $removedLocal = $true
+        } else {
+            $keptUps += ,$g
+        }
+    }
+    $data.hooks.UserPromptSubmit = $keptUps
+
     # Idempotent: skip if our exact command is already present.
     $already = $false
     foreach ($g in $data.hooks.UserPromptSubmit) {
@@ -754,6 +784,9 @@ if ($DoSettings) {
         Write-Ok "patched UserPromptSubmit hook"
     } else {
         Write-Ok "hook already present (no-op)"
+    }
+    if ($removedLocal) {
+        Write-Ok "removed local direct-connect hook (runai recommend) — remote client hook takes over, avoids double recommend calls per prompt"
     }
 
     # settings.json also UTF-8 no BOM — Claude Code parses it with UTF-8 by

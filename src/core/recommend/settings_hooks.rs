@@ -5,6 +5,19 @@
 //! equality so re-running is idempotent and uninstall only removes our entry;
 //! unrelated user hooks and the rest of the file are preserved, with a
 //! `.runai-bak` written before each write.
+//!
+//! **Mutually exclusive with the remote client hook.** The local
+//! direct-connect hook installed here (bare command `runai recommend`) and
+//! the remote client hook (`~/.runai-hook.sh` / `.ps1`, installed by
+//! `scripts/runai-client-install.{sh,ps1}`) both POST every prompt through
+//! the recommend pipeline — if both are wired into `UserPromptSubmit` at
+//! once, every prompt is routed twice, doubling events/latency/token spend.
+//! [`install_claude_hook`] proactively evicts any remote-hook entry it
+//! finds (mirroring its existing legacy-PostToolUse cleanup); the remote
+//! installer scripts do the symmetric eviction of the local entry on their
+//! side. Whichever installer runs last wins — this file does not touch the
+//! remote hook's own settings.json patch, only its own install/uninstall
+//! path.
 
 use anyhow::{Context, Result};
 use std::fs;
@@ -24,6 +37,19 @@ const HOOK_COMMAND: &str = "runai recommend";
 /// versions wrote this entry into PostToolUse; new installs no longer do.
 const LEGACY_POST_TOOL_HOOK_COMMAND: &str = "runai recommend post-tool";
 
+/// Substrings identifying a `UserPromptSubmit` command as the remote
+/// client hook (`scripts/runai-client-install.{sh,ps1}`), on either
+/// platform shape: a bare `.../.runai-hook.sh` path on unix, or a
+/// `chcp ... & powershell ... -File "...\.runai-hook.ps1"` command line on
+/// Windows.
+const REMOTE_HOOK_COMMAND_MARKERS: [&str; 2] = [".runai-hook.sh", ".runai-hook.ps1"];
+
+fn is_remote_hook_command(command: &str) -> bool {
+    REMOTE_HOOK_COMMAND_MARKERS
+        .iter()
+        .any(|marker| command.contains(marker))
+}
+
 /// Install the UserPromptSubmit hook into `<home>/.claude/settings.json`.
 /// The hook runs the router for each user prompt and injects the chosen
 /// skills as additional context. Idempotent.
@@ -31,6 +57,13 @@ const LEGACY_POST_TOOL_HOOK_COMMAND: &str = "runai recommend post-tool";
 /// As a side-effect, any legacy `runai recommend post-tool` entry in the
 /// PostToolUse array is removed: counting now flows through the activation
 /// protocol, so the PostToolUse path is no longer wired.
+///
+/// Also mutually exclusive with the remote client hook (`~/.runai-hook.sh`
+/// / `.ps1`, installed by `scripts/runai-client-install.{sh,ps1}`): both
+/// hooks POST the same prompt through the recommend pipeline, so having
+/// both wired doubles events/latency/token spend per prompt. Installing
+/// the local direct-connect hook evicts any remote-hook entry — the later
+/// installer wins.
 pub fn install_claude_hook(home: &Path) -> Result<HookInstallStatus> {
     let claude_dir = home.join(".claude");
     let path = claude_dir.join("settings.json");
@@ -47,12 +80,39 @@ pub fn install_claude_hook(home: &Path) -> Result<HookInstallStatus> {
     }
 
     let legacy_removed = remove_legacy_post_tool_hook(&mut value);
+    let remote_removed = remove_remote_hook_entries(&mut value);
 
-    if ups_already && !legacy_removed {
+    if ups_already && !legacy_removed && !remote_removed {
         return Ok(HookInstallStatus::AlreadyPresent);
     }
     write_settings_json(&path, &value)?;
     Ok(HookInstallStatus::Installed)
+}
+
+/// Strip any `UserPromptSubmit` group whose every hook is the remote
+/// client hook (`~/.runai-hook.sh` / `.ps1`). Returns true if something
+/// was actually removed. Mirrors `remove_legacy_post_tool_hook`'s
+/// whole-group-only-if-all-ours removal shape.
+fn remove_remote_hook_entries(value: &mut serde_json::Value) -> bool {
+    let arr = match get_user_prompt_submit_array(value) {
+        Some(a) => a,
+        None => return false,
+    };
+    let before = arr.len();
+    arr.retain(|group| {
+        let hooks = match group.get("hooks").and_then(|h| h.as_array()) {
+            Some(h) => h,
+            None => return true,
+        };
+        let all_remote = !hooks.is_empty()
+            && hooks.iter().all(|h| {
+                h.get("command")
+                    .and_then(|c| c.as_str())
+                    .is_some_and(is_remote_hook_command)
+            });
+        !all_remote
+    });
+    arr.len() != before
 }
 
 /// Strip any historical `runai recommend post-tool` entry from

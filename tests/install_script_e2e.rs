@@ -462,3 +462,153 @@ fn rendered_script_supports_help_flag() {
     assert!(!client_home.path().join(".runai-hook.sh").exists());
     assert!(!client_home.path().join(".claude/settings.json").exists());
 }
+
+/// Root-cause regression for the double-routing incident: a machine that
+/// already has the LOCAL direct-connect hook (bare `runai recommend`,
+/// as written by `runai recommend install-hook` / the TUI hook panel)
+/// wired into `UserPromptSubmit`, then runs the remote client installer.
+/// The two hooks must never coexist — each would otherwise POST every
+/// prompt through the recommend pipeline independently, doubling
+/// events/latency/token spend. The remote installer must evict the local
+/// entry when it patches settings.json.
+#[test]
+fn install_script_evicts_local_direct_connect_hook() {
+    let server_home = make_home();
+    write_test_skill(server_home.path(), "demo-skill");
+    let port = free_port();
+    let server = spawn_server(server_home, port, "team");
+
+    let client = http_client();
+    let body = client
+        .get(format!("{}/install", server.base_url()))
+        .send()
+        .expect("GET /install")
+        .text()
+        .expect("install body");
+    let loopback_url = server.base_url();
+    let script_body = rewrite_server_url(&body, &loopback_url);
+
+    let script_dir = tempfile::tempdir().expect("script tempdir");
+    let script_path = script_dir.path().join("install.sh");
+    std::fs::write(&script_path, script_body).expect("write rendered install.sh");
+
+    // Pre-seed the client HOME with a settings.json that already carries
+    // the local direct-connect hook entry PLUS an unrelated user hook,
+    // exactly the shape `install_claude_hook` (src/core/recommend/
+    // settings_hooks.rs) would have written.
+    let client_home = tempfile::tempdir().expect("client HOME tempdir");
+    let claude_dir = client_home.path().join(".claude");
+    std::fs::create_dir_all(&claude_dir).expect("mkdir .claude");
+    let pre = serde_json::json!({
+        "hooks": {
+            "UserPromptSubmit": [
+                {"hooks": [{"type": "command", "command": "user-existing-hook"}]},
+                {"hooks": [{"type": "command", "command": "runai recommend"}]}
+            ]
+        }
+    });
+    std::fs::write(
+        claude_dir.join("settings.json"),
+        serde_json::to_string_pretty(&pre).unwrap(),
+    )
+    .expect("write pre-seeded settings.json");
+
+    let username = format!("e2e-mutex-{}", std::process::id());
+    let password = "correct-horse-battery-staple";
+    let output = Command::new("bash")
+        .arg(script_path.as_os_str())
+        .env("HOME", client_home.path())
+        .env("RUNAI_USERNAME", &username)
+        .env("RUNAI_PASSWORD", password)
+        .env("RUNAI_NO_AUTOSPAWN", "1")
+        .env_remove("RUNE_DATA_DIR")
+        .env_remove("SKILL_MANAGER_DATA_DIR")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("run rendered install.sh");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "install.sh failed:\nexit={}\nstdout=\n{}\nstderr=\n{}",
+        output.status,
+        stdout,
+        stderr,
+    );
+
+    let settings_path = claude_dir.join("settings.json");
+    let settings_raw = std::fs::read_to_string(&settings_path).expect("read settings.json");
+    let settings_json: serde_json::Value =
+        serde_json::from_str(&settings_raw).expect("settings.json is valid JSON");
+    let ups = settings_json["hooks"]["UserPromptSubmit"]
+        .as_array()
+        .expect("UserPromptSubmit array");
+    let commands: Vec<&str> = ups
+        .iter()
+        .map(|g| g["hooks"][0]["command"].as_str().unwrap_or_default())
+        .collect();
+
+    assert!(
+        commands.contains(&"user-existing-hook"),
+        "unrelated hook must survive install; got {commands:?}"
+    );
+    assert!(
+        !commands.iter().any(|c| *c == "runai recommend"),
+        "local direct-connect hook must be evicted by the remote client \
+         installer (double-routing regression); got {commands:?}"
+    );
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|c| c.contains(".runai-hook.sh"))
+            .count(),
+        1,
+        "exactly one remote client hook entry must remain; got {commands:?}"
+    );
+
+    // Idempotency: re-running the installer must not pile up a second
+    // remote-hook entry (already-present branch also must not resurrect
+    // the local entry).
+    let output2 = Command::new("bash")
+        .arg(script_path.as_os_str())
+        .env("HOME", client_home.path())
+        .env("RUNAI_USERNAME", &username)
+        .env("RUNAI_PASSWORD", password)
+        .env("RUNAI_NO_AUTOSPAWN", "1")
+        .env_remove("RUNE_DATA_DIR")
+        .env_remove("SKILL_MANAGER_DATA_DIR")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("run rendered install.sh a second time");
+    assert!(
+        output2.status.success(),
+        "second install.sh run failed:\nexit={}\nstdout=\n{}\nstderr=\n{}",
+        output2.status,
+        String::from_utf8_lossy(&output2.stdout),
+        String::from_utf8_lossy(&output2.stderr),
+    );
+    let settings_raw2 = std::fs::read_to_string(&settings_path).expect("read settings.json #2");
+    let settings_json2: serde_json::Value =
+        serde_json::from_str(&settings_raw2).expect("settings.json #2 is valid JSON");
+    let ups2 = settings_json2["hooks"]["UserPromptSubmit"]
+        .as_array()
+        .expect("UserPromptSubmit array #2");
+    let commands2: Vec<&str> = ups2
+        .iter()
+        .map(|g| g["hooks"][0]["command"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(
+        commands2
+            .iter()
+            .filter(|c| c.contains(".runai-hook.sh"))
+            .count(),
+        1,
+        "re-running install.sh must stay idempotent; got {commands2:?}"
+    );
+    assert!(!commands2.iter().any(|c| *c == "runai recommend"));
+}
