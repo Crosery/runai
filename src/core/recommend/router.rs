@@ -179,11 +179,16 @@ pub struct RouterDecision {
 /// the message. A prefix appearing mid-body is a real prompt quoting one, and
 /// must still route.
 pub(super) fn is_harness_message(prompt: &str) -> bool {
-    const HARNESS_PREFIXES: [&str; 4] = [
+    const HARNESS_PREFIXES: [&str; 5] = [
         "<task-notification>",
         "<agent-message",
         "<teammate-message",
         "<local-command-",
+        // The harness precedes teammate mail with a plain-text preamble, so
+        // the raw tag prefix never matches that traffic shape (observed live:
+        // all-day inter-agent chatter burned two LLM calls per message and
+        // rate-limited real prompts into the hook's 30s timeout).
+        "Another Claude session sent a message",
     ];
     let trimmed = prompt.trim();
     HARNESS_PREFIXES.iter().any(|p| trimmed.starts_with(p))

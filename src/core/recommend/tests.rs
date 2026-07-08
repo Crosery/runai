@@ -1186,11 +1186,16 @@ fn effective_api_key_prefers_config() {
 
 #[test]
 fn harness_messages_are_gated_by_leading_envelope() {
-    // All four host-injected envelopes gate.
+    // All host-injected envelopes gate.
     assert!(is_harness_message("<task-notification>queue drained"));
     assert!(is_harness_message("<agent-message from=planner>go"));
     assert!(is_harness_message("<teammate-message id=7>ping"));
     assert!(is_harness_message("<local-command-stdout>ok"));
+    // The live traffic shape: teammate mail arrives behind a plain-text
+    // preamble, not the bare tag.
+    assert!(is_harness_message(
+        "Another Claude session sent a message:\n<teammate-message teammate_id=\"x\">hi</teammate-message>"
+    ));
 }
 
 #[test]
