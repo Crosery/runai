@@ -125,14 +125,22 @@ impl Drop for ServerGuard {
     }
 }
 
-/// Plant a public skill so the router has a non-empty candidate set
-/// (otherwise `recommend_for_user` short-circuits and never writes a row).
+/// Plant a public skill so the router has a non-empty candidate set. The body
+/// packs every prompt this file queries with ("drawing" / "现在做点东西" /
+/// "帮我推荐一个技能" / routing-context terms) so the skill clears the BM25
+/// relevance cutoff — these tests exercise prompt-injection plumbing, not
+/// routing relevance, so the fixture must have term overlap with the prompt or
+/// `recommend_for_user` short-circuits before Stage-2 and never builds
+/// `llm_input`.
 fn write_public_skill(root: &Path, name: &str) {
     let dir = root.join(name);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
         dir.join("SKILL.md"),
-        format!("# {name}\n\ntest skill for prompts e2e\n"),
+        format!(
+            "# {name}\n\ntest skill for prompts e2e drawing routing project context switching \
+             现在做点东西 帮我推荐一个技能\n"
+        ),
     )
     .unwrap();
 }

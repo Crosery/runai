@@ -1011,7 +1011,11 @@ fn mock_llm_http_500_persists_error_router_event() {
     // error_msg. This is the cost-audit invariant — silent failures hide
     // crashes from the operator.
     let env = TestEnv::new();
-    env.plant_skill("doomed", "skill that will never be picked");
+    // Description overlaps the prompt so the skill survives the BM25 relevance
+    // cutoff and the request actually reaches Stage-2 — this test is about the
+    // Stage-2 HTTP-500 → status=error path, not the zero-candidate short-circuit
+    // (which lands status=ok before any Stage-2 call).
+    env.plant_skill("doomed", "trigger an error path when routing");
     std::fs::write(env.bootstrap_seen_path(), "1").unwrap();
 
     let mock = MockLlm::start(MockBehavior::InternalError);

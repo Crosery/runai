@@ -59,6 +59,17 @@ const BM25_MIN_QUERY_TERMS: usize = 1;
 /// optimisation, not a correctness gate.
 const BM25_MIN_POSITIVE_HITS: usize = 5;
 
+/// Reasoning stored on the decision (and surfaced in logs) when the relevance
+/// cutoff leaves zero candidates: Stage-1 ran but no installed skill shares any
+/// query-term overlap with the intent, so Stage-2 is skipped entirely. Kept as
+/// a recognizable literal so the dashboard can distinguish "router chose
+/// nothing" from "router never got to choose".
+const NO_RELEVANT_CANDIDATE_REASONING: &str = "无文本相关候选：BM25 检索零命中，跳过路由 LLM";
+/// Placeholder written to `router_events.llm_input` for a cutoff-skipped round.
+/// No Stage-2 prompt was ever built, so storing the full candidate listing here
+/// would be misleading (and there is none) — the whole point is the token save.
+const STAGE2_SKIPPED_LLM_INPUT: &str = "[stage-2 skipped: no BM25-relevant candidate]";
+
 // All router prompts and hook output templates live in src/core/prompts/ and
 // are exposed as `PROMPT_<NAME>` consts via the centralised registry
 // (`crate::core::prompts`). Edit the .md files to retune wording.
@@ -422,6 +433,14 @@ fn clean_intent_model_output(raw: &str, fallback: &str) -> String {
     out.chars().take(2000).collect::<String>()
 }
 
+fn provider_label(cfg: &RecommendConfig) -> String {
+    match cfg.provider {
+        Provider::OpenaiCompat => "openai-compat".into(),
+        Provider::Anthropic => "anthropic".into(),
+        Provider::ClaudeCli => "claude-cli".into(),
+    }
+}
+
 fn add_stats(a: &RouterCallStats, b: &RouterCallStats) -> RouterCallStats {
     RouterCallStats {
         prompt_tokens: a.prompt_tokens + b.prompt_tokens,
@@ -724,6 +743,13 @@ pub fn recommend_for_user_with_client(
     let bm25_pure = std::env::var("RUNAI_BM25_PURE").is_ok();
     let bm25_as_signal = std::env::var("RUNAI_BM25_AS_SIGNAL").is_ok();
     let bm25_hybrid = !bm25_pure && !bm25_as_signal && !bm25_disabled;
+    // Relevance cutoff: in the default hybrid mode a candidate reaches the
+    // router LLM only if it has real query-term overlap (raw BM25 > 0). Setting
+    // this env restores the legacy fill-to-`bm25_candidate_limit` behavior where
+    // the llm_score / feedback prior alone could float a zero-overlap skill into
+    // the prompt — kept as a regression-comparison escape hatch, named to match
+    // the existing `RUNAI_BM25_*` family.
+    let bm25_no_cutoff = std::env::var("RUNAI_BM25_NO_CUTOFF").is_ok();
 
     // Query expansion (opt-in): rewrite short prompts via the LLM into a
     // BM25-friendly keyword list before prefilter. Off by default —
@@ -902,9 +928,17 @@ pub fn recommend_for_user_with_client(
             // harder relevance signal than the enrich-pass `llm_score` alone.
             // Zero-history skills stay neutral (0.5), so this never penalises a
             // freshly-installed skill relative to the old two-signal formula.
+            // Relevance-first admission gate: a candidate is scored only when it
+            // has nonzero query-term overlap (present in `bm25_scores` ⇔ raw
+            // BM25 > 0). The llm_score / feedback prior may REORDER genuinely
+            // overlapping candidates but must never ADMIT a zero-overlap one —
+            // the ~0.33 baseline (llm/10*0.45 + feedback*0.20 at bm25=0) is
+            // exactly what let ~30 unrelated skills flood the prompt on a query
+            // no skill matched. `RUNAI_BM25_NO_CUTOFF=1` drops the gate.
             let mut scored: Vec<(usize, f64)> = all_candidates
                 .iter()
                 .enumerate()
+                .filter(|(_, r)| bm25_no_cutoff || bm25_scores.contains_key(&r.name))
                 .map(|(i, r)| {
                     let bm = bm25_scores.get(&r.name).copied().unwrap_or(0.0);
                     let index_key = Database::skill_ai_index_key_for_resource(r);
@@ -916,9 +950,11 @@ pub fn recommend_for_user_with_client(
                 })
                 .collect();
             scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-            // Drop trailing entries with zero BM25 + LLM default — they
-            // contribute no signal at all.
-            bm25_fallback_reason = "bm25-hybrid";
+            bm25_fallback_reason = if bm25_no_cutoff {
+                "bm25-hybrid-no-cutoff"
+            } else {
+                "bm25-hybrid"
+            };
             scored
                 .into_iter()
                 .take(bm25_candidate_limit)
@@ -956,6 +992,54 @@ pub fn recommend_for_user_with_client(
                 bm25_fallback_reason
             },
         );
+    }
+
+    // Relevance cutoff produced zero candidates: no installed skill shares any
+    // query-term overlap with the current intent. Skip the Stage-2 router LLM
+    // entirely — no call, no tokens — and record a normal telemetry row so the
+    // dashboard shows the skipped round. Stage-1 already ran and its compact
+    // intent was appended to memory above, so intent recall is unaffected.
+    if candidates.is_empty() {
+        let decision = RouterDecision {
+            mode: RouterMode::Exclusive,
+            reasoning: NO_RELEVANT_CANDIDATE_REASONING.to_string(),
+            skills: Vec::new(),
+        };
+        let ev = RouterEvent {
+            id: None,
+            ts: chrono::Utc::now().timestamp(),
+            provider: provider_label(&cfg),
+            model: cfg.model.clone(),
+            // Stage-1 tokens only; Stage-2 never ran.
+            prompt_tokens: intent_stats.prompt_tokens,
+            completion_tokens: intent_stats.completion_tokens,
+            reasoning_tokens: intent_stats.reasoning_tokens,
+            total_tokens: intent_stats.total_tokens,
+            cache_hit_tokens: intent_stats.cache_hit_tokens,
+            cache_miss_tokens: intent_stats.cache_miss_tokens,
+            latency_ms: 0,
+            chosen_skills_json: "[]".to_string(),
+            candidate_count: all_candidates_count as i64,
+            status: "ok".to_string(),
+            error_msg: None,
+            session_id: session_id.unwrap_or("").to_string(),
+            mode: RouterMode::Exclusive.as_str().to_string(),
+            user_prompt: user_prompt.to_string(),
+            cwd: cwd.unwrap_or("").to_string(),
+            bm25_kept: 0,
+            llm_raw_response: String::new(),
+            hook_output: String::new(),
+            llm_input: STAGE2_SKIPPED_LLM_INPUT.to_string(),
+            intent_llm_input,
+            intent_llm_output: intent_summary.clone(),
+            intent_status,
+            intent_error_msg,
+            bm25_candidates_json: "[]".to_string(),
+            user_id: user_id.map(|s| s.to_string()),
+        };
+        let _ = mgr.db().insert_router_event(&ev);
+        write_last_recommend(mgr.paths(), &decision);
+        return Ok(decision);
     }
 
     let bm25_candidate_names: Vec<String> = candidates.iter().map(|r| r.name.clone()).collect();
@@ -1176,11 +1260,7 @@ pub fn recommend_for_user_with_client(
     let ev = RouterEvent {
         id: None,
         ts: chrono::Utc::now().timestamp(),
-        provider: match cfg.provider {
-            Provider::OpenaiCompat => "openai-compat".into(),
-            Provider::Anthropic => "anthropic".into(),
-            Provider::ClaudeCli => "claude-cli".into(),
-        },
+        provider: provider_label(&cfg),
         model: cfg.model.clone(),
         prompt_tokens: stats.prompt_tokens,
         completion_tokens: stats.completion_tokens,
