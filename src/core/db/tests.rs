@@ -18,6 +18,33 @@ fn migration_creates_schema_version() {
 }
 
 #[test]
+fn reopening_same_db_file_stays_fully_migrated_and_usable() {
+    // The dashboard opens one connection PER REQUEST; migration is now run
+    // once per (process, file) and skipped on later opens. A second open of
+    // the same file must still expose the fully-migrated schema and read/write
+    // correctly (the skip must not leave a connection on a stale view).
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("test.db");
+    let first = Database::open(&path).unwrap();
+    assert_eq!(first.schema_version(), 26);
+    drop(first);
+
+    let second = Database::open(&path).unwrap();
+    assert_eq!(second.schema_version(), 26);
+    // A v26 table must be queryable through the migration-skipped connection.
+    let n: i64 = second
+        .conn
+        .query_row("SELECT COUNT(*) FROM skill_feedback", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 0);
+    second
+        .record_skill_feedback(1, "alpha", None, None, None, None, 1, None)
+        .unwrap();
+    let (pos, neg) = second.skill_feedback_counts("alpha", None).unwrap();
+    assert_eq!((pos, neg), (1, 0));
+}
+
+#[test]
 fn router_intent_memory_appends_and_drops_oldest() {
     let tmp = tempfile::tempdir().unwrap();
     let db = Database::open(&tmp.path().join("test.db")).unwrap();
