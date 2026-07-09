@@ -196,6 +196,8 @@ fn build_macos_plist(exe: &std::path::Path, host: &str, port: u16, mode: ServerM
   <true/>
   <key>KeepAlive</key>
   <true/>
+  <key>ProcessType</key>
+  <string>Interactive</string>
   <key>StandardOutPath</key>
   <string>/tmp/runai-server.out</string>
   <key>StandardErrorPath</key>
@@ -337,6 +339,12 @@ mod tests {
         assert!(plist.contains("RUNAI_NO_AUTOSPAWN"));
         assert!(plist.contains("<string>--mode</string>"));
         assert!(plist.contains("<string>owner</string>"));
+        // The dashboard is user-facing: without ProcessType=Interactive,
+        // launchd files the agent under background QoS and macOS starves it
+        // after idle periods on a loaded machine (first requests crawl for
+        // tens of seconds, then speed up once promoted).
+        assert!(plist.contains("<key>ProcessType</key>"));
+        assert!(plist.contains("<string>Interactive</string>"));
     }
 
     #[cfg(target_os = "macos")]
