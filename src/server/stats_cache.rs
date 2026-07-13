@@ -141,13 +141,13 @@ fn compute_and_store(
     since_ts: i64,
 ) -> anyhow::Result<RouterAndFeedbackStats> {
     #[cfg(test)]
-    std::thread::sleep(test_hooks::slowdown());
+    std::thread::sleep(test_hooks::slowdown(db_path));
 
     let router_stats = db.skill_router_stats(since_ts)?;
     let feedback_all = db.skill_feedback_counts_all()?;
 
     #[cfg(test)]
-    test_hooks::record_compute_call();
+    test_hooks::record_compute_call(db_path);
 
     registry().lock().unwrap_or_else(|e| e.into_inner()).insert(
         db_path.to_path_buf(),
@@ -238,54 +238,95 @@ fn force_stale(db_path: &Path) {
 
 #[cfg(test)]
 mod test_hooks {
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
     use std::sync::{Mutex, OnceLock};
     use std::time::Duration;
 
-    static SLOWDOWN_MS: OnceLock<Mutex<u64>> = OnceLock::new();
-    static COMPUTE_CALLS: OnceLock<AtomicU64> = OnceLock::new();
+    static SLOWDOWN_MS: OnceLock<Mutex<HashMap<PathBuf, u64>>> = OnceLock::new();
+    static COMPUTE_CALLS: OnceLock<Mutex<HashMap<PathBuf, u64>>> = OnceLock::new();
 
     /// Make every `compute_and_store` call (sync AND background-thread)
     /// sleep this long before touching the DB, so tests can prove a caller
     /// returned WITHOUT waiting for a slow recompute.
-    pub(super) fn set_slowdown_ms(ms: u64) {
-        *SLOWDOWN_MS
-            .get_or_init(|| Mutex::new(0))
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = ms;
-    }
-
-    pub(super) fn slowdown() -> Duration {
-        let ms = *SLOWDOWN_MS
-            .get_or_init(|| Mutex::new(0))
+    pub(super) fn set_slowdown_ms(db_path: &Path, ms: u64) {
+        let mut slowdown = SLOWDOWN_MS
+            .get_or_init(|| Mutex::new(HashMap::new()))
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        if ms == 0 {
+            slowdown.remove(db_path);
+        } else {
+            slowdown.insert(db_path.to_path_buf(), ms);
+        }
+    }
+
+    pub(super) fn slowdown(db_path: &Path) -> Duration {
+        let ms = SLOWDOWN_MS
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(db_path)
+            .copied()
+            .unwrap_or(0);
         Duration::from_millis(ms)
     }
 
-    pub(super) fn record_compute_call() {
-        COMPUTE_CALLS
-            .get_or_init(|| AtomicU64::new(0))
-            .fetch_add(1, Ordering::SeqCst);
+    pub(super) fn record_compute_call(db_path: &Path) {
+        let mut calls = COMPUTE_CALLS
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        *calls.entry(db_path.to_path_buf()).or_insert(0) += 1;
     }
 
-    pub(super) fn compute_calls() -> u64 {
+    pub(super) fn compute_calls(db_path: &Path) -> u64 {
         COMPUTE_CALLS
-            .get_or_init(|| AtomicU64::new(0))
-            .load(Ordering::SeqCst)
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(db_path)
+            .copied()
+            .unwrap_or(0)
     }
 
-    pub(super) fn reset() {
-        set_slowdown_ms(0);
+    pub(super) fn reset(db_path: &Path) {
+        set_slowdown_ms(db_path, 0);
         COMPUTE_CALLS
-            .get_or_init(|| AtomicU64::new(0))
-            .store(0, Ordering::SeqCst);
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(db_path);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_hooks_are_scoped_by_db_path() {
+        let root = tempfile::tempdir().unwrap();
+        let path_a = root.path().join("hook-a.db");
+        let path_b = root.path().join("hook-b.db");
+
+        test_hooks::reset(&path_a);
+        test_hooks::reset(&path_b);
+        test_hooks::set_slowdown_ms(&path_a, 25);
+        test_hooks::record_compute_call(&path_a);
+        test_hooks::record_compute_call(&path_a);
+        test_hooks::record_compute_call(&path_b);
+
+        assert_eq!(test_hooks::slowdown(&path_a).as_millis(), 25);
+        assert_eq!(test_hooks::slowdown(&path_b).as_millis(), 0);
+        assert_eq!(test_hooks::compute_calls(&path_a), 2);
+        assert_eq!(test_hooks::compute_calls(&path_b), 1);
+
+        test_hooks::reset(&path_a);
+        assert_eq!(test_hooks::compute_calls(&path_a), 0);
+        assert_eq!(test_hooks::compute_calls(&path_b), 1);
+        test_hooks::reset(&path_b);
+    }
 
     #[test]
     fn second_call_within_ttl_returns_the_stale_snapshot() {
@@ -376,9 +417,9 @@ mod tests {
 
     #[test]
     fn expired_snapshot_returns_immediately_and_refreshes_in_background() {
-        test_hooks::reset();
         let tmp = tempfile::tempdir().unwrap();
         let db_path = tmp.path().join("swr_test.db");
+        test_hooks::reset(&db_path);
         let db = Database::open(&db_path).unwrap();
         db.record_skill_feedback(1, "swr-skill", None, None, None, None, 1, None)
             .unwrap();
@@ -394,7 +435,7 @@ mod tests {
 
         // Make the recompute artificially slow so a synchronous call would
         // provably block for at least this long.
-        test_hooks::set_slowdown_ms(300);
+        test_hooks::set_slowdown_ms(&db_path, 300);
 
         let start = Instant::now();
         let (_, fb2) = router_and_feedback_stats(&db, &db_path, 0).unwrap();
@@ -421,24 +462,24 @@ mod tests {
             refreshed,
             "background refresh must eventually update the cache to the fresh count"
         );
-        test_hooks::reset();
+        test_hooks::reset(&db_path);
     }
 
     #[test]
     fn concurrent_expired_calls_dedupe_to_one_background_refresh() {
-        test_hooks::reset();
         let tmp = tempfile::tempdir().unwrap();
         let db_path = tmp.path().join("swr_dedupe_test.db");
+        test_hooks::reset(&db_path);
         let db = Database::open(&db_path).unwrap();
         db.record_skill_feedback(1, "dedupe-skill", None, None, None, None, 1, None)
             .unwrap();
 
         let _ = router_and_feedback_stats(&db, &db_path, 0).unwrap();
         // One compute call so far (the priming call above).
-        assert_eq!(test_hooks::compute_calls(), 1);
+        assert_eq!(test_hooks::compute_calls(&db_path), 1);
 
         force_stale(&db_path);
-        test_hooks::set_slowdown_ms(200);
+        test_hooks::set_slowdown_ms(&db_path, 200);
 
         // Two calls in quick succession while the entry is expired: both
         // must return the stale snapshot immediately, and only ONE of them
@@ -452,17 +493,17 @@ mod tests {
         // the total compute-call count is exactly 2 (prime + one refresh),
         // never 3 — a second background thread would double-count.
         wait_until(std::time::Duration::from_secs(3), || {
-            test_hooks::compute_calls() >= 2
+            test_hooks::compute_calls(&db_path) >= 2
         });
         // Settle briefly past the slowdown window so a wrongly-spawned
         // second refresh (if any) has had time to also complete and bump
         // the counter, so we're not just catching the race mid-flight.
         std::thread::sleep(std::time::Duration::from_millis(250));
         assert_eq!(
-            test_hooks::compute_calls(),
+            test_hooks::compute_calls(&db_path),
             2,
             "two callers racing an expired snapshot must share ONE background refresh"
         );
-        test_hooks::reset();
+        test_hooks::reset(&db_path);
     }
 }
