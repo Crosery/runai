@@ -31,7 +31,9 @@ fn payload_str(payload: &serde_json::Value, key: &str) -> String {
 /// POST /recommend — runai's remote skill router.
 ///
 /// Body: hook JSON (fields used: `prompt`, `session_id`, `runai_session_id`,
-/// `client_kind`, `cwd`, `transcript_path`).
+/// `client_kind`, `cwd`, `transcript_path`). A request with a non-empty
+/// `query` uses the bounded presentation index and returns JSON without an
+/// LLM call; the original `prompt` protocol remains unchanged.
 ///
 /// Optional `X-Runai-User: {user}@{host}` header scopes the native session key
 /// before deriving the opaque `rnai_sess_*` id, so multiple teammates' sessions
@@ -78,6 +80,69 @@ pub(super) async fn handle_recommend(
         return ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], "").into_response();
     }
 
+    let query = payload_str(&payload, "query");
+    if !query.is_empty() {
+        let query_for_index = query.clone();
+        let payload_for_index = payload.clone();
+        let bearer_hash_for_index = bearer_hash.clone();
+        let user_prefix_for_index = user_prefix.clone();
+        let join = tokio::task::spawn_blocking(
+            move || -> Result<Option<(Vec<QuickCandidate>, Option<String>)>> {
+                let mgr = SkillManager::new()?;
+                let user_id_opt = match bearer_hash_for_index.as_deref() {
+                    Some(hash) => match mgr.db().find_user_by_api_key_hash(hash).ok().flatten() {
+                        Some(user) if !user.disabled => Some(user.user_id),
+                        _ => return Ok(None),
+                    },
+                    None => None,
+                };
+                let host_kind = payload_host_kind(&payload_for_index);
+                let native_sid = payload_native_session_id(&payload_for_index);
+                let runai_session_id = scoped_runai_session_id(
+                    user_id_opt.as_deref(),
+                    &user_prefix_for_index,
+                    &host_kind,
+                    &native_sid,
+                );
+                let resources = query_resources_for_user(&mgr, user_id_opt.as_deref())?;
+                let entries = resources
+                    .iter()
+                    .map(|resource| (resource.name.as_str(), resource.description.as_str()))
+                    .collect::<Vec<_>>();
+                Ok(Some((
+                    quick_candidates_from_entries(&query_for_index, &entries),
+                    runai_session_id,
+                )))
+            },
+        )
+        .await;
+        let result = match join {
+            Ok(Ok(result)) => result,
+            Ok(Err(error)) => {
+                eprintln!("/recommend query index failed: {error:#}");
+                Some((Vec::new(), None))
+            }
+            Err(error) => {
+                eprintln!("/recommend query index join failed: {error}");
+                Some((Vec::new(), None))
+            }
+        };
+        let Some((candidates, runai_session_id)) = result else {
+            return ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], "").into_response();
+        };
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "protocol": "runai-recommend-query-v1",
+                "query": query,
+                "router": "deterministic-local-index",
+                "runai_session_id": runai_session_id,
+                "candidates": candidates,
+            })),
+        )
+            .into_response();
+    }
+
     // recommend() is blocking (reqwest::blocking + rusqlite). Hop onto a
     // blocking thread so the async runtime stays responsive.
     let join = tokio::task::spawn_blocking(move || -> Result<String> {
@@ -100,31 +165,14 @@ pub(super) async fn handle_recommend(
         }
         let cwd = payload_str(&payload, "cwd");
         let transcript = payload_str(&payload, "transcript_path");
-        let mut native_sid = payload_str(&payload, "runai_session_id");
-        if native_sid.is_empty() {
-            native_sid = payload_str(&payload, "session_id");
-        }
-        let mut host_kind = payload_str(&payload, "client_kind");
-        if host_kind.is_empty() {
-            host_kind = payload_str(&payload, "host_kind");
-        }
-
-        // The host-native session key is scoped before hashing so two
-        // teammates or host integrations cannot collide in router memory.
-        let sid_scope = match (
+        let native_sid = payload_native_session_id(&payload);
+        let host_kind = payload_host_kind(&payload);
+        let sid_string = scoped_runai_session_id(
             user_id_opt.as_deref(),
-            user_prefix.is_empty(),
-            host_kind.is_empty(),
-        ) {
-            (Some(uid), _, false) => format!("user:{uid}:host:{host_kind}"),
-            (Some(uid), _, true) => format!("user:{uid}"),
-            (None, false, false) => format!("header:{user_prefix}:host:{host_kind}"),
-            (None, false, true) => format!("header:{user_prefix}"),
-            (None, true, false) => format!("anon:host:{host_kind}"),
-            (None, true, true) => "anon".to_string(),
-        };
-        let sid_string =
-            crate::core::recommend::runai_session_id_from_native(Some(&sid_scope), &native_sid);
+            &user_prefix,
+            &host_kind,
+            &native_sid,
+        );
 
         let tpath_pb = if transcript.is_empty() {
             None
@@ -196,6 +244,158 @@ pub(super) async fn handle_recommend(
         }
     };
     ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], body).into_response()
+}
+
+fn payload_native_session_id(payload: &serde_json::Value) -> String {
+    let runai_session_id = payload_str(payload, "runai_session_id");
+    if runai_session_id.is_empty() {
+        payload_str(payload, "session_id")
+    } else {
+        runai_session_id
+    }
+}
+
+fn payload_host_kind(payload: &serde_json::Value) -> String {
+    let client_kind = payload_str(payload, "client_kind");
+    if client_kind.is_empty() {
+        payload_str(payload, "host_kind")
+    } else {
+        client_kind
+    }
+}
+
+fn scoped_runai_session_id(
+    user_id: Option<&str>,
+    user_prefix: &str,
+    host_kind: &str,
+    native_session_id: &str,
+) -> Option<String> {
+    let scope = match (user_id, user_prefix.is_empty(), host_kind.is_empty()) {
+        (Some(uid), _, false) => format!("user:{uid}:host:{host_kind}"),
+        (Some(uid), _, true) => format!("user:{uid}"),
+        (None, false, false) => format!("header:{user_prefix}:host:{host_kind}"),
+        (None, false, true) => format!("header:{user_prefix}"),
+        (None, true, false) => format!("anon:host:{host_kind}"),
+        (None, true, true) => "anon".to_string(),
+    };
+    crate::core::recommend::runai_session_id_from_native(Some(&scope), native_session_id)
+}
+
+fn query_resources_for_user(
+    mgr: &SkillManager,
+    user_id: Option<&str>,
+) -> Result<Vec<crate::core::resource::Resource>> {
+    use crate::core::prefs::UserPrefs;
+    use crate::core::resource::ResourceKind;
+    use std::collections::{BTreeSet, HashSet};
+
+    let db = mgr.db();
+    let mut resources = match user_id {
+        Some(uid) => {
+            let prefs = db
+                .find_user_by_id(uid)?
+                .map(|user| UserPrefs::from_json_str(&user.prefs_json))
+                .unwrap_or_default();
+            if !prefs.recommend_enabled {
+                return Ok(Vec::new());
+            }
+            let visible = db.list_resources_for_user(Some(ResourceKind::Skill), Some(uid))?;
+            if prefs.allow_public_recommend {
+                visible
+            } else {
+                let library = db.library_list(uid)?.into_iter().collect::<BTreeSet<_>>();
+                visible
+                    .into_iter()
+                    .filter(|resource| {
+                        resource.owner_user_id.as_deref() == Some(uid)
+                            || library.contains(&resource.name)
+                    })
+                    .collect()
+            }
+        }
+        None => db.list_resources_for_user(Some(ResourceKind::Skill), None)?,
+    };
+
+    resources.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then_with(|| {
+                right
+                    .owner_user_id
+                    .is_some()
+                    .cmp(&left.owner_user_id.is_some())
+            })
+            .then_with(|| right.installed_at.cmp(&left.installed_at))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    let mut seen = HashSet::new();
+    resources.retain(|resource| seen.insert(resource.name.clone()));
+    Ok(resources)
+}
+
+#[derive(Serialize)]
+struct QuickCandidate {
+    name: String,
+    description: String,
+}
+
+/// Bounded deterministic compatibility lane. General routing remains on the
+/// existing `prompt` protocol so this path never turns every Pi prompt into an
+/// LLM-blocking request.
+fn quick_candidates_from_entries(query: &str, entries: &[(&str, &str)]) -> Vec<QuickCandidate> {
+    let query = query.to_lowercase();
+    let presentation_query = [
+        "ppt",
+        "powerpoint",
+        "presentation",
+        "slide",
+        "deck",
+        "演示",
+        "幻灯",
+    ]
+    .iter()
+    .any(|term| query.contains(term));
+    if !presentation_query {
+        return Vec::new();
+    }
+
+    let mut scored = entries
+        .iter()
+        .filter_map(|(name, description)| {
+            let name_lower = name.to_lowercase();
+            let haystack = format!("{name_lower} {}", description.to_lowercase());
+            let score = [
+                "ppt",
+                "powerpoint",
+                "presentation",
+                "slide",
+                "deck",
+                "演示",
+                "幻灯",
+            ]
+            .iter()
+            .enumerate()
+            .filter_map(|(index, term)| {
+                if name_lower.contains(term) {
+                    Some(200 - index as i32)
+                } else {
+                    haystack.contains(term).then_some(100 - index as i32)
+                }
+            })
+            .max()
+            .unwrap_or(0);
+            (score > 0).then(|| (score, name, description))
+        })
+        .collect::<Vec<_>>();
+    scored.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(right.1)));
+    scored
+        .into_iter()
+        .take(3)
+        .map(|(_, name, description)| QuickCandidate {
+            name: name.to_string(),
+            description: description.to_string(),
+        })
+        .collect()
 }
 
 /// Reconstruct the server URL clients should use. Strategy:
@@ -630,5 +830,29 @@ pub(super) async fn handle_feedback(
             )
                 .into_response()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::quick_candidates_from_entries;
+
+    #[test]
+    fn query_compatibility_lane_is_presentation_only_and_ranked() {
+        let entries = [
+            ("article-writing", "Write long-form articles"),
+            ("pptx", "Presentation creation and analysis"),
+            ("slide-making-skill", "Implement PowerPoint slides"),
+            ("browser-qa", "Browser checks"),
+        ];
+
+        let candidates =
+            quick_candidates_from_entries("制作一份中文自我介绍 PPT 演示文稿", &entries);
+        let names = candidates
+            .into_iter()
+            .map(|candidate| candidate.name)
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["pptx", "slide-making-skill"]);
+        assert!(quick_candidates_from_entries("修复一个 Rust 编译错误", &entries).is_empty());
     }
 }
