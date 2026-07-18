@@ -559,14 +559,6 @@ fn openai_response(content: &str) -> String {
     )
 }
 
-fn intent_summary_from_llm_input(input: &str) -> &str {
-    input
-        .split("```text")
-        .nth(1)
-        .and_then(|s| s.split("```").next())
-        .unwrap_or("")
-}
-
 fn plant_android_debug_fixture(env: &TestEnv) {
     env.plant_skill(
         "android-cli",
@@ -758,9 +750,7 @@ fn stdin_json_client_kind_cwd_and_session_memory_feed_router_input() {
     std::fs::write(env.bootstrap_seen_path(), "1").unwrap();
 
     let mock = MockLlm::start(MockBehavior::Sequence(&[
-        "intent: first compact alpha intent\ninclude_terms: alpha, runai intent memory",
         "EXCLUSIVE\nreasoning: matches the current intent\nalpha-skill\n",
-        "intent: second compact alpha intent with prior context\ninclude_terms: alpha, second turn",
         "EXCLUSIVE\nreasoning: matches the current intent\nalpha-skill\n",
     ]));
     enable_recommend_config(&env, mock.base_url());
@@ -797,40 +787,21 @@ fn stdin_json_client_kind_cwd_and_session_memory_feed_router_input() {
     assert_eq!(statuses, vec!["ok".to_string(), "ok".to_string()]);
 
     let memories = env.router_intent_memories();
-    assert_eq!(
-        memories,
-        vec![
-            "intent: first compact alpha intent include_terms: alpha, runai intent memory".to_string(),
-            "intent: second compact alpha intent with prior context include_terms: alpha, second turn".to_string(),
-        ]
-    );
+    assert_eq!(memories.len(), 2);
+    assert!(!memories[0].is_empty(), "memories={memories:?}");
+    assert!(!memories[1].is_empty(), "memories={memories:?}");
+    assert!(memories[1].contains("session_memory"));
 
     let inputs = env.router_llm_inputs();
     assert_eq!(inputs.len(), 2);
     let stage_fields = env.router_stage_fields();
     assert_eq!(stage_fields.len(), 2);
-    assert!(stage_fields[1].0.contains("agent_cli"));
-    assert!(stage_fields[1].0.contains("codex"));
-    assert!(
-        stage_fields[1]
-            .0
-            .contains(cwd.display().to_string().as_str())
-    );
-    assert!(stage_fields[1].0.contains("first compact alpha intent"));
-    assert!(
-        !stage_fields[1]
-            .0
-            .contains("first runai intent memory alpha\n"),
-        "stage-1 memory must contain compact intent, not raw previous prompt"
-    );
+    assert!(stage_fields.iter().all(|fields| fields.0.is_empty()));
+    assert!(stage_fields.iter().all(|fields| fields.2 == "skipped-fast"));
     let second = &inputs[1];
-    assert!(second.contains("## 意图摘要（第一波已提炼，精排依据）"));
-    assert!(second.contains("second compact alpha intent"));
-    assert!(second.contains("默认 30 个 skill 候选"));
-    assert!(
-        !second.contains("first compact alpha intent"),
-        "second-wave router input should use the current compact intent; prior memory is visible in first-wave input"
-    );
+    assert!(second.contains("## 当前任务锚点"));
+    assert!(second.contains("second turn keeps alpha context"));
+    assert!(second.contains("最多 30 个"));
     assert!(!second.contains("CLAUDE_SESSION_ID"));
 }
 
@@ -841,7 +812,6 @@ fn mock_llm_android_emulator_does_not_emit_ktv_candidate() {
     std::fs::write(env.bootstrap_seen_path(), "1").unwrap();
 
     let mock = MockLlm::start(MockBehavior::Sequence(&[
-        "intent: 调试 Android 模拟器，关注 adb/logcat/emulator/AVD；非 KTV/车机/WebView/H5 场景\ninclude_terms: Android, adb, logcat, emulator, AVD, 模拟器\nexclude_terms: KTV, 车机, WebView, H5",
         "COMPATIBLE\nreasoning: mock deliberately returns every candidate\nandroid-cli\nemulator-launch\nktv-car-debug-suite\n",
     ]));
     enable_recommend_config(&env, mock.base_url());
@@ -862,10 +832,10 @@ fn mock_llm_android_emulator_does_not_emit_ktv_candidate() {
 
     let inputs = env.router_llm_inputs();
     assert_eq!(inputs.len(), 1);
-    assert!(inputs[0].contains("- android-cli"));
-    assert!(inputs[0].contains("- emulator-launch"));
+    assert!(inputs[0].contains("| android-cli"));
+    assert!(inputs[0].contains("| emulator-launch"));
     assert!(
-        !inputs[0].contains("- ktv-car-debug-suite"),
+        !inputs[0].contains("| ktv-car-debug-suite"),
         "KTV candidate must be filtered before LLM input: {}",
         inputs[0]
     );
@@ -883,7 +853,6 @@ fn image_regeneration_reference_prompt_uses_compressed_intent_and_single_direct_
     std::fs::write(env.bootstrap_seen_path(), "1").unwrap();
 
     let mock = MockLlm::start(MockBehavior::Sequence(&[
-        "intent: 重新生成图片；必须使用搭子形象参考图；保持角色一致；水彩风格；reference image / img2img\ninclude_terms: 参考图, 搭子形象, 图生图, 角色一致, 水彩风格\nexclude_terms: 视频生成, 用户访谈",
         "EXCLUSIVE\nreasoning: mock returns multiple image alternatives\ngenerate-image\nmmx-cli\nimagegen\ninterview-script\n",
     ]));
     enable_recommend_config(&env, mock.base_url());
@@ -906,37 +875,23 @@ fn image_regeneration_reference_prompt_uses_compressed_intent_and_single_direct_
     let stage_fields = env.router_stage_fields();
     assert_eq!(stage_fields.len(), 1);
     let (intent_input, intent_output, intent_status, bm25_candidates_json) = &stage_fields[0];
-    // Static instructions (e.g. "第一波") now live in the FIXED Stage-1 system
-    // prompt, not the stored user message. The stored intent_llm_input is the
-    // minimal dynamic user message: it carries the "当前用户输入：" marker and
-    // the raw prompt, but none of the static template body.
-    assert!(intent_input.contains("当前用户输入"), "{intent_input}");
-    assert!(!intent_input.contains("第一波"), "{intent_input}");
-    assert!(intent_input.contains("没有用搭子形象"), "{intent_input}");
-    assert_eq!(intent_status, "ok");
-    assert!(intent_output.contains("重新生成图片"), "{intent_output}");
-    assert!(intent_output.contains("搭子形象参考图"), "{intent_output}");
+    assert!(intent_input.is_empty());
+    assert_eq!(intent_status, "skipped-fast");
+    assert!(
+        intent_output.contains("image-generation"),
+        "{intent_output}"
+    );
+    assert!(intent_output.contains("参考图"), "{intent_output}");
 
-    let intent_summary = intent_summary_from_llm_input(&inputs[0]);
-    assert!(intent_summary.contains("重新生成图片"), "{intent_summary}");
+    assert!(inputs[0].contains("当前任务锚点"));
+    assert!(inputs[0].contains("没有用搭子形象的参考图啊你这个，重新生成"));
+    assert!(inputs[0].contains("image-generation"));
+    assert!(inputs[0].contains("角色一致"));
+    assert!(inputs[0].contains("| generate-image"));
+    assert!(inputs[0].contains("| mmx-cli"));
+    assert!(inputs[0].contains("| imagegen"));
     assert!(
-        intent_summary.contains("搭子形象参考图"),
-        "{intent_summary}"
-    );
-    assert!(intent_summary.contains("角色一致"), "{intent_summary}");
-    assert!(
-        intent_summary.contains("reference image"),
-        "{intent_summary}"
-    );
-    assert!(
-        !intent_summary.contains("没有用搭子形象的参考图啊你这个，重新生成"),
-        "BM25 intent summary must not copy the complaint verbatim: {intent_summary}"
-    );
-    assert!(inputs[0].contains("- generate-image"));
-    assert!(inputs[0].contains("- mmx-cli"));
-    assert!(inputs[0].contains("- imagegen"));
-    assert!(
-        !inputs[0].contains("- interview-script"),
+        !inputs[0].contains("| interview-script"),
         "non-image product research skill must be gated before LLM input: {}",
         inputs[0]
     );
@@ -974,7 +929,6 @@ fn mock_llm_ktv_webview_emulator_can_emit_ktv_candidate() {
     std::fs::write(env.bootstrap_seen_path(), "1").unwrap();
 
     let mock = MockLlm::start(MockBehavior::Sequence(&[
-        "intent: 调试 KTV/车机 WebView/H5 的 Android 模拟器问题\ninclude_terms: KTV, 车机, WebView, H5, android, emulator\ndomain_tags: ktv, vehicle, webview, h5",
         "COMPATIBLE\nreasoning: KTV vehicle WebView emulator workflow\nktv-car-debug-suite\nandroid-cli\nemulator-launch\n",
     ]));
     enable_recommend_config(&env, mock.base_url());
@@ -996,7 +950,7 @@ fn mock_llm_ktv_webview_emulator_can_emit_ktv_candidate() {
     let inputs = env.router_llm_inputs();
     assert_eq!(inputs.len(), 1);
     assert!(
-        inputs[0].contains("- ktv-car-debug-suite"),
+        inputs[0].contains("| ktv-car-debug-suite"),
         "KTV candidate must remain visible for KTV/WebView prompts: {}",
         inputs[0]
     );
@@ -1150,7 +1104,7 @@ fn seeded_adoption_and_feedback_render_markers_in_router_input() {
     // candidate and must show both markers on its candidate line.
     let inputs = env.router_llm_inputs();
     assert!(
-        inputs.iter().any(|i| i.contains("- alpha-skill")
+        inputs.iter().any(|i| i.contains("| alpha-skill")
             && i.contains("[adopt:75%]")
             && i.contains("[fb:+2/-1]")),
         "stage-2 router input must carry adopt/feedback markers, got: {inputs:?}"

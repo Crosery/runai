@@ -221,7 +221,9 @@
       <div>${intentStatus}</div>
       <div class="section-label">第一波：意图识别 LLM 输入</div>
       <div class="prompt-block">${e.intent_llm_input ? escapeHTML(e.intent_llm_input) : '<span class="dim">(legacy row · schema v25 之后的事件才有)</span>'}</div>
-      <div class="section-label">第一波：压缩后的 BM25 检索意图</div>
+      <div class="section-label">第一波：原始模型输出</div>
+      <div class="prompt-block">${e.intent_llm_raw_output ? escapeHTML(e.intent_llm_raw_output) : '<span class="dim">(Fast / legacy row)</span>'}</div>
+      <div class="section-label">第一波：清洗后的检索意图</div>
       <div class="prompt-block">${e.intent_llm_output ? escapeHTML(e.intent_llm_output) : '<span class="dim">(legacy row)</span>'}</div>
       <div class="section-label">第一波：BM25 候选</div>
       <div>${bm25CandidateChips}</div>

@@ -269,14 +269,7 @@ fn anonymous_router_event_count(mgr: &SkillManager) -> usize {
 }
 
 fn llm_candidate_line_count(input: &str) -> usize {
-    input
-        .split("候选 skill:\n")
-        .nth(1)
-        .and_then(|tail| tail.split("\n\n---").next())
-        .unwrap_or("")
-        .lines()
-        .filter(|line| line.starts_with("- "))
-        .count()
+    input.lines().filter(|line| line.starts_with('C')).count()
 }
 
 fn run_cli_recommend_with_home(home: &Path, data_dir: &Path, hook_json: serde_json::Value) {
@@ -334,7 +327,7 @@ fn user_a_off_strips_history_block_user_b_on_keeps_it() {
     write_public_skill(&paths.skills_dir(), "beta");
     mgr.register_local_skill("beta").unwrap();
 
-    // A: history off; B: defaults (history on).
+    // A: Fast + history off; B: Precise + history on.
     let mut a_prefs = UserPrefs {
         allow_public_recommend: true,
         ..Default::default()
@@ -344,6 +337,7 @@ fn user_a_off_strips_history_block_user_b_on_keeps_it() {
         .insert("recommend_history_prefix".into(), false);
     let b_prefs = UserPrefs {
         allow_public_recommend: true,
+        routing_mode: runai::core::prefs::RoutingMode::Precise,
         ..Default::default()
     };
     let a_uid = make_user(&mgr, "alice", &a_prefs);
@@ -506,12 +500,9 @@ fn unauthenticated_request_uses_defaults_and_does_not_read_user_prefs() {
     );
 
     let anon_input = latest_llm_input(&mgr, None);
-    // Defaults are ON for every toggleable block — each marker present.
-    // (recommend_already_routed was removed with session no-repeat.)
-    assert!(
-        anon_input.contains(HISTORY_MARKER),
-        "unauth: history block must be present (default ON): {anon_input}"
-    );
+    // Anonymous defaults to Fast, so the large transcript block stays absent
+    // even though the user's stored toggle is irrelevant.
+    assert!(!anon_input.contains(HISTORY_MARKER));
     assert!(
         anon_input.contains(CWD_MARKER),
         "unauth: cwd block must be present (default ON): {anon_input}"

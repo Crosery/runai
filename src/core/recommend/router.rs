@@ -249,6 +249,48 @@ pub(super) fn is_harness_message(prompt: &str) -> bool {
 /// `bm25_norm` and `llm_val` are already normalised to `0..1`;
 /// `feedback_factor` is the `0..1` scalar from `skill_metrics::feedback_factor`
 /// (neutral 0.5 when a skill has no adoption / rating history).
+pub(super) fn action_form_match(query: &str, candidate: &str) -> bool {
+    const FAMILIES: &[&[&str]] = &[
+        &[
+            "message",
+            "messaging",
+            "instant message",
+            "send message",
+            "消息",
+            "即时通讯",
+            "发消息",
+            "发送消息",
+            "飞书",
+        ],
+        &[
+            "browse",
+            "browser",
+            "web navigation",
+            "网页浏览",
+            "浏览网页",
+        ],
+        &["remember", "memory", "long-term memory", "记忆", "长期记忆"],
+        &["handoff", "delegate", "transfer task", "移交", "转交"],
+        &["migrate", "migration", "迁移"],
+        &["research", "investigate", "调研", "研究"],
+        &["write", "document", "documentation", "写文档", "撰写"],
+        &[
+            "image",
+            "generate image",
+            "edit image",
+            "生图",
+            "改图",
+            "图片",
+        ],
+    ];
+    let query = query.to_lowercase();
+    let candidate = candidate.to_lowercase();
+    FAMILIES.iter().any(|family| {
+        family.iter().any(|term| query.contains(term))
+            && family.iter().any(|term| candidate.contains(term))
+    })
+}
+
 pub(super) fn hybrid_score(
     bm25_norm: f64,
     llm_val: f64,
@@ -315,6 +357,55 @@ fn positive_retrieval_text(text: &str) -> String {
         return text[..idx].trim().to_string();
     }
     text.to_string()
+}
+
+fn summary_field(text: &str, label: &str) -> String {
+    text.lines()
+        .find_map(|line| {
+            let (key, value) = line.split_once([':', '：'])?;
+            (key.trim().eq_ignore_ascii_case(label)).then(|| value.trim().to_string())
+        })
+        .unwrap_or_default()
+}
+
+fn compact_field(text: &str, limit: usize) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(limit)
+        .collect()
+}
+
+pub(super) fn structured_candidate_card(summary: &str, fallback: &str) -> String {
+    let source = if summary.trim().is_empty() {
+        fallback
+    } else {
+        summary
+    };
+    let task = compact_field(&summary_field(source, "task"), 120);
+    let triggers = compact_field(&summary_field(source, "triggers"), 140);
+    let inputs = compact_field(&summary_field(source, "inputs"), 100);
+    let outputs = compact_field(&summary_field(source, "outputs"), 100);
+    let not_for = compact_field(&summary_field(source, "not-for"), 140);
+    if [
+        task.as_str(),
+        triggers.as_str(),
+        inputs.as_str(),
+        outputs.as_str(),
+        not_for.as_str(),
+    ]
+    .iter()
+    .all(|field| field.is_empty())
+    {
+        return format!(
+            "task: {} | triggers: | inputs: | outputs: | not-for:",
+            compact_field(source, 220)
+        );
+    }
+    format!(
+        "task: {task} | triggers: {triggers} | inputs: {inputs} | outputs: {outputs} | not-for: {not_for}"
+    )
 }
 
 pub(super) fn candidate_allowed_by_intent(
@@ -698,40 +789,49 @@ pub fn recommend_for_user_with_client(
     let task_anchor = compact_true_intent(user_prompt);
     let deterministic_intent =
         build_intent_summary(user_prompt, cwd_for_intent, client_kind, &intent_memory);
-    let (intent_summary, intent_llm_input, intent_status, intent_error_msg, intent_stats) =
-        match user_prefs.routing_mode {
-            crate::core::prefs::RoutingMode::Fast => (
-                deterministic_intent.clone(),
-                String::new(),
-                "skipped-fast".to_string(),
-                None,
-                RouterCallStats::default(),
-            ),
-            crate::core::prefs::RoutingMode::Precise => {
-                let input = build_intent_user_message(
-                    user_prompt,
-                    cwd_for_intent,
-                    client_kind,
-                    &intent_memory,
-                );
-                match call_intent_recognition(&cfg, &api_key, &input) {
-                    Ok((raw, stats)) => (
-                        clean_intent_model_output(&raw, &deterministic_intent),
-                        input,
-                        "ok".to_string(),
-                        None,
-                        stats,
-                    ),
-                    Err(e) => (
-                        deterministic_intent.clone(),
-                        input,
-                        "fallback".to_string(),
-                        Some(e.to_string()),
-                        RouterCallStats::default(),
-                    ),
-                }
+    let (
+        intent_summary,
+        intent_llm_input,
+        intent_llm_raw_output,
+        intent_status,
+        intent_error_msg,
+        intent_stats,
+    ) = match user_prefs.routing_mode {
+        crate::core::prefs::RoutingMode::Fast => (
+            deterministic_intent
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("intent:"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            String::new(),
+            String::new(),
+            "skipped-fast".to_string(),
+            None,
+            RouterCallStats::default(),
+        ),
+        crate::core::prefs::RoutingMode::Precise => {
+            let input =
+                build_intent_user_message(user_prompt, cwd_for_intent, client_kind, &intent_memory);
+            match call_intent_recognition(&cfg, &api_key, &input) {
+                Ok((raw, stats)) => (
+                    clean_intent_model_output(&raw, &deterministic_intent),
+                    input,
+                    raw,
+                    "ok".to_string(),
+                    None,
+                    stats,
+                ),
+                Err(e) => (
+                    deterministic_intent.clone(),
+                    input,
+                    String::new(),
+                    "fallback".to_string(),
+                    Some(e.to_string()),
+                    RouterCallStats::default(),
+                ),
             }
-        };
+        }
+    };
     let positive_expansion = intent_summary
         .lines()
         .filter(|line| {
@@ -744,7 +844,7 @@ pub fn recommend_for_user_with_client(
         .join("\n");
     let bm25_input_query = format!("{task_anchor}\n{positive_expansion}");
     let recognized_intent = recognize_intent(
-        &format!("{task_anchor}\n{intent_summary}"),
+        user_prompt,
         &intent_memory,
         cwd_for_intent,
         Some(client_kind),
@@ -949,6 +1049,7 @@ pub fn recommend_for_user_with_client(
             user_prompt: user_prompt.into(),
             cwd: cwd.unwrap_or("").into(),
             intent_llm_input,
+            intent_llm_raw_output,
             intent_llm_output: intent_summary,
             intent_status,
             intent_error_msg,
@@ -1040,7 +1141,23 @@ pub fn recommend_for_user_with_client(
                     let llm = indices.get(&index_key).map(|i| i.llm_score).unwrap_or(5);
                     let llm_val = (llm as f64) / 10.0;
                     let ff = feedback_factor_of(&r.name);
-                    let hybrid = hybrid_score(bm, llm_val, ff, feedback_disabled);
+                    let action_boost = if action_form_match(
+                        &bm25_input_query,
+                        &format!(
+                            "{} {} {}",
+                            r.name,
+                            r.description,
+                            indices
+                                .get(&index_key)
+                                .map(|row| row.search_doc.as_str())
+                                .unwrap_or("")
+                        ),
+                    ) {
+                        1.0
+                    } else {
+                        0.0
+                    };
+                    let hybrid = action_boost + hybrid_score(bm, llm_val, ff, feedback_disabled);
                     (i, hybrid)
                 })
                 .collect();
@@ -1128,6 +1245,7 @@ pub fn recommend_for_user_with_client(
             hook_output: String::new(),
             llm_input: STAGE2_SKIPPED_LLM_INPUT.to_string(),
             intent_llm_input,
+            intent_llm_raw_output,
             intent_llm_output: intent_summary.clone(),
             intent_status,
             intent_error_msg,
@@ -1201,11 +1319,10 @@ pub fn recommend_for_user_with_client(
             // Show the short router card when available — it is the compact
             // LLM-facing digest built specifically for this prompt. Falls
             // back to the raw description when a skill has not been enriched.
-            let body_for_llm = match indices.get(&index_key) {
-                Some(index) if !index.router_card.is_empty() => index.router_card.as_str(),
-                _ => r.description.as_str(),
+            let compact_card = match indices.get(&index_key) {
+                Some(index) => structured_candidate_card(&index.summary, &index.router_card),
+                None => structured_candidate_card("", &r.description),
             };
-            let compact_card: String = body_for_llm.chars().take(520).collect();
             format!(
                 "C{:02} | {}{tags} | {}",
                 candidate_idx + 1,
@@ -1216,7 +1333,8 @@ pub fn recommend_for_user_with_client(
         .collect::<Vec<_>>()
         .join("\n");
 
-    let history = if inject_history {
+    let precise = user_prefs.routing_mode == crate::core::prefs::RoutingMode::Precise;
+    let history = if precise && inject_history {
         transcript_path
             .map(|p| recent_transcript_messages(p, HISTORY_TURN_LIMIT))
             .unwrap_or_default()
@@ -1236,7 +1354,7 @@ pub fn recommend_for_user_with_client(
         _ => String::new(),
     };
     let project_context_block = match cwd {
-        Some(c) if !c.is_empty() && cfg.read_claude_md && inject_project_context => {
+        Some(c) if precise && !c.is_empty() && cfg.read_claude_md && inject_project_context => {
             read_project_context(Path::new(c))
         }
         _ => String::new(),
@@ -1254,8 +1372,8 @@ pub fn recommend_for_user_with_client(
 
     // Build conversation history when this session has prior turns AND
     // Conversation mode is on. Oneshot keeps history empty regardless.
-    let history_turns: Vec<RouterTurn> = match (cfg.session_mode, session_id) {
-        (SessionMode::Conversation, Some(sid))
+    let history_turns: Vec<RouterTurn> = match (precise, cfg.session_mode, session_id) {
+        (true, SessionMode::Conversation, Some(sid))
             if !sid.is_empty() && cfg.session_history_limit > 0 =>
         {
             mgr.db()
@@ -1401,6 +1519,7 @@ pub fn recommend_for_user_with_client(
         hook_output: hook_output.clone(),
         llm_input: user_msg.clone(),
         intent_llm_input,
+        intent_llm_raw_output,
         intent_llm_output: intent_summary.clone(),
         intent_status,
         intent_error_msg,
@@ -1628,12 +1747,32 @@ pub(super) fn parse_router_response(
 }
 
 fn reasoning_mentions_candidate(reasoning: &str, entry: &CandidateCatalogEntry) -> bool {
-    if exact_mention(reasoning, &entry.id) || exact_mention(reasoning, &entry.name) {
+    let lower = reasoning.to_lowercase();
+    let negative_terms = [
+        "不合适",
+        "不适合",
+        "不要",
+        "排除",
+        "剔除",
+        "not suitable",
+        "exclude",
+    ];
+    for needle in [&entry.id, &entry.name] {
+        if !exact_mention(reasoning, needle) {
+            continue;
+        }
+        let needle_lower = needle.to_lowercase();
+        if let Some(idx) = lower.find(&needle_lower) {
+            let before: String = lower[..idx].chars().rev().take(16).collect();
+            let after: String = lower[idx + needle_lower.len()..].chars().take(24).collect();
+            let window = format!("{}{}", before.chars().rev().collect::<String>(), after);
+            if negative_terms.iter().any(|term| window.contains(term)) {
+                continue;
+            }
+        }
         return true;
     }
-    reasoning
-        .to_lowercase()
-        .contains(&entry.name.to_lowercase())
+    false
 }
 
 /// Parse router output into `(mode, reasoning, skill_names)`.

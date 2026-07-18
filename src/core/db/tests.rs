@@ -1268,6 +1268,7 @@ fn base_event() -> RouterEvent {
         hook_output: "# runai recommend\n...".into(),
         llm_input: "candidate listing + user prompt".into(),
         intent_llm_input: "stage1 prompt".into(),
+        intent_llm_raw_output: "raw intent provider output".into(),
         intent_llm_output: "intent: compact task".into(),
         intent_status: "ok".into(),
         intent_error_msg: None,
@@ -1324,6 +1325,7 @@ fn insert_router_event_roundtrip_preserves_all_fields_including_user_id() {
     assert_eq!(got.hook_output, ev.hook_output);
     assert_eq!(got.llm_input, ev.llm_input);
     assert_eq!(got.intent_llm_input, ev.intent_llm_input);
+    assert_eq!(got.intent_llm_raw_output, ev.intent_llm_raw_output);
     assert_eq!(got.intent_llm_output, ev.intent_llm_output);
     assert_eq!(got.intent_status, ev.intent_status);
     assert_eq!(got.intent_error_msg, ev.intent_error_msg);

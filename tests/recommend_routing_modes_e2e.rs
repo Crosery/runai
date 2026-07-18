@@ -230,6 +230,29 @@ fn precise_keeps_original_anchor_parallel_to_stage1_expansion_and_calls_twice() 
 }
 
 #[test]
+fn precise_records_stage1_raw_and_cleaned_outputs() {
+    let mock = MockLlm::start(vec![
+        "```\nintent: expanded alpha\ninclude_terms: alpha synonym\n```",
+        r#"{"mode":"exclusive","selected":["C01"]}"#,
+    ]);
+    let (_root, mgr) = setup(&mock, "precise", "alpha task");
+    let _ = recommend_for_user_with_client(
+        &mgr,
+        "alpha task",
+        None,
+        Some("precise-raw"),
+        None,
+        Some("u1"),
+        Some("claude"),
+    )
+    .unwrap();
+    let event = mgr.db().router_recent_events(1).unwrap().pop().unwrap();
+    assert!(event.intent_llm_raw_output.contains("```"));
+    assert!(!event.intent_llm_output.contains("```"));
+    assert!(event.intent_llm_output.contains("expanded alpha"));
+}
+
+#[test]
 fn fast_cross_language_zero_lexical_overlap_uses_bounded_fallback_pool() {
     let mock = MockLlm::start(vec![r#"{"mode":"exclusive","selected":["C01"]}"#]);
     let (_root, mgr) = setup(&mock, "fast", "send an instant message to a Lark user");

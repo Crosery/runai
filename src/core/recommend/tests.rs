@@ -8,10 +8,10 @@ use super::intent::{
 use super::lang_validation::prose_fields;
 use super::project_context::{extract_at_references, read_project_context};
 use super::router::{
-    CandidateCatalogEntry, CandidateRelevanceInput, RouterUserMessageParts,
+    CandidateCatalogEntry, CandidateRelevanceInput, RouterUserMessageParts, action_form_match,
     build_router_user_message, candidate_allowed_by_intent, feedback_markers, hybrid_score,
     is_harness_message, parse_lines, parse_router_response, split_mode_and_names,
-    truncate_prompt_for_llm,
+    structured_candidate_card, truncate_prompt_for_llm,
 };
 use super::{
     HookInstallStatus, Provider, RecommendConfig, RecommendedSkill, RouterDecision, RouterMode,
@@ -276,6 +276,55 @@ fn issue44_parser_recovery_never_creates_non_candidate_skill() {
     let recovered = parse_router_response(raw, &catalog, 8).filtered_names;
     assert_eq!(recovered, vec!["alpha"]);
     assert!(!recovered.iter().any(|name| name == "ghost-skill"));
+}
+
+#[test]
+fn issue44_recovery_rejects_substrings_and_negative_mentions() {
+    let catalog = vec![CandidateCatalogEntry {
+        id: "C01".into(),
+        name: "browse".into(),
+    }];
+    for raw in [
+        "EXCLUSIVE\nreasoning: browser automation is relevant",
+        "EXCLUSIVE\nreasoning: browse 不合适，应该保持空集",
+        "EXCLUSIVE\nreasoning: 不要使用 C01",
+    ] {
+        let parsed = parse_router_response(raw, &catalog, 8);
+        assert!(parsed.filtered_names.is_empty(), "不得恢复：{raw}");
+        assert!(!parsed.recovery);
+    }
+}
+
+#[test]
+fn issue44_candidate_card_preserves_labeled_not_for_under_long_fields() {
+    let summary = format!(
+        "task: {}\ntriggers: {}\ninputs: {}\noutputs: {}\nnot-for: 禁止支付、删除和不可逆操作",
+        "超长任务".repeat(100),
+        "超长触发".repeat(100),
+        "超长输入".repeat(100),
+        "超长输出".repeat(100),
+    );
+    let card = structured_candidate_card(&summary, "");
+    for field in ["task:", "triggers:", "inputs:", "outputs:", "not-for:"] {
+        assert!(card.contains(field), "缺少字段 {field}: {card}");
+    }
+    assert!(card.contains("禁止支付、删除和不可逆操作"));
+    assert!(card.chars().count() < 700);
+}
+
+#[test]
+fn issue44_cross_language_action_match_beats_unrelated_high_prior() {
+    assert!(action_form_match(
+        "给飞书联系人发一条即时消息",
+        "send an instant message to a Lark user"
+    ));
+    assert!(!action_form_match(
+        "给飞书联系人发一条即时消息",
+        "kubernetes deploy container cluster"
+    ));
+    let relevant = 1.0 + hybrid_score(0.0, 0.2, 0.2, false);
+    let unrelated = hybrid_score(0.0, 1.0, 1.0, false);
+    assert!(relevant > unrelated);
 }
 
 #[test]

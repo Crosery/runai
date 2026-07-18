@@ -625,6 +625,23 @@ impl Database {
             )?;
         }
 
+        if version < 29 {
+            let has_router_events: i64 = self.conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='router_events'",
+                [],
+                |r| r.get(0),
+            )?;
+            if has_router_events > 0 {
+                self.conn.execute_batch(
+                    "ALTER TABLE router_events ADD COLUMN intent_llm_raw_output TEXT NOT NULL DEFAULT '';",
+                )?;
+            }
+            self.conn.execute_batch(
+                "DELETE FROM schema_version;
+                 INSERT INTO schema_version VALUES (29);",
+            )?;
+        }
+
         Ok(())
     }
 }

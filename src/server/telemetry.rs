@@ -179,6 +179,8 @@ pub(super) struct EventJson {
     llm_input: String,
     /// First-wave intent-recognition prompt sent to the same recommend model.
     intent_llm_input: String,
+    /// First-wave raw provider response before cleanup.
+    intent_llm_raw_output: String,
     /// First-wave compact intent output used for BM25 and session memory.
     intent_llm_output: String,
     /// First-wave status: ok / fallback / legacy empty.
@@ -231,6 +233,7 @@ impl From<RouterEvent> for EventJson {
             hook_output: e.hook_output,
             llm_input: e.llm_input,
             intent_llm_input: e.intent_llm_input,
+            intent_llm_raw_output: e.intent_llm_raw_output,
             intent_llm_output: e.intent_llm_output,
             intent_status: e.intent_status,
             intent_error_msg: e.intent_error_msg,

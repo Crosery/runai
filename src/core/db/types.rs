@@ -49,8 +49,9 @@ pub struct RouterEvent {
     /// Full first-wave intent-recognition prompt sent to the same recommend
     /// model. Capped at ~16 KB. Empty for pre-schema-v25 rows.
     pub intent_llm_input: String,
-    /// Compact first-wave intent output used as the BM25 query source and the
-    /// current-session intent-memory row. Capped at ~2 KB.
+    /// Raw first-wave provider response before cleanup. Empty in Fast/legacy.
+    pub intent_llm_raw_output: String,
+    /// Cleaned first-wave intent output used as expansion/session memory.
     pub intent_llm_output: String,
     /// First-wave status: `ok` when the model returned a usable intent,
     /// `fallback` when deterministic compression was used, empty for legacy.
@@ -106,6 +107,7 @@ impl Default for RouterEvent {
             hook_output: String::new(),
             llm_input: String::new(),
             intent_llm_input: String::new(),
+            intent_llm_raw_output: String::new(),
             intent_llm_output: String::new(),
             intent_status: String::new(),
             intent_error_msg: None,

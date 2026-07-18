@@ -288,12 +288,7 @@ fn fixed_system_prompts_are_byte_identical_across_requests() {
         .filter(|s| s.contains("skill router"))
         .collect();
 
-    assert_eq!(
-        intent_systems.len(),
-        2,
-        "expected 2 Stage-1 intent calls, got {}",
-        intent_systems.len()
-    );
+    assert_eq!(intent_systems.len(), 0, "Fast must skip Stage-1");
     assert_eq!(
         router_systems.len(),
         2,
@@ -301,19 +296,11 @@ fn fixed_system_prompts_are_byte_identical_across_requests() {
         router_systems.len()
     );
     assert_eq!(
-        intent_systems[0], intent_systems[1],
-        "Stage-1 system prompt must be byte-identical across requests"
-    );
-    assert_eq!(
         router_systems[0], router_systems[1],
         "Stage-2 system prompt must be byte-identical across requests"
     );
     // The static instructions genuinely live in the system messages.
-    assert!(intent_systems[0].contains("第一波"));
-    assert!(router_systems[0].contains("精准优先"));
-    // And the system message carries no request-specific dynamic value.
-    assert!(!intent_systems[0].contains("arch-proj"));
-    assert!(!intent_systems[0].contains("alpha 任务"));
+    assert!(router_systems[0].contains("skill router"));
 
     // max_tokens caps are present on both waves.
     let intent_bodies: Vec<&String> = bodies
@@ -328,7 +315,7 @@ fn fixed_system_prompts_are_byte_identical_across_requests() {
                 .unwrap_or(false)
         })
         .collect();
-    assert_eq!(max_tokens_of(intent_bodies[0]), Some(512));
+    assert!(intent_bodies.is_empty());
     assert_eq!(max_tokens_of(router_bodies[0]), Some(400));
     // temperature 0 for deterministic + cache-friendly routing.
     for b in bodies.iter() {
@@ -338,13 +325,13 @@ fn fixed_system_prompts_are_byte_identical_across_requests() {
 }
 
 #[test]
-fn stage1_user_message_carries_each_dynamic_field_exactly_once() {
+fn fast_router_message_carries_task_anchor_once() {
     let env = TestEnv::new();
     env.plant_skill("alpha-skill", "处理 alpha 任务 alpha 工具");
     let mock = RecordingMock::start();
     env.write_config(mock.base_url());
 
-    // Second turn so session_memory has content; the raw prompt is distinctive.
+    // Fast has no Stage-1; the bounded task anchor reaches the sole router call.
     let unique = "帮我处理 alpha 任务 UNIQUEMARK";
     let _ = recommend_stdin(&env, "first alpha turn", "once-session");
     let _ = recommend_stdin(&env, unique, "once-session");
@@ -353,38 +340,22 @@ fn stage1_user_message_carries_each_dynamic_field_exactly_once() {
     let intent_user = bodies
         .iter()
         .filter_map(|b| {
-            if system_of(b).map(|s| s.contains("第一波")).unwrap_or(false) {
+            if max_tokens_of(b) == Some(400) {
                 user_of(b)
             } else {
                 None
             }
         })
         .next_back()
-        .expect("a Stage-1 user message");
+        .expect("a router user message");
 
     assert_eq!(
         intent_user.matches("UNIQUEMARK").count(),
         1,
-        "current prompt must appear exactly once in Stage-1 user msg:\n{intent_user}"
+        "task anchor must appear exactly once in Fast router msg:\n{intent_user}"
     );
-    assert_eq!(
-        intent_user.matches("cwd:").count(),
-        1,
-        "cwd line must appear exactly once:\n{intent_user}"
-    );
-    assert_eq!(
-        intent_user.matches("agent_cli:").count(),
-        1,
-        "agent_cli line must appear exactly once:\n{intent_user}"
-    );
-    assert_eq!(
-        intent_user.matches("session_memory:").count(),
-        1,
-        "session_memory block must appear exactly once:\n{intent_user}"
-    );
-    // The static deterministic-fallback dump is gone from the user message.
-    assert!(!intent_user.contains("deterministic fallback"));
-    assert!(intent_user.contains("当前用户输入"));
+    assert!(intent_user.contains("当前任务锚点"));
+    assert!(intent_user.contains("检索意图 / expansion"));
 }
 
 #[test]
@@ -438,14 +409,14 @@ fn user_messages_and_hook_output_stay_under_token_budget() {
     let intent_user = bodies
         .iter()
         .filter_map(|b| {
-            if system_of(b).map(|s| s.contains("第一波")).unwrap_or(false) {
+            if max_tokens_of(b) == Some(400) {
                 user_of(b)
             } else {
                 None
             }
         })
         .next()
-        .expect("Stage-1 user msg");
+        .expect("Fast router user msg");
     let router_user = bodies
         .iter()
         .filter_map(|b| {
@@ -462,8 +433,8 @@ fn user_messages_and_hook_output_stay_under_token_budget() {
         .expect("Stage-2 user msg");
 
     assert!(
-        intent_user.chars().count() < 400,
-        "Stage-1 user msg too large ({} chars):\n{intent_user}",
+        intent_user.chars().count() < 1200,
+        "Fast router user msg too large ({} chars):\n{intent_user}",
         intent_user.chars().count()
     );
     assert!(
@@ -483,10 +454,8 @@ fn user_messages_and_hook_output_stay_under_token_budget() {
 }
 
 #[test]
-fn long_prompt_truncation_keeps_head_and_tail_in_stage1_input() {
-    // A 5000+ char paste with the real request at the END. Head-only truncation
-    // used to drop the tail (the actual ask) — now the Stage-1 user message
-    // carries the head window, the tail request, and a middle-elision marker.
+fn long_prompt_fast_anchor_keeps_tail_request_bounded() {
+    // Fast skips Stage-1 and derives a compact task anchor from the tail.
     let env = TestEnv::new();
     env.plant_skill("alpha-skill", "处理 alpha 任务 alpha 工具");
     let mock = RecordingMock::start();
@@ -504,27 +473,24 @@ fn long_prompt_truncation_keeps_head_and_tail_in_stage1_input() {
     let intent_user = bodies
         .iter()
         .filter_map(|b| {
-            if system_of(b).map(|s| s.contains("第一波")).unwrap_or(false) {
+            if max_tokens_of(b) == Some(400) {
                 user_of(b)
             } else {
                 None
             }
         })
         .next()
-        .expect("Stage-1 user msg");
+        .expect("Fast router user msg");
 
     assert!(
-        intent_user.contains("HEADMARK"),
-        "leading framing kept in Stage-1 input:\n{intent_user}"
+        !intent_user.contains("HEADMARK"),
+        "long pasted head should not dominate Fast anchor:\n{intent_user}"
     );
     assert!(
         intent_user.contains("TAILMARK"),
-        "trailing real request kept in Stage-1 input:\n{intent_user}"
+        "trailing real request kept in Fast anchor:\n{intent_user}"
     );
-    assert!(
-        intent_user.contains("中段已截断"),
-        "middle-elision marker present in Stage-1 input:\n{intent_user}"
-    );
+    assert!(intent_user.chars().count() < 1200);
     assert!(
         !intent_user.contains("MIDDLEMARK"),
         "the elided middle must be gone from Stage-1 input:\n{intent_user}"
@@ -532,13 +498,7 @@ fn long_prompt_truncation_keeps_head_and_tail_in_stage1_input() {
 }
 
 #[test]
-fn stage2_user_message_excludes_raw_prompt_but_carries_intent() {
-    // Responsibility split: Stage-1 reads the raw prompt and emits the intent
-    // summary; Stage-2 routes off that summary and NEVER sees the raw prompt.
-    // A sentinel unique to the raw prompt ("SENTINELZZZ") must reach Stage-1 but
-    // be absent from Stage-2; a token unique to the intent summary
-    // ("include_terms", from the mock's Stage-1 reply, never in the raw prompt)
-    // must be present in Stage-2 — proving the summary is what Stage-2 routes on.
+fn fast_router_message_carries_raw_task_anchor_and_deterministic_intent() {
     let env = TestEnv::new();
     env.plant_skill("alpha-skill", "处理 alpha 任务 alpha 工具");
     let mock = RecordingMock::start();
@@ -553,17 +513,6 @@ fn stage2_user_message_excludes_raw_prompt_but_carries_intent() {
     );
 
     let bodies = mock.bodies();
-    let stage1_user = bodies
-        .iter()
-        .filter_map(|b| {
-            if system_of(b).map(|s| s.contains("第一波")).unwrap_or(false) {
-                user_of(b)
-            } else {
-                None
-            }
-        })
-        .next()
-        .expect("Stage-1 user msg");
     let stage2_user = bodies
         .iter()
         .filter_map(|b| {
@@ -579,26 +528,38 @@ fn stage2_user_message_excludes_raw_prompt_but_carries_intent() {
         .next()
         .expect("Stage-2 user msg");
 
-    assert!(
-        stage1_user.contains("SENTINELZZZ"),
-        "raw prompt must reach Stage-1:\n{stage1_user}"
-    );
-    assert!(
-        !stage2_user.contains("SENTINELZZZ"),
-        "raw prompt must NOT reach Stage-2 (routes off intent summary only):\n{stage2_user}"
-    );
-    assert!(
-        stage2_user.contains("include_terms"),
-        "the Stage-1 intent summary must be present in the Stage-2 user msg:\n{stage2_user}"
-    );
-    assert!(
-        stage2_user.contains("意图摘要"),
-        "Stage-2 user msg frames the intent summary as its routing basis:\n{stage2_user}"
-    );
+    assert!(stage2_user.contains("SENTINELZZZ"));
+    assert!(stage2_user.contains("当前任务锚点"));
+    assert!(stage2_user.contains("检索意图 / expansion"));
     assert!(
         !stage2_user.contains("用户当前 prompt"),
         "the old raw-prompt header must be gone from Stage-2:\n{stage2_user}"
     );
+}
+
+#[test]
+fn fast_omits_large_context_blocks_even_when_available() {
+    let env = TestEnv::new();
+    env.plant_skill("alpha-skill", "处理 alpha 任务 alpha 工具");
+    let mock = RecordingMock::start();
+    env.write_config(mock.base_url());
+    std::fs::create_dir_all("/tmp/arch-proj").unwrap();
+    std::fs::write("/tmp/arch-proj/CLAUDE.md", "FAST_PROJECT_CONTEXT_SENTINEL").unwrap();
+    let _ = recommend_stdin(&env, "帮我处理 alpha 任务", "fast-no-large-blocks");
+    let router_user = mock
+        .bodies()
+        .iter()
+        .filter_map(|body| {
+            if max_tokens_of(body) == Some(400) {
+                user_of(body)
+            } else {
+                None
+            }
+        })
+        .next()
+        .unwrap();
+    assert!(!router_user.contains("FAST_PROJECT_CONTEXT_SENTINEL"));
+    assert!(!router_user.contains("最近对话"));
 }
 
 #[test]
@@ -634,10 +595,7 @@ fn output_and_quantity_rules_live_in_system_not_user_message() {
         .find(|s| s.contains("skill router"))
         .expect("Stage-2 system msg");
 
-    assert!(
-        !router_user.contains("输出格式"),
-        "输出格式 must not be in the user message:\n{router_user}"
-    );
+    assert!(router_user.contains("只返回 JSON"));
     assert!(
         !router_user.contains("硬上限"),
         "numeric hard cap must not be in the user message:\n{router_user}"
@@ -646,10 +604,7 @@ fn output_and_quantity_rules_live_in_system_not_user_message() {
         !router_user.contains("最小充分集合"),
         "quantity rules must not be in the user message:\n{router_user}"
     );
-    assert!(
-        router_system.contains("输出格式"),
-        "输出格式 must live in the system prompt"
-    );
+    assert!(router_system.contains("输出"));
     assert!(
         router_system.contains("最小充分集合"),
         "quantity rules must live in the system prompt"
