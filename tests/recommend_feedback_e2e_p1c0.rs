@@ -15,11 +15,12 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
 
 use assert_cmd::cargo::CommandCargoExt;
+use runai::core::manager::SkillManager;
 use tempfile::TempDir;
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -58,8 +59,9 @@ impl TestEnv {
         self.home().join(".runai/config.toml")
     }
 
-    /// Plant a skill with the given SKILL.md body and register it in the DB
-    /// via `runai scan`.
+    /// Plant a skill and register it directly through the manager. This fixture
+    /// must not invoke `runai scan`: scan intentionally spawns detached enrich,
+    /// which can outlive the setup step and race a later mock config write.
     fn plant_skill(&self, name: &str, body: &str) {
         let dir = self.managed_skills_dir().join(name);
         std::fs::create_dir_all(&dir).unwrap();
@@ -68,12 +70,11 @@ impl TestEnv {
             format!("---\nname: {name}\ndescription: {body}\n---\n\n# {name}\n\n{body}\n"),
         )
         .unwrap();
-        let out = self.run(&["scan"]);
-        assert!(
-            out.status.success(),
-            "scan must succeed to register planted skill (stderr={})",
-            String::from_utf8_lossy(&out.stderr)
-        );
+        let manager = SkillManager::with_base(self.home().join(".runai"))
+            .expect("create manager for planted skill");
+        manager
+            .register_local_skill(name)
+            .expect("register planted skill without auto-enrich");
     }
 
     /// Write recommend config pointing to the given mock LLM base_url.
@@ -140,6 +141,7 @@ impl TestEnv {
 struct MockLlm {
     base_url: String,
     shutdown: Arc<AtomicBool>,
+    request_count: Arc<AtomicUsize>,
 }
 
 impl MockLlm {
@@ -152,12 +154,15 @@ impl MockLlm {
         let base_url = format!("http://{}", addr);
         let shutdown = Arc::new(AtomicBool::new(false));
         let stop = shutdown.clone();
+        let request_count = Arc::new(AtomicUsize::new(0));
+        let count = request_count.clone();
         let body_content = content.to_string();
         thread::spawn(move || {
             // Accept loop: poll until shutdown flips.
             while !stop.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
+                        count.fetch_add(1, Ordering::Relaxed);
                         // Read until end-of-headers (or up to 64KB), then ignore
                         // any body — we always reply the same canned JSON.
                         stream
@@ -203,11 +208,19 @@ impl MockLlm {
                 }
             }
         });
-        Self { base_url, shutdown }
+        Self {
+            base_url,
+            shutdown,
+            request_count,
+        }
     }
 
     fn base_url(&self) -> &str {
         &self.base_url
+    }
+
+    fn request_count(&self) -> usize {
+        self.request_count.load(Ordering::Relaxed)
     }
 }
 
@@ -280,6 +293,7 @@ fn recommend_feedback_adjusts_score() {
         !new_summary.contains("score:"),
         "summary text must have the score: line stripped (it is stored in llm_score column), got:\n{new_summary}"
     );
+    assert_eq!(mock.request_count(), 1, "happy path must call the LLM once");
 }
 
 /// Asking for feedback on a non-existent skill must fail with a clear
@@ -325,5 +339,10 @@ fn recommend_feedback_skill_not_found() {
     assert!(
         env.get_summary("ghost").is_none(),
         "no summary row may be created for a non-existent skill"
+    );
+    assert_eq!(
+        mock.request_count(),
+        0,
+        "not-found feedback must not call the LLM or inherit a detached enrich request"
     );
 }
