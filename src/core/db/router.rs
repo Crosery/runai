@@ -373,8 +373,8 @@ impl Database {
     /// Return (llm_input, llm_raw_response) pairs for every successful
     /// router call in this session, ordered by ts ASC. Used by the
     /// Conversation `session_mode` to rebuild a chat-history messages
-    /// array fed back to the router LLM. Limit caps cost — at default
-    /// 30 turns the conversation payload stays bounded.
+    /// array fed back to the router LLM. The caller clamps the limit and
+    /// additionally caps each turn and the total replay characters.
     pub fn router_session_turn_history(
         &self,
         session_id: &str,
@@ -386,7 +386,7 @@ impl Database {
         let mut stmt = self.conn.prepare(
             "SELECT llm_input, llm_raw_response FROM router_events
              WHERE session_id = ?1 AND status = 'ok'
-             ORDER BY ts ASC
+             ORDER BY ts DESC
              LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![session_id, limit as i64], |r| {
@@ -398,6 +398,7 @@ impl Database {
         for row in rows {
             out.push(row?);
         }
+        out.reverse();
         Ok(out)
     }
 

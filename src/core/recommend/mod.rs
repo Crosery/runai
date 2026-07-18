@@ -31,13 +31,16 @@ mod settings_hooks;
 mod transcript;
 
 // ── Public surface (external code depends on these exact paths) ──
-pub use config::{Provider, ProviderEntry, RecommendConfig, SessionMode};
+pub use config::{
+    Provider, ProviderEntry, RecommendConfig, SESSION_HISTORY_LIMIT_MAX, SessionMode,
+};
 pub use enrich::{EnrichMode, EnrichReport, FeedbackReport, enrich_skills, reevaluate_skill};
 pub use hook_output::{
     bootstrap_guide, format_for_hook, format_for_hook_full, format_for_hook_with_session,
 };
 pub use lang_validation::{find_language_mismatched_skills, summary_matches_lang};
 pub use llm_call::{ProviderTestResult, test_provider_request};
+pub(crate) use router::resolve_user_prefs;
 pub use router::{
     RecommendedSkill, RouterDecision, RouterMode, RouterTurn, recommend, recommend_for_user,
     recommend_for_user_with_client,

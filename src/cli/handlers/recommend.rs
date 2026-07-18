@@ -62,9 +62,8 @@ pub(in crate::cli) fn handle_recommend(
             // Resolve user prompt + transcript path. Precedence:
             //   1. positional `prompt` arg if given
             //   2. stdin JSON (Claude Code hook protocol: {prompt, transcript_path, ...})
-            // Stdin-JSON mode lets the router see recent conversation history,
-            // which is how "use figma-component-mapping" replies get auto-routed
-            // to the right skill on the next round.
+            // Stdin JSON carries host metadata. Transcript history is read only
+            // by the opt-in Precise path; Fast remains single-turn.
             let (user_prompt, transcript_path, native_session_id, cwd, payload_host_kind) =
                 match prompt_opt {
                     Some(p) => (p, None, None, None, None),
@@ -258,7 +257,7 @@ pub(in crate::cli) fn handle_recommend(
 }}
 
 Claude Code pipes the hook JSON (prompt, transcript_path, ...) to stdin.
-runai recommend reads it, looks at recent conversation history, and emits
+Precise may read bounded recent history; Fast stays single-turn. runai emits
 the picked SKILL.md to stdout — which Claude Code injects as additional
 context for the upcoming turn.
 

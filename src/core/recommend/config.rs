@@ -42,9 +42,9 @@ pub struct RecommendConfig {
     /// Default `Oneshot` — see [`SessionMode`] for the trade-off.
     #[serde(default)]
     pub session_mode: SessionMode,
-    /// Max prior turns to replay in `Conversation` mode. Older turns get
-    /// dropped to keep request size bounded. 0 disables history (= Oneshot
-    /// behaviour even when mode is Conversation).
+    /// Requested prior turns for Precise Conversation mode. Load/API clamp it
+    /// to `SESSION_HISTORY_LIMIT_MAX`; the router also applies a smaller live
+    /// turn cap plus per-message and total-character budgets. 0 disables replay.
     #[serde(default = "default_session_history_limit")]
     pub session_history_limit: usize,
     /// Saved provider library — Settings UI shows these, and switching one
@@ -103,8 +103,10 @@ fn default_summary_lang() -> String {
     "zh".to_string()
 }
 
+pub const SESSION_HISTORY_LIMIT_MAX: usize = 8;
+
 fn default_session_history_limit() -> usize {
-    20
+    SESSION_HISTORY_LIMIT_MAX
 }
 
 /// How the router LLM sees this session's earlier turns.
@@ -275,6 +277,7 @@ impl RecommendConfig {
         let raw: RawConfig =
             toml::from_str(&text).with_context(|| format!("parse {}", path.display()))?;
         let mut cfg = raw.recommend.unwrap_or_default();
+        cfg.session_history_limit = cfg.session_history_limit.min(SESSION_HISTORY_LIMIT_MAX);
         cfg.ensure_default_saved_entry();
         // Back-compat: a config written before `summary_lang_confirmed`
         // existed, but already enabled with a non-empty summary language,

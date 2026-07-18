@@ -1676,10 +1676,10 @@ fn router_session_turn_history_orders_ascending_and_respects_limit_and_status() 
     assert_eq!(
         limited,
         vec![
-            ("turn1-in".to_string(), "turn1-out".to_string()),
             ("turn2-in".to_string(), "turn2-out".to_string()),
+            ("turn3-in".to_string(), "turn3-out".to_string()),
         ],
-        "limit caps the ASC-ordered result, keeping the oldest turns"
+        "limit keeps the most recent turns and returns them oldest-first"
     );
 }
 

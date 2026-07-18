@@ -1,9 +1,8 @@
 //! Claude Code session transcript reading for history / BM25 recall.
 //!
-//! Pulls the most recent user/assistant text turns out of a session jsonl,
-//! dropping tool calls/results. Used both to thread short history into the
-//! router LLM input and to stitch earlier user turns into the BM25 prefilter
-//! query (so "换一个" style follow-ups keep the original topic in scope).
+//! Pulls bounded recent user/assistant text turns out of a session jsonl,
+//! dropping tool calls/results. The live router uses this only for the
+//! Precise transcript block; Fast never reads transcript history.
 
 use std::path::Path;
 
@@ -19,7 +18,7 @@ pub fn recent_transcript_messages(transcript_path: &Path, n: usize) -> String {
 }
 
 /// Per-message char cap for transcript history fed to the router LLM. Kept
-/// tight (was 400) because the history block only needs enough of each turn
+/// tight because the history block only needs enough of each turn
 /// to tell whether the current prompt is replying to a prior recommendation —
 /// a full multi-hundred-char assistant message is pure context bloat.
 const TRANSCRIPT_MSG_CHAR_CAP: usize = 250;
@@ -85,8 +84,9 @@ pub fn recent_transcript_pairs(transcript_path: &Path, n: usize) -> Vec<(String,
     msgs[take_from..].to_vec()
 }
 
-/// Return the last `n` user messages concatenated as a single string,
-/// usable as extra BM25 prefilter input. Assistant messages are dropped
+/// Legacy helper returning the last `n` user messages as a bounded string.
+/// It is retained for compatibility/tests; the live Fast/Precise retrieval
+/// path no longer appends transcript text to BM25. Assistant messages are dropped
 /// (they're the main agent's output — feeding them back would self-bias
 /// the prefilter toward whatever the agent just talked about).
 ///

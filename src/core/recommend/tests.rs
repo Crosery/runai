@@ -22,6 +22,22 @@ use super::{
 };
 
 #[test]
+fn load_clamps_session_history_limit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = AppPaths::with_base(tmp.path().to_path_buf());
+    std::fs::write(
+        paths.config_path(),
+        "[recommend]\nenabled=true\nprovider='openai-compat'\nbase_url='http://localhost'\nmodel='mock'\napi_key='x'\ntop_k=8\nmin_prompt_len=0\nsession_history_limit=99999\n",
+    )
+    .unwrap();
+    let cfg = RecommendConfig::load(&paths).unwrap();
+    assert_eq!(
+        cfg.session_history_limit,
+        super::config::SESSION_HISTORY_LIMIT_MAX
+    );
+}
+
+#[test]
 fn default_disabled() {
     let cfg = RecommendConfig::default();
     assert!(!cfg.enabled);
@@ -314,6 +330,14 @@ fn issue44_recovery_rejects_substrings_and_negative_mentions() {
         "EXCLUSIVE\nreasoning: 不要使用 C01",
         "EXCLUSIVE\nreasoning: 应排除 browse",
         "EXCLUSIVE\nreasoning: C01 is irrelevant and should be rejected",
+        "EXCLUSIVE\nreasoning: 禁止使用 C01",
+        "EXCLUSIVE\nreasoning: C01 不能用于这个任务",
+        "EXCLUSIVE\nreasoning: C01 不可采用",
+        "EXCLUSIVE\nreasoning: C01 并非合适选择",
+        "EXCLUSIVE\nreasoning: 拒绝选择 C01",
+        "EXCLUSIVE\nreasoning: C01 cannot be used",
+        "EXCLUSIVE\nreasoning: C01 must not be selected",
+        "EXCLUSIVE\nreasoning: C01 is not a match",
     ] {
         let parsed = parse_router_response(raw, &catalog, 8);
         assert!(parsed.filtered_names.is_empty(), "不得恢复：{raw}");

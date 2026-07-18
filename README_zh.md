@@ -77,7 +77,7 @@
 ### 2. LLM skill router（opt-in）
 
 - **Hook 集成** —— Claude Code 的 `UserPromptSubmit` hook → `runai recommend` → router 决策 → 输出作为额外 context 注入主 agent 的 prompt。Dashboard / team 场景下，本地 hook 读取 `~/.runai-identity`；key 有效时使用该用户的网页偏好，key 过期时返回空 hook 输出，不再静默退回匿名默认偏好。
-- **默认 Fast，按需 Precise** —— Fast 用有界 head+tail 任务锚点和结构化 `task / triggers / inputs / outputs` 检索，最多调用一次 router 模型；不注入 transcript、项目文件、conversation replay 或 session intent memory。Precise 增加一次有界语义 expansion，并可按开关注入这些上下文，同时始终并联原始任务锚点，避免 expansion 覆盖原始证据。
+- **默认 Fast，按需 Precise** —— Fast 用有界 head+tail 任务锚点和结构化 `task / triggers / inputs / outputs` 检索，最多调用一次 router 模型；不注入 transcript、项目文件、conversation replay 或 session intent memory。Precise 增加一次有界语义 expansion；cwd、client kind、transcript 单条消息和 Conversation replay 都有字段/轮次/总字符硬上限。
 - **有证据的候选检索** —— BM25 与结构化双语 triggers 排序候选。质量分、采用率和反馈只能重排已有检索证据的候选，不能把零证据 skill 填进超限 Fast 候选池。超限且全零证据时记录 `retrieval_zero` 并空推；候选池本来很小时仍可交给 router，因为小语料的 BM25 IDF 可能为零。
 - **AI summary 富集** —— 每个 skill 都由同一个 LLM 用你选定的 `summary_lang` 生成结构化 summary（`task / triggers / inputs / outputs / not-for / score`）；正向字段进入 BM25 索引，`not-for` 保留为负向准入信号和 router 上下文。富集以显式选定语言为前提，且输出语言被强制校验（不符先重试、再不符就丢弃不写），索引保持单一语言；`triggers` 字段保留跨语言关键词以提升检索。SKILL.md 编辑后自动 refresh，`runai install` / `scan` 也会针对改动的 skill 单点 re-enrich。
 - **严格短 ID 路由** —— 每次请求把候选映射为 `C01..Cnn`，解析结果必须通过本次候选白名单；`not-for` 命中一票否决。互为替代用 `EXCLUSIVE`，明示工作流中的必要互补步骤用 `COMPATIBLE`。后续轮次仍可再次推荐同一个相关 skill，不做 session 去重。

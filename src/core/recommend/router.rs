@@ -76,14 +76,10 @@ const USER_MSG_TEMPLATE: &str = crate::core::prompts::PROMPT_RECOMMEND_USER;
 const HISTORY_PREFIX_TEMPLATE: &str = crate::core::prompts::PROMPT_RECOMMEND_HISTORY_PREFIX;
 const CWD_PREFIX_TEMPLATE: &str = crate::core::prompts::PROMPT_RECOMMEND_CWD_PREFIX;
 
-/// Upper bound (in chars) on the raw user prompt copied verbatim into the
-/// Stage-1 intent user message. Stage-1 is now the ONLY stage that reads the
-/// raw prompt — Stage-2 works purely off the condensed intent summary — so this
-/// cap is deliberately generous. Stage-1 is the sole comprehension bottleneck:
-/// whatever it drops here cannot be recovered downstream (Stage-2 never sees the
-/// original text to correct a compressed-away detail), so it is worth spending
-/// more input budget on the one stage that reads the source. Still bounded to
-/// protect against tens-of-thousands-char pastes; telemetry
+/// Upper bound (in chars) on the raw user prompt copied into the Precise
+/// Stage-1 message. Fast skips Stage-1; both modes separately carry a much
+/// smaller bounded task anchor into the router. The cap protects against
+/// tens-of-thousands-char pastes while preserving source evidence; telemetry
 /// (`RouterEvent.user_prompt`) always stores the full text. Over the cap we keep
 /// a head AND a tail (see `truncate_prompt_for_llm`).
 const LLM_PROMPT_CHAR_CAP: usize = 4000;
@@ -122,6 +118,10 @@ pub(super) fn truncate_prompt_for_llm(prompt: &str) -> String {
 /// purpose — the block only needs to reveal whether the current prompt is a
 /// reply to the previous recommendation, not replay the whole conversation.
 const HISTORY_TURN_LIMIT: usize = 4;
+const CWD_CHAR_CAP: usize = 256;
+const CLIENT_KIND_CHAR_CAP: usize = 64;
+const CONVERSATION_TURN_CHAR_CAP: usize = 1200;
+const CONVERSATION_TOTAL_CHAR_CAP: usize = 6000;
 
 /// Mode tag returned by the router on the first line of its output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -465,13 +465,10 @@ pub(super) struct RouterUserMessageParts<'a> {
 }
 
 pub(super) fn build_router_user_message(parts: RouterUserMessageParts<'_>) -> String {
-    // Stage-2 no longer embeds the raw user prompt: Stage-1 already read the
-    // original text and produced the intent summary, which is the authoritative
-    // statement of the current task here. The router精排 (re-ranks) candidates
-    // off `{INTENT_SUMMARY}` + the candidate listing (plus the optional
-    // cwd/project/history blocks). Dropping the raw prompt removes a per-turn
-    // changing, re-truncated segment — smaller message, and a more stable
-    // prefix within a session (the trailing prompt no longer busts the cache).
+    // The router sees the bounded original task anchor in parallel with the
+    // deterministic/Precise expansion. This preserves source evidence without
+    // resending the unbounded raw payload. Optional history/project blocks are
+    // Precise-only and bounded before this builder.
     crate::core::prompts::template_body(USER_MSG_TEMPLATE)
         .replace("{TASK_ANCHOR}", parts.task_anchor)
         .replace("{HISTORY_BLOCK}", parts.history_block)
@@ -494,6 +491,38 @@ pub(super) fn build_router_user_message(parts: RouterUserMessageParts<'_>) -> St
 /// memory/cwd/prompt a second time) is gone. The deterministic fallback is NOT
 /// sent to the model; it stays a code-side safety net used only when the
 /// Stage-1 call fails.
+fn truncate_context_field(value: &str, cap: usize) -> String {
+    let trimmed = value.trim();
+    let total = trimmed.chars().count();
+    if total <= cap {
+        return trimmed.to_string();
+    }
+    let marker = "…[截断]…";
+    let marker_len = marker.chars().count();
+    let head_len = (cap.saturating_sub(marker_len)) / 2;
+    let tail_len = cap.saturating_sub(marker_len + head_len);
+    let head: String = trimmed.chars().take(head_len).collect();
+    let tail: String = trimmed.chars().skip(total - tail_len).collect();
+    format!("{head}{marker}{tail}")
+}
+
+fn bound_conversation_history(turns: Vec<(String, String)>) -> Vec<RouterTurn> {
+    let mut kept_rev = Vec::new();
+    let mut total = 0_usize;
+    for (user, assistant) in turns.into_iter().rev().take(HISTORY_TURN_LIMIT) {
+        let user = truncate_context_field(&user, CONVERSATION_TURN_CHAR_CAP);
+        let assistant = truncate_context_field(&assistant, CONVERSATION_TURN_CHAR_CAP);
+        let cost = user.chars().count() + assistant.chars().count();
+        if total + cost > CONVERSATION_TOTAL_CHAR_CAP {
+            continue;
+        }
+        total += cost;
+        kept_rev.push(RouterTurn { user, assistant });
+    }
+    kept_rev.reverse();
+    kept_rev
+}
+
 fn build_intent_user_message(
     user_prompt: &str,
     cwd: Option<&str>,
@@ -596,10 +625,8 @@ fn call_intent_recognition(
 /// Returns `Ok(Vec::new())` when nothing matches, when disabled, or when prompt
 /// is too short.
 ///
-/// `transcript_path`, when supplied, points at the Claude Code session jsonl.
-/// The last few user+assistant text messages are appended to the LLM input so
-/// the router can recognize replies like "use figma-component-mapping" and pick
-/// the right skill on the next round.
+/// `transcript_path`, when supplied, is consulted only in Precise mode and is
+/// rendered through bounded recent-message helpers. Fast never reads it.
 pub fn recommend(
     mgr: &SkillManager,
     user_prompt: &str,
@@ -639,7 +666,7 @@ pub fn recommend_for_user(
     )
 }
 
-fn resolve_user_prefs(
+pub(crate) fn resolve_user_prefs(
     db: &Database,
     user_id: Option<&str>,
 ) -> Result<crate::core::prefs::UserPrefs> {
@@ -713,13 +740,29 @@ pub fn recommend_for_user_with_client(
         });
     }
 
+    let bounded_cwd = cwd
+        .map(|value| truncate_context_field(value, CWD_CHAR_CAP))
+        .filter(|value| !value.is_empty());
+    let bounded_client_kind = truncate_context_field(
+        client_kind
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("claude"),
+        CLIENT_KIND_CHAR_CAP,
+    );
+    let client_kind = bounded_client_kind.as_str();
+
     // PLANNING §1.3: per-user injection flags strip optional blocks before
     // prompt construction. The intent layer shares the same cwd switch so a
     // disabled cwd block cannot leak through `{INTENT_SUMMARY}`.
     let inject_history = user_prefs.prompt_injection_enabled("recommend_history_prefix");
     let inject_cwd = user_prefs.prompt_injection_enabled("recommend_cwd_prefix");
     let inject_project_context = user_prefs.prompt_injection_enabled("recommend_project_context");
-    let cwd_for_intent = if inject_cwd { cwd } else { None };
+    let cwd_for_intent = if inject_cwd {
+        bounded_cwd.as_deref()
+    } else {
+        None
+    };
 
     // ClaudeCli reuses the user's Claude Code session — no API key needed.
     let api_key = if cfg.provider == Provider::ClaudeCli {
@@ -729,10 +772,6 @@ pub fn recommend_for_user_with_client(
             .context("recommend api_key not configured: run `runai recommend setup` or set RUNAI_RECOMMEND_API_KEY")?
     };
 
-    let client_kind = client_kind
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or("claude");
     let precise = user_prefs.routing_mode == crate::core::prefs::RoutingMode::Precise;
     let intent_memory_limit = if precise && user_prefs.intent_memory_enabled {
         user_prefs.intent_memory_limit
@@ -1286,13 +1325,13 @@ pub fn recommend_for_user_with_client(
         crate::core::prompts::template_body(HISTORY_PREFIX_TEMPLATE).replace("{HISTORY}", &history)
     };
 
-    let cwd_block = match cwd {
+    let cwd_block = match bounded_cwd.as_deref() {
         Some(c) if !c.is_empty() && inject_cwd => {
             crate::core::prompts::template_body(CWD_PREFIX_TEMPLATE).replace("{CWD}", c)
         }
         _ => String::new(),
     };
-    let project_context_block = match cwd {
+    let project_context_block = match bounded_cwd.as_deref() {
         Some(c) if precise && !c.is_empty() && cfg.read_claude_md && inject_project_context => {
             read_project_context(Path::new(c))
         }
@@ -1315,12 +1354,15 @@ pub fn recommend_for_user_with_client(
         (true, SessionMode::Conversation, Some(sid))
             if !sid.is_empty() && cfg.session_history_limit > 0 =>
         {
-            mgr.db()
-                .router_session_turn_history(sid, cfg.session_history_limit)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|(user, assistant)| RouterTurn { user, assistant })
-                .collect()
+            let limit = cfg
+                .session_history_limit
+                .min(crate::core::recommend::SESSION_HISTORY_LIMIT_MAX)
+                .min(HISTORY_TURN_LIMIT);
+            bound_conversation_history(
+                mgr.db()
+                    .router_session_turn_history(sid, limit)
+                    .unwrap_or_default(),
+            )
         }
         _ => Vec::new(),
     };
@@ -1707,6 +1749,11 @@ fn reasoning_mentions_candidate(reasoning: &str, entry: &CandidateCatalogEntry) 
         "不合适",
         "不适合",
         "不要",
+        "禁止",
+        "不能",
+        "不可",
+        "并非",
+        "拒绝",
         "不应",
         "不选",
         "不使用",
@@ -1717,6 +1764,15 @@ fn reasoning_mentions_candidate(reasoning: &str, entry: &CandidateCatalogEntry) 
         "否定",
         "别用",
         "not suitable",
+        "cannot",
+        "can't",
+        "must not",
+        "forbidden",
+        "not allowed",
+        "not a match",
+        "not relevant",
+        "refuse",
+        "refused",
         "do not",
         "don't",
         "exclude",

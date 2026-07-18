@@ -7,9 +7,12 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use runai::core::db::SkillAiIndex;
+use runai::core::db::{RouterEvent, SkillAiIndex};
 use runai::core::manager::SkillManager;
-use runai::core::recommend::{Provider, RecommendConfig, recommend_for_user_with_client};
+use runai::core::recommend::{
+    Provider, RecommendConfig, SessionMode, recommend_for_user_with_client,
+    runai_session_id_from_native,
+};
 
 struct MockLlm {
     base_url: String,
@@ -284,6 +287,110 @@ fn precise_records_stage1_raw_and_cleaned_outputs() {
     assert!(!event.intent_llm_output.contains("```"));
     assert!(event.intent_llm_output.contains("expanded alpha"));
     assert_eq!(event.llm_call_count, 2);
+}
+
+#[test]
+fn precise_bounds_remote_cwd_and_client_kind_before_both_stages() {
+    let mock = MockLlm::start(vec![
+        "intent: alpha task\ninclude_terms: alpha",
+        r#"{"mode":"exclusive","selected":["C01"]}"#,
+    ]);
+    let (_root, mgr) = setup(&mock, "precise", "alpha task");
+    let cwd = format!("CWD_HEAD/{}CWD_TAIL", "x".repeat(10_000));
+    let client = format!("CLIENT_HEAD-{}-CLIENT_TAIL", "y".repeat(10_000));
+    recommend_for_user_with_client(
+        &mgr,
+        "alpha task",
+        None,
+        Some("bounded-dynamic-fields"),
+        Some(&cwd),
+        Some("u1"),
+        Some(&client),
+    )
+    .unwrap();
+    let bodies = mock.bodies();
+    assert_eq!(bodies.len(), 2);
+    for body in &bodies {
+        assert!(body.contains("CWD_HEAD"));
+        assert!(body.contains("CWD_TAIL"));
+        assert!(!body.contains(&"x".repeat(1000)));
+    }
+    assert!(bodies[0].contains("CLIENT_HEAD"));
+    assert!(bodies[0].contains("CLIENT_TAIL"));
+    assert!(!bodies[0].contains(&"y".repeat(1000)));
+    assert!(bodies.iter().all(|body| body.len() < 20_000));
+}
+
+#[test]
+fn precise_conversation_history_has_turn_item_and_total_caps() {
+    let mock = MockLlm::start(vec![
+        "intent: alpha task\ninclude_terms: alpha",
+        r#"{"mode":"exclusive","selected":["C01"]}"#,
+    ]);
+    let (_root, mgr) = setup(&mock, "precise", "alpha task");
+    let mut cfg = RecommendConfig::load(mgr.paths()).unwrap();
+    cfg.session_mode = SessionMode::Conversation;
+    cfg.session_history_limit = 100_000;
+    cfg.save(mgr.paths()).unwrap();
+    let history_session = runai_session_id_from_native(Some("u1"), "history-cap").unwrap();
+    for ts in 1..=12 {
+        mgr.db()
+            .insert_router_event(&RouterEvent {
+                ts,
+                session_id: history_session.clone(),
+                status: "ok".into(),
+                llm_input: format!("HISTORY_USER_{ts}_{}", "u".repeat(65_536)),
+                llm_raw_response: format!("HISTORY_ASSISTANT_{ts}_{}", "a".repeat(65_536)),
+                ..RouterEvent::default()
+            })
+            .unwrap();
+    }
+    recommend_for_user_with_client(
+        &mgr,
+        "alpha task",
+        None,
+        Some("history-cap"),
+        None,
+        Some("u1"),
+        Some("claude"),
+    )
+    .unwrap();
+    let router_body: serde_json::Value = serde_json::from_str(&mock.bodies()[1]).unwrap();
+    let messages = router_body["messages"].as_array().unwrap();
+    assert_eq!(
+        messages.len(),
+        6,
+        "system + 2 recent history pairs within total budget + current user"
+    );
+    let history = &messages[1..messages.len() - 1];
+    assert!(
+        history
+            .iter()
+            .all(|message| { message["content"].as_str().unwrap().chars().count() <= 1200 })
+    );
+    let history_chars: usize = history
+        .iter()
+        .map(|message| message["content"].as_str().unwrap().chars().count())
+        .sum();
+    assert!(history_chars <= 6000);
+    assert!(history.iter().any(|message| {
+        message["content"]
+            .as_str()
+            .unwrap()
+            .contains("HISTORY_USER_12")
+    }));
+    assert!(history.iter().any(|message| {
+        message["content"]
+            .as_str()
+            .unwrap()
+            .contains("HISTORY_USER_11")
+    }));
+    assert!(!history.iter().any(|message| {
+        message["content"]
+            .as_str()
+            .unwrap()
+            .contains("HISTORY_USER_10")
+    }));
 }
 
 #[test]

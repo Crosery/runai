@@ -289,32 +289,32 @@ fn query_resources_for_user(
     mgr: &SkillManager,
     user_id: Option<&str>,
 ) -> Result<Vec<crate::core::resource::Resource>> {
-    use crate::core::prefs::UserPrefs;
     use crate::core::resource::ResourceKind;
     use std::collections::{BTreeSet, HashSet};
 
     let db = mgr.db();
     let mut resources = match user_id {
         Some(uid) => {
-            let prefs = db
-                .find_user_by_id(uid)?
-                .map(|user| UserPrefs::from_json_str(&user.prefs_json))
-                .unwrap_or_default();
+            let prefs = recommend::resolve_user_prefs(db, Some(uid))?;
             if !prefs.recommend_enabled {
                 return Ok(Vec::new());
             }
-            let visible = db.list_resources_for_user(Some(ResourceKind::Skill), Some(uid))?;
-            if prefs.allow_public_recommend {
-                visible
+            if uid == "owner" {
+                db.list_resources_for_user(Some(ResourceKind::Skill), None)?
             } else {
-                let library = db.library_list(uid)?.into_iter().collect::<BTreeSet<_>>();
-                visible
-                    .into_iter()
-                    .filter(|resource| {
-                        resource.owner_user_id.as_deref() == Some(uid)
-                            || library.contains(&resource.name)
-                    })
-                    .collect()
+                let visible = db.list_resources_for_user(Some(ResourceKind::Skill), Some(uid))?;
+                if prefs.allow_public_recommend {
+                    visible
+                } else {
+                    let library = db.library_list(uid)?.into_iter().collect::<BTreeSet<_>>();
+                    visible
+                        .into_iter()
+                        .filter(|resource| {
+                            resource.owner_user_id.as_deref() == Some(uid)
+                                || library.contains(&resource.name)
+                        })
+                        .collect()
+                }
             }
         }
         None => db.list_resources_for_user(Some(ResourceKind::Skill), None)?,

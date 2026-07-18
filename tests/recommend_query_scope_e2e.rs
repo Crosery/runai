@@ -64,7 +64,7 @@ impl Drop for ServerGuard {
     }
 }
 
-fn spawn_server() -> ServerGuard {
+fn spawn_server_mode(mode: &str) -> ServerGuard {
     let home = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(home.path().join(".runai/skills")).unwrap();
     let port = free_port();
@@ -75,7 +75,7 @@ fn spawn_server() -> ServerGuard {
         .arg("--port")
         .arg(port.to_string())
         .arg("--mode")
-        .arg("team")
+        .arg(mode)
         .env("HOME", home.path())
         .env("RUNAI_NO_AUTOSPAWN", "1")
         .env("RUNAI_DISABLE_SKILL_WATCHER", "1")
@@ -89,6 +89,10 @@ fn spawn_server() -> ServerGuard {
     let guard = ServerGuard { child, home, port };
     assert!(wait_for_port(guard.port, Duration::from_secs(8)));
     guard
+}
+
+fn spawn_server() -> ServerGuard {
+    spawn_server_mode("team")
 }
 
 fn http() -> reqwest::blocking::Client {
@@ -167,6 +171,32 @@ fn candidate_names(body: &Value) -> Vec<&str> {
         .iter()
         .map(|candidate| candidate["name"].as_str().unwrap())
         .collect()
+}
+
+#[test]
+fn owner_query_lane_sees_public_pool_and_honors_kill_switch() {
+    let server = spawn_server_mode("owner");
+    let db = Database::open(&server.data_dir().join("runai.db")).unwrap();
+    insert_skill(&db, "public-ppt", None);
+    db.set_app_setting(
+        "owner_prefs",
+        r#"{"allow_public_recommend":false,"recommend_enabled":true}"#,
+    )
+    .unwrap();
+    drop(db);
+
+    let visible = query(&server, None, "owner-query-visible");
+    assert_eq!(candidate_names(&visible), vec!["public-ppt"]);
+
+    let db = Database::open(&server.data_dir().join("runai.db")).unwrap();
+    db.set_app_setting(
+        "owner_prefs",
+        r#"{"allow_public_recommend":true,"recommend_enabled":false}"#,
+    )
+    .unwrap();
+    drop(db);
+    let disabled = query(&server, None, "owner-query-disabled");
+    assert!(candidate_names(&disabled).is_empty());
 }
 
 #[test]

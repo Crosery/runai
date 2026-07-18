@@ -275,18 +275,21 @@ fn settings_post_persists_enabled_toggle() {
 }
 
 #[test]
-fn settings_post_updates_top_k_and_session_history_limit() {
+fn settings_post_updates_top_k_and_clamps_session_history_limit() {
     let s = spawn_team_server();
     let akey = register(&s, "admin", "pw admin 1234");
     let r = http()
         .post(format!("{}/api/settings", s.base_url()))
         .bearer_auth(&akey)
-        .json(&json!({"top_k": 10, "session_history_limit": 25}))
+        .json(&json!({"top_k": 10, "session_history_limit": 25_000}))
         .send()
         .unwrap();
     let b: Value = r.json().unwrap();
     assert_eq!(b["top_k"].as_u64().unwrap(), 10);
-    assert_eq!(b["session_history_limit"].as_u64().unwrap(), 25);
+    assert_eq!(
+        b["session_history_limit"].as_u64().unwrap(),
+        runai::core::recommend::SESSION_HISTORY_LIMIT_MAX as u64
+    );
 }
 
 #[test]

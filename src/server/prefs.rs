@@ -175,7 +175,7 @@ pub(super) async fn api_post_settings(
             cfg.session_mode = m;
         }
         if let Some(v) = patch.session_history_limit {
-            cfg.session_history_limit = v;
+            cfg.session_history_limit = v.min(recommend::SESSION_HISTORY_LIMIT_MAX);
         }
         if let Some(v) = patch.summary_lang {
             cfg.summary_lang = v;
