@@ -486,6 +486,17 @@ mod tests {
     }
 
     #[test]
+    fn merge_accepts_routing_mode() {
+        let mut current = json!({"routing_mode": "fast"});
+        merge_prefs_patch(&mut current, json!({"routing_mode": "precise"}));
+        let prefs = UserPrefs::from_json_str(&current.to_string());
+        assert_eq!(
+            serde_json::to_value(prefs).unwrap()["routing_mode"],
+            "precise"
+        );
+    }
+
+    #[test]
     fn merge_accepts_intent_memory_numeric_prefs() {
         let mut current = json!({
             "intent_memory_enabled": true,

@@ -1,0 +1,32 @@
+[
+  {
+    "name": "lark-im",
+    "candidates": ["lark-im", "lark-docs"],
+    "raw": "EXCLUSIVE\nreasoning: 用户需要发送飞书消息，lark-im 是直接匹配候选",
+    "expected": ["lark-im"]
+  },
+  {
+    "name": "browse",
+    "candidates": ["browse", "research"],
+    "raw": "EXCLUSIVE\nreasoning: 需要实际浏览网页，应选择 browse",
+    "expected": ["browse"]
+  },
+  {
+    "name": "remember",
+    "candidates": ["remember", "notes"],
+    "raw": "EXCLUSIVE\nreasoning: 用户要求保存长期记忆，remember 最合适",
+    "expected": ["remember"]
+  },
+  {
+    "name": "handoff",
+    "candidates": ["handoff", "reviewer"],
+    "raw": "EXCLUSIVE\nreasoning: 任务需要完整移交给另一个 worktree，使用 handoff",
+    "expected": ["handoff"]
+  },
+  {
+    "name": "migrate-to-shoehorn",
+    "candidates": ["migrate-to-shoehorn", "refactor"],
+    "raw": "EXCLUSIVE\nreasoning: 这是迁移到 Shoehorn 的明确请求，命中 migrate-to-shoehorn",
+    "expected": ["migrate-to-shoehorn"]
+  }
+]

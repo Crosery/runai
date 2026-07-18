@@ -210,6 +210,63 @@ fn parse_empty_input() {
     assert!(parse_lines("   \n\n").is_empty());
 }
 
+#[derive(serde::Deserialize)]
+struct Issue44ReplayCase {
+    name: String,
+    candidates: Vec<String>,
+    raw: String,
+    expected: Vec<String>,
+}
+
+#[test]
+fn issue44_reasoning_named_candidate_recovers_from_anonymized_replays() {
+    let fixture = include_str!("../../../tests/fixtures/issue44_reasoning_recovery.json");
+    let cases: Vec<Issue44ReplayCase> = serde_json::from_str(fixture).unwrap();
+    assert_eq!(cases.len(), 5);
+    for case in cases {
+        let (_mode, _reasoning, parsed) = split_mode_and_names(parse_lines(&case.raw));
+        let whitelist: std::collections::HashSet<&str> =
+            case.candidates.iter().map(String::as_str).collect();
+        let recovered: Vec<String> = parsed
+            .into_iter()
+            .filter(|name| whitelist.contains(name.as_str()))
+            .collect();
+        assert_eq!(
+            recovered, case.expected,
+            "reasoning 点名候选但漏选择行时应受控恢复：{}",
+            case.name
+        );
+    }
+}
+
+#[test]
+fn issue44_parser_accepts_short_id_json_and_common_drift() {
+    let cases = [
+        r#"{"mode":"exclusive","selected":["C01"]}"#,
+        "```json\n{\"mode\":\"exclusive\",\"selected\":[\"c01\"]}\n```",
+        "EXCLUSIVE\n1. C01",
+        "EXCLUSIVE\n- skill: C01",
+        "EXCLUSIVE\nname: c01\n说明：直接命中",
+    ];
+    for raw in cases {
+        let (_mode, _reasoning, names) = split_mode_and_names(parse_lines(raw));
+        assert_eq!(names, vec!["C01"], "应解析短 ID 协议：{raw}");
+    }
+}
+
+#[test]
+fn issue44_parser_recovery_never_creates_non_candidate_skill() {
+    let raw = "EXCLUSIVE\nreasoning: C01 合适，但也可以使用 ghost-skill";
+    let (_mode, _reasoning, parsed) = split_mode_and_names(parse_lines(raw));
+    let whitelist = std::collections::HashSet::from(["C01"]);
+    let recovered: Vec<String> = parsed
+        .into_iter()
+        .filter(|name| whitelist.contains(name.as_str()))
+        .collect();
+    assert_eq!(recovered, vec!["C01"]);
+    assert!(!recovered.iter().any(|name| name == "ghost-skill"));
+}
+
 #[test]
 fn recent_user_prompts_for_bm25_filters_assistant_and_concatenates() {
     // Build a synthetic transcript jsonl with mixed user/assistant
@@ -454,6 +511,22 @@ fn router_user_message_uses_intent_summary_and_client_context() {
         "raw-prompt header must be gone from Stage-2:\n{msg}"
     );
     assert!(!msg.contains("RAWONLYMARK"));
+}
+
+#[test]
+fn issue44_precise_router_message_keeps_raw_task_anchor_parallel_to_expansion() {
+    let msg = build_router_user_message(RouterUserMessageParts {
+        cwd_block: "",
+        project_context_block: "",
+        history_block: "",
+        intent_summary: "intent: 查询 Lark 消息能力\ninclude_terms: 飞书 即时通讯",
+        candidate_listing: "C01 | lark-im | task: 发送飞书消息",
+        bm25_candidate_limit: 30,
+    });
+    assert!(
+        msg.contains("RAW_TASK_ANCHOR_LARK_IM"),
+        "Precise Stage-2 必须并联原始任务锚点，不能只依赖 expansion：{msg}"
+    );
 }
 
 #[test]

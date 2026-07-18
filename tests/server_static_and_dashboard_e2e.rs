@@ -371,6 +371,16 @@ fn app_js_skill_detail_poll_uses_light_refresh_not_full_repaint() {
 // loadModelUsage function body contains no /api/events fetch and no paging
 // loop anymore.
 #[test]
+fn issue44_dashboard_exposes_fast_precise_per_user_control() {
+    let html = include_str!("../web/index.html");
+    let js = include_str!("../web/js/10-settings.js");
+    assert!(html.contains("set-routing-mode"));
+    assert!(html.contains("Fast"));
+    assert!(html.contains("Precise"));
+    assert!(js.contains("routing_mode"));
+}
+
+#[test]
 fn app_js_model_usage_consumes_summary_not_events_paging() {
     let s = spawn_team_server();
     let body = http()

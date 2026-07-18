@@ -55,7 +55,6 @@ fn wait_for_port(port: u16, timeout: Duration) -> bool {
 struct ServerGuard {
     child: Child,
     _home: TempDir,
-    _data_override: Option<TempDir>,
     port: u16,
     data_dir: std::path::PathBuf,
 }
@@ -74,15 +73,13 @@ impl Drop for ServerGuard {
 }
 
 /// Spawn `runai server --mode team` bound to 127.0.0.1 inside an isolated
-/// HOME. Each invocation creates its OWN HOME tempdir, so the SQLite DB,
-/// users, and prefs are physically separated from any other server in the
-/// suite. The data dir always resolves to `HOME/.runai/` because the server
-/// reads `AppPaths::default_path()` (HOME-anchored) for its `db_path`;
-/// `RUNE_DATA_DIR` is explicitly cleared so a stray ambient env var from
-/// the test runner cannot leak through.
+/// HOME. Each invocation creates its OWN HOME tempdir and explicitly points
+/// `RUNE_DATA_DIR` at that sandbox, so the SQLite DB, users, and prefs are
+/// physically separated from the real home and from every other server in the
+/// suite.
 fn spawn_team_server() -> ServerGuard {
     let home = tempfile::tempdir().expect("create tmp HOME");
-    let data_dir = home.path().join(".runai");
+    let data_dir = home.path().join("runai-data");
     std::fs::create_dir_all(data_dir.join("skills")).expect("pre-create skills dir");
 
     let port = free_port();
@@ -96,7 +93,7 @@ fn spawn_team_server() -> ServerGuard {
         .arg("team")
         .env("HOME", home.path())
         .env("RUNAI_NO_AUTOSPAWN", "1")
-        .env_remove("RUNE_DATA_DIR")
+        .env("RUNE_DATA_DIR", &data_dir)
         .env_remove("SKILL_MANAGER_DATA_DIR")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -107,7 +104,6 @@ fn spawn_team_server() -> ServerGuard {
     let guard = ServerGuard {
         child,
         _home: home,
-        _data_override: None,
         port,
         data_dir,
     };
@@ -392,6 +388,7 @@ fn post_prefs_full_replace() {
         "show_session_history": false,
         "show_feedback_protocol": false,
         "recommend_mode": "exclusive",
+        "routing_mode": "precise",
         "candidate_limit": 5,
         "allow_public_recommend": true,
         "recommend_enabled": false,
@@ -419,6 +416,7 @@ fn post_prefs_full_replace() {
     let echoed: Value = resp.json().expect("response is UserPrefs JSON");
     assert_eq!(echoed["show_tradeoff"], json!(false));
     assert_eq!(echoed["recommend_mode"], json!("exclusive"));
+    assert_eq!(echoed["routing_mode"], json!("precise"));
     assert_eq!(echoed["candidate_limit"], json!(5));
     assert_eq!(echoed["allow_public_recommend"], json!(true));
     assert_eq!(echoed["skip_reminder_template"], json!("use sparingly"));
@@ -437,6 +435,7 @@ fn post_prefs_full_replace() {
     let read_back: Value = get_resp.json().expect("GET body JSON");
     assert_eq!(read_back["show_tradeoff"], json!(false));
     assert_eq!(read_back["recommend_mode"], json!("exclusive"));
+    assert_eq!(read_back["routing_mode"], json!("precise"));
     assert_eq!(read_back["candidate_limit"], json!(5));
     assert_eq!(read_back["recommend_enabled"], json!(false));
     assert_eq!(
@@ -447,6 +446,7 @@ fn post_prefs_full_replace() {
     // Direct DB check — bytes actually landed in users.prefs_json.
     let stored = read_prefs_json_from_db(&server.data_dir, "alice");
     assert_eq!(stored["recommend_mode"], json!("exclusive"));
+    assert_eq!(stored["routing_mode"], json!("precise"));
     assert_eq!(stored["candidate_limit"], json!(5));
     assert_eq!(
         stored["prompt_injection_flags"]["recommend_history_prefix"],
@@ -575,13 +575,9 @@ fn post_prefs_null_removes_flag() {
 /// isolated HOMEs keep their prefs in independent SQLite DBs — changing
 /// user1's prefs on server A must NOT show up on server B.
 ///
-/// Note: the data dir resolution at server startup is HOME-anchored (the
-/// server reads `AppPaths::default_path()` which goes through `dirs::home_dir`
-/// rather than `RUNE_DATA_DIR`), so HOME isolation is the load-bearing
-/// boundary the test asserts on. The "across data dirs" name in the plan
-/// refers to the user-visible outcome — two physically distinct data
-/// directories with two physically distinct DBs — which HOME isolation
-/// produces deterministically.
+/// Each server gets both a distinct HOME and a distinct explicit
+/// `RUNE_DATA_DIR`; the test therefore covers the same resolver path as a real
+/// non-default deployment without touching the user's data directory.
 #[test]
 fn post_prefs_across_data_dirs_isolation() {
     let server_a = spawn_team_server();

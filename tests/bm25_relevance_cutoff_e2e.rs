@@ -330,8 +330,8 @@ fn zero_overlap_query_skips_stage2_and_logs_empty_candidate_event() {
 
     assert_eq!(
         mock.stage2_calls(),
-        0,
-        "Stage-2 router LLM must NOT be called when no candidate has term overlap; hook=\n{hook}"
+        1,
+        "BM25 零词面命中不再是唯一 correctness gate；必须把受控候选池交给 router 判断：\n{hook}"
     );
     // No skill surfaced to the agent.
     for noise in [

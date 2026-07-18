@@ -196,6 +196,8 @@ mod tests {
     #[test]
     fn test_default_values() {
         let p = UserPrefs::default();
+        let json = serde_json::to_value(&p).unwrap();
+        assert_eq!(json["routing_mode"], "fast");
         assert!(p.show_tradeoff);
         assert!(p.show_session_history);
         assert!(p.show_feedback_protocol);
@@ -251,6 +253,14 @@ mod tests {
         let mut flags = HashMap::new();
         flags.insert("recommend_history_prefix".to_string(), false);
         flags.insert("recommend_cwd_prefix".to_string(), true);
+        let mut value = serde_json::to_value(UserPrefs::default()).unwrap();
+        value["routing_mode"] = serde_json::json!("precise");
+        let parsed: UserPrefs = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            serde_json::to_value(&parsed).unwrap()["routing_mode"],
+            "precise"
+        );
+
         let p = UserPrefs {
             show_tradeoff: false,
             show_session_history: true,
