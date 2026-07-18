@@ -29,6 +29,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
 
+use runai::core::manager::SkillManager;
 use tempfile::TempDir;
 
 const RUNAI_BIN: &str = env!("CARGO_BIN_EXE_runai");
@@ -69,6 +70,8 @@ impl TestEnv {
         self.runai_dir().join(".bootstrap-seen")
     }
 
+    /// Register directly through the manager. A CLI scan would spawn detached
+    /// enrich and could consume a mock config written later in the same test.
     fn plant_skill(&self, name: &str, description: &str) {
         let dir = self.runai_dir().join("skills").join(name);
         std::fs::create_dir_all(&dir).unwrap();
@@ -79,13 +82,10 @@ impl TestEnv {
             ),
         )
         .unwrap();
-        // Make sure the DB knows about it so the candidate set isn't empty.
-        let out = self.run(&["scan"]);
-        assert!(
-            out.status.success(),
-            "scan must succeed (stderr={})",
-            String::from_utf8_lossy(&out.stderr)
-        );
+        let manager = SkillManager::with_base(self.runai_dir()).expect("fixture manager");
+        manager
+            .register_local_skill(name)
+            .expect("register fixture without auto-enrich");
     }
 
     /// Spawn the installed binary with all relevant env vars pinned to the

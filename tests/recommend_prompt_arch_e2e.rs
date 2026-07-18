@@ -21,6 +21,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use runai::core::manager::SkillManager;
 use tempfile::TempDir;
 
 const RUNAI_BIN: &str = env!("CARGO_BIN_EXE_runai");
@@ -42,6 +43,8 @@ impl TestEnv {
     fn runai_dir(&self) -> PathBuf {
         self.home().join(".runai")
     }
+    /// Register directly through the manager. `runai scan` intentionally
+    /// spawns detached enrich and can race the mock config installed next.
     fn plant_skill(&self, name: &str, description: &str) {
         let dir = self.runai_dir().join("skills").join(name);
         std::fs::create_dir_all(&dir).unwrap();
@@ -52,20 +55,10 @@ impl TestEnv {
             ),
         )
         .unwrap();
-        let out = self.run(&["scan"]);
-        assert!(out.status.success(), "scan failed");
-    }
-    fn run(&self, args: &[&str]) -> std::process::Output {
-        Command::new(RUNAI_BIN)
-            .args(args)
-            .env("HOME", self.home())
-            .env("RUNAI_NO_AUTOSPAWN", "1")
-            .env("RUNE_DATA_DIR", self.runai_dir())
-            .env_remove("SKILL_MANAGER_DATA_DIR")
-            .env_remove("CLAUDE_SESSION_ID")
-            .env_remove("RUNAI_RECOMMEND_API_KEY")
-            .output()
-            .expect("spawn runai")
+        let manager = SkillManager::with_base(self.runai_dir()).expect("fixture manager");
+        manager
+            .register_local_skill(name)
+            .expect("register fixture without auto-enrich");
     }
     fn run_with_input(&self, args: &[&str], stdin: &str) -> std::process::Output {
         use std::process::Stdio;

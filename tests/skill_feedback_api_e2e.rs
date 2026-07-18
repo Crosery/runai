@@ -35,6 +35,7 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 
 use runai::core::db::{Database, RouterEvent};
+use runai::core::manager::SkillManager;
 
 // ─── generic server harness (mirrors tests/feedback_auth_e2e.rs) ──────────
 
@@ -90,7 +91,7 @@ impl Drop for ServerGuard {
 
 /// Spawn `runai server --mode team` against a caller-supplied HOME
 /// (`spawn_team_server` below delegates here with a fresh tempdir). Use
-/// this directly when a test needs to plant+scan skills BEFORE the server
+/// this directly when a test needs to plant+register skills BEFORE the server
 /// starts, so `core::skill_watcher::SkillWatcher` (started at server boot,
 /// watches `<data>/skills` recursively) never observes those files as a
 /// fresh write and never fires `market::spawn_enrich` for them — the only
@@ -177,10 +178,10 @@ fn register(s: &ServerGuard, u: &str, p: &str) -> Account {
     }
 }
 
-/// Plant a SKILL.md and run `runai scan` (subprocess, same HOME) so the
-/// resource row exists before the server (a separate process) opens the
-/// DB per-request.
-fn plant_and_scan(home: &Path, name: &str, desc: &str) {
+/// Plant a SKILL.md and register it in-process so the resource row exists
+/// before the server opens the DB. Do not use `runai scan` here: its detached
+/// enrich child can outlive setup and consume a mock config written nearby.
+fn plant_and_register(home: &Path, name: &str, desc: &str) {
     let dir = home.join(".runai/skills").join(name);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
@@ -188,19 +189,10 @@ fn plant_and_scan(home: &Path, name: &str, desc: &str) {
         format!("---\nname: {name}\ndescription: {desc}\n---\n\n# {name}\n\n{desc}\n"),
     )
     .unwrap();
-    let out = runai_cmd()
-        .arg("scan")
-        .env("HOME", home)
-        .env("RUNAI_NO_AUTOSPAWN", "1")
-        .env_remove("RUNE_DATA_DIR")
-        .env_remove("SKILL_MANAGER_DATA_DIR")
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "scan must succeed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    let manager = SkillManager::with_base(home.join(".runai")).expect("fixture manager");
+    manager
+        .register_local_skill(name)
+        .expect("register fixture without auto-enrich");
 }
 
 fn write_recommend_config(home: &Path, base_url: &str) {
@@ -364,7 +356,7 @@ fn feedback_verdict_requires_auth_401_empty() {
 /// the response; the ASYNC failure is invisible to the caller (only
 /// `tracing::warn!`ed).
 ///
-/// Plants + scans BEFORE the server starts (see
+/// Plants + registers BEFORE the server starts (see
 /// `api_skill_detail_enrich_status_unenriched_for_fresh_skill`'s doc
 /// comment) so the file watcher's own `spawn_enrich` never races this
 /// test's own claim of the `enrich_state` in-flight slot for "alpha".
@@ -372,7 +364,7 @@ fn feedback_verdict_requires_auth_401_empty() {
 fn feedback_verdict_positive_records_row_without_reevaluate() {
     let home = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(home.path().join(".runai/skills")).unwrap();
-    plant_and_scan(home.path(), "alpha", "alpha skill description");
+    plant_and_register(home.path(), "alpha", "alpha skill description");
     let s = spawn_team_server_with_home(home);
     let alice = register(&s, "alice", "pw alice correct horse");
 
@@ -441,7 +433,7 @@ fn feedback_verdict_positive_records_row_without_reevaluate() {
 fn feedback_verdict_string_bad_maps_to_negative_one() {
     let s = spawn_team_server();
     let alice = register(&s, "alice", "pw alice correct horse");
-    plant_and_scan(s.home.path(), "alpha", "alpha skill description");
+    plant_and_register(s.home.path(), "alpha", "alpha skill description");
 
     let r = http()
         .post(format!("{}/feedback", s.base_url()))
@@ -461,7 +453,7 @@ fn feedback_verdict_string_bad_maps_to_negative_one() {
 fn feedback_verdict_zero_is_400() {
     let s = spawn_team_server();
     let alice = register(&s, "alice", "pw alice correct horse");
-    plant_and_scan(s.home.path(), "alpha", "alpha skill description");
+    plant_and_register(s.home.path(), "alpha", "alpha skill description");
 
     let r = http()
         .post(format!("{}/feedback", s.base_url()))
@@ -514,7 +506,7 @@ fn feedback_verdict_and_note_together_records_feedback_and_reevaluates() {
     let home = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(home.path().join(".runai/skills")).unwrap();
     write_recommend_config(home.path(), mock.base_url());
-    plant_and_scan(home.path(), "alpha", "alpha skill description");
+    plant_and_register(home.path(), "alpha", "alpha skill description");
     let s = spawn_team_server_with_home(home);
     let alice = register(&s, "alice", "pw alice correct horse");
 
@@ -574,7 +566,7 @@ fn feedback_legacy_body_without_verdict_field_unaffected() {
     let home = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(home.path().join(".runai/skills")).unwrap();
     write_recommend_config(home.path(), mock.base_url());
-    plant_and_scan(home.path(), "alpha", "alpha skill description");
+    plant_and_register(home.path(), "alpha", "alpha skill description");
     let s = spawn_team_server_with_home(home);
     let alice = register(&s, "alice", "pw alice correct horse");
 
@@ -618,7 +610,7 @@ fn feedback_legacy_body_without_verdict_field_unaffected() {
 /// `api_skill_detail_includes_radar_and_feedback_stats_matching_fixture`,
 /// `"enriching"` by `feedback_verdict_positive_records_row_without_reevaluate`).
 ///
-/// Plants + scans BEFORE the server starts (via `spawn_team_server_with_home`)
+/// Plants + registers BEFORE the server starts (via `spawn_team_server_with_home`)
 /// — planting on an ALREADY-RUNNING server races the file watcher, which
 /// fires `spawn_enrich` on the SKILL.md write and marks the skill 富集中
 /// before this test's own GET ever runs, making "unenriched" unobservable.
@@ -626,7 +618,7 @@ fn feedback_legacy_body_without_verdict_field_unaffected() {
 fn api_skill_detail_enrich_status_unenriched_for_fresh_skill() {
     let home = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(home.path().join(".runai/skills")).unwrap();
-    plant_and_scan(home.path(), "gamma", "gamma skill description");
+    plant_and_register(home.path(), "gamma", "gamma skill description");
     let s = spawn_team_server_with_home(home);
     let alice = register(&s, "alice", "pw alice correct horse");
 
@@ -644,8 +636,8 @@ fn api_skill_detail_enrich_status_unenriched_for_fresh_skill() {
 fn api_skill_detail_includes_radar_and_feedback_stats_matching_fixture() {
     let s = spawn_team_server();
     let alice = register(&s, "alice", "pw alice correct horse");
-    plant_and_scan(s.home.path(), "alpha", "alpha skill description");
-    plant_and_scan(s.home.path(), "beta", "beta skill description");
+    plant_and_register(s.home.path(), "alpha", "alpha skill description");
+    plant_and_register(s.home.path(), "beta", "beta skill description");
 
     let db = s.db();
     db.set_skill_ai_summary_scored("alpha", "alpha summary text", 8)
@@ -769,7 +761,7 @@ fn api_skill_detail_feedback_recent_hides_user_id_from_non_admin() {
     // First registered user is auto-admin.
     let alice = register(&s, "alice", "pw alice correct horse");
     let bob = register(&s, "bob", "pw bob correct horse too");
-    plant_and_scan(s.home.path(), "alpha", "alpha skill description");
+    plant_and_register(s.home.path(), "alpha", "alpha skill description");
 
     let db = s.db();
     db.set_skill_ai_summary_scored("alpha", "alpha summary text", 6)
@@ -831,7 +823,7 @@ fn api_skill_detail_feedback_recent_hides_user_id_from_non_admin() {
 fn api_skill_detail_router_stats_are_cached_within_ttl() {
     let s = spawn_team_server();
     let alice = register(&s, "alice", "pw alice correct horse");
-    plant_and_scan(s.home.path(), "alpha", "alpha skill description");
+    plant_and_register(s.home.path(), "alpha", "alpha skill description");
 
     let db = s.db();
     let now = chrono::Utc::now().timestamp();
