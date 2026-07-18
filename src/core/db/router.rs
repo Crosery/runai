@@ -1,13 +1,15 @@
 //! `router_events` + `router_session_adoptions` CRUD and per-session memory.
 //!
 //! INVARIANT: `row_to_router_event` reads columns POSITIONALLY. Every SELECT in
-//! this file that feeds it MUST list all 29 columns, in this exact order:
+//! this file that feeds it MUST list all 36 columns, in this exact order:
 //! id, ts, provider, model, prompt_tokens, completion_tokens, reasoning_tokens,
 //! total_tokens, cache_hit_tokens, cache_miss_tokens, latency_ms,
 //! chosen_skills_json, candidate_count, status, error_msg, session_id, mode,
 //! user_prompt, cwd, bm25_kept, llm_raw_response, hook_output, llm_input,
 //! intent_llm_input, intent_llm_output, intent_status, intent_error_msg,
-//! bm25_candidates_json, user_id. Do NOT reorder, and do NOT drop the trailing `user_id` — see
+//! bm25_candidates_json, user_id, routing_mode, empty_reason, retrieval_query,
+//! parsed_candidates_json, filtered_candidates_json, parser_recovery,
+//! llm_call_count. Do NOT reorder.
 //! github.com/Crosery/runai/issues/33, where `router_event_by_id` and
 //! `router_events_since_ordered` omitted it, causing `row_to_router_event`'s
 //! positional `r.get(23)` to silently read out of range and always return
@@ -27,7 +29,9 @@ use rusqlite::params;
 /// chosen_skills_json, candidate_count, status, error_msg,
 /// session_id, mode, user_prompt, cwd, bm25_kept, llm_raw_response,
 /// hook_output, llm_input, intent_llm_input, intent_llm_output,
-/// intent_status, intent_error_msg, bm25_candidates_json, user_id.
+/// intent_status, intent_error_msg, bm25_candidates_json, user_id,
+/// routing_mode, empty_reason, retrieval_query, parsed_candidates_json,
+/// filtered_candidates_json, parser_recovery, llm_call_count.
 pub(super) fn row_to_router_event(r: &rusqlite::Row<'_>) -> rusqlite::Result<RouterEvent> {
     Ok(RouterEvent {
         id: r.get(0)?,
@@ -74,6 +78,28 @@ pub(super) fn row_to_router_event(r: &rusqlite::Row<'_>) -> rusqlite::Result<Rou
             .unwrap_or_default()
             .unwrap_or_else(|| "[]".to_string()),
         user_id: r.get::<_, Option<String>>(28).unwrap_or_default(),
+        routing_mode: r
+            .get::<_, Option<String>>(29)
+            .unwrap_or_default()
+            .unwrap_or_default(),
+        empty_reason: r
+            .get::<_, Option<String>>(30)
+            .unwrap_or_default()
+            .unwrap_or_default(),
+        retrieval_query: r
+            .get::<_, Option<String>>(31)
+            .unwrap_or_default()
+            .unwrap_or_default(),
+        parsed_candidates_json: r
+            .get::<_, Option<String>>(32)
+            .unwrap_or_default()
+            .unwrap_or_else(|| "[]".into()),
+        filtered_candidates_json: r
+            .get::<_, Option<String>>(33)
+            .unwrap_or_default()
+            .unwrap_or_else(|| "[]".into()),
+        parser_recovery: r.get::<_, Option<i64>>(34).unwrap_or_default().unwrap_or(0) != 0,
+        llm_call_count: r.get::<_, Option<i64>>(35).unwrap_or_default().unwrap_or(0),
     })
 }
 
@@ -89,7 +115,8 @@ impl Database {
                     session_id, mode, user_prompt, cwd, bm25_kept,
                     llm_raw_response, hook_output, llm_input,
                     intent_llm_input, intent_llm_output, intent_status,
-                    intent_error_msg, bm25_candidates_json, user_id
+                    intent_error_msg, bm25_candidates_json, user_id, routing_mode, empty_reason, retrieval_query,
+                    parsed_candidates_json, filtered_candidates_json, parser_recovery, llm_call_count
              FROM router_events re
              WHERE EXISTS (
                 SELECT 1 FROM json_each(re.chosen_skills_json) je WHERE je.value = ?1
@@ -210,6 +237,11 @@ impl Database {
         let intent_input_capped: String = ev.intent_llm_input.chars().take(16384).collect();
         let intent_output_capped: String = ev.intent_llm_output.chars().take(2000).collect();
         let bm25_candidates_capped: String = ev.bm25_candidates_json.chars().take(12000).collect();
+        let retrieval_query_capped: String = ev.retrieval_query.chars().take(4000).collect();
+        let parsed_candidates_capped: String =
+            ev.parsed_candidates_json.chars().take(12000).collect();
+        let filtered_candidates_capped: String =
+            ev.filtered_candidates_json.chars().take(12000).collect();
         self.conn.execute(
             "INSERT INTO router_events (
                 ts, provider, model,
@@ -220,8 +252,9 @@ impl Database {
                 user_prompt, cwd, bm25_kept,
                 llm_raw_response, hook_output, llm_input,
                 intent_llm_input, intent_llm_output, intent_status,
-                intent_error_msg, bm25_candidates_json, user_id
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)",
+                intent_error_msg, bm25_candidates_json, user_id, routing_mode, empty_reason, retrieval_query,
+                    parsed_candidates_json, filtered_candidates_json, parser_recovery, llm_call_count
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35)",
             params![
                 ev.ts,
                 ev.provider,
@@ -254,6 +287,13 @@ impl Database {
                 // per-user filtering / prompt-injection multi-user e2e
                 // (PLANNING §1.3) can scope rows. NULL = unauthenticated.
                 ev.user_id,
+                ev.routing_mode,
+                ev.empty_reason,
+                retrieval_query_capped,
+                parsed_candidates_capped,
+                filtered_candidates_capped,
+                i64::from(ev.parser_recovery),
+                ev.llm_call_count,
             ],
         )?;
         Ok(())
@@ -410,7 +450,8 @@ impl Database {
                     session_id, mode, user_prompt, cwd, bm25_kept,
                     llm_raw_response, hook_output, llm_input,
                     intent_llm_input, intent_llm_output, intent_status,
-                    intent_error_msg, bm25_candidates_json, user_id
+                    intent_error_msg, bm25_candidates_json, user_id, routing_mode, empty_reason, retrieval_query,
+                    parsed_candidates_json, filtered_candidates_json, parser_recovery, llm_call_count
              FROM router_events WHERE 1=1",
         );
         if since_ts.is_some() {
@@ -499,7 +540,8 @@ impl Database {
                     session_id, mode, user_prompt, cwd, bm25_kept,
                     llm_raw_response, hook_output, llm_input,
                     intent_llm_input, intent_llm_output, intent_status,
-                    intent_error_msg, bm25_candidates_json, user_id
+                    intent_error_msg, bm25_candidates_json, user_id, routing_mode, empty_reason, retrieval_query,
+                    parsed_candidates_json, filtered_candidates_json, parser_recovery, llm_call_count
              FROM router_events
              WHERE ts >= ?1 AND session_id != ''
              ORDER BY session_id, ts",
@@ -520,7 +562,8 @@ impl Database {
                     session_id, mode, user_prompt, cwd, bm25_kept,
                     llm_raw_response, hook_output, llm_input,
                     intent_llm_input, intent_llm_output, intent_status,
-                    intent_error_msg, bm25_candidates_json, user_id
+                    intent_error_msg, bm25_candidates_json, user_id, routing_mode, empty_reason, retrieval_query,
+                    parsed_candidates_json, filtered_candidates_json, parser_recovery, llm_call_count
              FROM router_events WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map(params![id], row_to_router_event)?;

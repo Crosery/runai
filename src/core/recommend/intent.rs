@@ -47,7 +47,7 @@ fn contains_any(haystack: &str, terms: &[&str]) -> bool {
     terms.iter().any(|term| haystack.contains(term))
 }
 
-fn compact_true_intent(prompt: &str) -> String {
+pub(super) fn compact_true_intent(prompt: &str) -> String {
     let normalized = normalize_ws(prompt);
     if normalized.chars().count() <= MEMORY_ITEM_CHAR_LIMIT {
         return normalized;

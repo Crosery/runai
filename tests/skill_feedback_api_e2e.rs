@@ -258,6 +258,7 @@ fn insert_router_event(
         intent_error_msg: None,
         bm25_candidates_json: serde_json::to_string(candidates).unwrap(),
         user_id: None,
+        ..RouterEvent::default()
     };
     db.insert_router_event(&ev).unwrap();
 }

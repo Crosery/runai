@@ -19,11 +19,10 @@ use crate::core::paths::AppPaths;
 use crate::core::resource::ResourceKind;
 
 use super::config::{Provider, RecommendConfig, SessionMode};
-use super::enrich::rewrite_query_for_bm25;
 use super::hook_output::format_for_hook_full;
 use super::intent::{
     RecognizedIntent, ScenarioConstraint, build_intent_memory_from_prompt, build_intent_summary,
-    recognize_intent,
+    compact_true_intent, recognize_intent,
 };
 use super::llm_call::{
     INTENT_MAX_TOKENS, ROUTER_MAX_TOKENS, RouterCallStats, call_anthropic,
@@ -141,6 +140,47 @@ impl RouterMode {
             RouterMode::Exclusive => "exclusive",
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct CandidateCatalogEntry {
+    pub(super) id: String,
+    pub(super) name: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum EmptyReason {
+    RetrievalZero,
+    GateZero,
+    ModelEmpty,
+    ParseEmpty,
+    FilteredEmpty,
+    TransportError,
+    None,
+}
+
+impl EmptyReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            EmptyReason::RetrievalZero => "retrieval_zero",
+            EmptyReason::GateZero => "gate_zero",
+            EmptyReason::ModelEmpty => "model_empty",
+            EmptyReason::ParseEmpty => "parse_empty",
+            EmptyReason::FilteredEmpty => "filtered_empty",
+            EmptyReason::TransportError => "transport_error",
+            EmptyReason::None => "none",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct ParsedRouterResponse {
+    pub(super) mode: RouterMode,
+    pub(super) reasoning: String,
+    pub(super) parsed_values: Vec<String>,
+    pub(super) filtered_names: Vec<String>,
+    pub(super) recovery: bool,
+    pub(super) empty_reason: EmptyReason,
 }
 
 /// A single prior router round-trip — the exact `user_msg` we sent and the
@@ -366,6 +406,7 @@ pub(super) fn candidate_allowed_by_intent(
 }
 
 pub(super) struct RouterUserMessageParts<'a> {
+    pub(super) task_anchor: &'a str,
     pub(super) cwd_block: &'a str,
     pub(super) project_context_block: &'a str,
     pub(super) history_block: &'a str,
@@ -383,6 +424,7 @@ pub(super) fn build_router_user_message(parts: RouterUserMessageParts<'_>) -> St
     // changing, re-truncated segment — smaller message, and a more stable
     // prefix within a session (the trailing prompt no longer busts the cache).
     crate::core::prompts::template_body(USER_MSG_TEMPLATE)
+        .replace("{TASK_ANCHOR}", parts.task_anchor)
         .replace("{HISTORY_BLOCK}", parts.history_block)
         .replace("{CWD_BLOCK}", parts.cwd_block)
         .replace("{PROJECT_CONTEXT_BLOCK}", parts.project_context_block)
@@ -653,30 +695,56 @@ pub fn recommend_for_user_with_client(
             .collect();
     }
 
-    // The deterministic intent is the CODE-SIDE fallback (used only if the
-    // Stage-1 LLM call fails) — it is NOT sent to the model, so its
-    // re-embedding of memory/cwd/prompt no longer bloats the intent input.
+    let task_anchor = compact_true_intent(user_prompt);
     let deterministic_intent =
         build_intent_summary(user_prompt, cwd_for_intent, client_kind, &intent_memory);
-    let intent_llm_input =
-        build_intent_user_message(user_prompt, cwd_for_intent, client_kind, &intent_memory);
-    let intent_call = call_intent_recognition(&cfg, &api_key, &intent_llm_input);
-    let (intent_summary, _intent_raw_response, intent_status, intent_error_msg, intent_stats) =
-        match intent_call {
-            Ok((raw, stats)) => {
-                let cleaned = clean_intent_model_output(&raw, &deterministic_intent);
-                (cleaned, raw, "ok".to_string(), None, stats)
-            }
-            Err(e) => (
+    let (intent_summary, intent_llm_input, intent_status, intent_error_msg, intent_stats) =
+        match user_prefs.routing_mode {
+            crate::core::prefs::RoutingMode::Fast => (
                 deterministic_intent.clone(),
                 String::new(),
-                "fallback".to_string(),
-                Some(e.to_string()),
+                "skipped-fast".to_string(),
+                None,
                 RouterCallStats::default(),
             ),
+            crate::core::prefs::RoutingMode::Precise => {
+                let input = build_intent_user_message(
+                    user_prompt,
+                    cwd_for_intent,
+                    client_kind,
+                    &intent_memory,
+                );
+                match call_intent_recognition(&cfg, &api_key, &input) {
+                    Ok((raw, stats)) => (
+                        clean_intent_model_output(&raw, &deterministic_intent),
+                        input,
+                        "ok".to_string(),
+                        None,
+                        stats,
+                    ),
+                    Err(e) => (
+                        deterministic_intent.clone(),
+                        input,
+                        "fallback".to_string(),
+                        Some(e.to_string()),
+                        RouterCallStats::default(),
+                    ),
+                }
+            }
         };
+    let positive_expansion = intent_summary
+        .lines()
+        .filter(|line| {
+            !line
+                .trim_start()
+                .to_ascii_lowercase()
+                .starts_with("exclude_terms")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let bm25_input_query = format!("{task_anchor}\n{positive_expansion}");
     let recognized_intent = recognize_intent(
-        &intent_summary,
+        &format!("{task_anchor}\n{intent_summary}"),
         &intent_memory,
         cwd_for_intent,
         Some(client_kind),
@@ -774,42 +842,11 @@ pub fn recommend_for_user_with_client(
     let bm25_pure = std::env::var("RUNAI_BM25_PURE").is_ok();
     let bm25_as_signal = std::env::var("RUNAI_BM25_AS_SIGNAL").is_ok();
     let bm25_hybrid = !bm25_pure && !bm25_as_signal && !bm25_disabled;
-    // Relevance cutoff: in the default hybrid mode a candidate reaches the
-    // router LLM only if it has real query-term overlap (raw BM25 > 0). Setting
-    // this env restores the legacy fill-to-`bm25_candidate_limit` behavior where
-    // the llm_score / feedback prior alone could float a zero-overlap skill into
-    // the prompt — kept as a regression-comparison escape hatch, named to match
-    // the existing `RUNAI_BM25_*` family.
+    // BM25 ranks candidates; it is not the only correctness gate. Positive
+    // retrieval query always keeps the original task anchor in parallel with
+    // deterministic/Stage-1 expansion. Exclusion fields stay out of positive
+    // BM25 text and remain available to deterministic gates/router cards.
     let bm25_no_cutoff = std::env::var("RUNAI_BM25_NO_CUTOFF").is_ok();
-
-    // Query expansion (opt-in): rewrite short prompts via the LLM into a
-    // BM25-friendly keyword list before prefilter. Off by default —
-    // empirically in hybrid mode (`bm25 * 0.4 + llm_score/10 * 0.6`) the
-    // LLM-score weight dominates and reshuffling BM25 rarely changes the
-    // bounded top-K; the rewrite call adds latency with no chosen-set change.
-    // Worth enabling only with `RUNAI_QUERY_REWRITE_ENABLE=1`, typically
-    // paired with `RUNAI_BM25_PURE=1` to give BM25 score more weight.
-    // Failure falls back to the original prompt.
-    let rewrite_enabled = std::env::var("RUNAI_QUERY_REWRITE_ENABLE").is_ok();
-    let expanded_query = if !rewrite_enabled || intent_summary.chars().count() > 800 {
-        None
-    } else {
-        let api_key_for_rewrite = if cfg.provider == Provider::ClaudeCli {
-            String::new()
-        } else {
-            cfg.effective_api_key().unwrap_or_default()
-        };
-        if cfg.provider == Provider::ClaudeCli || !api_key_for_rewrite.is_empty() {
-            rewrite_query_for_bm25(&cfg, &api_key_for_rewrite, &intent_summary)
-        } else {
-            None
-        }
-    };
-
-    let bm25_input_query: String = match &expanded_query {
-        Some(expanded) => format!("{intent_summary}\n{expanded}"),
-        None => intent_summary.clone(),
-    };
 
     let q_terms = bm25::tokenize(&bm25_input_query);
     let mut bm25_fallback_reason: &'static str = "";
@@ -890,11 +927,42 @@ pub fn recommend_for_user_with_client(
     });
 
     if all_candidates.is_empty() {
-        return Ok(RouterDecision {
+        let decision = RouterDecision {
             mode: RouterMode::Exclusive,
             reasoning: String::new(),
             skills: Vec::new(),
-        });
+        };
+        let ev = RouterEvent {
+            ts: chrono::Utc::now().timestamp(),
+            provider: provider_label(&cfg),
+            model: cfg.model.clone(),
+            prompt_tokens: intent_stats.prompt_tokens,
+            completion_tokens: intent_stats.completion_tokens,
+            reasoning_tokens: intent_stats.reasoning_tokens,
+            total_tokens: intent_stats.total_tokens,
+            cache_hit_tokens: intent_stats.cache_hit_tokens,
+            cache_miss_tokens: intent_stats.cache_miss_tokens,
+            chosen_skills_json: "[]".into(),
+            candidate_count: all_candidates_count as i64,
+            session_id: session_id.unwrap_or("").into(),
+            mode: RouterMode::Exclusive.as_str().into(),
+            user_prompt: user_prompt.into(),
+            cwd: cwd.unwrap_or("").into(),
+            intent_llm_input,
+            intent_llm_output: intent_summary,
+            intent_status,
+            intent_error_msg,
+            user_id: user_id.map(str::to_string),
+            routing_mode: user_prefs.routing_mode.as_str().into(),
+            empty_reason: EmptyReason::GateZero.as_str().into(),
+            retrieval_query: bm25_input_query,
+            llm_call_count: i64::from(
+                user_prefs.routing_mode == crate::core::prefs::RoutingMode::Precise,
+            ),
+            ..RouterEvent::default()
+        };
+        let _ = mgr.db().insert_router_event(&ev);
+        return Ok(decision);
     }
 
     // skill name → normalised BM25 score (0..1) for the [bm25:0.XX] tag.
@@ -959,17 +1027,13 @@ pub fn recommend_for_user_with_client(
             // harder relevance signal than the enrich-pass `llm_score` alone.
             // Zero-history skills stay neutral (0.5), so this never penalises a
             // freshly-installed skill relative to the old two-signal formula.
-            // Relevance-first admission gate: a candidate is scored only when it
-            // has nonzero query-term overlap (present in `bm25_scores` ⇔ raw
-            // BM25 > 0). The llm_score / feedback prior may REORDER genuinely
-            // overlapping candidates but must never ADMIT a zero-overlap one —
-            // the ~0.33 baseline (llm/10*0.45 + feedback*0.20 at bm25=0) is
-            // exactly what let ~30 unrelated skills flood the prompt on a query
-            // no skill matched. `RUNAI_BM25_NO_CUTOFF=1` drops the gate.
+            // Zero-overlap candidates may fill the remaining bounded pool;
+            // BM25 still dominates ordering, while quality/feedback provide a
+            // deterministic semantic-fallback prior. The configured limit
+            // prevents restoring the old full-corpus prompt flood.
             let mut scored: Vec<(usize, f64)> = all_candidates
                 .iter()
                 .enumerate()
-                .filter(|(_, r)| bm25_no_cutoff || bm25_scores.contains_key(&r.name))
                 .map(|(i, r)| {
                     let bm = bm25_scores.get(&r.name).copied().unwrap_or(0.0);
                     let index_key = Database::skill_ai_index_key_for_resource(r);
@@ -983,6 +1047,8 @@ pub fn recommend_for_user_with_client(
             scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
             bm25_fallback_reason = if bm25_no_cutoff {
                 "bm25-hybrid-no-cutoff"
+            } else if bm25_scores.is_empty() {
+                "bounded-zero-overlap-fallback"
             } else {
                 "bm25-hybrid"
             };
@@ -1067,6 +1133,17 @@ pub fn recommend_for_user_with_client(
             intent_error_msg,
             bm25_candidates_json: "[]".to_string(),
             user_id: user_id.map(|s| s.to_string()),
+            routing_mode: user_prefs.routing_mode.as_str().to_string(),
+            empty_reason: EmptyReason::RetrievalZero.as_str().to_string(),
+            retrieval_query: bm25_input_query.clone(),
+            parsed_candidates_json: "[]".into(),
+            filtered_candidates_json: "[]".into(),
+            parser_recovery: false,
+            llm_call_count: if user_prefs.routing_mode == crate::core::prefs::RoutingMode::Precise {
+                1
+            } else {
+                0
+            },
         };
         let _ = mgr.db().insert_router_event(&ev);
         write_last_recommend(mgr.paths(), &decision);
@@ -1083,7 +1160,8 @@ pub fn recommend_for_user_with_client(
     let emit_bm25_tag = bm25_as_signal;
     let candidate_listing: String = candidates
         .iter()
-        .map(|r| {
+        .enumerate()
+        .map(|(candidate_idx, r)| {
             let mut tags = String::new();
             if r.usage_count > 0 {
                 tags.push_str(&format!(" [used:{}]", r.usage_count));
@@ -1127,7 +1205,13 @@ pub fn recommend_for_user_with_client(
                 Some(index) if !index.router_card.is_empty() => index.router_card.as_str(),
                 _ => r.description.as_str(),
             };
-            format!("- {}{tags}: {}", r.name, body_for_llm)
+            let compact_card: String = body_for_llm.chars().take(520).collect();
+            format!(
+                "C{:02} | {}{tags} | {}",
+                candidate_idx + 1,
+                r.name,
+                compact_card
+            )
         })
         .collect::<Vec<_>>()
         .join("\n");
@@ -1162,6 +1246,7 @@ pub fn recommend_for_user_with_client(
         cwd_block: &cwd_block,
         project_context_block: &project_context_block,
         history_block: &history_block,
+        task_anchor: &task_anchor,
         intent_summary: &intent_summary,
         candidate_listing: &candidate_listing,
         bm25_candidate_limit,
@@ -1184,35 +1269,40 @@ pub fn recommend_for_user_with_client(
     };
 
     let started = Instant::now();
-    let call_result = call_router(&cfg, &api_key, &user_msg, &history_turns);
+    let catalog: Vec<CandidateCatalogEntry> = candidates
+        .iter()
+        .enumerate()
+        .map(|(idx, resource)| CandidateCatalogEntry {
+            id: format!("C{:02}", idx + 1),
+            name: resource.name.clone(),
+        })
+        .collect();
+    let call_result = call_router(&cfg, &api_key, &user_msg, &history_turns, &catalog);
     let latency_ms = started.elapsed().as_millis() as i64;
 
-    let (mode, reasoning, chosen_names, router_stats, status, error_msg, llm_raw) =
-        match call_result {
-            Ok((mode, reasoning, names, stats, raw)) => {
-                (mode, reasoning, names, stats, "ok".to_string(), None, raw)
-            }
-            Err(e) => (
-                RouterMode::Exclusive,
-                String::new(),
-                Vec::new(),
-                RouterCallStats::default(),
-                "error".to_string(),
-                Some(e.to_string()),
-                String::new(),
-            ),
-        };
+    let (parsed, router_stats, status, error_msg, llm_raw) = match call_result {
+        Ok((parsed, stats, raw)) => (parsed, stats, "ok".to_string(), None, raw),
+        Err(e) => (
+            ParsedRouterResponse {
+                mode: RouterMode::Exclusive,
+                reasoning: String::new(),
+                parsed_values: Vec::new(),
+                filtered_names: Vec::new(),
+                recovery: false,
+                empty_reason: EmptyReason::TransportError,
+            },
+            RouterCallStats::default(),
+            "error".to_string(),
+            Some(e.to_string()),
+            String::new(),
+        ),
+    };
+    let mode = parsed.mode;
+    let reasoning = parsed.reasoning.clone();
+    let mut chosen_names = parsed.filtered_names.clone();
     let stats = add_stats(&intent_stats, &router_stats);
-    // Drop names that the LLM hallucinated against the candidate set (they
-    // can't be loaded). Already-routed names stay eligible here: the prompt
-    // warns the router about them, but follow-up requests can still re-surface
-    // the same skill if it is the right answer again.
-    let candidate_set: std::collections::HashSet<String> =
-        candidates.iter().map(|r| r.name.clone()).collect();
-    let mut chosen_names: Vec<String> = chosen_names
-        .into_iter()
-        .filter(|n| candidate_set.contains(n))
-        .collect();
+    // `parse_router_response` already maps every protocol variant through the
+    // request-local short-ID/name whitelist and enforces the output ceiling.
     if mode == RouterMode::Exclusive
         && recognized_intent.has(ScenarioConstraint::ImageReferenceRegeneration)
         && chosen_names.len() > 1
@@ -1316,6 +1406,19 @@ pub fn recommend_for_user_with_client(
         intent_error_msg,
         bm25_candidates_json,
         user_id: user_id.map(|s| s.to_string()),
+        routing_mode: user_prefs.routing_mode.as_str().to_string(),
+        empty_reason: parsed.empty_reason.as_str().to_string(),
+        retrieval_query: bm25_input_query.clone(),
+        parsed_candidates_json: serde_json::to_string(&parsed.parsed_values)
+            .unwrap_or_else(|_| "[]".into()),
+        filtered_candidates_json: serde_json::to_string(&chosen_names)
+            .unwrap_or_else(|_| "[]".into()),
+        parser_recovery: parsed.recovery,
+        llm_call_count: if user_prefs.routing_mode == crate::core::prefs::RoutingMode::Precise {
+            2
+        } else {
+            1
+        },
     };
     let _ = mgr.db().insert_router_event(&ev);
 
@@ -1358,18 +1461,179 @@ fn call_router(
     api_key: &str,
     user_msg: &str,
     history: &[RouterTurn],
-) -> Result<(RouterMode, String, Vec<String>, RouterCallStats, String)> {
+    catalog: &[CandidateCatalogEntry],
+) -> Result<(ParsedRouterResponse, RouterCallStats, String)> {
     let max_tokens = Some(ROUTER_MAX_TOKENS);
     let (raw, stats) = match cfg.provider {
         Provider::OpenaiCompat => call_openai_compat(cfg, api_key, user_msg, history, max_tokens)?,
         Provider::Anthropic => call_anthropic(cfg, api_key, user_msg, history, max_tokens)?,
-        // ClaudeCli always boots a fresh Claude Code session per call,
-        // so conversation replay would have to ship the entire history
-        // through stdin every time — defeats the cost story. Stay oneshot.
         Provider::ClaudeCli => call_claude_cli(cfg, user_msg)?,
     };
-    let (mode, reasoning, names) = split_mode_and_names(parse_lines(&raw));
-    Ok((mode, reasoning, names, stats, raw))
+    let parsed = parse_router_response(&raw, catalog, cfg.top_k);
+    Ok((parsed, stats, raw))
+}
+
+#[derive(serde::Deserialize)]
+struct RouterJsonOutput {
+    mode: Option<String>,
+    selected: Option<Vec<String>>,
+    reasoning: Option<String>,
+}
+
+fn strip_fence(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if !trimmed.starts_with("```") {
+        return trimmed.to_string();
+    }
+    let mut lines = trimmed.lines();
+    let _ = lines.next();
+    lines
+        .take_while(|line| !line.trim_start().starts_with("```"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
+fn normalized_selection_token(line: &str) -> String {
+    let mut text = line
+        .trim()
+        .trim_start_matches(|c: char| c == '-' || c == '*' || c == '•')
+        .trim();
+    let digits = text.chars().take_while(|c| c.is_ascii_digit()).count();
+    if digits > 0 {
+        let rest = &text[digits..];
+        if rest.starts_with('.') || rest.starts_with(')') || rest.starts_with('、') {
+            text = rest[1..].trim();
+        }
+    }
+    for prefix in ["skill:", "skill：", "name:", "name："] {
+        if text.to_ascii_lowercase().starts_with(prefix) {
+            text = text[prefix.len()..].trim();
+            break;
+        }
+    }
+    text.trim_matches('`')
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .trim_end_matches([',', ';', '，', '；'])
+        .to_string()
+}
+
+fn exact_mention(text: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    let lower = text.to_lowercase();
+    let needle = needle.to_lowercase();
+    lower.match_indices(&needle).any(|(idx, _)| {
+        let before = lower[..idx].chars().next_back();
+        let after = lower[idx + needle.len()..].chars().next();
+        let boundary = |c: Option<char>| {
+            c.is_none_or(|ch| !ch.is_ascii_alphanumeric() && ch != '-' && ch != '_')
+        };
+        boundary(before) && boundary(after)
+    })
+}
+
+pub(super) fn parse_router_response(
+    raw: &str,
+    catalog: &[CandidateCatalogEntry],
+    limit: usize,
+) -> ParsedRouterResponse {
+    let trimmed = strip_fence(raw);
+    let (mode, reasoning, parsed_values, explicit_empty) =
+        if let Ok(json) = serde_json::from_str::<RouterJsonOutput>(&trimmed) {
+            let mode = match json.mode.as_deref().map(str::to_ascii_lowercase).as_deref() {
+                Some("compatible") => RouterMode::Compatible,
+                _ => RouterMode::Exclusive,
+            };
+            let selected = json.selected.unwrap_or_default();
+            (
+                mode,
+                json.reasoning.unwrap_or_default(),
+                selected.clone(),
+                selected.is_empty(),
+            )
+        } else {
+            let lines = parse_lines(&trimmed);
+            let (mode, reasoning, values) = split_mode_and_names(lines);
+            let values: Vec<String> = values
+                .into_iter()
+                .map(|line| normalized_selection_token(&line))
+                .filter(|line| !line.is_empty())
+                .collect();
+            let explicit_empty = trimmed.eq_ignore_ascii_case("NONE")
+                || (values.is_empty()
+                    && trimmed
+                        .lines()
+                        .any(|line| line.trim().eq_ignore_ascii_case("NONE")));
+            (mode, reasoning, values, explicit_empty)
+        };
+
+    let by_id: std::collections::HashMap<String, String> = catalog
+        .iter()
+        .map(|entry| (entry.id.to_ascii_uppercase(), entry.name.clone()))
+        .collect();
+    let by_name: std::collections::HashMap<String, String> = catalog
+        .iter()
+        .map(|entry| (entry.name.to_lowercase(), entry.name.clone()))
+        .collect();
+    let mut filtered_names = Vec::new();
+    for value in &parsed_values {
+        let normalized = normalized_selection_token(value);
+        let resolved = by_id
+            .get(&normalized.to_ascii_uppercase())
+            .or_else(|| by_name.get(&normalized.to_lowercase()));
+        if let Some(name) = resolved
+            && !filtered_names.contains(name)
+        {
+            filtered_names.push(name.clone());
+        }
+    }
+    filtered_names.truncate(limit);
+
+    let mut recovery = false;
+    if filtered_names.is_empty() && !explicit_empty && !reasoning.trim().is_empty() {
+        let mentions: Vec<String> = catalog
+            .iter()
+            .filter(|entry| reasoning_mentions_candidate(&reasoning, entry))
+            .map(|entry| entry.name.clone())
+            .collect();
+        if mentions.len() == 1 {
+            filtered_names = mentions;
+            recovery = true;
+        }
+    }
+
+    let empty_reason = if !filtered_names.is_empty() {
+        EmptyReason::None
+    } else if explicit_empty {
+        EmptyReason::ModelEmpty
+    } else if raw.trim().is_empty() || parsed_values.is_empty() {
+        EmptyReason::ParseEmpty
+    } else {
+        EmptyReason::FilteredEmpty
+    };
+
+    ParsedRouterResponse {
+        mode,
+        reasoning,
+        parsed_values,
+        filtered_names,
+        recovery,
+        empty_reason,
+    }
+}
+
+fn reasoning_mentions_candidate(reasoning: &str, entry: &CandidateCatalogEntry) -> bool {
+    if exact_mention(reasoning, &entry.id) || exact_mention(reasoning, &entry.name) {
+        return true;
+    }
+    reasoning
+        .to_lowercase()
+        .contains(&entry.name.to_lowercase())
 }
 
 /// Parse router output into `(mode, reasoning, skill_names)`.

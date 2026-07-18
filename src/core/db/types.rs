@@ -61,9 +61,65 @@ pub struct RouterEvent {
     /// before the second-wave router LLM picks the final set.
     pub bm25_candidates_json: String,
     /// Authenticated user_id this event belongs to. None for pre-schema-v15
-    /// rows and for unauthenticated requests during the compat window
-    /// (prefs.require_auth=false). Per-user dashboard views filter on this.
+    /// rows and for unauthenticated requests during the compat window.
     pub user_id: Option<String>,
+    /// Per-user routing pipeline: fast / precise; empty means a legacy row.
+    pub routing_mode: String,
+    /// Why the final selection is empty, or `none` for a non-empty result.
+    pub empty_reason: String,
+    /// Actual positive retrieval query used for candidate ranking.
+    pub retrieval_query: String,
+    /// IDs/names parsed from the model before whitelist filtering.
+    pub parsed_candidates_json: String,
+    /// Candidate names surviving the request-local whitelist.
+    pub filtered_candidates_json: String,
+    /// Whether a missing selection was recovered from a unique reasoning mention.
+    pub parser_recovery: bool,
+    /// Number of recommend-model calls made by this request.
+    pub llm_call_count: i64,
+}
+
+impl Default for RouterEvent {
+    fn default() -> Self {
+        Self {
+            id: None,
+            ts: 0,
+            provider: String::new(),
+            model: String::new(),
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            reasoning_tokens: 0,
+            total_tokens: 0,
+            cache_hit_tokens: 0,
+            cache_miss_tokens: 0,
+            latency_ms: 0,
+            chosen_skills_json: "[]".into(),
+            candidate_count: 0,
+            status: "ok".into(),
+            error_msg: None,
+            session_id: String::new(),
+            mode: "exclusive".into(),
+            user_prompt: String::new(),
+            cwd: String::new(),
+            bm25_kept: 0,
+            llm_raw_response: String::new(),
+            hook_output: String::new(),
+            llm_input: String::new(),
+            intent_llm_input: String::new(),
+            intent_llm_output: String::new(),
+            intent_status: String::new(),
+            intent_error_msg: None,
+            bm25_candidates_json: "[]".into(),
+            user_id: None,
+            routing_mode: String::new(),
+            empty_reason: String::new(),
+            retrieval_query: String::new(),
+            parsed_candidates_json: "[]".into(),
+            filtered_candidates_json: "[]".into(),
+            parser_recovery: false,
+            llm_call_count: 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

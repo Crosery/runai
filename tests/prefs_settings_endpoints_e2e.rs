@@ -140,6 +140,7 @@ fn seed_one_router_event(s: &ServerGuard) {
         intent_error_msg: None,
         bm25_candidates_json: "[]".into(),
         user_id: None,
+        ..RouterEvent::default()
     };
     db.insert_router_event(&ev).expect("seed router event");
 }

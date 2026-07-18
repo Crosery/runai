@@ -212,7 +212,7 @@ fn precise_keeps_original_anchor_parallel_to_stage1_expansion_and_calls_twice() 
     let (_root, mgr) = setup(&mock, "precise", "ORIGINALANCHOR");
     let decision = recommend_for_user_with_client(
         &mgr,
-        "ORIGINALANCHOR",
+        "Please process ORIGINALANCHOR now",
         None,
         Some("precise-session"),
         None,

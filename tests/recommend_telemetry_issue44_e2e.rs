@@ -33,6 +33,7 @@ fn base_event() -> RouterEvent {
         intent_error_msg: None,
         bm25_candidates_json: r#"["C01"]"#.into(),
         user_id: None,
+        ..RouterEvent::default()
     }
 }
 

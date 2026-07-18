@@ -1273,6 +1273,13 @@ fn base_event() -> RouterEvent {
         intent_error_msg: None,
         bm25_candidates_json: r#"["foo","bar"]"#.into(),
         user_id: None,
+        routing_mode: "fast".into(),
+        empty_reason: "none".into(),
+        retrieval_query: "write test".into(),
+        parsed_candidates_json: r#"["C01"]"#.into(),
+        filtered_candidates_json: r#"["foo"]"#.into(),
+        parser_recovery: true,
+        llm_call_count: 1,
     }
 }
 
@@ -1321,6 +1328,13 @@ fn insert_router_event_roundtrip_preserves_all_fields_including_user_id() {
     assert_eq!(got.intent_status, ev.intent_status);
     assert_eq!(got.intent_error_msg, ev.intent_error_msg);
     assert_eq!(got.bm25_candidates_json, ev.bm25_candidates_json);
+    assert_eq!(got.routing_mode, ev.routing_mode);
+    assert_eq!(got.empty_reason, ev.empty_reason);
+    assert_eq!(got.retrieval_query, ev.retrieval_query);
+    assert_eq!(got.parsed_candidates_json, ev.parsed_candidates_json);
+    assert_eq!(got.filtered_candidates_json, ev.filtered_candidates_json);
+    assert_eq!(got.parser_recovery, ev.parser_recovery);
+    assert_eq!(got.llm_call_count, ev.llm_call_count);
     assert_eq!(
         got.user_id.as_deref(),
         Some("usr_alice"),

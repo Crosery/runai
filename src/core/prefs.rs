@@ -5,10 +5,10 @@
 //! - missing fields → individual `serde(default = ...)` per field
 //! - numeric limits are clamped on load
 //!
-//! Recommend context controls live here too: `intent_memory_enabled`,
-//! `intent_memory_limit` (default 10, drop-oldest queue), and
-//! `bm25_candidate_limit` (default 30) are per-user dashboard preferences,
-//! not global `RecommendConfig` values.
+//! Recommend context controls live here too: `routing_mode` (Fast by default,
+//! Precise opt-in), `intent_memory_enabled`, `intent_memory_limit` (default 10,
+//! drop-oldest queue), and `bm25_candidate_limit` (default 30) are per-user
+//! dashboard preferences, not global `RecommendConfig` values.
 //!
 //! This makes the column safe to evolve: adding a field never breaks an
 //! old prefs blob, and dropping one is a no-op for unknown keys.
@@ -35,6 +35,26 @@ impl RecommendMode {
             RecommendMode::Compatible => "compatible",
             RecommendMode::Exclusive => "exclusive",
             RecommendMode::Off => "off",
+        }
+    }
+}
+
+/// LLM routing pipeline selected per user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum RoutingMode {
+    /// Deterministic retrieval plus one bounded router LLM call.
+    #[default]
+    Fast,
+    /// Query expansion plus bounded router LLM selection.
+    Precise,
+}
+
+impl RoutingMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RoutingMode::Fast => "fast",
+            RoutingMode::Precise => "precise",
         }
     }
 }
@@ -87,6 +107,8 @@ pub struct UserPrefs {
     pub intent_memory_limit: usize,
     /// Number of BM25-ranked skill candidates shown to the router LLM before
     /// it picks the final `candidate_limit` / `RecommendConfig::top_k` output.
+    #[serde(default)]
+    pub routing_mode: RoutingMode,
     #[serde(default = "default_bm25_candidate_limit")]
     pub bm25_candidate_limit: usize,
     /// Per-user injection toggles for centralised prompt templates (PLANNING
@@ -152,6 +174,7 @@ impl Default for UserPrefs {
             skip_reminder_template: String::new(),
             intent_memory_enabled: default_true(),
             intent_memory_limit: default_intent_memory_limit(),
+            routing_mode: RoutingMode::Fast,
             bm25_candidate_limit: default_bm25_candidate_limit(),
             prompt_injection_flags: HashMap::new(),
         }
@@ -274,6 +297,7 @@ mod tests {
             skip_reminder_template: "use sparingly".into(),
             intent_memory_enabled: true,
             intent_memory_limit: 7,
+            routing_mode: RoutingMode::Precise,
             bm25_candidate_limit: 42,
             prompt_injection_flags: flags,
         };

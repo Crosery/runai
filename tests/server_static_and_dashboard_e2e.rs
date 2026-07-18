@@ -146,6 +146,7 @@ fn seed_router_event(s: &ServerGuard, user_id: Option<&str>) -> i64 {
         intent_error_msg: None,
         bm25_candidates_json: r#"["alpha"]"#.into(),
         user_id: user_id.map(str::to_string),
+        ..RouterEvent::default()
     };
     mgr.db().insert_router_event(&ev).unwrap();
     mgr.db()

@@ -20,13 +20,10 @@
 /// off leaves the router LLM with no instructions and produces garbage.
 pub const PROMPT_RECOMMEND_SYSTEM: &str = include_str!("recommend_system.md");
 
-/// recommend_user.md — Stage-2 user-turn scaffold built per request, with
-/// placeholders `{INTENT_SUMMARY}` / `{CWD_BLOCK}` / `{PROJECT_CONTEXT_BLOCK}` /
-/// `{HISTORY_BLOCK}` / `{CANDIDATE_LISTING}` / `{BM25_CANDIDATE_LIMIT}`.
-/// Always rendered — toggling the surrounding blocks is what users configure,
-/// not this skeleton. **No `{USER_PROMPT}`**: Stage-2 routes off the Stage-1
-/// intent summary, not the raw prompt (session no-repeat suppression was also
-/// removed, so there is no `{ALREADY_ROUTED_BLOCK}` either).
+/// recommend_user.md — bounded router user-turn scaffold built per request,
+/// with `{TASK_ANCHOR}` parallel to `{INTENT_SUMMARY}` plus the candidate and
+/// optional context blocks. Fast sends deterministic intent; Precise sends the
+/// Stage-1 expansion without allowing it to replace the original task anchor.
 pub const PROMPT_RECOMMEND_USER: &str = include_str!("recommend_user.md");
 
 /// recommend_intent.md — first-wave intent condensation prompt. It uses the
@@ -138,9 +135,8 @@ mod tests {
         assert!(PROMPT_RECOMMEND_HISTORY_PREFIX.contains("{HISTORY}"));
         assert!(PROMPT_RECOMMEND_CWD_PREFIX.contains("{CWD}"));
         assert!(PROMPT_RECOMMEND_PROJECT_CONTEXT.contains("{PROJECT_DOCS}"));
-        // Stage-2 no longer embeds the raw prompt — `{USER_PROMPT}` was removed;
-        // the router routes off the Stage-1 intent summary.
         assert!(!PROMPT_RECOMMEND_USER.contains("{USER_PROMPT}"));
+        assert!(PROMPT_RECOMMEND_USER.contains("{TASK_ANCHOR}"));
         assert!(PROMPT_RECOMMEND_USER.contains("{INTENT_SUMMARY}"));
         assert!(PROMPT_RECOMMEND_USER.contains("{BM25_CANDIDATE_LIMIT}"));
         // recommend_intent.md is now a FIXED system prompt with no dynamic

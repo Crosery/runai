@@ -137,6 +137,7 @@
     };
     setSwitch('set-intent-memory-enabled', 'intent_memory_enabled', true);
     setNumber('set-intent-memory-limit', 'intent_memory_limit', 10);
+    setText('set-routing-mode', 'routing_mode', 'fast');
     setNumber('set-bm25-candidate-limit', 'bm25_candidate_limit', 30);
     setSwitch('set-allow-public-recommend', 'allow_public_recommend', false);
     setSwitch('set-enabled', 'recommend_enabled', true);

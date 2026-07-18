@@ -167,13 +167,19 @@ impl Mock {
                         let is_intent = system_of(&body)
                             .map(|s| s.contains("第一波"))
                             .unwrap_or(false);
+                        let is_router = serde_json::from_str::<serde_json::Value>(&body)
+                            .ok()
+                            .and_then(|v| v.get("max_tokens").and_then(|n| n.as_i64()))
+                            == Some(400);
                         let content = if is_intent {
                             let prompt = intent_prompt_of(&body);
                             format!("intent: {prompt}\ninclude_terms: {prompt}")
-                        } else {
+                        } else if is_router {
                             calls_t.fetch_add(1, Ordering::SeqCst);
                             let pick = pick_t.lock().unwrap().clone();
                             format!("EXCLUSIVE\nreasoning: mock 命中\n{pick}\n")
+                        } else {
+                            "task: 测试\ntriggers: test\ninputs: text\noutputs: text\nnot-for: none\nscore: 5".to_string()
                         };
                         let resp = openai_response(&content);
                         let _ = stream.write_all(resp.as_bytes());
@@ -320,7 +326,7 @@ fn plant_noise(env: &TestEnv) {
 fn zero_overlap_query_skips_stage2_and_logs_empty_candidate_event() {
     let env = TestEnv::new();
     plant_noise(&env);
-    let mock = Mock::start("swift-actor-persistence");
+    let mock = Mock::start("");
     env.write_config(mock.base_url());
 
     // Real user failure case: intent has distinctive terms (ventoy/U盘/usb) that
@@ -346,14 +352,17 @@ fn zero_overlap_query_skips_stage2_and_logs_empty_candidate_event() {
         );
     }
 
-    // Telemetry: Stage-1 ran (intent output present), the row is status=ok with
-    // bm25_kept = 0.
+    // Telemetry: Fast skips Stage-1, keeps a bounded fallback pool, and lets
+    // the router explicitly return empty.
     let (kept, status, intent_present) = env.last_event().expect("a router_events row");
-    assert_eq!(kept, 0, "bm25_kept must be 0 for the cutoff-skipped round");
-    assert_eq!(status, "ok", "cutoff-skipped round is a normal ok event");
+    assert!(
+        kept > 0 && kept <= 30,
+        "fallback candidate pool must stay bounded"
+    );
+    assert_eq!(status, "ok");
     assert!(
         intent_present,
-        "Stage-1 intent output must still be recorded"
+        "deterministic intent remains recorded for audit"
     );
 }
 

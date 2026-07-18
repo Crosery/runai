@@ -370,6 +370,7 @@
     wirePref('set-read-claude-md', 'read_claude_md', 'checkbox');
     wirePref('set-intent-memory-enabled', 'intent_memory_enabled', 'checkbox');
     wirePref('set-intent-memory-limit', 'intent_memory_limit', 'number');
+    wirePref('set-routing-mode', 'routing_mode', 'select');
     wirePref('set-bm25-candidate-limit', 'bm25_candidate_limit', 'number');
     wirePref('set-skip-reminder', 'skip_reminder_enabled', 'checkbox');
     wirePref('set-skip-reminder-template', 'skip_reminder_template', 'textarea');

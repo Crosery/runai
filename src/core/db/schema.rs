@@ -602,6 +602,29 @@ impl Database {
             )?;
         }
 
+        if version < 28 {
+            let has_router_events: i64 = self.conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='router_events'",
+                [],
+                |r| r.get(0),
+            )?;
+            if has_router_events > 0 {
+                self.conn.execute_batch(
+                    "ALTER TABLE router_events ADD COLUMN routing_mode TEXT NOT NULL DEFAULT '';
+                     ALTER TABLE router_events ADD COLUMN empty_reason TEXT NOT NULL DEFAULT '';
+                     ALTER TABLE router_events ADD COLUMN retrieval_query TEXT NOT NULL DEFAULT '';
+                     ALTER TABLE router_events ADD COLUMN parsed_candidates_json TEXT NOT NULL DEFAULT '[]';
+                     ALTER TABLE router_events ADD COLUMN filtered_candidates_json TEXT NOT NULL DEFAULT '[]';
+                     ALTER TABLE router_events ADD COLUMN parser_recovery INTEGER NOT NULL DEFAULT 0;
+                     ALTER TABLE router_events ADD COLUMN llm_call_count INTEGER NOT NULL DEFAULT 0;",
+                )?;
+            }
+            self.conn.execute_batch(
+                "DELETE FROM schema_version;
+                 INSERT INTO schema_version VALUES (28);",
+            )?;
+        }
+
         Ok(())
     }
 }

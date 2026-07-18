@@ -600,45 +600,6 @@ fn parse_enrich_response(raw: &str) -> (String, i64) {
     (cleaned, score.unwrap_or(5))
 }
 
-/// Expand a short / ambiguous user prompt into a BM25-friendly keyword
-/// string for the prefilter. The LLM is asked to pull out the user's real
-/// intent and pad the query with synonyms, jargon, en/zh cross-fills, and
-/// verb/noun variants. Output is a single comma-separated line, no prose.
-/// Returns `None` on any error (network, parse, empty) — caller falls back
-/// to the raw user prompt; nothing depends on rewrite succeeding.
-pub(super) fn rewrite_query_for_bm25(
-    cfg: &RecommendConfig,
-    api_key: &str,
-    user_prompt: &str,
-) -> Option<String> {
-    let prompt = format!(
-        "你是 BM25 检索查询扩展器。\n\n\
-        任务：把下面的 user prompt 扩展成一行 BM25 检索友好的关键词列表。\n\
-        - 提取用户的真实意图（不要逐字复述 prompt）\n\
-        - 加同义词、行话、动词名词变体、缩写\n\
-        - 中文 prompt 加英文同义词；英文 prompt 加中文等价词\n\
-        - 至少 10 个关键词，多多益善\n\
-        - **输出格式**：单行，逗号分隔的关键词，不要任何解释 / 标题 / 前后缀 / 引号\n\
-        - 不要写句子，只写关键词\n\n\
-        反例（不要这样写）：\n\
-        - 'I think the user wants ...' （别解释）\n\
-        - 'Keywords: a, b, c' （别写前缀）\n\
-        - 多行输出\n\n\
-        user prompt: {user_prompt}\n\n\
-        输出（单行关键词）："
-    );
-    let raw = call_summary_llm(cfg, api_key, &prompt).ok()?;
-    // Take only the first non-empty line; LLM sometimes adds a trailing
-    // explanation despite the instructions.
-    let line = raw.lines().find(|l| !l.trim().is_empty())?.trim();
-    if line.is_empty() {
-        return None;
-    }
-    // Sanity cap to bound the prefilter input.
-    let capped: String = line.chars().take(800).collect();
-    Some(capped)
-}
-
 #[cfg(test)]
 mod owner_aware_tests {
     use super::*;

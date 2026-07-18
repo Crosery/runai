@@ -8,9 +8,10 @@ use super::intent::{
 use super::lang_validation::prose_fields;
 use super::project_context::{extract_at_references, read_project_context};
 use super::router::{
-    CandidateRelevanceInput, RouterUserMessageParts, build_router_user_message,
-    candidate_allowed_by_intent, feedback_markers, hybrid_score, is_harness_message, parse_lines,
-    split_mode_and_names, truncate_prompt_for_llm,
+    CandidateCatalogEntry, CandidateRelevanceInput, RouterUserMessageParts,
+    build_router_user_message, candidate_allowed_by_intent, feedback_markers, hybrid_score,
+    is_harness_message, parse_lines, parse_router_response, split_mode_and_names,
+    truncate_prompt_for_llm,
 };
 use super::{
     HookInstallStatus, Provider, RecommendConfig, RecommendedSkill, RouterDecision, RouterMode,
@@ -224,13 +225,16 @@ fn issue44_reasoning_named_candidate_recovers_from_anonymized_replays() {
     let cases: Vec<Issue44ReplayCase> = serde_json::from_str(fixture).unwrap();
     assert_eq!(cases.len(), 5);
     for case in cases {
-        let (_mode, _reasoning, parsed) = split_mode_and_names(parse_lines(&case.raw));
-        let whitelist: std::collections::HashSet<&str> =
-            case.candidates.iter().map(String::as_str).collect();
-        let recovered: Vec<String> = parsed
-            .into_iter()
-            .filter(|name| whitelist.contains(name.as_str()))
+        let catalog: Vec<CandidateCatalogEntry> = case
+            .candidates
+            .iter()
+            .enumerate()
+            .map(|(idx, name)| CandidateCatalogEntry {
+                id: format!("C{:02}", idx + 1),
+                name: name.clone(),
+            })
             .collect();
+        let recovered = parse_router_response(&case.raw, &catalog, 8).filtered_names;
         assert_eq!(
             recovered, case.expected,
             "reasoning 点名候选但漏选择行时应受控恢复：{}",
@@ -248,22 +252,29 @@ fn issue44_parser_accepts_short_id_json_and_common_drift() {
         "EXCLUSIVE\n- skill: C01",
         "EXCLUSIVE\nname: c01\n说明：直接命中",
     ];
+    let catalog = vec![CandidateCatalogEntry {
+        id: "C01".into(),
+        name: "alpha".into(),
+    }];
     for raw in cases {
-        let (_mode, _reasoning, names) = split_mode_and_names(parse_lines(raw));
-        assert_eq!(names, vec!["C01"], "应解析短 ID 协议：{raw}");
+        let parsed = parse_router_response(raw, &catalog, 8);
+        assert_eq!(
+            parsed.filtered_names,
+            vec!["alpha"],
+            "应解析短 ID 协议：{raw}"
+        );
     }
 }
 
 #[test]
 fn issue44_parser_recovery_never_creates_non_candidate_skill() {
     let raw = "EXCLUSIVE\nreasoning: C01 合适，但也可以使用 ghost-skill";
-    let (_mode, _reasoning, parsed) = split_mode_and_names(parse_lines(raw));
-    let whitelist = std::collections::HashSet::from(["C01"]);
-    let recovered: Vec<String> = parsed
-        .into_iter()
-        .filter(|name| whitelist.contains(name.as_str()))
-        .collect();
-    assert_eq!(recovered, vec!["C01"]);
+    let catalog = vec![CandidateCatalogEntry {
+        id: "C01".into(),
+        name: "alpha".into(),
+    }];
+    let recovered = parse_router_response(raw, &catalog, 8).filtered_names;
+    assert_eq!(recovered, vec!["alpha"]);
     assert!(!recovered.iter().any(|name| name == "ghost-skill"));
 }
 
@@ -490,18 +501,19 @@ fn router_user_message_uses_intent_summary_and_client_context() {
         cwd_block: "cwd: `/repo/runai`\n",
         project_context_block: "",
         history_block: "",
+        task_anchor: "设计 runai 推荐模型记忆队列",
         intent_summary: "intent: 设计 runai 推荐模型记忆队列\nagent_cli: codex",
         candidate_listing: "- test-driven-development: TDD",
         bm25_candidate_limit: 30,
     });
-    assert!(msg.contains("## 意图摘要（第一波已提炼，精排依据）"));
+    assert!(msg.contains("## 当前任务锚点"));
+    assert!(msg.contains("## 检索意图 / expansion"));
     assert!(msg.contains("intent: 设计 runai 推荐模型记忆队列"));
     assert!(msg.contains("agent_cli: codex"));
     assert!(msg.contains("cwd: `/repo/runai`"));
     assert!(msg.contains("- test-driven-development: TDD"));
     assert!(msg.contains("默认 30 个 skill 候选"));
-    // No leftover placeholder and no "用户当前 prompt" header from the old
-    // Stage-2 template that embedded the raw prompt.
+    // No leftover placeholder and no unbounded raw-prompt header.
     assert!(
         !msg.contains("{USER_PROMPT}"),
         "no leftover placeholder:\n{msg}"
@@ -519,6 +531,7 @@ fn issue44_precise_router_message_keeps_raw_task_anchor_parallel_to_expansion() 
         cwd_block: "",
         project_context_block: "",
         history_block: "",
+        task_anchor: "RAW_TASK_ANCHOR_LARK_IM",
         intent_summary: "intent: 查询 Lark 消息能力\ninclude_terms: 飞书 即时通讯",
         candidate_listing: "C01 | lark-im | task: 发送飞书消息",
         bm25_candidate_limit: 30,
@@ -594,26 +607,21 @@ fn truncate_between_old_and_new_cap_is_unchanged() {
 }
 
 #[test]
-fn router_user_message_omits_output_format_and_quantity_rules() {
-    // 输出格式 + 候选数量规则移入固定 system prompt（吃前缀缓存）；user message
-    // 只留动态内容，不再每请求重发这些静态块，也不含任何数字硬上限。
+fn router_user_message_keeps_only_compact_json_contract() {
+    // 动态 user message 只保留短 JSON 契约，不重复长篇规则。
     let msg = build_router_user_message(RouterUserMessageParts {
         cwd_block: "",
         project_context_block: "",
         history_block: "",
+        task_anchor: "调试 Android 模拟器",
         intent_summary: "intent: 调试 Android 模拟器",
         candidate_listing: "- android-cli: Android 调试",
         bm25_candidate_limit: 30,
     });
-    assert!(
-        !msg.contains("输出格式"),
-        "输出格式 moved to system:\n{msg}"
-    );
+    assert!(msg.contains("只返回 JSON"));
+    assert!(msg.contains("selected"));
     assert!(!msg.contains("硬上限"), "numeric cap removed:\n{msg}");
-    assert!(
-        !msg.contains("最小充分集合"),
-        "quantity rules moved to system:\n{msg}"
-    );
+    assert!(!msg.contains("最小充分集合"));
     // Dynamic content still present.
     assert!(msg.contains("intent: 调试 Android 模拟器"));
     assert!(msg.contains("- android-cli: Android 调试"));
@@ -622,23 +630,11 @@ fn router_user_message_omits_output_format_and_quantity_rules() {
 #[test]
 fn system_prompt_precision_contract() {
     let system = super::prompts::system_prompt_template();
-    assert!(system.contains("精准优先"));
-    assert!(system.contains("同组不是共载理由"));
+    assert!(system.contains("准入"));
     assert!(system.contains("not-for"));
-    // Stage-2 now routes off the Stage-1 intent summary, not the raw prompt —
-    // the old "先概括简述当前任务" instruction (which assumed Stage-2 read the
-    // raw prompt) was replaced by the intent-summary framing.
-    assert!(system.contains("你依据的是意图摘要"));
-    assert!(system.contains("在候选里精排"));
-    assert!(
-        !system.contains("先概括简述当前任务"),
-        "raw-prompt summarisation instruction must be gone"
-    );
-    assert!(system.contains("固定组合"));
-    assert!(system.contains("COMPATIBLE 默认组合执行"));
-    assert!(system.contains("最小必要问题"));
-    // 输出格式 + 候选数量规则现在住在 system prompt，且不含数字硬上限。
-    assert!(system.contains("输出格式"));
+    assert!(system.contains("当前任务锚点"));
+    assert!(system.contains("短 ID"));
+    assert!(system.contains("selected"));
     assert!(system.contains("最小充分集合"));
     assert!(
         !system.contains("硬上限"),

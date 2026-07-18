@@ -761,6 +761,16 @@
             </div>
             <div class="setting-row">
               <div class="setting-meta">
+                <div class="setting-title">推荐路由模式</div>
+                <div class="setting-hint">Fast 默认只调用一次模型；Precise 增加一次 query expansion，适合复杂约束</div>
+              </div>
+              <select class="setting-select" id="set-routing-mode" disabled>
+                <option value="fast">Fast</option>
+                <option value="precise">Precise</option>
+              </select>
+            </div>
+            <div class="setting-row">
+              <div class="setting-meta">
                 <div class="setting-title">BM25 候选数</div>
                 <div class="setting-hint">默认 30；控制进入推荐模型的候选 skill 数量，不等于最终推荐数量</div>
               </div>
