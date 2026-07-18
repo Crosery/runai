@@ -21,6 +21,10 @@ struct MockLlm {
 
 impl MockLlm {
     fn start(responses: Vec<&'static str>) -> Self {
+        Self::start_with_statuses(responses, Vec::new())
+    }
+
+    fn start_with_statuses(responses: Vec<&'static str>, statuses: Vec<u16>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let base_url = format!("http://{}", listener.local_addr().unwrap());
@@ -31,8 +35,7 @@ impl MockLlm {
         let bodies_t = bodies.clone();
         let stop_t = stop.clone();
         let handle = thread::spawn(move || {
-            let started = std::time::Instant::now();
-            while !stop_t.load(Ordering::SeqCst) && started.elapsed() < Duration::from_secs(20) {
+            while !stop_t.load(Ordering::SeqCst) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
                         stream.set_read_timeout(Some(Duration::from_secs(3))).ok();
@@ -40,13 +43,15 @@ impl MockLlm {
                         bodies_t.lock().unwrap().push(body);
                         let idx = calls_t.fetch_add(1, Ordering::SeqCst);
                         let content = responses.get(idx).copied().unwrap_or("NONE");
+                        let status = statuses.get(idx).copied().unwrap_or(200);
                         let body = serde_json::json!({
                             "choices": [{"message": {"content": content}}],
                             "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
                         })
                         .to_string();
                         let response = format!(
-                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            "HTTP/1.1 {status} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            if status == 200 { "OK" } else { "Error" },
                             body.len(),
                             body
                         );
@@ -230,6 +235,34 @@ fn precise_keeps_original_anchor_parallel_to_stage1_expansion_and_calls_twice() 
 }
 
 #[test]
+fn precise_stage1_transport_failure_counts_attempt_then_router_success() {
+    let mock = MockLlm::start_with_statuses(
+        vec![
+            "intent unavailable",
+            r#"{"mode":"exclusive","selected":["C01"]}"#,
+        ],
+        vec![500, 200],
+    );
+    let (_root, mgr) = setup(&mock, "precise", "alpha task");
+    let decision = recommend_for_user_with_client(
+        &mgr,
+        "alpha task",
+        None,
+        Some("precise-stage1-error"),
+        None,
+        Some("u1"),
+        Some("claude"),
+    )
+    .unwrap();
+    assert_eq!(decision.skills.len(), 1);
+    assert_eq!(mock.calls(), 2);
+    let event = mgr.db().router_recent_events(1).unwrap().pop().unwrap();
+    assert_eq!(event.intent_status, "fallback");
+    assert!(event.intent_error_msg.is_some());
+    assert_eq!(event.llm_call_count, 2);
+}
+
+#[test]
 fn precise_records_stage1_raw_and_cleaned_outputs() {
     let mock = MockLlm::start(vec![
         "```\nintent: expanded alpha\ninclude_terms: alpha synonym\n```",
@@ -250,12 +283,17 @@ fn precise_records_stage1_raw_and_cleaned_outputs() {
     assert!(event.intent_llm_raw_output.contains("```"));
     assert!(!event.intent_llm_output.contains("```"));
     assert!(event.intent_llm_output.contains("expanded alpha"));
+    assert_eq!(event.llm_call_count, 2);
 }
 
 #[test]
 fn fast_cross_language_zero_lexical_overlap_uses_bounded_fallback_pool() {
     let mock = MockLlm::start(vec![r#"{"mode":"exclusive","selected":["C01"]}"#]);
-    let (_root, mgr) = setup(&mock, "fast", "send an instant message to a Lark user");
+    let (_root, mgr) = setup(
+        &mock,
+        "fast",
+        "task: send an instant message | triggers: 飞书消息 lark messaging",
+    );
     let decision = recommend_for_user_with_client(
         &mgr,
         "给飞书联系人发一条即时消息",
@@ -270,6 +308,6 @@ fn fast_cross_language_zero_lexical_overlap_uses_bounded_fallback_pool() {
     assert_eq!(
         decision.skills.len(),
         1,
-        "BM25 零词面命中不能成为唯一 correctness gate"
+        "结构化 triggers 中的跨语言词必须提供真实检索证据"
     );
 }

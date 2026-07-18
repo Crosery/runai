@@ -14,7 +14,29 @@ fn migration_creates_schema_version() {
         .conn
         .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 27);
+    assert_eq!(version, 30);
+}
+
+#[test]
+fn app_settings_roundtrip_without_creating_user_account() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(&tmp.path().join("settings.db")).unwrap();
+    assert_eq!(db.app_setting("owner_prefs").unwrap(), None);
+    db.set_app_setting("owner_prefs", r#"{"routing_mode":"precise"}"#)
+        .unwrap();
+    assert_eq!(
+        db.app_setting("owner_prefs").unwrap().as_deref(),
+        Some(r#"{"routing_mode":"precise"}"#)
+    );
+    assert!(db.list_users().unwrap().is_empty());
+}
+
+#[test]
+fn app_setting_propagates_sqlite_errors() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(&tmp.path().join("settings-error.db")).unwrap();
+    db.conn.execute("DROP TABLE app_settings", []).unwrap();
+    assert!(db.app_setting("owner_prefs").is_err());
 }
 
 #[test]
@@ -26,11 +48,11 @@ fn reopening_same_db_file_stays_fully_migrated_and_usable() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("test.db");
     let first = Database::open(&path).unwrap();
-    assert_eq!(first.schema_version(), 27);
+    assert_eq!(first.schema_version(), 30);
     drop(first);
 
     let second = Database::open(&path).unwrap();
-    assert_eq!(second.schema_version(), 27);
+    assert_eq!(second.schema_version(), 30);
     // A v26 table must be queryable through the migration-skipped connection.
     let n: i64 = second
         .conn
@@ -155,7 +177,7 @@ fn migration_v21_moves_ai_summary_to_owner_scoped_key() {
     }
 
     let db = Database::open(&db_path).unwrap();
-    assert_eq!(db.schema_version(), 27);
+    assert_eq!(db.schema_version(), 30);
     let loaded = db.skill_ai_index("legacy").unwrap().unwrap();
     assert_eq!(loaded.summary, "task: legacy public summary");
     assert_eq!(loaded.updated_at, 42);
@@ -408,7 +430,7 @@ fn schema_at_v15_after_open() {
     // this test is kept for git-blame continuity; the v15 tables it
     // spot-checks below are still there post-v17, just behind a higher
     // version number.
-    assert_eq!(version, 27);
+    assert_eq!(version, 30);
 
     // Tables must exist
     for tbl in &["users", "user_skill_library"] {

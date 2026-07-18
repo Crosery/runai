@@ -141,12 +141,19 @@ fn seed_router_event(s: &ServerGuard, user_id: Option<&str>) -> i64 {
         hook_output: "seed hook".into(),
         llm_input: "seed llm input".into(),
         intent_llm_input: "seed intent input".into(),
-        intent_llm_output: "intent: seed".into(),
+        intent_llm_raw_output: "```intent: raw seed```".into(),
+        intent_llm_output: "intent: cleaned seed".into(),
         intent_status: "ok".into(),
         intent_error_msg: None,
         bm25_candidates_json: r#"["alpha"]"#.into(),
+        routing_mode: "precise".into(),
+        empty_reason: "none".into(),
+        retrieval_query: "seed anchor seed expansion".into(),
+        parsed_candidates_json: r#"["C01"]"#.into(),
+        filtered_candidates_json: r#"["alpha"]"#.into(),
+        parser_recovery: true,
+        llm_call_count: 2,
         user_id: user_id.map(str::to_string),
-        ..RouterEvent::default()
     };
     mgr.db().insert_router_event(&ev).unwrap();
     mgr.db()
@@ -372,13 +379,62 @@ fn app_js_skill_detail_poll_uses_light_refresh_not_full_repaint() {
 // loadModelUsage function body contains no /api/events fetch and no paging
 // loop anymore.
 #[test]
-fn issue44_dashboard_exposes_fast_precise_per_user_control() {
+fn issue44_dashboard_routing_mode_select_saves_and_reloads() {
     let html = include_str!("../web/index.html");
-    let js = include_str!("../web/js/10-settings.js");
     assert!(html.contains("set-routing-mode"));
     assert!(html.contains("Fast"));
     assert!(html.contains("Precise"));
-    assert!(js.contains("routing_mode"));
+
+    let script = r#"
+const fs = require('fs');
+const vm = require('vm');
+(async () => {
+  class Element {
+    constructor() { this.value = ''; this.disabled = false; this.listeners = {}; }
+    addEventListener(type, cb) { this.listeners[type] = cb; }
+  }
+  const routing = new Element();
+  const saved = [];
+  const context = {
+    console,
+    account: { me: { username: 'owner' }, prefs: { routing_mode: 'fast' } },
+    document: {
+      getElementById(id) { return id === 'set-routing-mode' ? routing : null; },
+      querySelector() { return null; },
+      querySelectorAll() { return []; },
+    },
+    $(selector) { return selector === '#set-routing-mode' ? routing : null; },
+    savePrefs: async () => { saved.push(context.account.prefs.routing_mode); return context.account.prefs; },
+    api: async () => ({}), alert(message) { throw new Error(message); },
+    escapeHTML(value) { return String(value); }, initDropdown() {},
+  };
+  context.window = context;
+  vm.createContext(context);
+  vm.runInContext(fs.readFileSync('web/js/10-settings.js', 'utf8'), context);
+  vm.runInContext(fs.readFileSync('web/js/12-admin-scope-skills.js', 'utf8'), context);
+  context.bindSettingsControls();
+  context.renderSettingsUser();
+  if (routing.value !== 'fast') throw new Error(`initial reload failed: ${routing.value}`);
+  routing.value = 'precise';
+  await routing.listeners.change();
+  if (saved[0] !== 'precise') throw new Error(`save failed: ${JSON.stringify(saved)}`);
+  context.account.prefs.routing_mode = 'fast';
+  context.renderSettingsUser();
+  if (routing.value !== 'fast') throw new Error(`reload failed: ${routing.value}`);
+})().catch((err) => { console.error(err.stack || err); process.exit(1); });
+"#;
+    let output = std::process::Command::new("node")
+        .arg("-e")
+        .arg(script)
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("run routing-mode frontend harness");
+    assert!(
+        output.status.success(),
+        "frontend routing-mode harness failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
@@ -526,6 +582,20 @@ fn api_events_exposes_authenticated_boolean_without_user_id() {
     let events = b["events"].as_array().expect("events array");
     assert_eq!(events.len(), 1);
     assert_eq!(events[0]["authenticated"], json!(true));
+    assert_eq!(events[0]["routing_mode"], json!("precise"));
+    assert_eq!(events[0]["empty_reason"], json!("none"));
+    assert_eq!(events[0]["llm_call_count"], json!(2));
+    assert_eq!(events[0]["parser_recovery"], json!(true));
+    assert_eq!(
+        events[0]["intent_llm_raw_output"],
+        json!("```intent: raw seed```")
+    );
+    assert_eq!(
+        events[0]["intent_llm_output"],
+        json!("intent: cleaned seed")
+    );
+    assert_eq!(events[0]["parsed_candidates"], json!(["C01"]));
+    assert_eq!(events[0]["filtered_candidates"], json!(["alpha"]));
     assert!(
         events[0].get("user_id").is_none(),
         "telemetry DTO must not expose raw user_id: {:?}",

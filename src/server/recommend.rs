@@ -45,6 +45,7 @@ fn payload_str(payload: &serde_json::Value, key: &str) -> String {
 /// 200 + empty body — the install script's `--max-time 30 || true`
 /// pattern means a server hiccup never blocks the teammate's prompt.
 pub(super) async fn handle_recommend(
+    State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(payload): Json<serde_json::Value>,
 ) -> Response {
@@ -80,6 +81,7 @@ pub(super) async fn handle_recommend(
         return ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], "").into_response();
     }
 
+    let owner_mode = state.mode == crate::core::server_mode::ServerMode::Owner;
     let query = payload_str(&payload, "query");
     if !query.is_empty() {
         let query_for_index = query.clone();
@@ -94,6 +96,7 @@ pub(super) async fn handle_recommend(
                         Some(user) if !user.disabled => Some(user.user_id),
                         _ => return Ok(None),
                     },
+                    None if owner_mode => Some("owner".to_string()),
                     None => None,
                 };
                 let host_kind = payload_host_kind(&payload_for_index);
@@ -156,6 +159,7 @@ pub(super) async fn handle_recommend(
                 Some(u) if !u.disabled => Some(u.user_id),
                 _ => return Ok(String::new()),
             },
+            None if owner_mode => Some("owner".to_string()),
             None => None,
         };
 

@@ -119,8 +119,7 @@ impl RecordingMock {
         let stop_t = stop.clone();
         let bodies_t = bodies.clone();
         let handle = thread::spawn(move || {
-            let started = std::time::Instant::now();
-            while !stop_t.load(Ordering::SeqCst) && started.elapsed() < Duration::from_secs(30) {
+            while !stop_t.load(Ordering::SeqCst) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
                         stream.set_read_timeout(Some(Duration::from_secs(3))).ok();
@@ -273,8 +272,8 @@ fn fixed_system_prompts_are_byte_identical_across_requests() {
 
     // Two DIFFERENT prompts in the same session — memory/prompt differ, but the
     // system messages must stay byte-identical (no dynamic values baked in).
-    let _ = recommend_stdin(&env, "帮我处理 alpha 任务", "arch-session");
-    let _ = recommend_stdin(&env, "再换一个方式处理 alpha", "arch-session");
+    let _ = recommend_stdin(&env, "帮我处理 alpha 任务 ARCH_ONE", "arch-session");
+    let _ = recommend_stdin(&env, "再换一个方式处理 alpha ARCH_TWO", "arch-session");
 
     let bodies = mock.bodies();
     let intent_systems: Vec<String> = bodies
@@ -289,15 +288,31 @@ fn fixed_system_prompts_are_byte_identical_across_requests() {
         .collect();
 
     assert_eq!(intent_systems.len(), 0, "Fast must skip Stage-1");
+    assert!(router_systems.len() >= 2);
+    assert!(
+        router_systems.windows(2).all(|pair| pair[0] == pair[1]),
+        "Stage-2 system prompt must be byte-identical across requests"
+    );
+    let router_users: Vec<String> = bodies
+        .iter()
+        .filter(|body| max_tokens_of(body) == Some(400))
+        .filter_map(|body| user_of(body))
+        .collect();
     assert_eq!(
-        router_systems.len(),
-        2,
-        "expected 2 Stage-2 router calls, got {}",
-        router_systems.len()
+        router_users
+            .iter()
+            .filter(|user| user.contains("ARCH_ONE"))
+            .count(),
+        1,
+        "first Fast turn must make exactly one router call: {router_users:?}"
     );
     assert_eq!(
-        router_systems[0], router_systems[1],
-        "Stage-2 system prompt must be byte-identical across requests"
+        router_users
+            .iter()
+            .filter(|user| user.contains("ARCH_TWO"))
+            .count(),
+        1,
+        "second Fast turn must make exactly one router call: {router_users:?}"
     );
     // The static instructions genuinely live in the system messages.
     assert!(router_systems[0].contains("skill router"));
@@ -483,13 +498,14 @@ fn long_prompt_fast_anchor_keeps_tail_request_bounded() {
         .expect("Fast router user msg");
 
     assert!(
-        !intent_user.contains("HEADMARK"),
-        "long pasted head should not dominate Fast anchor:\n{intent_user}"
+        intent_user.contains("HEADMARK"),
+        "Fast anchor must retain bounded head constraints:\n{intent_user}"
     );
     assert!(
         intent_user.contains("TAILMARK"),
         "trailing real request kept in Fast anchor:\n{intent_user}"
     );
+    assert!(intent_user.contains("中段已截断"));
     assert!(intent_user.chars().count() < 1200);
     assert!(
         !intent_user.contains("MIDDLEMARK"),
@@ -545,9 +561,18 @@ fn fast_omits_large_context_blocks_even_when_available() {
     env.write_config(mock.base_url());
     std::fs::create_dir_all("/tmp/arch-proj").unwrap();
     std::fs::write("/tmp/arch-proj/CLAUDE.md", "FAST_PROJECT_CONTEXT_SENTINEL").unwrap();
+    let _ = recommend_stdin(
+        &env,
+        "FIRST_CONVERSATION_SENTINEL alpha task",
+        "fast-no-large-blocks",
+    );
     let _ = recommend_stdin(&env, "帮我处理 alpha 任务", "fast-no-large-blocks");
-    let router_user = mock
-        .bodies()
+    let bodies = mock.bodies();
+    let router_body = bodies
+        .iter()
+        .rfind(|body| max_tokens_of(body) == Some(400))
+        .unwrap();
+    let router_user = bodies
         .iter()
         .filter_map(|body| {
             if max_tokens_of(body) == Some(400) {
@@ -556,10 +581,16 @@ fn fast_omits_large_context_blocks_even_when_available() {
                 None
             }
         })
-        .next()
+        .next_back()
         .unwrap();
     assert!(!router_user.contains("FAST_PROJECT_CONTEXT_SENTINEL"));
+    assert!(!router_user.contains("FIRST_CONVERSATION_SENTINEL"));
     assert!(!router_user.contains("最近对话"));
+    assert_eq!(
+        parse_messages(router_body).unwrap().len(),
+        2,
+        "Fast router request must contain only system + current user message"
+    );
 }
 
 #[test]

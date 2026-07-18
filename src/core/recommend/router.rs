@@ -249,48 +249,6 @@ pub(super) fn is_harness_message(prompt: &str) -> bool {
 /// `bm25_norm` and `llm_val` are already normalised to `0..1`;
 /// `feedback_factor` is the `0..1` scalar from `skill_metrics::feedback_factor`
 /// (neutral 0.5 when a skill has no adoption / rating history).
-pub(super) fn action_form_match(query: &str, candidate: &str) -> bool {
-    const FAMILIES: &[&[&str]] = &[
-        &[
-            "message",
-            "messaging",
-            "instant message",
-            "send message",
-            "消息",
-            "即时通讯",
-            "发消息",
-            "发送消息",
-            "飞书",
-        ],
-        &[
-            "browse",
-            "browser",
-            "web navigation",
-            "网页浏览",
-            "浏览网页",
-        ],
-        &["remember", "memory", "long-term memory", "记忆", "长期记忆"],
-        &["handoff", "delegate", "transfer task", "移交", "转交"],
-        &["migrate", "migration", "迁移"],
-        &["research", "investigate", "调研", "研究"],
-        &["write", "document", "documentation", "写文档", "撰写"],
-        &[
-            "image",
-            "generate image",
-            "edit image",
-            "生图",
-            "改图",
-            "图片",
-        ],
-    ];
-    let query = query.to_lowercase();
-    let candidate = candidate.to_lowercase();
-    FAMILIES.iter().any(|family| {
-        family.iter().any(|term| query.contains(term))
-            && family.iter().any(|term| candidate.contains(term))
-    })
-}
-
 pub(super) fn hybrid_score(
     bm25_norm: f64,
     llm_val: f64,
@@ -681,6 +639,23 @@ pub fn recommend_for_user(
     )
 }
 
+fn resolve_user_prefs(
+    db: &Database,
+    user_id: Option<&str>,
+) -> Result<crate::core::prefs::UserPrefs> {
+    let Some(uid) = user_id else {
+        return Ok(crate::core::prefs::UserPrefs::default());
+    };
+    if uid == "owner" {
+        let stored = db.app_setting("owner_prefs")?.unwrap_or_default();
+        return Ok(crate::core::prefs::UserPrefs::from_json_str(&stored));
+    }
+    Ok(db
+        .find_user_by_id(uid)?
+        .map(|user| crate::core::prefs::UserPrefs::from_json_str(&user.prefs_json))
+        .unwrap_or_default())
+}
+
 pub fn recommend_for_user_with_client(
     mgr: &SkillManager,
     user_prompt: &str,
@@ -700,16 +675,7 @@ pub fn recommend_for_user_with_client(
     // (unauthenticated / legacy CLI hook) the prefs are the default value
     // = every prompt enabled, ensuring the unauthenticated path NEVER
     // reads another account's prefs.
-    let user_prefs: crate::core::prefs::UserPrefs = match user_id {
-        Some(uid) => mgr
-            .db()
-            .find_user_by_id(uid)
-            .ok()
-            .flatten()
-            .map(|u| crate::core::prefs::UserPrefs::from_json_str(&u.prefs_json))
-            .unwrap_or_default(),
-        None => crate::core::prefs::UserPrefs::default(),
-    };
+    let user_prefs = resolve_user_prefs(mgr.db(), user_id)?;
     if user_id.is_some() {
         cfg.enabled = cfg.enabled && user_prefs.recommend_enabled;
         cfg.read_claude_md = user_prefs.read_claude_md;
@@ -767,7 +733,8 @@ pub fn recommend_for_user_with_client(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .unwrap_or("claude");
-    let intent_memory_limit = if user_prefs.intent_memory_enabled {
+    let precise = user_prefs.routing_mode == crate::core::prefs::RoutingMode::Precise;
+    let intent_memory_limit = if precise && user_prefs.intent_memory_enabled {
         user_prefs.intent_memory_limit
     } else {
         0
@@ -796,6 +763,7 @@ pub fn recommend_for_user_with_client(
         intent_status,
         intent_error_msg,
         intent_stats,
+        intent_call_attempts,
     ) = match user_prefs.routing_mode {
         crate::core::prefs::RoutingMode::Fast => (
             deterministic_intent
@@ -808,6 +776,7 @@ pub fn recommend_for_user_with_client(
             "skipped-fast".to_string(),
             None,
             RouterCallStats::default(),
+            0_i64,
         ),
         crate::core::prefs::RoutingMode::Precise => {
             let input =
@@ -820,6 +789,7 @@ pub fn recommend_for_user_with_client(
                     "ok".to_string(),
                     None,
                     stats,
+                    1_i64,
                 ),
                 Err(e) => (
                     deterministic_intent.clone(),
@@ -828,6 +798,7 @@ pub fn recommend_for_user_with_client(
                     "fallback".to_string(),
                     Some(e.to_string()),
                     RouterCallStats::default(),
+                    1_i64,
                 ),
             }
         }
@@ -871,13 +842,7 @@ pub fn recommend_for_user_with_client(
     let db = mgr.db();
     let mut all_candidates: Vec<_> = match user_id {
         Some(uid) => {
-            let prefs = db
-                .find_user_by_id(uid)
-                .ok()
-                .flatten()
-                .map(|u| crate::core::prefs::UserPrefs::from_json_str(&u.prefs_json))
-                .unwrap_or_default();
-            if prefs.allow_public_recommend {
+            if user_prefs.allow_public_recommend || uid == "owner" {
                 db.list_resources_for_user(Some(ResourceKind::Skill), Some(uid))?
             } else {
                 let lib: std::collections::BTreeSet<String> = db
@@ -942,14 +907,14 @@ pub fn recommend_for_user_with_client(
     let bm25_pure = std::env::var("RUNAI_BM25_PURE").is_ok();
     let bm25_as_signal = std::env::var("RUNAI_BM25_AS_SIGNAL").is_ok();
     let bm25_hybrid = !bm25_pure && !bm25_as_signal && !bm25_disabled;
-    // BM25 ranks candidates; it is not the only correctness gate. Positive
-    // retrieval query always keeps the original task anchor in parallel with
-    // deterministic/Stage-1 expansion. Exclusion fields stay out of positive
-    // BM25 text and remain available to deterministic gates/router cards.
-    let bm25_no_cutoff = std::env::var("RUNAI_BM25_NO_CUTOFF").is_ok();
+    // BM25 ranks candidates. Positive retrieval query always keeps the
+    // original task anchor in parallel with deterministic/Stage-1 expansion.
+    // Exclusion fields stay out of positive BM25 text and remain available to
+    // deterministic gates/router cards. Quality/feedback may re-rank positive
+    // retrieval evidence, but never resurrect a zero-evidence candidate.
 
     let q_terms = bm25::tokenize(&bm25_input_query);
-    let mut bm25_fallback_reason: &'static str = "";
+    let bm25_fallback_reason: &'static str;
 
     let indices = mgr
         .db()
@@ -1057,9 +1022,7 @@ pub fn recommend_for_user_with_client(
             routing_mode: user_prefs.routing_mode.as_str().into(),
             empty_reason: EmptyReason::GateZero.as_str().into(),
             retrieval_query: bm25_input_query,
-            llm_call_count: i64::from(
-                user_prefs.routing_mode == crate::core::prefs::RoutingMode::Precise,
-            ),
+            llm_call_count: intent_call_attempts,
             ..RouterEvent::default()
         };
         let _ = mgr.db().insert_router_event(&ev);
@@ -1117,77 +1080,58 @@ pub fn recommend_for_user_with_client(
             bm25_fallback_reason = "bm25-as-signal";
             all_candidates
         } else if bm25_hybrid {
-            // Hybrid score = BM25 * 0.35 + LLM/10 * 0.45 + feedback * 0.20
-            // (legacy BM25 * 0.4 + LLM/10 * 0.6 under RUNAI_FEEDBACK_DISABLED).
-            //
-            // The `feedback` term is `skill_metrics::feedback_factor` — an
-            // aggregate of real adoption rate + explicit thumbs — NOT the bare
-            // subjective ratings the earlier note warned against. It blends
-            // behavioural signal (did the main agent actually adopt this skill
-            // when the router offered it?) with structured feedback, so it is a
-            // harder relevance signal than the enrich-pass `llm_score` alone.
-            // Zero-history skills stay neutral (0.5), so this never penalises a
-            // freshly-installed skill relative to the old two-signal formula.
-            // Zero-overlap candidates may fill the remaining bounded pool;
-            // BM25 still dominates ordering, while quality/feedback provide a
-            // deterministic semantic-fallback prior. The configured limit
-            // prevents restoring the old full-corpus prompt flood.
+            // Quality/feedback can only re-rank candidates with positive
+            // retrieval evidence. This keeps Fast domain-independent: its
+            // deterministic anchor + expansion and each skill's structured
+            // task/triggers text are the evidence. When every score is zero we
+            // return an empty pool instead of reviving unrelated high-prior
+            // skills. Precise users may improve recall through Stage-1's one
+            // bounded semantic expansion call, without adding a Fast LLM call.
             let mut scored: Vec<(usize, f64)> = all_candidates
                 .iter()
                 .enumerate()
-                .map(|(i, r)| {
-                    let bm = bm25_scores.get(&r.name).copied().unwrap_or(0.0);
+                .filter_map(|(i, r)| {
+                    let bm = bm25_scores.get(&r.name).copied()?;
                     let index_key = Database::skill_ai_index_key_for_resource(r);
                     let llm = indices.get(&index_key).map(|i| i.llm_score).unwrap_or(5);
                     let llm_val = (llm as f64) / 10.0;
                     let ff = feedback_factor_of(&r.name);
-                    let action_boost = if action_form_match(
-                        &bm25_input_query,
-                        &format!(
-                            "{} {} {}",
-                            r.name,
-                            r.description,
-                            indices
-                                .get(&index_key)
-                                .map(|row| row.search_doc.as_str())
-                                .unwrap_or("")
-                        ),
-                    ) {
-                        1.0
-                    } else {
-                        0.0
-                    };
-                    let hybrid = action_boost + hybrid_score(bm, llm_val, ff, feedback_disabled);
-                    (i, hybrid)
+                    Some((i, hybrid_score(bm, llm_val, ff, feedback_disabled)))
                 })
                 .collect();
             scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-            bm25_fallback_reason = if bm25_no_cutoff {
-                "bm25-hybrid-no-cutoff"
-            } else if bm25_scores.is_empty() {
-                "bounded-zero-overlap-fallback"
+            if scored.is_empty() && all_candidates.len() <= bm25_candidate_limit {
+                bm25_fallback_reason = "bounded-full-pool";
+                all_candidates
             } else {
-                "bm25-hybrid"
-            };
-            scored
-                .into_iter()
-                .take(bm25_candidate_limit)
-                .map(|(i, _)| all_candidates[i].clone())
-                .collect()
+                bm25_fallback_reason = if scored.is_empty() {
+                    "retrieval-zero"
+                } else {
+                    "bm25-hybrid"
+                };
+                scored
+                    .into_iter()
+                    .take(bm25_candidate_limit)
+                    .map(|(i, _)| all_candidates[i].clone())
+                    .collect()
+            }
         } else {
             let positive: Vec<(usize, f64)> = ranked
                 .into_iter()
                 .filter(|(_, s)| *s > 0.0)
                 .take(bm25_candidate_limit)
                 .collect();
-            if positive.len() < BM25_MIN_POSITIVE_HITS {
-                bm25_fallback_reason = if positive.is_empty() {
-                    "no-bm25-hits"
-                } else {
-                    "few-bm25-hits"
-                };
+            if positive.is_empty() && all_candidates.len() <= bm25_candidate_limit {
+                bm25_fallback_reason = "bounded-full-pool";
                 all_candidates
             } else {
+                bm25_fallback_reason = if positive.is_empty() {
+                    "retrieval-zero"
+                } else if positive.len() < BM25_MIN_POSITIVE_HITS {
+                    "few-bm25-hits"
+                } else {
+                    "bm25-pure"
+                };
                 positive
                     .into_iter()
                     .map(|(i, _)| all_candidates[i].clone())
@@ -1257,11 +1201,7 @@ pub fn recommend_for_user_with_client(
             parsed_candidates_json: "[]".into(),
             filtered_candidates_json: "[]".into(),
             parser_recovery: false,
-            llm_call_count: if user_prefs.routing_mode == crate::core::prefs::RoutingMode::Precise {
-                1
-            } else {
-                0
-            },
+            llm_call_count: intent_call_attempts,
         };
         let _ = mgr.db().insert_router_event(&ev);
         write_last_recommend(mgr.paths(), &decision);
@@ -1333,7 +1273,6 @@ pub fn recommend_for_user_with_client(
         .collect::<Vec<_>>()
         .join("\n");
 
-    let precise = user_prefs.routing_mode == crate::core::prefs::RoutingMode::Precise;
     let history = if precise && inject_history {
         transcript_path
             .map(|p| recent_transcript_messages(p, HISTORY_TURN_LIMIT))
@@ -1396,6 +1335,7 @@ pub fn recommend_for_user_with_client(
         })
         .collect();
     let call_result = call_router(&cfg, &api_key, &user_msg, &history_turns, &catalog);
+    let llm_call_count = intent_call_attempts + 1;
     let latency_ms = started.elapsed().as_millis() as i64;
 
     let (parsed, router_stats, status, error_msg, llm_raw) = match call_result {
@@ -1533,11 +1473,7 @@ pub fn recommend_for_user_with_client(
         filtered_candidates_json: serde_json::to_string(&chosen_names)
             .unwrap_or_else(|_| "[]".into()),
         parser_recovery: parsed.recovery,
-        llm_call_count: if user_prefs.routing_mode == crate::core::prefs::RoutingMode::Precise {
-            2
-        } else {
-            1
-        },
+        llm_call_count,
     };
     let _ = mgr.db().insert_router_event(&ev);
 
@@ -1615,10 +1551,7 @@ fn strip_fence(raw: &str) -> String {
 }
 
 fn normalized_selection_token(line: &str) -> String {
-    let mut text = line
-        .trim()
-        .trim_start_matches(|c: char| c == '-' || c == '*' || c == '•')
-        .trim();
+    let mut text = line.trim().trim_start_matches(['-', '*', '•']).trim();
     let digits = text.chars().take_while(|c| c.is_ascii_digit()).count();
     if digits > 0 {
         let rest = &text[digits..];
@@ -1668,12 +1601,14 @@ pub(super) fn parse_router_response(
                 Some("compatible") => RouterMode::Compatible,
                 _ => RouterMode::Exclusive,
             };
+            let explicit_empty =
+                matches!(json.selected.as_ref(), Some(selected) if selected.is_empty());
             let selected = json.selected.unwrap_or_default();
             (
                 mode,
                 json.reasoning.unwrap_or_default(),
-                selected.clone(),
-                selected.is_empty(),
+                selected,
+                explicit_empty,
             )
         } else {
             let lines = parse_lines(&trimmed);
@@ -1748,29 +1683,64 @@ pub(super) fn parse_router_response(
 
 fn reasoning_mentions_candidate(reasoning: &str, entry: &CandidateCatalogEntry) -> bool {
     let lower = reasoning.to_lowercase();
+    let positive_terms = [
+        "选择",
+        "选用",
+        "使用",
+        "采用",
+        "推荐",
+        "命中",
+        "匹配",
+        "合适",
+        "适合",
+        "最佳",
+        "choose",
+        "select",
+        "use",
+        "recommend",
+        "match",
+        "suitable",
+        "best",
+        "relevant",
+    ];
     let negative_terms = [
         "不合适",
         "不适合",
         "不要",
+        "不应",
+        "不选",
+        "不使用",
+        "不推荐",
+        "无需",
         "排除",
         "剔除",
+        "否定",
+        "别用",
         "not suitable",
+        "do not",
+        "don't",
         "exclude",
+        "avoid",
+        "reject",
+        "irrelevant",
     ];
     for needle in [&entry.id, &entry.name] {
         if !exact_mention(reasoning, needle) {
             continue;
         }
         let needle_lower = needle.to_lowercase();
-        if let Some(idx) = lower.find(&needle_lower) {
-            let before: String = lower[..idx].chars().rev().take(16).collect();
-            let after: String = lower[idx + needle_lower.len()..].chars().take(24).collect();
-            let window = format!("{}{}", before.chars().rev().collect::<String>(), after);
-            if negative_terms.iter().any(|term| window.contains(term)) {
-                continue;
-            }
+        let Some(idx) = lower.find(&needle_lower) else {
+            continue;
+        };
+        let before: String = lower[..idx].chars().rev().take(32).collect();
+        let after: String = lower[idx + needle_lower.len()..].chars().take(40).collect();
+        let window = format!("{}{}", before.chars().rev().collect::<String>(), after);
+        if negative_terms.iter().any(|term| window.contains(term)) {
+            continue;
         }
-        return true;
+        if positive_terms.iter().any(|term| window.contains(term)) {
+            return true;
+        }
     }
     false
 }

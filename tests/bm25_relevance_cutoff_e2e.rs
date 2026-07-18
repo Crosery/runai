@@ -89,6 +89,7 @@ impl TestEnv {
             .env_remove("SKILL_MANAGER_DATA_DIR")
             .env_remove("CLAUDE_SESSION_ID")
             .env_remove("RUNAI_RECOMMEND_API_KEY")
+            .env("RUNAI_BM25_TOP_K", "5")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -114,20 +115,22 @@ impl TestEnv {
         );
         std::fs::write(self.runai_dir().join("config.toml"), body).unwrap();
     }
-    /// (bm25_kept, status, intent_output_nonempty) of the single router_events row.
-    fn last_event(&self) -> Option<(i64, String, bool)> {
+    /// (bm25_kept, status, intent_output_nonempty, empty_reason, calls).
+    fn last_event(&self) -> Option<(i64, String, bool, String, i64)> {
         if !self.db_path().exists() {
             return None;
         }
         let conn = rusqlite::Connection::open(self.db_path()).ok()?;
         conn.query_row(
-            "SELECT bm25_kept, status, intent_llm_output FROM router_events ORDER BY id DESC LIMIT 1",
+            "SELECT bm25_kept, status, intent_llm_output, empty_reason, llm_call_count FROM router_events ORDER BY id DESC LIMIT 1",
             rusqlite::params![],
             |r| {
                 let kept: i64 = r.get(0)?;
                 let status: String = r.get(1)?;
                 let intent: String = r.get(2)?;
-                Ok((kept, status, !intent.trim().is_empty()))
+                let empty_reason: String = r.get(3)?;
+                let calls: i64 = r.get(4)?;
+                Ok((kept, status, !intent.trim().is_empty(), empty_reason, calls))
             },
         )
         .ok()
@@ -320,6 +323,14 @@ fn plant_noise(env: &TestEnv) {
         "kubernetes-deployer",
         "kubernetes deploy container cluster yaml pod service",
     );
+    env.plant_skill(
+        "audio-waveform-editor",
+        "audio waveform trim normalize podcast sound",
+    );
+    env.plant_skill(
+        "finance-ledger-audit",
+        "finance ledger reconcile invoice accounting audit",
+    );
 }
 
 #[test]
@@ -336,8 +347,8 @@ fn zero_overlap_query_skips_stage2_and_logs_empty_candidate_event() {
 
     assert_eq!(
         mock.stage2_calls(),
-        1,
-        "BM25 零词面命中不再是唯一 correctness gate；必须把受控候选池交给 router 判断：\n{hook}"
+        0,
+        "Fast 全零检索证据时不得让先验复活无关候选：\n{hook}"
     );
     // No skill surfaced to the agent.
     for noise in [
@@ -345,6 +356,8 @@ fn zero_overlap_query_skips_stage2_and_logs_empty_candidate_event() {
         "react-component-builder",
         "sql-query-optimizer",
         "kubernetes-deployer",
+        "audio-waveform-editor",
+        "finance-ledger-audit",
     ] {
         assert!(
             !hook.contains(noise),
@@ -352,13 +365,12 @@ fn zero_overlap_query_skips_stage2_and_logs_empty_candidate_event() {
         );
     }
 
-    // Telemetry: Fast skips Stage-1, keeps a bounded fallback pool, and lets
-    // the router explicitly return empty.
-    let (kept, status, intent_present) = env.last_event().expect("a router_events row");
-    assert!(
-        kept > 0 && kept <= 30,
-        "fallback candidate pool must stay bounded"
-    );
+    // Telemetry: Fast skips both model calls when retrieval has no evidence.
+    let (kept, status, intent_present, empty_reason, calls) =
+        env.last_event().expect("a router_events row");
+    assert_eq!(kept, 0);
+    assert_eq!(empty_reason, "retrieval_zero");
+    assert_eq!(calls, 0);
     assert_eq!(status, "ok");
     assert!(
         intent_present,
@@ -387,7 +399,9 @@ fn overlapping_query_still_reaches_stage2_and_surfaces_the_match() {
         "the matching skill must be surfaced:\n{hook}"
     );
 
-    let (kept, status, _) = env.last_event().expect("a router_events row");
+    let (kept, status, _, empty_reason, calls) = env.last_event().expect("a router_events row");
     assert!(kept >= 1, "at least the matching candidate must be kept");
     assert_eq!(status, "ok");
+    assert_eq!(empty_reason, "none");
+    assert_eq!(calls, 1);
 }

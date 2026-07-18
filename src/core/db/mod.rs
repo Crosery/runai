@@ -13,6 +13,7 @@
 //!   query without its column order is a silent bug.
 
 mod ai_summary;
+mod app_settings;
 mod community;
 mod core;
 mod feedback;

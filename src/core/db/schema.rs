@@ -642,6 +642,17 @@ impl Database {
             )?;
         }
 
+        if version < 30 {
+            self.conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS app_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                 );
+                 DELETE FROM schema_version;
+                 INSERT INTO schema_version VALUES (30);",
+            )?;
+        }
+
         Ok(())
     }
 }

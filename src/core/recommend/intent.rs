@@ -80,18 +80,25 @@ pub(super) fn compact_true_intent(prompt: &str) -> String {
         }
     }
 
-    let tail = candidates.into_iter().rev().collect::<Vec<_>>().join(" ");
-    let chosen = if tail.is_empty() { normalized } else { tail };
-    chosen
+    let extracted_tail = candidates.into_iter().rev().collect::<Vec<_>>().join(" ");
+    let tail_source = if extracted_tail.is_empty() {
+        normalized.as_str()
+    } else {
+        extracted_tail.as_str()
+    };
+    const MARKER: &str = " …[中段已截断]… ";
+    const HEAD_CHARS: usize = 72;
+    let tail_chars = MEMORY_ITEM_CHAR_LIMIT - HEAD_CHARS - MARKER.chars().count();
+    let head: String = normalized.chars().take(HEAD_CHARS).collect();
+    let tail: String = tail_source
         .chars()
         .rev()
-        .take(MEMORY_ITEM_CHAR_LIMIT)
+        .take(tail_chars)
         .collect::<Vec<_>>()
         .into_iter()
         .rev()
-        .collect::<String>()
-        .trim()
-        .to_string()
+        .collect();
+    format!("{}{}{}", head.trim(), MARKER, tail.trim())
 }
 
 fn clean_reference_subject(mut subject: String) -> String {

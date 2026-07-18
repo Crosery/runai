@@ -744,7 +744,7 @@ fn mock_llm_recommend_emits_runai_client_activation() {
 }
 
 #[test]
-fn stdin_json_client_kind_cwd_and_session_memory_feed_router_input() {
+fn stdin_json_fast_client_kind_and_cwd_feed_router_without_session_memory() {
     let env = TestEnv::new();
     env.plant_skill("alpha-skill", "test skill alpha");
     std::fs::write(env.bootstrap_seen_path(), "1").unwrap();
@@ -787,10 +787,10 @@ fn stdin_json_client_kind_cwd_and_session_memory_feed_router_input() {
     assert_eq!(statuses, vec!["ok".to_string(), "ok".to_string()]);
 
     let memories = env.router_intent_memories();
-    assert_eq!(memories.len(), 2);
-    assert!(!memories[0].is_empty(), "memories={memories:?}");
-    assert!(!memories[1].is_empty(), "memories={memories:?}");
-    assert!(memories[1].contains("session_memory"));
+    assert!(
+        memories.is_empty(),
+        "Fast must not read or persist session intent memory: {memories:?}"
+    );
 
     let inputs = env.router_llm_inputs();
     assert_eq!(inputs.len(), 2);
@@ -901,9 +901,10 @@ fn image_regeneration_reference_prompt_uses_compressed_intent_and_single_direct_
     assert!(!bm25_candidates_json.contains("interview-script"));
 
     let memories = env.router_intent_memories();
-    assert_eq!(memories.len(), 1);
-    assert!(memories[0].contains("重新生成图片"));
-    assert!(!memories[0].contains("没有用搭子形象的参考图啊你这个"));
+    assert!(
+        memories.is_empty(),
+        "Fast must not persist session memory: {memories:?}"
+    );
 
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("generate-image"), "stdout={stdout}");

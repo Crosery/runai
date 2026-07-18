@@ -21,11 +21,18 @@
 
 #![cfg(not(target_os = "windows"))]
 
+use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use assert_cmd::cargo::CommandCargoExt;
+use runai::core::db::SkillAiIndex;
+use runai::core::manager::SkillManager;
+use runai::core::recommend::{Provider, RecommendConfig};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -56,6 +63,7 @@ struct ServerGuard {
     child: Child,
     _home: TempDir,
     port: u16,
+    data_dir: std::path::PathBuf,
 }
 
 impl ServerGuard {
@@ -73,7 +81,8 @@ impl Drop for ServerGuard {
 
 fn spawn_server(mode: &str) -> ServerGuard {
     let home = tempfile::tempdir().expect("create tmp HOME");
-    std::fs::create_dir_all(home.path().join(".runai/skills")).expect("pre-create .runai/skills");
+    let data_dir = home.path().join("runai-data");
+    std::fs::create_dir_all(data_dir.join("skills")).expect("pre-create isolated skills");
     let port = free_port();
     let child = runai_cmd()
         .arg("server")
@@ -85,7 +94,7 @@ fn spawn_server(mode: &str) -> ServerGuard {
         .arg(mode)
         .env("HOME", home.path())
         .env("RUNAI_NO_AUTOSPAWN", "1")
-        .env_remove("RUNE_DATA_DIR")
+        .env("RUNE_DATA_DIR", &data_dir)
         .env_remove("SKILL_MANAGER_DATA_DIR")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -96,6 +105,7 @@ fn spawn_server(mode: &str) -> ServerGuard {
         child,
         _home: home,
         port,
+        data_dir,
     };
     assert!(
         wait_for_port(g.port, Duration::from_secs(8)),
@@ -110,6 +120,142 @@ fn http() -> reqwest::blocking::Client {
         .timeout(Duration::from_secs(5))
         .build()
         .expect("reqwest client")
+}
+
+struct MockLlm {
+    base_url: String,
+    calls: Arc<AtomicUsize>,
+    stop: Arc<AtomicBool>,
+    handle: Option<thread::JoinHandle<()>>,
+}
+
+impl MockLlm {
+    fn start() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        let calls_t = calls.clone();
+        let stop_t = stop.clone();
+        let handle = thread::spawn(move || {
+            while !stop_t.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        stream.set_read_timeout(Some(Duration::from_secs(3))).ok();
+                        let body = read_http_body(&mut stream);
+                        let idx = calls_t.fetch_add(1, Ordering::SeqCst);
+                        let content = if idx == 0 {
+                            "intent: alpha task\ninclude_terms: alpha"
+                        } else {
+                            r#"{"mode":"exclusive","selected":["C01"]}"#
+                        };
+                        assert!(!body.is_empty());
+                        let json = serde_json::json!({
+                            "choices": [{"message": {"content": content}}],
+                            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+                        })
+                        .to_string();
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            json.len(),
+                            json
+                        );
+                        let _ = stream.write_all(response.as_bytes());
+                    }
+                    Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        Self {
+            base_url,
+            calls,
+            stop,
+            handle: Some(handle),
+        }
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+    }
+}
+
+impl Drop for MockLlm {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+fn read_http_body(stream: &mut TcpStream) -> String {
+    let mut bytes = Vec::new();
+    let mut buf = [0_u8; 8192];
+    let header_end = loop {
+        match stream.read(&mut buf) {
+            Ok(0) | Err(_) => return String::new(),
+            Ok(n) => {
+                bytes.extend_from_slice(&buf[..n]);
+                if let Some(pos) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                    break pos;
+                }
+            }
+        }
+    };
+    let headers = String::from_utf8_lossy(&bytes[..header_end]).to_lowercase();
+    let len = headers
+        .lines()
+        .find_map(|line| line.strip_prefix("content-length:"))
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(0);
+    let body_start = header_end + 4;
+    while bytes.len().saturating_sub(body_start) < len {
+        match stream.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => bytes.extend_from_slice(&buf[..n]),
+        }
+    }
+    String::from_utf8_lossy(&bytes[body_start..]).to_string()
+}
+
+fn configure_owner_recommend(s: &ServerGuard, mock: &MockLlm) {
+    let mgr = SkillManager::with_base(s.data_dir.clone()).expect("owner manager");
+    let skill_dir = mgr.paths().skills_dir().join("alpha-skill");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: alpha-skill\ndescription: alpha task\n---\n# alpha\n",
+    )
+    .unwrap();
+    mgr.register_local_skill("alpha-skill").unwrap();
+    mgr.db()
+        .set_skill_ai_index(
+            "alpha-skill",
+            &SkillAiIndex {
+                summary: "task: alpha task".into(),
+                search_doc: "task: alpha task triggers: alpha".into(),
+                router_card: "task: alpha task | triggers: alpha | inputs: text | outputs: result | not-for: unrelated".into(),
+                llm_score: 8,
+                ..SkillAiIndex::default()
+            },
+        )
+        .unwrap();
+    RecommendConfig {
+        enabled: true,
+        provider: Provider::OpenaiCompat,
+        base_url: mock.base_url.clone(),
+        model: "mock".into(),
+        api_key: "test".into(),
+        min_prompt_len: 0,
+        summary_lang_confirmed: true,
+        ..RecommendConfig::default()
+    }
+    .save(mgr.paths())
+    .unwrap();
 }
 
 fn register_first(s: &ServerGuard, username: &str, password: &str) -> String {
@@ -156,6 +302,121 @@ fn owner_me_no_credential_returns_implicit_admin_200() {
         me["username"].as_str().is_some(),
         "owner mode: synthetic owner must carry a username, got {me}"
     );
+}
+
+#[test]
+fn owner_prefs_routing_mode_roundtrips_through_http_and_db() {
+    let s = spawn_server("owner");
+    let client = http();
+    let initial: Value = client
+        .get(format!("{}/api/prefs", s.base_url()))
+        .send()
+        .expect("GET owner prefs")
+        .json()
+        .expect("owner prefs JSON");
+    assert_eq!(initial["routing_mode"], json!("fast"));
+
+    let updated = client
+        .post(format!("{}/api/prefs", s.base_url()))
+        .json(&json!({"routing_mode":"precise","show_tradeoff":false}))
+        .send()
+        .expect("POST owner prefs");
+    assert_eq!(updated.status().as_u16(), 200);
+    let echoed: Value = updated.json().expect("updated prefs JSON");
+    assert_eq!(echoed["routing_mode"], json!("precise"));
+    assert_eq!(echoed["show_tradeoff"], json!(false));
+
+    let invalid = client
+        .post(format!("{}/api/prefs", s.base_url()))
+        .json(&json!({"routing_mode":"turbo","show_tradeoff":true}))
+        .send()
+        .expect("POST invalid owner prefs");
+    assert_eq!(invalid.status().as_u16(), 400);
+
+    let read_back: Value = client
+        .get(format!("{}/api/prefs", s.base_url()))
+        .send()
+        .expect("GET owner prefs after invalid patch")
+        .json()
+        .expect("owner prefs JSON");
+    assert_eq!(read_back["routing_mode"], json!("precise"));
+    assert_eq!(read_back["show_tradeoff"], json!(false));
+
+    let conn = rusqlite::Connection::open(s.data_dir.join("runai.db")).expect("open owner db");
+    let stored: String = conn
+        .query_row(
+            "SELECT value FROM app_settings WHERE key='owner_prefs'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("owner prefs setting");
+    let stored: Value = serde_json::from_str(&stored).expect("stored owner prefs JSON");
+    assert_eq!(stored["routing_mode"], json!("precise"));
+    assert_eq!(stored["show_tradeoff"], json!(false));
+}
+
+#[test]
+fn owner_recommend_uses_persisted_routing_mode() {
+    let s = spawn_server("owner");
+    let mock = MockLlm::start();
+    configure_owner_recommend(&s, &mock);
+    let client = http();
+
+    let precise = client
+        .post(format!("{}/api/prefs", s.base_url()))
+        .json(&json!({"routing_mode":"precise"}))
+        .send()
+        .expect("set owner precise");
+    assert_eq!(precise.status().as_u16(), 200);
+    let routed = client
+        .post(format!("{}/recommend", s.base_url()))
+        .json(&json!({"prompt":"alpha task","session_id":"owner-precise"}))
+        .send()
+        .expect("owner precise recommend");
+    assert_eq!(routed.status().as_u16(), 200);
+    assert_eq!(
+        mock.calls(),
+        2,
+        "Precise owner request must call expansion + router"
+    );
+
+    let conn = rusqlite::Connection::open(s.data_dir.join("runai.db")).unwrap();
+    let (mode, calls): (String, i64) = conn
+        .query_row(
+            "SELECT routing_mode, llm_call_count FROM router_events ORDER BY id DESC LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(mode, "precise");
+    assert_eq!(calls, 2);
+
+    let fast = client
+        .post(format!("{}/api/prefs", s.base_url()))
+        .json(&json!({"routing_mode":"fast"}))
+        .send()
+        .expect("set owner fast");
+    assert_eq!(fast.status().as_u16(), 200);
+    let routed = client
+        .post(format!("{}/recommend", s.base_url()))
+        .json(&json!({"prompt":"alpha task","session_id":"owner-fast"}))
+        .send()
+        .expect("owner fast recommend");
+    assert_eq!(routed.status().as_u16(), 200);
+    assert_eq!(
+        mock.calls(),
+        3,
+        "Fast owner request adds exactly one router call"
+    );
+    let (mode, calls): (String, i64) = conn
+        .query_row(
+            "SELECT routing_mode, llm_call_count FROM router_events ORDER BY id DESC LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(mode, "fast");
+    assert_eq!(calls, 1);
 }
 
 #[test]

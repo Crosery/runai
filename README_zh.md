@@ -47,7 +47,7 @@
 在这套核心之上：
 
 - **LLM skill router** 选 (opt-in)：每条 user prompt 自动选最合适的 skill 注入主 agent 上下文（BM25 prefilter + LLM rerank + 真采用计数）
-- **本地 dashboard** 在 `http://127.0.0.1:17888`：每次 hook 触发、token 成本、延迟、被选 skill、第一波意图识别和第二波 router 输入输出都实时记录
+- **本地 dashboard** 在 `http://127.0.0.1:17888`：每次 hook 触发、Fast/Precise、实际调用次数、token、延迟、候选、可选 Precise expansion、router 输入输出和空推归因都实时记录
 
 ---
 
@@ -60,7 +60,7 @@
 | 2000+ skill 散在 GitHub，没办法在终端里浏览 | 内置 market：`runai market` 浏览本地缓存索引，Enter 直接装 |
 | 删了的 skill 想恢复回不来 | Trash-first：`runai uninstall` 进 `~/.runai/trash/`，`runai trash restore` 拉回来 |
 | "我到底启用了哪些 skill？" —— `ls` 四个目录、对比配置文件、祈祷它们一致 | 真值 = symlink 存在 + 配置条目存在；`runai status` 实时读文件系统 |
-| 不知道自己实际用了哪些 skill，不知道 router 每轮在干嘛 | Dashboard 在 127.0.0.1:17888 —— 每次 router 调用都记下被选 skill / 第一波意图识别 / BM25 候选 / 第二波 router 输入输出 / hook 输出 / 延迟 / token |
+| 不知道自己实际用了哪些 skill，不知道 router 每轮在干嘛 | Dashboard 在 127.0.0.1:17888 —— 每次路由尝试记录 Fast/Precise / 候选 / 可选 Precise expansion / router 输入输出 / hook 输出 / recovery / 空推归因 / 延迟 / token |
 
 ---
 
@@ -77,9 +77,10 @@
 ### 2. LLM skill router（opt-in）
 
 - **Hook 集成** —— Claude Code 的 `UserPromptSubmit` hook → `runai recommend` → router 决策 → 输出作为额外 context 注入主 agent 的 prompt。Dashboard / team 场景下，本地 hook 读取 `~/.runai-identity`；key 有效时使用该用户的网页偏好，key 过期时返回空 hook 输出，不再静默退回匿名默认偏好。
-- **意图识别 + BM25 prefilter + LLM rerank** —— 每个 `rnai_sess_*` 维护当前 session 的短记忆队列（默认 10 条，Settings 可配置；溢出时丢最旧项）。BM25 不直接吃原始长 prompt，而是先用当前输入 + 历史短记忆 + cwd + agent CLI 提取压缩后的真实意图，产出 domain tags / include terms / exclude terms，再用这段意图摘要召回候选（默认 30 个候选；默认 DeepSeek v4-flash；也支持任意 OpenAI 兼容 / Anthropic / `claude-cli` 后端）。普通 Android 模拟器调试会在 LLM 前过滤 KTV/车机/WebView 专用候选；带参考图约束的返工生图会先规整成“重新生成图片 + 参考图/角色一致”再召回。
+- **默认 Fast，按需 Precise** —— Fast 用有界 head+tail 任务锚点和结构化 `task / triggers / inputs / outputs` 检索，最多调用一次 router 模型；不注入 transcript、项目文件、conversation replay 或 session intent memory。Precise 增加一次有界语义 expansion，并可按开关注入这些上下文，同时始终并联原始任务锚点，避免 expansion 覆盖原始证据。
+- **有证据的候选检索** —— BM25 与结构化双语 triggers 排序候选。质量分、采用率和反馈只能重排已有检索证据的候选，不能把零证据 skill 填进超限 Fast 候选池。超限且全零证据时记录 `retrieval_zero` 并空推；候选池本来很小时仍可交给 router，因为小语料的 BM25 IDF 可能为零。
 - **AI summary 富集** —— 每个 skill 都由同一个 LLM 用你选定的 `summary_lang` 生成结构化 summary（`task / triggers / inputs / outputs / not-for / score`）；正向字段进入 BM25 索引，`not-for` 保留为负向准入信号和 router 上下文。富集以显式选定语言为前提，且输出语言被强制校验（不符先重试、再不符就丢弃不写），索引保持单一语言；`triggers` 字段保留跨语言关键词以提升检索。SKILL.md 编辑后自动 refresh，`runai install` / `scan` 也会针对改动的 skill 单点 re-enrich。
-- **两种模式** —— `EXCLUSIVE` 用于互斥替代或歧义，主 agent 可以让用户选择；`COMPATIBLE` 用于固定互补工作流（"整套调试链路" / "完整发版流程"），hook 输出默认让 agent 激活全部候选组合执行，但缺关键输入、权限确认、高成本或不可逆风险时仍可问一个最小必要问题。同 session 去重，已采用的 skill 不再被重推。
+- **严格短 ID 路由** —— 每次请求把候选映射为 `C01..Cnn`，解析结果必须通过本次候选白名单；`not-for` 命中一票否决。互为替代用 `EXCLUSIVE`，明示工作流中的必要互补步骤用 `COMPATIBLE`。后续轮次仍可再次推荐同一个相关 skill，不做 session 去重。
 - **真采用计数** —— Hook 输出让主 agent 运行 `runai-client activate <skill>`，必要时附带 runai 自己生成的 literal `rnai_sess_*` 会话 id。这个命令只有在 server 已 ACK `/skills/use/{name}`，或本地 durable outbox 已写入 `~/.runai/client-cache/servers/<server-key>/skills/<skill-key>/.outbox/` 后，才会把 `SKILL.md` 打到 stdout。
 - **客户端缓存** —— `runai-client activate` / `sync` 把整个 skill 目录缓存到 `~/.runai/client-cache`，永远不写入受管真实池 `~/.runai/skills`。缓存命中也会先发送或入队 usage event，再输出 `SKILL.md`，所以降低内容请求压力不会丢采用计数。SKILL.md 引用的 bundle 内附属文件由 agent 通过 `runai-client file <skill> <relpath>` 从 cache 读取；`~/.tool-name/...` 这类运行时 / 用户目录仍是本机文件系统数据，不属于 bundle。
 
@@ -87,7 +88,7 @@
 
 - **单一 binary 无 CDN** —— `runai server` 启动嵌入的 axum HTTP server；`web/{index.html,app.css,app.js}` 通过 `include_str!` 编译进 Rust 二进制。
 - **每个 Claude Code 会话自动拉起** —— `runai server --install-hook` 加 `SessionStart` hook，让 dashboard 永远在 `http://127.0.0.1:17888`。
-- **每次 router 调用都有埋点** —— 每条事件：model + provider，mode (compat / excl)，候选数，BM25 kept，prompt / completion / total tokens，延迟，被选 skill，状态，错误，完整 user prompt，工作目录，第一波意图识别 LLM 输入/输出/状态，第一波 BM25 候选名，第二波 router LLM 输入/原始输出，以及完整 hook 输出。
+- **每次路由尝试都有埋点** —— 每条事件记录 Fast/Precise、实际 LLM 尝试次数、空推归因、检索 query、解析前后候选、parser recovery、候选池、Precise expansion 原始/清洗输出、router 输入/原始输出、hook 输出、延迟与 token。
 - **Admin 运营商检查** —— Dashboard Admin 把全局 recommend 总开关和个人偏好分开，并能对已保存 provider 发一条短模型请求，直接显示成功或 provider 返回的错误。Provider / model 是全局配置；prompt 注入开关、推荐上下文设置（session 记忆开关 + 队列上限 + BM25 候选数）、跳过提醒、我的库范围是用户偏好，只影响带有效身份的 `/recommend` 请求或本地 hook。
 - **Skill 详情下钻** —— `/skills` 列出每个 skill 的使用次数、LLM 质量分、AI summary；点进去看完整目录树（浏览 SKILL.md + 配套文件）、最近使用历史、原始 description vs 富集后的 summary。
 - **实时刷新** —— 5 秒轮询 + `inFlight` 防并发 + `visibilitychange` 切后台自动暂停。静态资源每次 boot 加 `?v=<时间戳>` cache buster，`cargo install` 升级 binary 后浏览器普通 reload 就拿新版，不用 hard refresh。

@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::{sync::Arc, time::Instant};
 
 use crate::core::paths::AppPaths;
-use crate::core::prefs::UserPrefs;
+use crate::core::prefs::{RoutingMode, UserPrefs};
 use crate::core::recommend;
 
 use super::error::ApiError;
@@ -364,7 +364,15 @@ pub(super) async fn api_get_prefs(
     let prefs = tokio::task::spawn_blocking(move || -> Result<UserPrefs, ApiError> {
         let db = state.db().map_err(ApiError::Internal)?;
         let u = require_user(&headers, &db)?;
-        Ok(UserPrefs::from_json_str(&u.prefs_json))
+        if u.user_id == "owner" {
+            let stored = db
+                .app_setting("owner_prefs")
+                .map_err(ApiError::Internal)?
+                .unwrap_or_default();
+            Ok(UserPrefs::from_json_str(&stored))
+        } else {
+            Ok(UserPrefs::from_json_str(&u.prefs_json))
+        }
     })
     .await
     .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))??;
@@ -389,13 +397,26 @@ pub(super) async fn api_post_prefs(
     let prefs = tokio::task::spawn_blocking(move || -> Result<UserPrefs, ApiError> {
         let db = state.db().map_err(ApiError::Internal)?;
         let u = require_user(&headers, &db)?;
+        validate_prefs_patch(&patch)?;
+        let current_json = if u.user_id == "owner" {
+            db.app_setting("owner_prefs")
+                .map_err(ApiError::Internal)?
+                .unwrap_or_default()
+        } else {
+            u.prefs_json.clone()
+        };
         let mut current_value: serde_json::Value =
-            serde_json::from_str(&u.prefs_json).unwrap_or_else(|_| serde_json::json!({}));
+            serde_json::from_str(&current_json).unwrap_or_else(|_| serde_json::json!({}));
         merge_prefs_patch(&mut current_value, patch);
         let merged_prefs = UserPrefs::from_json_str(&current_value.to_string());
         let json = merged_prefs.to_json_str();
-        db.update_user_prefs(&u.user_id, &json)
-            .map_err(ApiError::Internal)?;
+        if u.user_id == "owner" {
+            db.set_app_setting("owner_prefs", &json)
+                .map_err(ApiError::Internal)?;
+        } else {
+            db.update_user_prefs(&u.user_id, &json)
+                .map_err(ApiError::Internal)?;
+        }
         Ok(merged_prefs)
     })
     .await
@@ -411,6 +432,18 @@ pub(super) async fn api_post_prefs(
 ///   (revert-to-default), any other value sets it. Non-object patches for
 ///   the flags field still replace the whole map (back-compat with a full
 ///   `UserPrefs` round-trip).
+fn validate_prefs_patch(patch: &serde_json::Value) -> Result<(), ApiError> {
+    if let Some(value) = patch.get("routing_mode") {
+        let valid = serde_json::from_value::<RoutingMode>(value.clone()).is_ok();
+        if !valid {
+            return Err(ApiError::BadRequest(
+                "routing_mode must be fast or precise".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn merge_prefs_patch(current: &mut serde_json::Value, patch: serde_json::Value) {
     use serde_json::Value;
     let Value::Object(patch_obj) = patch else {

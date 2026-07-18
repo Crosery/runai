@@ -3,12 +3,13 @@ use std::fs;
 use crate::core::paths::AppPaths;
 
 use super::intent::{
-    ScenarioConstraint, build_intent_memory_from_prompt, build_intent_summary, recognize_intent,
+    ScenarioConstraint, build_intent_memory_from_prompt, build_intent_summary, compact_true_intent,
+    recognize_intent,
 };
 use super::lang_validation::prose_fields;
 use super::project_context::{extract_at_references, read_project_context};
 use super::router::{
-    CandidateCatalogEntry, CandidateRelevanceInput, RouterUserMessageParts, action_form_match,
+    CandidateCatalogEntry, CandidateRelevanceInput, RouterUserMessageParts,
     build_router_user_message, candidate_allowed_by_intent, feedback_markers, hybrid_score,
     is_harness_message, parse_lines, parse_router_response, split_mode_and_names,
     structured_candidate_card, truncate_prompt_for_llm,
@@ -234,7 +235,13 @@ fn issue44_reasoning_named_candidate_recovers_from_anonymized_replays() {
                 name: name.clone(),
             })
             .collect();
-        let recovered = parse_router_response(&case.raw, &catalog, 8).filtered_names;
+        let parsed = parse_router_response(&case.raw, &catalog, 8);
+        assert!(
+            parsed.recovery,
+            "fixture must exercise recovery: {}",
+            case.name
+        );
+        let recovered = parsed.filtered_names;
         assert_eq!(
             recovered, case.expected,
             "reasoning 点名候选但漏选择行时应受控恢复：{}",
@@ -267,6 +274,22 @@ fn issue44_parser_accepts_short_id_json_and_common_drift() {
 }
 
 #[test]
+fn issue44_explicit_empty_selection_never_recovers_from_reasoning() {
+    let catalog = vec![CandidateCatalogEntry {
+        id: "C01".into(),
+        name: "alpha".into(),
+    }];
+    let parsed = parse_router_response(
+        r#"{"mode":"exclusive","selected":[],"reasoning":"明确选择 C01"}"#,
+        &catalog,
+        8,
+    );
+    assert!(parsed.filtered_names.is_empty());
+    assert!(!parsed.recovery);
+    assert_eq!(parsed.empty_reason, super::router::EmptyReason::ModelEmpty);
+}
+
+#[test]
 fn issue44_parser_recovery_never_creates_non_candidate_skill() {
     let raw = "EXCLUSIVE\nreasoning: C01 合适，但也可以使用 ghost-skill";
     let catalog = vec![CandidateCatalogEntry {
@@ -286,8 +309,11 @@ fn issue44_recovery_rejects_substrings_and_negative_mentions() {
     }];
     for raw in [
         "EXCLUSIVE\nreasoning: browser automation is relevant",
+        "EXCLUSIVE\nreasoning: browse 只是普通单词",
         "EXCLUSIVE\nreasoning: browse 不合适，应该保持空集",
         "EXCLUSIVE\nreasoning: 不要使用 C01",
+        "EXCLUSIVE\nreasoning: 应排除 browse",
+        "EXCLUSIVE\nreasoning: C01 is irrelevant and should be rejected",
     ] {
         let parsed = parse_router_response(raw, &catalog, 8);
         assert!(parsed.filtered_names.is_empty(), "不得恢复：{raw}");
@@ -310,21 +336,6 @@ fn issue44_candidate_card_preserves_labeled_not_for_under_long_fields() {
     }
     assert!(card.contains("禁止支付、删除和不可逆操作"));
     assert!(card.chars().count() < 700);
-}
-
-#[test]
-fn issue44_cross_language_action_match_beats_unrelated_high_prior() {
-    assert!(action_form_match(
-        "给飞书联系人发一条即时消息",
-        "send an instant message to a Lark user"
-    ));
-    assert!(!action_form_match(
-        "给飞书联系人发一条即时消息",
-        "kubernetes deploy container cluster"
-    ));
-    let relevant = 1.0 + hybrid_score(0.0, 0.2, 0.2, false);
-    let unrelated = hybrid_score(0.0, 1.0, 1.0, false);
-    assert!(relevant > unrelated);
 }
 
 #[test]
@@ -561,7 +572,7 @@ fn router_user_message_uses_intent_summary_and_client_context() {
     assert!(msg.contains("agent_cli: codex"));
     assert!(msg.contains("cwd: `/repo/runai`"));
     assert!(msg.contains("- test-driven-development: TDD"));
-    assert!(msg.contains("默认 30 个 skill 候选"));
+    assert!(msg.contains("最多 30 个"));
     // No leftover placeholder and no unbounded raw-prompt header.
     assert!(
         !msg.contains("{USER_PROMPT}"),
@@ -630,6 +641,25 @@ fn truncate_keeps_head_and_tail_with_middle_marker() {
 }
 
 #[test]
+fn compact_task_anchor_keeps_head_and_tail() {
+    let prompt = format!(
+        "HEAD_CONSTRAINT {} TAIL_ACTION",
+        "middle context ".repeat(100)
+    );
+    let anchor = compact_true_intent(&prompt);
+    assert!(
+        anchor.contains("HEAD_CONSTRAINT"),
+        "anchor lost head: {anchor}"
+    );
+    assert!(anchor.contains("TAIL_ACTION"), "anchor lost tail: {anchor}");
+    assert!(
+        anchor.contains("中段已截断"),
+        "anchor lacks marker: {anchor}"
+    );
+    assert!(anchor.chars().count() <= 240);
+}
+
+#[test]
 fn truncate_short_prompt_is_unchanged() {
     let short = "帮我处理 alpha 任务";
     assert_eq!(truncate_prompt_for_llm(short), short);
@@ -685,6 +715,11 @@ fn system_prompt_precision_contract() {
     assert!(system.contains("短 ID"));
     assert!(system.contains("selected"));
     assert!(system.contains("最小充分集合"));
+    assert!(system.contains("领域过泛时至多选 1 个"));
+    assert!(system.contains("必要互补子任务"));
+    assert!(system.contains("互为替代用 exclusive"));
+    assert!(system.contains("not-for 命中是一票否决"));
+    assert!(system.contains("follow-up 明确要求排除"));
     assert!(
         !system.contains("硬上限"),
         "numeric hard cap removed from system too"

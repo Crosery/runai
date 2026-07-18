@@ -164,16 +164,17 @@ pub async fn serve_with(
     // (default unchanged: watcher on). A box with a large static skill pool can
     // hit a startup enrich storm from the recursive watch's initial event
     // burst, so unattended servers can disable it without affecting normal use.
-    let _skill_watcher = if std::env::var("RUNAI_DISABLE_SKILL_WATCHER").ok().as_deref() == Some("1") {
-        tracing::info!("skill watcher disabled via RUNAI_DISABLE_SKILL_WATCHER=1");
-        None
-    } else {
-        crate::core::skill_watcher::SkillWatcher::start(data_dir, |names| {
-            super::market::spawn_enrich(names);
-        })
-        .map_err(|e| tracing::warn!("skill watcher failed to start: {e}"))
-        .ok()
-    };
+    let _skill_watcher =
+        if std::env::var("RUNAI_DISABLE_SKILL_WATCHER").ok().as_deref() == Some("1") {
+            tracing::info!("skill watcher disabled via RUNAI_DISABLE_SKILL_WATCHER=1");
+            None
+        } else {
+            crate::core::skill_watcher::SkillWatcher::start(data_dir, |names| {
+                super::market::spawn_enrich(names);
+            })
+            .map_err(|e| tracing::warn!("skill watcher failed to start: {e}"))
+            .ok()
+        };
 
     // Sub-routers for the rate-limited families. Building them as
     // independent sub-routers means the `from_fn` middleware applies

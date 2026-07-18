@@ -271,6 +271,7 @@ fn frontend_prompt_toggle_payloads() -> (Value, Value) {
         show_feedback_protocol: true,
         recommend_mode: 'compatible',
         candidate_limit: 3,
+        routing_mode: 'precise',
         allow_public_recommend: true,
         recommend_enabled: true,
         read_claude_md: true,
@@ -455,6 +456,41 @@ fn post_prefs_full_replace() {
 }
 
 /// Plan 4.28 #2: per-key merge — flipping one flag must NOT clobber siblings.
+#[test]
+fn invalid_routing_mode_returns_400_without_mutating_other_prefs() {
+    let server = spawn_team_server();
+    let api_key = register_user(&server, "alice", "correct horse battery staple");
+    let client = http_client();
+    let seed = client
+        .post(format!("{}/api/prefs", server.base_url()))
+        .bearer_auth(&api_key)
+        .json(&json!({"routing_mode":"precise","show_tradeoff":false}))
+        .send()
+        .expect("seed prefs");
+    assert_eq!(seed.status().as_u16(), 200);
+
+    let invalid = client
+        .post(format!("{}/api/prefs", server.base_url()))
+        .bearer_auth(&api_key)
+        .json(&json!({"routing_mode":"turbo","show_tradeoff":true}))
+        .send()
+        .expect("invalid routing mode");
+    assert_eq!(invalid.status().as_u16(), 400);
+
+    let read_back: Value = client
+        .get(format!("{}/api/prefs", server.base_url()))
+        .bearer_auth(&api_key)
+        .send()
+        .expect("GET prefs")
+        .json()
+        .expect("prefs JSON");
+    assert_eq!(read_back["routing_mode"], json!("precise"));
+    assert_eq!(read_back["show_tradeoff"], json!(false));
+    let stored = read_prefs_json_from_db(&server.data_dir, "alice");
+    assert_eq!(stored["routing_mode"], json!("precise"));
+    assert_eq!(stored["show_tradeoff"], json!(false));
+}
+
 #[test]
 fn post_prefs_partial_merge() {
     let server = spawn_team_server();

@@ -27,8 +27,9 @@ fn base_event() -> RouterEvent {
         llm_raw_response: "NONE".into(),
         hook_output: String::new(),
         llm_input: "test".into(),
-        intent_llm_input: String::new(),
-        intent_llm_output: String::new(),
+        intent_llm_input: "stage1-input".into(),
+        intent_llm_raw_output: "```intent: raw```".into(),
+        intent_llm_output: "intent: cleaned".into(),
         intent_status: String::new(),
         intent_error_msg: None,
         bm25_candidates_json: r#"["C01"]"#.into(),
@@ -57,6 +58,7 @@ fn issue44_router_event_schema_roundtrips_routing_and_empty_attribution() {
         "filtered_candidates_json",
         "parser_recovery",
         "llm_call_count",
+        "intent_llm_raw_output",
     ] {
         assert!(
             columns.iter().any(|column| column == required),
@@ -68,4 +70,8 @@ fn issue44_router_event_schema_roundtrips_routing_and_empty_attribution() {
     let event = db.router_recent_events(1).unwrap().pop().unwrap();
     assert_eq!(event.status, "ok");
     assert_eq!(event.chosen_skills_json, "[]");
+    assert_eq!(event.intent_llm_raw_output, "```intent: raw```");
+    assert_eq!(event.intent_llm_output, "intent: cleaned");
+    assert_eq!(event.routing_mode, "");
+    assert_eq!(event.llm_call_count, 0);
 }
