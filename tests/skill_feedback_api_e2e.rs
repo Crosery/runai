@@ -90,13 +90,10 @@ impl Drop for ServerGuard {
 }
 
 /// Spawn `runai server --mode team` against a caller-supplied HOME
-/// (`spawn_team_server` below delegates here with a fresh tempdir). Use
-/// this directly when a test needs to plant+register skills BEFORE the server
-/// starts, so `core::skill_watcher::SkillWatcher` (started at server boot,
-/// watches `<data>/skills` recursively) never observes those files as a
-/// fresh write and never fires `market::spawn_enrich` for them — the only
-/// deterministic way to test the "unenriched" / untouched enrich_state on
-/// a live server (see `api_skill_detail_enrich_status_unenriched_for_fresh_skill`).
+/// (`spawn_team_server` below delegates here with a fresh tempdir). This suite
+/// disables `SkillWatcher`: it verifies feedback-driven re-enrich claims, and
+/// Linux notify backends can emit an initial event burst for skills planted
+/// before server startup. Watcher behavior has dedicated coverage elsewhere.
 fn spawn_team_server_with_home(home: TempDir) -> ServerGuard {
     std::fs::create_dir_all(home.path().join(".runai/skills")).unwrap();
     let port = free_port();
@@ -110,6 +107,7 @@ fn spawn_team_server_with_home(home: TempDir) -> ServerGuard {
         .arg("team")
         .env("HOME", home.path())
         .env("RUNAI_NO_AUTOSPAWN", "1")
+        .env("RUNAI_DISABLE_SKILL_WATCHER", "1")
         .env_remove("RUNE_DATA_DIR")
         .env_remove("SKILL_MANAGER_DATA_DIR")
         .stdin(Stdio::null())
@@ -610,10 +608,9 @@ fn feedback_legacy_body_without_verdict_field_unaffected() {
 /// `api_skill_detail_includes_radar_and_feedback_stats_matching_fixture`,
 /// `"enriching"` by `feedback_verdict_positive_records_row_without_reevaluate`).
 ///
-/// Plants + registers BEFORE the server starts (via `spawn_team_server_with_home`)
-/// — planting on an ALREADY-RUNNING server races the file watcher, which
-/// fires `spawn_enrich` on the SKILL.md write and marks the skill 富集中
-/// before this test's own GET ever runs, making "unenriched" unobservable.
+/// Plants + registers before the server starts. The suite disables the skill
+/// watcher so the assertion observes only feedback-owned enrich state, not
+/// platform-specific notify startup events.
 #[test]
 fn api_skill_detail_enrich_status_unenriched_for_fresh_skill() {
     let home = tempfile::tempdir().unwrap();
